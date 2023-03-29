@@ -7,6 +7,8 @@ use interpreter::interpret;
 use parser::tokenize;
 use std::env;
 use std::fs;
+use std::process::Command;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -29,10 +31,11 @@ fn main() {
     let content = fs::read_to_string(filename).expect("Could not read the file");
     let tokens = tokenize(&content);
     // interpret(tokens);
+    println!("Tokens: {:?}", tokens);
 
     // Initialize LLVM context and create the compiler instance
     let context = Context::create();
-    let compiler = Compiler::new(&context);
+    let mut compiler = Compiler::new(&context);
 
     // Compile the code
     compiler.compile(&tokens);
@@ -40,4 +43,26 @@ fn main() {
     compiler
         .write_ir_to_file("output.ll")
         .expect("Failed to write LLVM IR to file");
+
+    // Call llc
+    let output = Command::new("llc")
+        .arg("-relocation-model=pic")
+        .arg("-filetype=obj")
+        .arg("output.ll")
+        .arg("-o")
+        .arg("output.o")
+        .output()
+        .expect("Failed to execute llc");
+    println!("llc stdout: {}", String::from_utf8_lossy(&output.stdout));
+    println!("llc stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    // Call gcc
+    let output = Command::new("gcc")
+        .arg("output.o")
+        .arg("-o")
+        .arg("output")
+        .output()
+        .expect("Failed to execute gcc");
+    println!("gcc stdout: {}", String::from_utf8_lossy(&output.stdout));
+    println!("gcc stderr: {}", String::from_utf8_lossy(&output.stderr));
 }

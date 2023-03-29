@@ -2,12 +2,13 @@ use nom::{
     bytes::complete::tag,
     character::complete::{alpha1, alphanumeric0, digit1, space0, space1},
     combinator::{map_res, recognize},
-    sequence::pair,
+    sequence::{pair, preceded},
     IResult,
 };
 
 #[derive(Debug, PartialEq)]
 pub enum Token {
+    FnMain,
     LetInt,
     Identifier(String),
     Equals,
@@ -17,7 +18,25 @@ pub enum Token {
     SemiColon,
     LeftBracket,
     RightBracket,
+    LeftCurlyBrace,
+    RightCurlyBrace,
     Unknown,
+}
+pub fn parse_left_curly_brace(input: &str) -> IResult<&str, Token> {
+    let (input, _) = space0(input)?;
+    let (input, _) = tag("{")(input)?;
+    Ok((input, Token::LeftCurlyBrace))
+}
+
+pub fn parse_right_curly_brace(input: &str) -> IResult<&str, Token> {
+    let (input, _) = space0(input)?;
+    let (input, _) = tag("}")(input)?;
+    Ok((input, Token::RightCurlyBrace))
+}
+pub fn parse_fn_main(input: &str) -> IResult<&str, Token> {
+    let (input, _) = recognize(pair(tag("fn"), preceded(space1, tag("main"))))(input)?;
+    let (input, _) = space0(input)?;
+    Ok((input, Token::FnMain))
 }
 
 pub fn parse_let_int(input: &str) -> IResult<&str, Token> {
@@ -86,15 +105,18 @@ pub fn tokenize(input: &str) -> Vec<Token> {
     let mut remaining_input = input.trim_start();
 
     while !remaining_input.is_empty() {
-        let result = parse_let_int(remaining_input)
+        let result = parse_fn_main(remaining_input)
+            .or_else(|_| parse_right_bracket(remaining_input))
+            .or_else(|_| parse_left_bracket(remaining_input))
+            .or_else(|_| parse_left_curly_brace(remaining_input))
+            .or_else(|_| parse_let_int(remaining_input))
             .or_else(|_| parse_identifier(remaining_input))
             .or_else(|_| parse_equals(remaining_input))
             .or_else(|_| parse_integer(remaining_input))
             .or_else(|_| parse_plus(remaining_input))
             .or_else(|_| parse_std_out(remaining_input))
             .or_else(|_| parse_semi_colon(remaining_input))
-            .or_else(|_| parse_right_bracket(remaining_input))
-            .or_else(|_| parse_left_bracket(remaining_input))
+            .or_else(|_| parse_right_curly_brace(remaining_input))
             .or_else(|_| parse_any(remaining_input));
 
         match result {
