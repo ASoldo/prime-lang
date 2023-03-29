@@ -1,0 +1,3 @@
+let int a = 5;
+let int b = 10;
+out(a + b);
