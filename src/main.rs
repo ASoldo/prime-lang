@@ -1,19 +1,21 @@
 mod compiler;
 mod interpreter;
+mod lsp;
 mod parser;
+
 use compiler::Compiler;
 use inkwell::context::Context;
 use interpreter::interpret;
 use parser::tokenize;
 use std::env;
 use std::fs;
-use std::process::Command;
+use std::process::Command; // Add this line
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 3 {
-        eprintln!("Usage: ./prime-lang [run|build] <filename.prime>");
+        eprintln!("Usage: ./prime-lang [run|build|lsp] <filename.prime>");
         std::process::exit(1);
     }
 
@@ -69,8 +71,13 @@ fn main() {
             println!("gcc stdout: {}", String::from_utf8_lossy(&output.stdout));
             println!("gcc stderr: {}", String::from_utf8_lossy(&output.stderr));
         }
+        "lsp" => {
+            // Start the LSP server
+            lsp::start_lsp_server(filename).expect("Failed to start LSP server");
+            println!("{}", "LSP Started!");
+        }
         _ => {
-            eprintln!("Invalid command. Usage: ./prime-lang [run|build] <filename.prime>");
+            eprintln!("Invalid command. Usage: ./prime-lang [run|build|lsp] <filename.prime>");
             std::process::exit(1);
         }
     }
