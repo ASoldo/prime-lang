@@ -10,13 +10,21 @@ pub fn interpret(tokens: Vec<Token>) {
         match tokens[index] {
             Token::FnMain => {
                 if let Token::LeftBracket = tokens[index + 1] {
-                    inside_main = true;
-                    index += 2;
+                    if let Token::RightBracket = tokens[index + 2] {
+                        if let Token::LeftCurlyBrace = tokens[index + 3] {
+                            inside_main = true;
+                            index += 4;
+                        } else {
+                            panic!("Expected a left curly brace after 'fn main' right bracket.");
+                        }
+                    } else {
+                        panic!("Expected a right bracket after 'fn main' left bracket.");
+                    }
                 } else {
                     panic!("Expected a left bracket after 'fn main'.");
                 }
             }
-            Token::RightBracket if inside_main => {
+            Token::RightCurlyBrace => {
                 inside_main = false;
                 index += 1;
             }
@@ -58,6 +66,16 @@ pub fn interpret(tokens: Vec<Token>) {
                                                 if let Some(op) = operation {
                                                     match op {
                                                         Token::Plus => expr_value += value,
+                                                        Token::Minus => expr_value -= value,
+                                                        Token::Slash => {
+                                                            if *value == 0 {
+                                                                panic!("Division by zero.");
+                                                            } else {
+                                                                expr_value /= value;
+                                                            }
+                                                        }
+                                                        Token::Star => expr_value *= value,
+                                                        _ => panic!("Unsupported operation."),
                                                         _ => panic!("Unsupported operation."),
                                                     }
                                                     operation = None;
@@ -72,6 +90,16 @@ pub fn interpret(tokens: Vec<Token>) {
                                             if let Some(op) = operation {
                                                 match op {
                                                     Token::Plus => expr_value += value,
+                                                    Token::Minus => expr_value -= value,
+                                                    Token::Slash => {
+                                                        if value == 0 {
+                                                            panic!("Division by zero.");
+                                                        } else {
+                                                            expr_value /= value;
+                                                        }
+                                                    }
+                                                    Token::Star => expr_value *= value,
+
                                                     _ => panic!("Unsupported operation."),
                                                 }
                                                 operation = None;
@@ -82,6 +110,16 @@ pub fn interpret(tokens: Vec<Token>) {
                                         Token::Plus => {
                                             operation = Some(Token::Plus);
                                         }
+                                        Token::Minus => {
+                                            operation = Some(Token::Minus);
+                                        }
+                                        Token::Slash => {
+                                            operation = Some(Token::Slash);
+                                        }
+                                        Token::Star => {
+                                            operation = Some(Token::Star);
+                                        }
+
                                         _ => panic!("Unexpected token: {:?}", tokens[index]),
                                     }
                                     index += 1;
@@ -106,6 +144,9 @@ pub fn interpret(tokens: Vec<Token>) {
                     panic!("Code should be inside 'fn main' function.");
                 }
             }
+        }
+        if !inside_main && index < tokens.len() {
+            index += 1;
         }
     }
 }

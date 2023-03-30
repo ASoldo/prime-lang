@@ -70,7 +70,7 @@ impl<'ctx> Compiler<'ctx> {
                     let rhs = self.compile_term(tokens, index);
                     result = self
                         .builder
-                        .build_int_sub(result.into_int_value(), rhs.into_int_value(), "div")
+                        .build_int_signed_div(result.into_int_value(), rhs.into_int_value(), "div")
                         .into();
                 }
                 Token::Star => {
@@ -78,7 +78,7 @@ impl<'ctx> Compiler<'ctx> {
                     let rhs = self.compile_term(tokens, index);
                     result = self
                         .builder
-                        .build_int_sub(result.into_int_value(), rhs.into_int_value(), "mul")
+                        .build_int_mul(result.into_int_value(), rhs.into_int_value(), "mul")
                         .into();
                 }
                 _ => break,
@@ -120,21 +120,21 @@ impl<'ctx> Compiler<'ctx> {
         let lhs_val = i32_type.const_int(lhs as u64, false);
         let rhs_val = i32_type.const_int(rhs as u64, false);
 
-        self.builder.build_int_add(lhs_val, rhs_val, "sub")
+        self.builder.build_int_sub(lhs_val, rhs_val, "sub")
     }
     fn compile_division(&self, lhs: i32, rhs: i32) -> IntValue<'ctx> {
         let i32_type = self.context.i32_type();
         let lhs_val = i32_type.const_int(lhs as u64, false);
         let rhs_val = i32_type.const_int(rhs as u64, false);
 
-        self.builder.build_int_add(lhs_val, rhs_val, "div")
+        self.builder.build_int_signed_div(lhs_val, rhs_val, "div")
     }
     fn compile_multiplication(&self, lhs: i32, rhs: i32) -> IntValue<'ctx> {
         let i32_type = self.context.i32_type();
         let lhs_val = i32_type.const_int(lhs as u64, false);
         let rhs_val = i32_type.const_int(rhs as u64, false);
 
-        self.builder.build_int_add(lhs_val, rhs_val, "mul")
+        self.builder.build_int_mul(lhs_val, rhs_val, "mul")
     }
 
     pub fn compile(&mut self, tokens: &[Token]) {
