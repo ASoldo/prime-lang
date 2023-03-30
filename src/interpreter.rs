@@ -76,7 +76,6 @@ pub fn interpret(tokens: Vec<Token>) {
                                                         }
                                                         Token::Star => expr_value *= value,
                                                         _ => panic!("Unsupported operation."),
-                                                        _ => panic!("Unsupported operation."),
                                                     }
                                                     operation = None;
                                                 } else {

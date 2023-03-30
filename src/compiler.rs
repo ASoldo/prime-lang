@@ -107,35 +107,6 @@ impl<'ctx> Compiler<'ctx> {
             _ => panic!("Expected an integer or variable reference."),
         }
     }
-    //basic operators +, -, /, *
-    fn compile_addition(&self, lhs: i32, rhs: i32) -> IntValue<'ctx> {
-        let i32_type = self.context.i32_type();
-        let lhs_val = i32_type.const_int(lhs as u64, false);
-        let rhs_val = i32_type.const_int(rhs as u64, false);
-
-        self.builder.build_int_add(lhs_val, rhs_val, "add")
-    }
-    fn compile_subtraction(&self, lhs: i32, rhs: i32) -> IntValue<'ctx> {
-        let i32_type = self.context.i32_type();
-        let lhs_val = i32_type.const_int(lhs as u64, false);
-        let rhs_val = i32_type.const_int(rhs as u64, false);
-
-        self.builder.build_int_sub(lhs_val, rhs_val, "sub")
-    }
-    fn compile_division(&self, lhs: i32, rhs: i32) -> IntValue<'ctx> {
-        let i32_type = self.context.i32_type();
-        let lhs_val = i32_type.const_int(lhs as u64, false);
-        let rhs_val = i32_type.const_int(rhs as u64, false);
-
-        self.builder.build_int_signed_div(lhs_val, rhs_val, "div")
-    }
-    fn compile_multiplication(&self, lhs: i32, rhs: i32) -> IntValue<'ctx> {
-        let i32_type = self.context.i32_type();
-        let lhs_val = i32_type.const_int(lhs as u64, false);
-        let rhs_val = i32_type.const_int(rhs as u64, false);
-
-        self.builder.build_int_mul(lhs_val, rhs_val, "mul")
-    }
 
     pub fn compile(&mut self, tokens: &[Token]) {
         let entry_block = self.context.append_basic_block(self.main_function, "entry");
@@ -203,7 +174,6 @@ impl<'ctx> Compiler<'ctx> {
                                         panic!("Expected a semicolon.");
                                     }
 
-                                    let string_format = self.context.const_string(b"%d\n", false);
                                     let string_format_ptr = self
                                         .builder
                                         .build_global_string_ptr("%d\n", "fmt")
