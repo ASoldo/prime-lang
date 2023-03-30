@@ -26,13 +26,9 @@ impl<'ctx> Compiler<'ctx> {
         let init_config = InitializationConfig::default();
         Target::initialize_native(&init_config).unwrap();
 
-        // let i32_type = context.i32_type();
-        // let main_fn_type = i32_type.fn_type(&[], false);
         let main_fn_type = context.void_type().fn_type(&[], false);
 
         let main_function = module.add_function("main", main_fn_type, None);
-        // let basic_block = context.append_basic_block(main_function, "entry");
-        // builder.position_at_end(basic_block);
 
         let printf_function_type = context.i32_type().fn_type(
             &[context.i8_type().ptr_type(AddressSpace::from(0)).into()],
@@ -61,6 +57,30 @@ impl<'ctx> Compiler<'ctx> {
                         .build_int_add(result.into_int_value(), rhs.into_int_value(), "add")
                         .into();
                 }
+                Token::Minus => {
+                    *index += 1;
+                    let rhs = self.compile_term(tokens, index);
+                    result = self
+                        .builder
+                        .build_int_sub(result.into_int_value(), rhs.into_int_value(), "sub")
+                        .into();
+                }
+                Token::Slash => {
+                    *index += 1;
+                    let rhs = self.compile_term(tokens, index);
+                    result = self
+                        .builder
+                        .build_int_sub(result.into_int_value(), rhs.into_int_value(), "div")
+                        .into();
+                }
+                Token::Star => {
+                    *index += 1;
+                    let rhs = self.compile_term(tokens, index);
+                    result = self
+                        .builder
+                        .build_int_sub(result.into_int_value(), rhs.into_int_value(), "mul")
+                        .into();
+                }
                 _ => break,
             }
         }
@@ -87,13 +107,34 @@ impl<'ctx> Compiler<'ctx> {
             _ => panic!("Expected an integer or variable reference."),
         }
     }
-
+    //basic operators +, -, /, *
     fn compile_addition(&self, lhs: i32, rhs: i32) -> IntValue<'ctx> {
         let i32_type = self.context.i32_type();
         let lhs_val = i32_type.const_int(lhs as u64, false);
         let rhs_val = i32_type.const_int(rhs as u64, false);
 
         self.builder.build_int_add(lhs_val, rhs_val, "add")
+    }
+    fn compile_subtraction(&self, lhs: i32, rhs: i32) -> IntValue<'ctx> {
+        let i32_type = self.context.i32_type();
+        let lhs_val = i32_type.const_int(lhs as u64, false);
+        let rhs_val = i32_type.const_int(rhs as u64, false);
+
+        self.builder.build_int_add(lhs_val, rhs_val, "sub")
+    }
+    fn compile_division(&self, lhs: i32, rhs: i32) -> IntValue<'ctx> {
+        let i32_type = self.context.i32_type();
+        let lhs_val = i32_type.const_int(lhs as u64, false);
+        let rhs_val = i32_type.const_int(rhs as u64, false);
+
+        self.builder.build_int_add(lhs_val, rhs_val, "div")
+    }
+    fn compile_multiplication(&self, lhs: i32, rhs: i32) -> IntValue<'ctx> {
+        let i32_type = self.context.i32_type();
+        let lhs_val = i32_type.const_int(lhs as u64, false);
+        let rhs_val = i32_type.const_int(rhs as u64, false);
+
+        self.builder.build_int_add(lhs_val, rhs_val, "mul")
     }
 
     pub fn compile(&mut self, tokens: &[Token]) {

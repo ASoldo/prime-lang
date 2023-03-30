@@ -14,6 +14,9 @@ pub enum Token {
     Equals,
     Integer(i32),
     Plus,
+    Minus,
+    Slash,
+    Star,
     StdOut,
     SemiColon,
     LeftBracket,
@@ -71,6 +74,21 @@ pub fn parse_plus(input: &str) -> IResult<&str, Token> {
     let (input, _) = tag("+")(input)?;
     Ok((input, Token::Plus))
 }
+pub fn parse_minus(input: &str) -> IResult<&str, Token> {
+    let (input, _) = space0(input)?;
+    let (input, _) = tag("-")(input)?;
+    Ok((input, Token::Minus))
+}
+pub fn parse_slash(input: &str) -> IResult<&str, Token> {
+    let (input, _) = space0(input)?;
+    let (input, _) = tag("/")(input)?;
+    Ok((input, Token::Slash))
+}
+pub fn parse_star(input: &str) -> IResult<&str, Token> {
+    let (input, _) = space0(input)?;
+    let (input, _) = tag("*")(input)?;
+    Ok((input, Token::Star))
+}
 
 pub fn parse_std_out(input: &str) -> IResult<&str, Token> {
     let (input, _) = tag("out")(input)?;
@@ -114,6 +132,9 @@ pub fn tokenize(input: &str) -> Vec<Token> {
             .or_else(|_| parse_equals(remaining_input))
             .or_else(|_| parse_integer(remaining_input))
             .or_else(|_| parse_plus(remaining_input))
+            .or_else(|_| parse_minus(remaining_input))
+            .or_else(|_| parse_slash(remaining_input))
+            .or_else(|_| parse_star(remaining_input))
             .or_else(|_| parse_std_out(remaining_input))
             .or_else(|_| parse_semi_colon(remaining_input))
             .or_else(|_| parse_right_curly_brace(remaining_input))
