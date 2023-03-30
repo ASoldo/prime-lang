@@ -74,7 +74,6 @@ fn main() {
         "lsp" => {
             // Start the LSP server
             lsp::start_lsp_server(filename).expect("Failed to start LSP server");
-            println!("{}", "LSP Started!");
         }
         _ => {
             eprintln!("Invalid command. Usage: ./prime-lang [run|build|lsp] <filename.prime>");
