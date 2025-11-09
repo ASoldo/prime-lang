@@ -338,10 +338,8 @@ impl<'a> AstParser<'a> {
                     .peek_lex()
                     .map(|lex| to_source_span(&lex.span))
                     .unwrap_or_else(|| self.eof_span());
-                let mut err = self.error(
-                    format!("Unexpected token {:?} in statement", token),
-                    span,
-                );
+                let mut err =
+                    self.error(format!("Unexpected token {:?} in statement", token), span);
                 if matches!(token, Token::Identifier(name) if name == "let") {
                     err.help = Some(let_syntax_help());
                 }
@@ -369,8 +367,7 @@ impl<'a> AstParser<'a> {
                 }
             },
             None => {
-                let mut err =
-                    self.error("Expected identifier after 'let int'", self.eof_span());
+                let mut err = self.error("Expected identifier after 'let int'", self.eof_span());
                 err.help = Some(let_syntax_help());
                 return Err(err);
             }
@@ -418,7 +415,11 @@ impl<'a> AstParser<'a> {
             &Token::SemiColon,
             "Expected ';' after output expression",
             hint,
-            Some(format!("Try: out({}){}", expr_preview, highlight_symbol(";"))),
+            Some(format!(
+                "Try: out({}){}",
+                expr_preview,
+                highlight_symbol(";")
+            )),
         )?;
         Ok(Statement::Output(expr))
     }
@@ -505,8 +506,7 @@ impl<'a> AstParser<'a> {
             }
             Some(lex) => {
                 let span = hint.unwrap_or_else(|| to_source_span(&lex.span));
-                let mut err =
-                    self.error(format!("{}: found {:?}", message, lex.token), span);
+                let mut err = self.error(format!("{}: found {:?}", message, lex.token), span);
                 err.help = help;
                 Err(err)
             }
@@ -623,10 +623,5 @@ fn let_assignment_help(name: &str) -> String {
 }
 
 fn let_semicolon_help(name: &str, value: &str) -> String {
-    format!(
-        "Try: let int {} = {}{}",
-        name,
-        value,
-        highlight_symbol(";")
-    )
+    format!("Try: let int {} = {}{}", name, value, highlight_symbol(";"))
 }

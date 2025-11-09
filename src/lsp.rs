@@ -3,6 +3,7 @@ use crate::parser::{Token, tokenize};
 use miette::{Diagnostic, NamedSource, Result, SourceSpan};
 use std::error::Error;
 use std::fs;
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Error, Debug, Diagnostic)]
@@ -22,16 +23,17 @@ struct MyBad {
     bad_bit: SourceSpan,
 }
 
-fn report_unknown(file_path: &str, content: &str, span: SourceSpan) -> Result<()> {
+fn report_unknown(file_path: &Path, content: &str, span: SourceSpan) -> Result<()> {
     Err(MyBad {
-        src: NamedSource::new(file_path.to_string(), content.to_string()),
+        src: NamedSource::new(file_path.display().to_string(), content.to_string()),
         bad_bit: span,
     }
     .into())
 }
 
-pub fn start_lsp_server(file_path: &str) -> Result<(), Box<dyn Error + Sync + Send>> {
-    let content = fs::read_to_string(file_path).expect("Could not read the file");
+pub fn start_lsp_server(file_path: Option<&Path>) -> Result<(), Box<dyn Error + Sync + Send>> {
+    let path = file_path.ok_or_else(|| "LSP mode currently requires --file <path>".to_string())?;
+    let content = fs::read_to_string(path).expect("Could not read the file");
     let tokens = tokenize(&content);
     println!("{:?}", tokens);
 
@@ -44,7 +46,7 @@ pub fn start_lsp_server(file_path: &str) -> Result<(), Box<dyn Error + Sync + Se
                 token.span.end.saturating_sub(token.span.start),
             )
                 .into();
-            report_unknown(file_path, &content, span)?;
+            report_unknown(path, &content, span)?;
         }
     }
     println!("{}", "LSP Done! No errors!");
