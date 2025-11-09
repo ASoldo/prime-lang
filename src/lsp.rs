@@ -1,55 +1,111 @@
-// lsp.rs
-use crate::parser::{Token, tokenize};
-use miette::{Diagnostic, NamedSource, Result, SourceSpan};
+use crate::diagnostics::emit_parse_errors;
+use crate::parser::{LexToken, Token, parse, tokenize};
+use miette::{Diagnostic, NamedSource, Report, Result, SourceSpan};
+use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::error::Error;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Error, Debug, Diagnostic)]
-#[error("Unknown Token spoted:")]
-#[diagnostic(
-    code(main::prime::error),
-    url(docsrs),
-    help("Contact developer to implement it")
-)]
+#[error("Unknown Token spotted:")]
+#[diagnostic(code(main::prime::error), url(docsrs))]
 struct MyBad {
-    // The Source that we're gonna be printing snippets out of.
-    // This can be a String if you don't have or care about file names.
     #[source_code]
     src: NamedSource<String>,
-    // Snippets and highlights can be included in the diagnostic!
     #[label("& token is not yet implemented")]
     bad_bit: SourceSpan,
 }
 
-fn report_unknown(file_path: &Path, content: &str, span: SourceSpan) -> Result<()> {
-    Err(MyBad {
-        src: NamedSource::new(file_path.display().to_string(), content.to_string()),
-        bad_bit: span,
+pub fn start_lsp_server(file_path: &Path, watch: bool) -> Result<(), Box<dyn Error + Sync + Send>> {
+    run_single_check(file_path)?;
+
+    if !watch {
+        return Ok(());
     }
-    .into())
+
+    let path_buf = file_path.to_path_buf();
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = build_watcher(tx)?;
+    watcher.watch(&path_buf, RecursiveMode::NonRecursive)?;
+
+    println!(
+        "Watching {} for changes. Press Ctrl+C to stop...",
+        path_buf.display()
+    );
+
+    for res in rx {
+        match res {
+            Ok(event) => match event.kind {
+                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
+                    if let Err(err) = run_single_check(&path_buf) {
+                        eprintln!("lint error: {err}");
+                    }
+                }
+                _ => {}
+            },
+            Err(err) => eprintln!("watch error: {err}"),
+        }
+    }
+
+    Ok(())
 }
 
-pub fn start_lsp_server(file_path: Option<&Path>) -> Result<(), Box<dyn Error + Sync + Send>> {
-    let path = file_path.ok_or_else(|| "LSP mode currently requires --file <path>".to_string())?;
-    let content = fs::read_to_string(path).expect("Could not read the file");
-    let tokens = tokenize(&content);
-    println!("{:?}", tokens);
+fn build_watcher(
+    tx: mpsc::Sender<Result<notify::Event, notify::Error>>,
+) -> notify::Result<RecommendedWatcher> {
+    notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    })
+    .map(|mut watcher| {
+        watcher
+            .configure(Config::default().with_poll_interval(Duration::from_millis(200)))
+            .ok();
+        watcher
+    })
+}
 
-    println!("{}", "LSP Started!");
+fn run_single_check(file_path: &Path) -> Result<(), Box<dyn Error + Sync + Send>> {
+    let content = fs::read_to_string(file_path)?;
+    let tokens = tokenize(&content);
+
+    let mut diagnostics_emitted = emit_unknown_tokens(file_path, &content, &tokens);
+
+    if let Err(errors) = parse(&tokens) {
+        emit_parse_errors(file_path, &content, &errors);
+        diagnostics_emitted = true;
+    }
+
+    if !diagnostics_emitted {
+        println!("{}: no diagnostics", file_path.display());
+    }
+
+    Ok(())
+}
+
+fn emit_unknown_tokens(file_path: &Path, content: &str, tokens: &[LexToken]) -> bool {
+    let mut found = false;
     for (index, token) in tokens.iter().enumerate() {
         if matches!(token.token, Token::Unknown) {
+            found = true;
             println!("Element 'Unknown' at position {}", index);
             let span: SourceSpan = (
                 token.span.start,
                 token.span.end.saturating_sub(token.span.start),
             )
                 .into();
-            report_unknown(path, &content, span)?;
+            emit_unknown_diagnostic(file_path, content, span);
         }
     }
-    println!("{}", "LSP Done! No errors!");
+    found
+}
 
-    Ok(())
+fn emit_unknown_diagnostic(file_path: &Path, content: &str, span: SourceSpan) {
+    let diag = MyBad {
+        src: NamedSource::new(file_path.display().to_string(), content.to_string()),
+        bad_bit: span,
+    };
+    eprintln!("{:?}", Report::new(diag));
 }

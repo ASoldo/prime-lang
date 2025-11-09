@@ -9,3 +9,4 @@ miette = { version = "7.6.0", features = ["fancy"] }
 thiserror = "2.0.17"
 llvm-sys = "211.0.0"
 clap = { version = "4.5.51", features = ["derive"] }
+notify = "8.2.0"

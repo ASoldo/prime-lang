@@ -1,18 +1,18 @@
 mod compiler;
+mod diagnostics;
 mod interpreter;
 mod lsp;
 mod parser;
 
 use clap::{Parser, Subcommand};
 use compiler::Compiler;
+use diagnostics::emit_parse_errors;
 use interpreter::interpret;
-use miette::{Diagnostic, NamedSource, Report};
-use parser::{LexToken, ParseError, Program, parse, tokenize};
+use parser::{LexToken, Program, parse, tokenize};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use thiserror::Error;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -40,9 +40,12 @@ enum Commands {
     },
     /// Start the diagnostic helper for editor integrations
     Lsp {
-        /// Optional file to lint immediately before serving
+        /// File to lint and/or watch
         #[arg(short, long)]
-        file: Option<PathBuf>,
+        file: PathBuf,
+        /// Keep running and re-check the file whenever it changes
+        #[arg(long, default_value_t = false)]
+        watch: bool,
     },
 }
 
@@ -64,11 +67,9 @@ fn main() {
             let program = parse_or_report(&file, &source, &tokens);
             build_program(&program);
         }
-        Commands::Lsp { file } => {
-            if let Some(ref path) = file {
-                ensure_prime_file(path);
-            }
-            lsp::start_lsp_server(file.as_deref()).expect("Failed to start the diagnostic helper");
+        Commands::Lsp { file, watch } => {
+            ensure_prime_file(&file);
+            lsp::start_lsp_server(&file, watch).expect("Failed to start the diagnostic helper");
         }
     }
 }
@@ -127,38 +128,8 @@ fn parse_or_report(path: &Path, source: &str, tokens: &[LexToken]) -> Program {
     match parse(tokens) {
         Ok(program) => program,
         Err(errors) => {
-            let named = NamedSource::new(path.display().to_string(), source.to_string());
-            for err in errors {
-                let diagnostic = ParserDiagnostic::from_error(named.clone(), err);
-                let report = Report::new(diagnostic);
-                eprintln!("{:?}", report);
-            }
+            emit_parse_errors(path, source, &errors);
             std::process::exit(1);
-        }
-    }
-}
-
-#[derive(Debug, Error, Diagnostic)]
-#[error("{message}")]
-struct ParserDiagnostic {
-    message: String,
-    label: String,
-    #[source_code]
-    src: NamedSource<String>,
-    #[label("{label}")]
-    span: miette::SourceSpan,
-    #[help("{help_msg}")]
-    help_msg: Option<String>,
-}
-
-impl ParserDiagnostic {
-    fn from_error(src: NamedSource<String>, err: ParseError) -> Self {
-        Self {
-            message: err.message,
-            label: err.label,
-            span: err.span,
-            src,
-            help_msg: err.help,
         }
     }
 }
