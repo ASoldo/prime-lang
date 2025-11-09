@@ -99,6 +99,7 @@ return {
 Hover tips: the server now returns contextual documentation for every built-in.
 Press `K` on `fn`, `main`, `let`, `int`, `out`, literals, or identifiers to see
 the relevant description.
+Unused variable warnings are emitted as lint diagnostics (yellow) when a binding is declared but never referenced.
 
 ## Treesitter Highlighting & Symbols
 

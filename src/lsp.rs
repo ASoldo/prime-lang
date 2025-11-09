@@ -1,6 +1,6 @@
 use crate::formatter::format_program;
-use crate::parser::{LexToken, Token, parse, tokenize};
-use std::collections::HashMap;
+use crate::parser::{Expr, LexToken, Program, Statement, Token, parse, tokenize};
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -209,23 +209,31 @@ fn collect_diagnostics(text: &str) -> Vec<Diagnostic> {
         }
     }));
 
-    if let Err(errors) = parse(&tokens) {
-        for err in errors {
-            let span = err.span;
-            let range = span_range(text, span.offset(), span.len());
-            let mut message = err.message;
-            if let Some(help) = err.help {
-                message.push_str("\n");
-                message.push_str(&help);
+    let program = match parse(&tokens) {
+        Ok(program) => Some(program),
+        Err(errors) => {
+            for err in errors {
+                let span = err.span;
+                let range = span_range(text, span.offset(), span.len());
+                let mut message = err.message;
+                if let Some(help) = err.help {
+                    message.push_str("\n");
+                    message.push_str(&help);
+                }
+                diagnostics.push(Diagnostic {
+                    range,
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some("prime-lang".into()),
+                    message,
+                    ..Default::default()
+                });
             }
-            diagnostics.push(Diagnostic {
-                range,
-                severity: Some(DiagnosticSeverity::ERROR),
-                source: Some("prime-lang".into()),
-                message,
-                ..Default::default()
-            });
+            None
         }
+    };
+
+    if let Some(program) = program {
+        diagnostics.extend(unused_variable_diagnostics(text, &tokens, &program));
     }
 
     diagnostics
@@ -313,6 +321,76 @@ fn find_statement_end(tokens: &[LexToken], start_idx: usize) -> usize {
         }
     }
     end
+}
+
+#[derive(Debug, Clone)]
+struct DeclInfo {
+    name: String,
+    span: std::ops::Range<usize>,
+}
+
+fn unused_variable_diagnostics(
+    text: &str,
+    tokens: &[LexToken],
+    program: &Program,
+) -> Vec<Diagnostic> {
+    let decls = collect_decl_spans(tokens);
+    let mut used = HashSet::new();
+
+    for statement in &program.statements {
+        match statement {
+            Statement::Let { value, .. } => collect_expr_idents(value, &mut used),
+            Statement::Output(expr) => collect_expr_idents(expr, &mut used),
+        }
+    }
+
+    decls
+        .into_iter()
+        .filter(|decl| !used.contains(&decl.name))
+        .map(|decl| Diagnostic {
+            range: span_range(
+                text,
+                decl.span.start,
+                decl.span.end.saturating_sub(decl.span.start),
+            ),
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("prime-lang".into()),
+            message: format!("Variable `{}` is never used", decl.name),
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn collect_decl_spans(tokens: &[LexToken]) -> Vec<DeclInfo> {
+    let mut decls = Vec::new();
+    for i in 0..tokens.len() {
+        if matches!(tokens[i].token, Token::LetInt) {
+            if let Some(LexToken {
+                token: Token::Identifier(name),
+                span,
+            }) = tokens.get(i + 1)
+            {
+                decls.push(DeclInfo {
+                    name: name.clone(),
+                    span: span.clone(),
+                });
+            }
+        }
+    }
+    decls
+}
+
+fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
+    match expr {
+        Expr::Identifier(name) => {
+            used.insert(name.clone());
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_expr_idents(left, used);
+            collect_expr_idents(right, used);
+        }
+        Expr::Integer(_) => {}
+    }
 }
 
 #[derive(Debug, Clone)]
