@@ -1,8 +1,8 @@
-fn main(){
+fn main() 
   let int a = 5;
-  let int b = 10;
-  let int c = 2;
-  let int d = 2;
+  let int b = 10
+  let int c = 2
+  let  d = 2
   let int e = 4;
-  out(a + b - c * d / e);
+  out(a  b - c * d / e);
 }

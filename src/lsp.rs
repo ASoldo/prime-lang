@@ -83,7 +83,7 @@ impl LanguageServer for Backend {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
+                    TextDocumentSyncKind::FULL,
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
@@ -114,18 +114,20 @@ impl LanguageServer for Backend {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if let Some(change) = params.content_changes.last() {
+            let uri = params.text_document.uri.clone();
             self.documents
-                .insert(params.text_document.uri.clone(), change.text.clone())
+                .insert(uri.clone(), change.text.clone())
                 .await;
-            self.publish_diagnostics(&params.text_document.uri).await;
+            self.publish_diagnostics(&uri).await;
         }
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         if let Some(text) = params.text {
-            self.documents
-                .insert(params.text_document.uri.clone(), text)
-                .await;
+            let uri = params.text_document.uri.clone();
+            self.documents.insert(uri.clone(), text).await;
+            self.publish_diagnostics(&uri).await;
+            return;
         }
         self.publish_diagnostics(&params.text_document.uri).await;
     }
