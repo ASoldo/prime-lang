@@ -5,10 +5,12 @@ mod parser;
 
 use compiler::Compiler;
 use interpreter::interpret;
-use parser::{parse, tokenize};
+use miette::{Diagnostic, NamedSource, Report};
+use parser::{LexToken, ParseError, Program, parse, tokenize};
 use std::env;
 use std::fs;
 use std::process::Command;
+use thiserror::Error;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -31,13 +33,19 @@ fn main() {
 
     match command.as_str() {
         "run" => {
-            println!("Tokens: {:?}", tokens);
-            let program = parse(&tokens).expect("Failed to parse program");
+            println!(
+                "Tokens: {:?}",
+                tokens.iter().map(|lex| &lex.token).collect::<Vec<_>>()
+            );
+            let program = parse_or_report(filename, &content, &tokens);
             interpret(&program);
         }
         "build" => {
-            println!("Tokens: {:?}", tokens);
-            let program = parse(&tokens).expect("Failed to parse program");
+            println!(
+                "Tokens: {:?}",
+                tokens.iter().map(|lex| &lex.token).collect::<Vec<_>>()
+            );
+            let program = parse_or_report(filename, &content, &tokens);
 
             // Initialize the compiler instance backed by llvm-sys
             let mut compiler = Compiler::new();
@@ -78,6 +86,41 @@ fn main() {
         _ => {
             eprintln!("Invalid command. Usage: ./prime-lang [run|build|lsp] <filename.prime>");
             std::process::exit(1);
+        }
+    }
+}
+
+fn parse_or_report(filename: &str, source: &str, tokens: &[LexToken]) -> Program {
+    match parse(tokens) {
+        Ok(program) => program,
+        Err(err) => {
+            let named = NamedSource::new(filename.to_string(), source.to_string());
+            let diagnostic = ParserDiagnostic::from_error(named, err);
+            let report = Report::new(diagnostic);
+            eprintln!("{:?}", report);
+            std::process::exit(1);
+        }
+    }
+}
+
+#[derive(Debug, Error, Diagnostic)]
+#[error("{message}")]
+struct ParserDiagnostic {
+    message: String,
+    label: String,
+    #[source_code]
+    src: NamedSource<String>,
+    #[label("{label}")]
+    span: miette::SourceSpan,
+}
+
+impl ParserDiagnostic {
+    fn from_error(src: NamedSource<String>, err: ParseError) -> Self {
+        Self {
+            message: err.message,
+            label: err.label,
+            span: err.span,
+            src,
         }
     }
 }

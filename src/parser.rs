@@ -1,10 +1,12 @@
+use miette::SourceSpan;
 use nom::{
-    IResult, Parser,
+    IResult, Parser as NomParser,
     bytes::complete::{tag, take},
     character::complete::{alpha1, alphanumeric0, digit1, space0, space1},
     combinator::{map_res, recognize},
     sequence::{pair, preceded},
 };
+use std::ops::Range;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
@@ -29,6 +31,19 @@ pub enum Token {
 #[derive(Debug, Clone)]
 pub struct Program {
     pub statements: Vec<Statement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LexToken {
+    pub token: Token,
+    pub span: Range<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParseError {
+    pub message: String,
+    pub label: String,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
@@ -148,11 +163,22 @@ pub fn parse_any(input: &str) -> IResult<&str, Token> {
     Ok((input, Token::Unknown))
 }
 
-pub fn tokenize(input: &str) -> Vec<Token> {
+pub fn tokenize(input: &str) -> Vec<LexToken> {
     let mut tokens = Vec::new();
-    let mut remaining_input = input.trim_start();
+    let mut remaining_input = input;
+    let mut offset = 0usize;
 
     while !remaining_input.is_empty() {
+        let trimmed = remaining_input.trim_start();
+        let skipped = remaining_input.len() - trimmed.len();
+        offset += skipped;
+        remaining_input = trimmed;
+
+        if remaining_input.is_empty() {
+            break;
+        }
+
+        let original = remaining_input;
         let result = parse_fn_main(remaining_input)
             .or_else(|_| parse_right_bracket(remaining_input))
             .or_else(|_| parse_left_bracket(remaining_input))
@@ -172,8 +198,11 @@ pub fn tokenize(input: &str) -> Vec<Token> {
 
         match result {
             Ok((remaining, token)) => {
-                tokens.push(token);
-                remaining_input = remaining.trim_start();
+                let consumed = original.len() - remaining.len();
+                let span = offset..offset + consumed;
+                tokens.push(LexToken { token, span });
+                remaining_input = remaining;
+                offset += consumed;
             }
             Err(_) => {
                 let (new_remaining_input, _) = take(1usize)
@@ -181,12 +210,18 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     .map_err::<nom::Err<(&str, nom::error::ErrorKind)>, _>(nom::Err::convert)
                     .unwrap_or((remaining_input, ""));
                 if new_remaining_input != remaining_input {
-                    remaining_input = new_remaining_input.trim_start();
+                    let consumed = remaining_input.len() - new_remaining_input.len();
+                    let span = offset..offset + consumed;
+                    tokens.push(LexToken {
+                        token: Token::Unknown,
+                        span,
+                    });
+                    remaining_input = new_remaining_input;
+                    offset += consumed;
                 } else {
                     println!("Remaining input: {:?}", remaining_input);
                     panic!("Unexpected token: {:?}", remaining_input);
                 }
-                tokens.push(Token::Unknown);
             }
         }
     }
@@ -194,25 +229,27 @@ pub fn tokenize(input: &str) -> Vec<Token> {
     tokens
 }
 
-pub fn parse(tokens: &[Token]) -> Result<Program, String> {
+pub fn parse(tokens: &[LexToken]) -> Result<Program, ParseError> {
     let mut parser = AstParser::new(tokens);
     parser.parse_program()
 }
 
 struct AstParser<'a> {
-    tokens: &'a [Token],
+    tokens: &'a [LexToken],
     position: usize,
+    last_span: Option<Range<usize>>,
 }
 
 impl<'a> AstParser<'a> {
-    fn new(tokens: &'a [Token]) -> Self {
+    fn new(tokens: &'a [LexToken]) -> Self {
         Self {
             tokens,
             position: 0,
+            last_span: None,
         }
     }
 
-    fn parse_program(&mut self) -> Result<Program, String> {
+    fn parse_program(&mut self) -> Result<Program, ParseError> {
         self.consume(
             &Token::FnMain,
             "Expected 'fn main' at the start of the file",
@@ -227,7 +264,7 @@ impl<'a> AstParser<'a> {
         let mut statements = Vec::new();
         while !self.check(&Token::RightCurlyBrace) {
             if self.is_at_end() {
-                return Err("Expected '}' before end of file".into());
+                return Err(self.error("Expected '}' before end of file", self.eof_span()));
             }
             statements.push(self.parse_statement()?);
         }
@@ -238,27 +275,48 @@ impl<'a> AstParser<'a> {
         )?;
 
         if !self.is_at_end() {
-            return Err("Unexpected tokens after end of program".into());
+            let span = self
+                .peek_lex()
+                .map(|lex| to_source_span(&lex.span))
+                .unwrap_or_else(|| self.eof_span());
+            return Err(self.error("Unexpected tokens after end of program", span));
         }
 
         Ok(Program { statements })
     }
 
-    fn parse_statement(&mut self) -> Result<Statement, String> {
-        match self.peek() {
+    fn parse_statement(&mut self) -> Result<Statement, ParseError> {
+        match self.peek_token() {
             Some(Token::LetInt) => self.parse_let_statement(),
             Some(Token::Identifier(ident)) if ident == "out" => self.parse_output_statement(),
             Some(Token::StdOut) => self.parse_output_statement(),
-            Some(token) => Err(format!("Unexpected token {:?} in statement", token)),
-            None => Err("Unexpected end of input while reading statement".into()),
+            Some(token) => {
+                let span = self
+                    .peek_lex()
+                    .map(|lex| to_source_span(&lex.span))
+                    .unwrap_or_else(|| self.eof_span());
+                Err(self.error(format!("Unexpected token {:?} in statement", token), span))
+            }
+            None => Err(self.error(
+                "Unexpected end of input while reading statement",
+                self.eof_span(),
+            )),
         }
     }
 
-    fn parse_let_statement(&mut self) -> Result<Statement, String> {
+    fn parse_let_statement(&mut self) -> Result<Statement, ParseError> {
         self.consume(&Token::LetInt, "Expected 'let int'")?;
         let name = match self.advance() {
-            Some(Token::Identifier(name)) => name.clone(),
-            _ => return Err("Expected identifier after 'let int'".into()),
+            Some(lex) => match &lex.token {
+                Token::Identifier(name) => name.clone(),
+                _ => {
+                    return Err(self.error(
+                        "Expected identifier after 'let int'",
+                        to_source_span(&lex.span),
+                    ));
+                }
+            },
+            None => return Err(self.error("Expected identifier after 'let int'", self.eof_span())),
         };
         self.consume(&Token::Equals, "Expected '=' after identifier")?;
         let value = self.parse_expression()?;
@@ -266,28 +324,39 @@ impl<'a> AstParser<'a> {
         Ok(Statement::Let { name, value })
     }
 
-    fn parse_output_statement(&mut self) -> Result<Statement, String> {
-        match self.peek() {
+    fn parse_output_statement(&mut self) -> Result<Statement, ParseError> {
+        match self.peek_token() {
             Some(Token::Identifier(ident)) if ident == "out" => {
                 self.advance();
             }
             Some(Token::StdOut) => {
                 self.advance();
             }
-            _ => return Err("Expected 'out' before output expression".into()),
+            _ => {
+                let span = self
+                    .peek_lex()
+                    .map(|lex| to_source_span(&lex.span))
+                    .unwrap_or_else(|| self.eof_span());
+                return Err(self.error("Expected 'out' before output expression", span));
+            }
         }
         self.consume(&Token::LeftBracket, "Expected '(' after 'out'")?;
         let expr = self.parse_expression()?;
         self.consume(&Token::RightBracket, "Expected ')' after expression")?;
-        self.consume(&Token::SemiColon, "Expected ';' after output expression")?;
+        let hint = Some(self.span_after_last());
+        self.consume_with_hint(
+            &Token::SemiColon,
+            "Expected ';' after output expression",
+            hint,
+        )?;
         Ok(Statement::Output(expr))
     }
 
-    fn parse_expression(&mut self) -> Result<Expr, String> {
+    fn parse_expression(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_term()?;
 
         loop {
-            let op = match self.peek() {
+            let op = match self.peek_token() {
                 Some(Token::Plus) => BinaryOp::Add,
                 Some(Token::Minus) => BinaryOp::Sub,
                 _ => break,
@@ -304,11 +373,11 @@ impl<'a> AstParser<'a> {
         Ok(expr)
     }
 
-    fn parse_term(&mut self) -> Result<Expr, String> {
+    fn parse_term(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_factor()?;
 
         loop {
-            let op = match self.peek() {
+            let op = match self.peek_token() {
                 Some(Token::Star) => BinaryOp::Mul,
                 Some(Token::Slash) => BinaryOp::Div,
                 _ => break,
@@ -325,48 +394,109 @@ impl<'a> AstParser<'a> {
         Ok(expr)
     }
 
-    fn parse_factor(&mut self) -> Result<Expr, String> {
+    fn parse_factor(&mut self) -> Result<Expr, ParseError> {
         match self.advance() {
-            Some(Token::Integer(value)) => Ok(Expr::Integer(*value)),
-            Some(Token::Identifier(name)) => Ok(Expr::Identifier(name.clone())),
-            Some(Token::LeftBracket) => {
-                let expr = self.parse_expression()?;
-                self.consume(&Token::RightBracket, "Expected ')' after expression")?;
-                Ok(expr)
-            }
-            Some(token) => Err(format!("Unexpected token {:?} in expression", token)),
-            None => Err("Unexpected end of input while reading expression".into()),
+            Some(lex) => match &lex.token {
+                Token::Integer(value) => Ok(Expr::Integer(*value)),
+                Token::Identifier(name) => Ok(Expr::Identifier(name.clone())),
+                Token::LeftBracket => {
+                    let expr = self.parse_expression()?;
+                    self.consume(&Token::RightBracket, "Expected ')' after expression")?;
+                    Ok(expr)
+                }
+                token => Err(self.error(
+                    format!("Unexpected token {:?} in expression", token),
+                    to_source_span(&lex.span),
+                )),
+            },
+            None => Err(self.error(
+                "Unexpected end of input while reading expression",
+                self.eof_span(),
+            )),
         }
     }
 
-    fn consume(&mut self, expected: &Token, message: &str) -> Result<(), String> {
-        match self.peek() {
-            Some(token) if token == expected => {
+    fn consume(&mut self, expected: &Token, message: &str) -> Result<(), ParseError> {
+        self.consume_with_hint(expected, message, None)
+    }
+
+    fn consume_with_hint(
+        &mut self,
+        expected: &Token,
+        message: &str,
+        hint: Option<SourceSpan>,
+    ) -> Result<(), ParseError> {
+        match self.peek_lex() {
+            Some(lex) if &lex.token == expected => {
                 self.advance();
                 Ok(())
             }
-            Some(token) => Err(format!("{}: found {:?}", message, token)),
-            None => Err(format!("{}: reached end of input", message)),
+            Some(lex) => {
+                let span = hint.unwrap_or_else(|| to_source_span(&lex.span));
+                Err(self.error(format!("{}: found {:?}", message, lex.token), span))
+            }
+            None => Err(self.error(
+                format!("{}: reached end of input", message),
+                hint.unwrap_or_else(|| self.eof_span()),
+            )),
         }
     }
 
-    fn peek(&self) -> Option<&'a Token> {
+    fn peek_token(&self) -> Option<&'a Token> {
+        self.peek_lex().map(|lex| &lex.token)
+    }
+
+    fn peek_lex(&self) -> Option<&'a LexToken> {
         self.tokens.get(self.position)
     }
 
-    fn advance(&mut self) -> Option<&'a Token> {
+    fn advance(&mut self) -> Option<&'a LexToken> {
         let token = self.tokens.get(self.position);
-        if token.is_some() {
+        if let Some(lex) = token {
             self.position += 1;
+            self.last_span = Some(lex.span.clone());
         }
         token
     }
 
     fn check(&self, expected: &Token) -> bool {
-        matches!(self.peek(), Some(token) if token == expected)
+        matches!(self.peek_token(), Some(token) if token == expected)
     }
 
     fn is_at_end(&self) -> bool {
         self.position >= self.tokens.len()
     }
+
+    fn eof_span(&self) -> SourceSpan {
+        if let Some(span) = self
+            .last_span
+            .as_ref()
+            .or_else(|| self.tokens.last().map(|t| &t.span))
+        {
+            (span.end, 0).into()
+        } else {
+            (0, 0).into()
+        }
+    }
+
+    fn span_after_last(&self) -> SourceSpan {
+        if let Some(span) = &self.last_span {
+            (span.end, 0).into()
+        } else {
+            (0, 0).into()
+        }
+    }
+
+    fn error(&self, message: impl Into<String>, span: SourceSpan) -> ParseError {
+        let message = message.into();
+        ParseError {
+            label: message.clone(),
+            message,
+            span,
+        }
+    }
+}
+
+fn to_source_span(range: &Range<usize>) -> SourceSpan {
+    (range.start, range.end.saturating_sub(range.start)).into()
 }

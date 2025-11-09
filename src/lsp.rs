@@ -22,17 +22,12 @@ struct MyBad {
     bad_bit: SourceSpan,
 }
 
-fn this_fails() -> Result<()> {
-    // You can use plain strings as a `Source`, or anything that implements
-    // the one-method `Source` trait.
-    let src = "&".to_string();
-
+fn report_unknown(file_path: &str, content: &str, span: SourceSpan) -> Result<()> {
     Err(MyBad {
-        src: NamedSource::new("main.prime", src),
-        bad_bit: (0, 1).into(),
-    })?;
-
-    Ok(())
+        src: NamedSource::new(file_path.to_string(), content.to_string()),
+        bad_bit: span,
+    }
+    .into())
 }
 
 pub fn start_lsp_server(file_path: &str) -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -42,12 +37,14 @@ pub fn start_lsp_server(file_path: &str) -> Result<(), Box<dyn Error + Sync + Se
 
     println!("{}", "LSP Started!");
     for (index, token) in tokens.iter().enumerate() {
-        match token {
-            Token::Unknown => {
-                println!("Element 'Unknown' at position {}", index);
-                this_fails()?;
-            }
-            _ => (),
+        if matches!(token.token, Token::Unknown) {
+            println!("Element 'Unknown' at position {}", index);
+            let span: SourceSpan = (
+                token.span.start,
+                token.span.end.saturating_sub(token.span.start),
+            )
+                .into();
+            report_unknown(file_path, &content, span)?;
         }
     }
     println!("{}", "LSP Done! No errors!");
