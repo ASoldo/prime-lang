@@ -1,5 +1,5 @@
 use crate::formatter::format_program;
-use crate::parser::{Token, parse, tokenize};
+use crate::parser::{LexToken, Token, parse, tokenize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
@@ -8,10 +8,11 @@ use tokio::sync::RwLock;
 use tower_lsp_server::jsonrpc::Result as RpcResult;
 use tower_lsp_server::lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams, Hover,
-    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, MarkedString, MessageType, OneOf, Position, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+    MarkedString, MessageType, OneOf, Position, Range, ServerCapabilities, SymbolInformation,
+    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -162,6 +163,19 @@ impl LanguageServer for Backend {
             Ok(None)
         }
     }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> RpcResult<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let Some(text) = self.documents.get(&uri).await else {
+            return Ok(None);
+        };
+        let tokens = tokenize(&text);
+        let symbols = build_symbol_information(&uri, &text, &tokens);
+        Ok(Some(DocumentSymbolResponse::Flat(symbols)))
+    }
 }
 
 fn collect_diagnostics(text: &str) -> Vec<Diagnostic> {
@@ -237,4 +251,55 @@ fn full_range(text: &str) -> Range {
         start: Position::new(0, 0),
         end: offset_to_position(text, text.len()),
     }
+}
+
+fn build_symbol_information(uri: &Uri, text: &str, tokens: &[LexToken]) -> Vec<SymbolInformation> {
+    let mut symbols = Vec::new();
+
+    if !tokens.is_empty() {
+        #[allow(deprecated)]
+        {
+            symbols.push(SymbolInformation {
+                name: "fn main".into(),
+                kind: SymbolKind::FUNCTION,
+                location: Location::new(uri.clone(), full_range(text)),
+                container_name: None,
+                deprecated: None,
+                tags: None,
+            });
+        }
+    }
+
+    let mut i = 0;
+    while i < tokens.len() {
+        if let Token::LetInt = tokens[i].token {
+            if let Some(Token::Identifier(name)) = tokens.get(i + 1).map(|t| &t.token) {
+                let start = tokens[i].span.start;
+                let end = find_statement_end(tokens, i);
+                #[allow(deprecated)]
+                symbols.push(SymbolInformation {
+                    name: format!("let {}", name),
+                    kind: SymbolKind::VARIABLE,
+                    location: Location::new(uri.clone(), span_range(text, start, end - start)),
+                    container_name: Some("fn main".into()),
+                    deprecated: None,
+                    tags: None,
+                });
+            }
+        }
+        i += 1;
+    }
+
+    symbols
+}
+
+fn find_statement_end(tokens: &[LexToken], start_idx: usize) -> usize {
+    let mut end = tokens[start_idx].span.end;
+    for token in tokens.iter().skip(start_idx + 1) {
+        end = token.span.end;
+        if matches!(token.token, Token::SemiColon | Token::RightCurlyBrace) {
+            break;
+        }
+    }
+    end
 }
