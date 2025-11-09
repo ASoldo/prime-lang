@@ -198,6 +198,36 @@ return {
 }
 ```
 
+## Prime-Lang Icon Plugin:
+```lua
+-- lua/plugins/prime-icons.lua
+return {
+  {
+    "nvim-mini/mini.icons",
+    -- AstroNvim already loads this; we just extend its config
+    opts = function(_, opts)
+      opts = opts or {}
+
+      -- ensure extension table exists
+      opts.extension = opts.extension or {}
+
+      -- icon for .prime files
+      opts.extension.prime = {
+        glyph = "",
+        hl = "MiniIconsCyan",
+      }
+
+      -- (optional) also by filetype, in case something uses that path
+      opts.filetype = opts.filetype or {}
+      opts.filetype.prime = opts.extension.prime
+
+      return opts
+    end,
+  },
+}
+
+```
+
 Run `:TSInstall prime` once; afterwards Tree-sitter handles highlighting and
 Aerial (or Snacks) shows symbols even before the LSP attaches.
 
