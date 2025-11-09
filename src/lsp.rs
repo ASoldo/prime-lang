@@ -152,7 +152,7 @@ impl LanguageServer for Backend {
         let offset = position_to_offset(&text, position);
 
         if let Some(token) = token_at(&tokens, offset) {
-            if let Some(hover) = hover_for_token(&text, token, &vars) {
+            if let Some(hover) = hover_for_token(&text, token, offset, &vars) {
                 return Ok(Some(hover));
             }
         }
@@ -377,78 +377,94 @@ fn position_to_offset(text: &str, position: Position) -> usize {
     text.len()
 }
 
-fn hover_for_token(text: &str, token: &LexToken, vars: &[VarInfo]) -> Option<Hover> {
+fn hover_for_token(
+    text: &str,
+    token: &LexToken,
+    cursor_offset: usize,
+    vars: &[VarInfo],
+) -> Option<Hover> {
     match &token.token {
         Token::Identifier(name) => {
             if name == "out" {
-                Some(Hover {
-                    contents: HoverContents::Markup(MarkupContent {
-                        kind: MarkupKind::Markdown,
-                        value: "Built-in output function **out(expr)**\n\nEvaluates the expression and prints the result.".into(),
-                    }),
-                    range: Some(span_range(
-                        text,
-                        token.span.start,
-                        token.span.end.saturating_sub(token.span.start),
-                    )),
-                })
+                Some(markdown_hover(
+                    text,
+                    token,
+                    "Built-in output function **out(expr)**\n\nEvaluates the expression and prints the result."
+                        .into(),
+                ))
             } else {
                 let info = vars.iter().rev().find(|var| var.name == *name)?;
                 let contents = format!(
                     "```prime\nlet int {} = {};\n```\nType: `int`",
                     info.name, info.expr_text
                 );
-                Some(Hover {
-                    contents: HoverContents::Markup(MarkupContent {
-                        kind: MarkupKind::Markdown,
-                        value: contents,
-                    }),
-                    range: Some(span_range(
-                        text,
-                        token.span.start,
-                        token.span.end.saturating_sub(token.span.start),
-                    )),
-                })
+                Some(markdown_hover(text, token, contents))
             }
         }
         Token::LetInt => {
-            let contents = "Built-in type **int**\n\n- Signed 32-bit integer\n- Declared via `let int <name> = ...;`"
-                .to_string();
-            Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: contents,
-                }),
-                range: Some(span_range(
-                    text,
-                    token.span.start,
-                    token.span.end.saturating_sub(token.span.start),
-                )),
-            })
+            let word = word_under_cursor(text, cursor_offset);
+            let message = match word.as_deref() {
+                Some("let") => {
+                    "Built-in keyword **let**\n\nStarts an integer binding: `let int name = value;`"
+                        .into()
+                }
+                Some("int") => {
+                    "Built-in type **int**\n\nSigned 32-bit integer used in all bindings.".into()
+                }
+                _ => "Let statement `let int <name> = <expr>;`.".into(),
+            };
+            Some(markdown_hover(text, token, message))
         }
-        Token::FnMain => Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: "Built-in function **fn main()**\n\nEntry point of every Prime program."
-                    .into(),
-            }),
-            range: Some(span_range(
-                text,
-                token.span.start,
-                token.span.end.saturating_sub(token.span.start),
-            )),
-        }),
-        Token::Integer(value) => Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: format!("Integer literal `{}`", value),
-            }),
-            range: Some(span_range(
-                text,
-                token.span.start,
-                token.span.end.saturating_sub(token.span.start),
-            )),
-        }),
+        Token::FnMain => {
+            let word = word_under_cursor(text, cursor_offset);
+            let message = match word.as_deref() {
+                Some("fn") => {
+                    "Built-in keyword **fn**\n\nIntroduces the entry function `fn main() { ... }`."
+                        .into()
+                }
+                Some("main") => "Built-in function **main**\n\nProgram entry point.".into(),
+                _ => "Function definition `fn main() { ... }`.".into(),
+            };
+            Some(markdown_hover(text, token, message))
+        }
+        Token::Integer(value) => Some(markdown_hover(
+            text,
+            token,
+            format!("Integer literal `{}`", value),
+        )),
         _ => None,
     }
+}
+
+fn markdown_hover(text: &str, token: &LexToken, value: String) -> Hover {
+    Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        }),
+        range: Some(span_range(
+            text,
+            token.span.start,
+            token.span.end.saturating_sub(token.span.start),
+        )),
+    }
+}
+
+fn word_under_cursor<'a>(text: &'a str, offset: usize) -> Option<&'a str> {
+    if offset >= text.len() {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    if !bytes[offset].is_ascii_alphabetic() {
+        return None;
+    }
+    let mut start = offset;
+    while start > 0 && text.as_bytes()[start - 1].is_ascii_alphabetic() {
+        start -= 1;
+    }
+    let mut end = offset;
+    while end < text.len() && text.as_bytes()[end].is_ascii_alphabetic() {
+        end += 1;
+    }
+    Some(&text[start..end])
 }
