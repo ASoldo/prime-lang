@@ -1,3 +1,5 @@
+<img width="948" height="515" alt="image" src="https://github.com/user-attachments/assets/303940a2-5537-41f1-a3ab-e46b67500921" />
+
 # Prime Language
 
 Prime is a learning-oriented language and toolchain for experimenting with
