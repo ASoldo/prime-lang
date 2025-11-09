@@ -1,13 +1,17 @@
 mod compiler;
 mod diagnostics;
+mod formatter;
 mod interpreter;
+mod lint;
 mod lsp;
 mod parser;
 
 use clap::{Parser, Subcommand};
 use compiler::Compiler;
 use diagnostics::emit_parse_errors;
+use formatter::format_program;
 use interpreter::interpret;
+use lint::run_lint;
 use parser::{LexToken, Program, parse, tokenize};
 use std::ffi::OsStr;
 use std::fs;
@@ -38,15 +42,23 @@ enum Commands {
         /// Path to the .prime file
         file: PathBuf,
     },
-    /// Start the diagnostic helper for editor integrations
-    Lsp {
-        /// File to lint and/or watch
+    /// Lint a file once or continuously
+    Lint {
         #[arg(short, long)]
         file: PathBuf,
-        /// Keep running and re-check the file whenever it changes
         #[arg(long, default_value_t = false)]
         watch: bool,
     },
+    /// Format a source file and emit or write the result
+    Fmt {
+        #[arg(short, long)]
+        file: PathBuf,
+        /// Overwrite the source file with the formatted output
+        #[arg(long, default_value_t = false)]
+        write: bool,
+    },
+    /// Start the LSP server over stdio (used by editors)
+    Lsp,
 }
 
 fn main() {
@@ -67,9 +79,16 @@ fn main() {
             let program = parse_or_report(&file, &source, &tokens);
             build_program(&program);
         }
-        Commands::Lsp { file, watch } => {
+        Commands::Lint { file, watch } => {
             ensure_prime_file(&file);
-            lsp::start_lsp_server(&file, watch).expect("Failed to start the diagnostic helper");
+            run_lint(&file, watch).expect("Failed to run lint");
+        }
+        Commands::Fmt { file, write } => {
+            ensure_prime_file(&file);
+            format_file(&file, write);
+        }
+        Commands::Lsp => {
+            lsp::serve_stdio().expect("Failed to start LSP server");
         }
     }
 }
@@ -131,5 +150,19 @@ fn parse_or_report(path: &Path, source: &str, tokens: &[LexToken]) -> Program {
             emit_parse_errors(path, source, &errors);
             std::process::exit(1);
         }
+    }
+}
+
+fn format_file(path: &Path, write: bool) {
+    let (source, tokens) = read_source(path);
+    let program = parse_or_report(path, &source, &tokens);
+    let formatted = format_program(&program);
+    if write {
+        if let Err(err) = fs::write(path, formatted) {
+            eprintln!("Failed to write {}: {}", path.display(), err);
+            std::process::exit(1);
+        }
+    } else {
+        print!("{}", formatted);
     }
 }
