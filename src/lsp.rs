@@ -380,11 +380,40 @@ fn position_to_offset(text: &str, position: Position) -> usize {
 fn hover_for_token(text: &str, token: &LexToken, vars: &[VarInfo]) -> Option<Hover> {
     match &token.token {
         Token::Identifier(name) => {
-            let info = vars.iter().rev().find(|var| var.name == *name)?;
-            let contents = format!(
-                "```prime\nlet int {} = {};\n```\nType: `int`",
-                info.name, info.expr_text
-            );
+            if name == "out" {
+                Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: "Built-in output function **out(expr)**\n\nEvaluates the expression and prints the result.".into(),
+                    }),
+                    range: Some(span_range(
+                        text,
+                        token.span.start,
+                        token.span.end.saturating_sub(token.span.start),
+                    )),
+                })
+            } else {
+                let info = vars.iter().rev().find(|var| var.name == *name)?;
+                let contents = format!(
+                    "```prime\nlet int {} = {};\n```\nType: `int`",
+                    info.name, info.expr_text
+                );
+                Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: contents,
+                    }),
+                    range: Some(span_range(
+                        text,
+                        token.span.start,
+                        token.span.end.saturating_sub(token.span.start),
+                    )),
+                })
+            }
+        }
+        Token::LetInt => {
+            let contents = "Built-in type **int**\n\n- Signed 32-bit integer\n- Declared via `let int <name> = ...;`"
+                .to_string();
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
@@ -397,6 +426,18 @@ fn hover_for_token(text: &str, token: &LexToken, vars: &[VarInfo]) -> Option<Hov
                 )),
             })
         }
+        Token::FnMain => Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: "Built-in function **fn main()**\n\nEntry point of every Prime program."
+                    .into(),
+            }),
+            range: Some(span_range(
+                text,
+                token.span.start,
+                token.span.end.saturating_sub(token.span.start),
+            )),
+        }),
         Token::Integer(value) => Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
