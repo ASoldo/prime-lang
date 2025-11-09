@@ -333,6 +333,15 @@ impl<'a> AstParser<'a> {
             Some(Token::LetInt) => self.parse_let_statement(),
             Some(Token::Identifier(ident)) if ident == "out" => self.parse_output_statement(),
             Some(Token::StdOut) => self.parse_output_statement(),
+            Some(Token::Identifier(ident)) if ident == "let" => {
+                let span = self
+                    .peek_lex()
+                    .map(|lex| to_source_span(&lex.span))
+                    .unwrap_or_else(|| self.eof_span());
+                let mut err = self.error("Expected 'int' after 'let'", span);
+                err.help = Some(let_syntax_help());
+                Err(err)
+            }
             Some(token) => {
                 let span = self
                     .peek_lex()
@@ -381,12 +390,14 @@ impl<'a> AstParser<'a> {
         let value = self.parse_expression()?;
         let value_preview = value.as_source();
         let hint = Some(self.span_after_last());
-        self.consume_with_hint(
+        if let Err(err) = self.consume_with_hint(
             &Token::SemiColon,
             "Expected ';' after expression",
             hint,
             Some(let_semicolon_help(&name, &value_preview)),
-        )?;
+        ) {
+            self.report_error(err);
+        }
         Ok(Statement::Let { name, value })
     }
 
@@ -411,16 +422,14 @@ impl<'a> AstParser<'a> {
         let expr_preview = expr.as_source();
         self.consume(&Token::RightBracket, "Expected ')' after expression")?;
         let hint = Some(self.span_after_last());
-        self.consume_with_hint(
+        if let Err(err) = self.consume_with_hint(
             &Token::SemiColon,
             "Expected ';' after output expression",
             hint,
-            Some(format!(
-                "Try: out({}){}",
-                expr_preview,
-                highlight_symbol(";")
-            )),
-        )?;
+            Some(format!("Try: out({});", expr_preview)),
+        ) {
+            self.report_error(err);
+        }
         Ok(Statement::Output(expr))
     }
 
@@ -598,30 +607,14 @@ fn to_source_span(range: &Range<usize>) -> SourceSpan {
     (range.start, range.end.saturating_sub(range.start)).into()
 }
 
-const HIGHLIGHT: &str = "\u{001b}[1;31m";
-const RESET: &str = "\u{001b}[0m";
-
-fn highlight_symbol(symbol: &str) -> String {
-    format!("{HIGHLIGHT}{symbol}{RESET}")
-}
-
 fn let_syntax_help() -> String {
-    format!(
-        "Syntax: let int <name> {} <value>{}",
-        highlight_symbol("="),
-        highlight_symbol(";")
-    )
+    "Syntax: let int <name> = <value>;".into()
 }
 
 fn let_assignment_help(name: &str) -> String {
-    format!(
-        "Try: let int {} {} <value>{}",
-        name,
-        highlight_symbol("="),
-        highlight_symbol(";")
-    )
+    format!("Try: let int {} = <value>;", name)
 }
 
 fn let_semicolon_help(name: &str, value: &str) -> String {
-    format!("Try: let int {} = {}{}", name, value, highlight_symbol(";"))
+    format!("Try: let int {} = {};", name, value)
 }
