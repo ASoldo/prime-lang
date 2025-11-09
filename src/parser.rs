@@ -44,6 +44,7 @@ pub struct ParseError {
     pub message: String,
     pub label: String,
     pub span: SourceSpan,
+    pub help: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,29 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+}
+
+impl Expr {
+    fn as_source(&self) -> String {
+        match self {
+            Expr::Integer(value) => value.to_string(),
+            Expr::Identifier(name) => name.clone(),
+            Expr::Binary { left, op, right } => {
+                format!("{} {} {}", left.as_source(), op.symbol(), right.as_source())
+            }
+        }
+    }
+}
+
+impl BinaryOp {
+    fn symbol(&self) -> &'static str {
+        match self {
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+        }
+    }
 }
 pub fn parse_left_curly_brace(input: &str) -> IResult<&str, Token> {
     let (input, _) = space0(input)?;
@@ -229,15 +253,21 @@ pub fn tokenize(input: &str) -> Vec<LexToken> {
     tokens
 }
 
-pub fn parse(tokens: &[LexToken]) -> Result<Program, ParseError> {
+pub fn parse(tokens: &[LexToken]) -> Result<Program, Vec<ParseError>> {
     let mut parser = AstParser::new(tokens);
-    parser.parse_program()
+    let program = parser.parse_program();
+    if parser.errors.is_empty() {
+        Ok(program)
+    } else {
+        Err(parser.errors)
+    }
 }
 
 struct AstParser<'a> {
     tokens: &'a [LexToken],
     position: usize,
     last_span: Option<Range<usize>>,
+    errors: Vec<ParseError>,
 }
 
 impl<'a> AstParser<'a> {
@@ -246,43 +276,56 @@ impl<'a> AstParser<'a> {
             tokens,
             position: 0,
             last_span: None,
+            errors: Vec::new(),
         }
     }
 
-    fn parse_program(&mut self) -> Result<Program, ParseError> {
-        self.consume(
-            &Token::FnMain,
-            "Expected 'fn main' at the start of the file",
-        )?;
-        self.consume(&Token::LeftBracket, "Expected '(' after 'fn main'")?;
-        self.consume(&Token::RightBracket, "Expected ')' after 'fn main('")?;
-        self.consume(
-            &Token::LeftCurlyBrace,
-            "Expected '{' to start the main body",
-        )?;
-
-        let mut statements = Vec::new();
-        while !self.check(&Token::RightCurlyBrace) {
-            if self.is_at_end() {
-                return Err(self.error("Expected '}' before end of file", self.eof_span()));
+    fn parse_program(&mut self) -> Program {
+        for (expected, message) in [
+            (
+                &Token::FnMain,
+                "Expected 'fn main' at the start of the file",
+            ),
+            (&Token::LeftBracket, "Expected '(' after 'fn main'"),
+            (&Token::RightBracket, "Expected ')' after 'fn main('"),
+            (
+                &Token::LeftCurlyBrace,
+                "Expected '{' to start the main body",
+            ),
+        ] {
+            if let Err(err) = self.consume(expected, message) {
+                self.report_error(err);
+                self.synchronize();
             }
-            statements.push(self.parse_statement()?);
         }
 
-        self.consume(
+        let mut statements = Vec::new();
+        while !self.check(&Token::RightCurlyBrace) && !self.is_at_end() {
+            match self.parse_statement() {
+                Ok(stmt) => statements.push(stmt),
+                Err(err) => {
+                    self.report_error(err);
+                    self.synchronize();
+                }
+            }
+        }
+
+        if let Err(err) = self.consume(
             &Token::RightCurlyBrace,
             "Expected '}' at the end of the main body",
-        )?;
+        ) {
+            self.report_error(err);
+        }
 
         if !self.is_at_end() {
             let span = self
                 .peek_lex()
                 .map(|lex| to_source_span(&lex.span))
                 .unwrap_or_else(|| self.eof_span());
-            return Err(self.error("Unexpected tokens after end of program", span));
+            self.report_error(self.error("Unexpected tokens after end of program", span));
         }
 
-        Ok(Program { statements })
+        Program { statements }
     }
 
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
@@ -342,13 +385,19 @@ impl<'a> AstParser<'a> {
         }
         self.consume(&Token::LeftBracket, "Expected '(' after 'out'")?;
         let expr = self.parse_expression()?;
+        let expr_preview = expr.as_source();
         self.consume(&Token::RightBracket, "Expected ')' after expression")?;
         let hint = Some(self.span_after_last());
-        self.consume_with_hint(
+        if let Err(mut err) = self.consume_with_hint(
             &Token::SemiColon,
             "Expected ';' after output expression",
             hint,
-        )?;
+        ) {
+            const RED: &str = "\u{001b}[1;31m";
+            const RESET: &str = "\u{001b}[0m";
+            err.help = Some(format!("Try: out({}){};{}", expr_preview, RED, RESET));
+            return Err(err);
+        }
         Ok(Statement::Output(expr))
     }
 
@@ -493,6 +542,24 @@ impl<'a> AstParser<'a> {
             label: message.clone(),
             message,
             span,
+            help: None,
+        }
+    }
+
+    fn report_error(&mut self, err: ParseError) {
+        self.errors.push(err);
+    }
+
+    fn synchronize(&mut self) {
+        while !self.is_at_end() {
+            if matches!(self.peek_token(), Some(Token::SemiColon)) {
+                self.advance();
+                break;
+            }
+            if matches!(self.peek_token(), Some(Token::RightCurlyBrace)) {
+                break;
+            }
+            self.advance();
         }
     }
 }

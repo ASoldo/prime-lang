@@ -93,11 +93,13 @@ fn main() {
 fn parse_or_report(filename: &str, source: &str, tokens: &[LexToken]) -> Program {
     match parse(tokens) {
         Ok(program) => program,
-        Err(err) => {
+        Err(errors) => {
             let named = NamedSource::new(filename.to_string(), source.to_string());
-            let diagnostic = ParserDiagnostic::from_error(named, err);
-            let report = Report::new(diagnostic);
-            eprintln!("{:?}", report);
+            for err in errors {
+                let diagnostic = ParserDiagnostic::from_error(named.clone(), err);
+                let report = Report::new(diagnostic);
+                eprintln!("{:?}", report);
+            }
             std::process::exit(1);
         }
     }
@@ -112,6 +114,8 @@ struct ParserDiagnostic {
     src: NamedSource<String>,
     #[label("{label}")]
     span: miette::SourceSpan,
+    #[help("{help_msg}")]
+    help_msg: Option<String>,
 }
 
 impl ParserDiagnostic {
@@ -121,6 +125,7 @@ impl ParserDiagnostic {
             label: err.label,
             span: err.span,
             src,
+            help_msg: err.help,
         }
     }
 }
