@@ -5,7 +5,7 @@ source_filename = "prime"
 
 define void @main() {
 entry:
-  %printf_call = call i32 (ptr, ...) @printf(ptr @fmt, i32 14)
+  %printf_call = call i32 (ptr, ...) @printf(ptr @fmt, i32 15)
   ret void
 }
 

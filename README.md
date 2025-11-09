@@ -31,7 +31,8 @@ fn main() {
 Build the tool once:
 
 ```bash
-cargo build      # or cargo install --path . to put it on $PATH
+cargo build               # dev workflow in-place
+cargo install --path .    # install `prime-lang` onto your $PATH
 ```
 
 Commands:
@@ -94,6 +95,10 @@ return {
   },
 }
 ```
+
+Hover tips: the server now returns contextual documentation for every built-in.
+Press `K` on `fn`, `main`, `let`, `int`, `out`, literals, or identifiers to see
+the relevant description.
 
 ## Treesitter Highlighting & Symbols
 
