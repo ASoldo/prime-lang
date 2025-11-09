@@ -1,6 +1,6 @@
 // lsp.rs
-use crate::parser::{tokenize, Token};
-use miette::{Diagnostic, SourceSpan};
+use crate::parser::{Token, tokenize};
+use miette::{Diagnostic, NamedSource, Result, SourceSpan};
 use std::error::Error;
 use std::fs;
 use thiserror::Error;
@@ -16,13 +16,12 @@ struct MyBad {
     // The Source that we're gonna be printing snippets out of.
     // This can be a String if you don't have or care about file names.
     #[source_code]
-    src: NamedSource,
+    src: NamedSource<String>,
     // Snippets and highlights can be included in the diagnostic!
     #[label("& token is not yet implemented")]
     bad_bit: SourceSpan,
 }
 
-use miette::{NamedSource, Result};
 fn this_fails() -> Result<()> {
     // You can use plain strings as a `Source`, or anything that implements
     // the one-method `Source` trait.

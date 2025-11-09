@@ -1,219 +1,213 @@
-use crate::parser::Token;
-use inkwell::{
-    builder::Builder,
-    context::Context,
-    module::Module,
-    targets::{InitializationConfig, Target},
-    values::{BasicValueEnum, FunctionValue, IntValue},
-    AddressSpace,
+use crate::parser::{BinaryOp, Expr, Program, Statement};
+use llvm_sys::{
+    LLVMLinkage,
+    core::{
+        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMBuildAdd, LLVMBuildCall2,
+        LLVMBuildGlobalString, LLVMBuildMul, LLVMBuildRetVoid, LLVMBuildSDiv, LLVMBuildSub,
+        LLVMConstInt, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext,
+        LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMFunctionType,
+        LLVMInt8TypeInContext, LLVMInt32TypeInContext, LLVMModuleCreateWithNameInContext,
+        LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile, LLVMPrintModuleToString,
+        LLVMSetLinkage, LLVMVoidTypeInContext,
+    },
+    prelude::*,
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    ffi::{CStr, CString},
+    ptr,
+};
 
-pub struct Compiler<'ctx> {
-    context: &'ctx Context,
-    builder: Builder<'ctx>,
-    module: Module<'ctx>,
-    main_function: FunctionValue<'ctx>,
-    variables: HashMap<String, IntValue<'ctx>>,
-    printf_function: FunctionValue<'ctx>,
+pub struct Compiler {
+    context: LLVMContextRef,
+    module: LLVMModuleRef,
+    builder: LLVMBuilderRef,
+    i32_type: LLVMTypeRef,
+    printf_type: LLVMTypeRef,
+    printf: LLVMValueRef,
+    main_function: LLVMValueRef,
+    variables: HashMap<String, LLVMValueRef>,
 }
 
-impl<'ctx> Compiler<'ctx> {
-    pub fn new(context: &'ctx Context) -> Self {
-        let builder = context.create_builder();
-        let module = context.create_module("prime");
+impl Compiler {
+    pub fn new() -> Self {
+        unsafe {
+            let context = LLVMContextCreate();
+            let builder = LLVMCreateBuilderInContext(context);
+            let i32_type = LLVMInt32TypeInContext(context);
 
-        let init_config = InitializationConfig::default();
-        Target::initialize_native(&init_config).unwrap();
+            let mut compiler = Self {
+                context,
+                module: ptr::null_mut(),
+                builder,
+                i32_type,
+                printf_type: ptr::null_mut(),
+                printf: ptr::null_mut(),
+                main_function: ptr::null_mut(),
+                variables: HashMap::new(),
+            };
 
-        let main_fn_type = context.void_type().fn_type(&[], false);
-
-        let main_function = module.add_function("main", main_fn_type, None);
-
-        let printf_function_type = context.i32_type().fn_type(
-            &[context.i8_type().ptr_type(AddressSpace::from(0)).into()],
-            true,
-        );
-        let printf_function = module.add_function("printf", printf_function_type, None);
-        Self {
-            context,
-            builder,
-            module,
-            main_function,
-            variables: HashMap::new(),
-            printf_function,
-        }
-    }
-    fn compile_expression(&mut self, tokens: &[Token], index: &mut usize) -> BasicValueEnum<'ctx> {
-        let mut result = self.compile_term(tokens, index);
-
-        while *index < tokens.len() {
-            match tokens[*index] {
-                Token::Plus => {
-                    *index += 1;
-                    let rhs = self.compile_term(tokens, index);
-                    result = self
-                        .builder
-                        .build_int_add(result.into_int_value(), rhs.into_int_value(), "add")
-                        .into();
-                }
-                Token::Minus => {
-                    *index += 1;
-                    let rhs = self.compile_term(tokens, index);
-                    result = self
-                        .builder
-                        .build_int_sub(result.into_int_value(), rhs.into_int_value(), "sub")
-                        .into();
-                }
-                Token::Slash => {
-                    *index += 1;
-                    let rhs = self.compile_term(tokens, index);
-                    result = self
-                        .builder
-                        .build_int_signed_div(result.into_int_value(), rhs.into_int_value(), "div")
-                        .into();
-                }
-                Token::Star => {
-                    *index += 1;
-                    let rhs = self.compile_term(tokens, index);
-                    result = self
-                        .builder
-                        .build_int_mul(result.into_int_value(), rhs.into_int_value(), "mul")
-                        .into();
-                }
-                _ => break,
-            }
-        }
-
-        result
-    }
-    fn compile_term(&mut self, tokens: &[Token], index: &mut usize) -> BasicValueEnum<'ctx> {
-        match &tokens[*index] {
-            Token::Integer(value) => {
-                *index += 1;
-                self.context
-                    .i32_type()
-                    .const_int(*value as u64, false)
-                    .into()
-            }
-            Token::Identifier(ident) => {
-                *index += 1;
-                if let Some(value) = self.variables.get(ident) {
-                    value.clone().into()
-                } else {
-                    panic!("Undefined variable: {}", ident);
-                }
-            }
-            _ => panic!("Expected an integer or variable reference."),
+            compiler.reset_module();
+            compiler
         }
     }
 
-    pub fn compile(&mut self, tokens: &[Token]) {
-        let entry_block = self.context.append_basic_block(self.main_function, "entry");
-        self.builder.position_at_end(entry_block);
+    fn reset_module(&mut self) {
+        unsafe {
+            if !self.module.is_null() {
+                LLVMDisposeModule(self.module);
+            }
 
-        let mut inside_main = false;
-        let mut index = 0;
-        while index < tokens.len() {
-            match tokens[index] {
-                Token::FnMain => {
-                    if let Token::LeftBracket = tokens[index + 1] {
-                        inside_main = true;
-                        index += 2;
-                    } else {
-                        panic!("Expected a left bracket after 'fn main'.");
+            let module_name = CString::new("prime").unwrap();
+            self.module = LLVMModuleCreateWithNameInContext(module_name.as_ptr(), self.context);
+
+            let void_type = LLVMVoidTypeInContext(self.context);
+            let main_fn_type = LLVMFunctionType(void_type, ptr::null_mut(), 0, 0);
+            let main_name = CString::new("main").unwrap();
+            self.main_function = LLVMAddFunction(self.module, main_name.as_ptr(), main_fn_type);
+
+            let i8_ptr = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
+            let mut printf_params = [i8_ptr];
+            self.printf_type = LLVMFunctionType(
+                self.i32_type,
+                printf_params.as_mut_ptr(),
+                printf_params.len() as u32,
+                1,
+            );
+            let printf_name = CString::new("printf").unwrap();
+            self.printf = LLVMAddFunction(self.module, printf_name.as_ptr(), self.printf_type);
+            LLVMSetLinkage(self.printf, LLVMLinkage::LLVMExternalLinkage);
+        }
+    }
+
+    pub fn compile(&mut self, program: &Program) {
+        self.reset_module();
+        self.variables.clear();
+
+        unsafe {
+            let entry_name = CString::new("entry").unwrap();
+            let entry_block = LLVMAppendBasicBlockInContext(
+                self.context,
+                self.main_function,
+                entry_name.as_ptr(),
+            );
+            LLVMPositionBuilderAtEnd(self.builder, entry_block);
+        }
+
+        for statement in &program.statements {
+            match statement {
+                Statement::Let { name, value } => {
+                    let compiled = self.compile_expression(value);
+                    self.variables.insert(name.clone(), compiled);
+                }
+                Statement::Output(expr) => {
+                    let compiled = self.compile_expression(expr);
+                    unsafe {
+                        let fmt_literal = CString::new("%d\n").unwrap();
+                        let fmt_name = CString::new("fmt").unwrap();
+                        let format_ptr = LLVMBuildGlobalString(
+                            self.builder,
+                            fmt_literal.as_ptr(),
+                            fmt_name.as_ptr(),
+                        );
+                        let call_name = CString::new("printf_call").unwrap();
+                        let mut args = [format_ptr, compiled];
+                        LLVMBuildCall2(
+                            self.builder,
+                            self.printf_type,
+                            self.printf,
+                            args.as_mut_ptr(),
+                            args.len() as u32,
+                            call_name.as_ptr(),
+                        );
                     }
                 }
-                Token::RightBracket if inside_main => {
-                    inside_main = false;
-                    index += 1;
-                }
-                Token::LeftCurlyBrace => {
-                    inside_main = true;
-                    index += 1;
-                }
-                Token::RightCurlyBrace => {
-                    inside_main = false;
-                    index += 1;
-                }
-                _ => {
-                    if inside_main {
-                        match tokens[index] {
-                            Token::LetInt => {
-                                if let Token::Identifier(ref ident) = tokens[index + 1] {
-                                    if let Token::Equals = tokens[index + 2] {
-                                        index += 3;
-                                        let value = self.compile_expression(tokens, &mut index);
-                                        self.variables
-                                            .insert(ident.clone(), value.into_int_value());
+            }
+        }
 
-                                        if let Token::SemiColon = tokens[index] {
-                                            index += 1;
-                                        } else {
-                                            panic!("Expected a semicolon.");
-                                        }
-                                    } else {
-                                        panic!("Expected an equals sign.");
-                                    }
-                                } else {
-                                    panic!("Expected an identifier.");
-                                }
-                            }
-                            Token::Identifier(ref ident) if ident == "out" => {
-                                if let Token::LeftBracket = tokens[index + 1] {
-                                    index += 2;
-                                    let output = self.compile_expression(tokens, &mut index);
-                                    if let Token::RightBracket = tokens[index] {
-                                        index += 1;
-                                    } else {
-                                        panic!("Expected a right bracket.");
-                                    }
-                                    if let Token::SemiColon = tokens[index] {
-                                        index += 1;
-                                    } else {
-                                        panic!("Expected a semicolon.");
-                                    }
+        unsafe {
+            LLVMBuildRetVoid(self.builder);
+        }
+    }
 
-                                    let string_format_ptr = self
-                                        .builder
-                                        .build_global_string_ptr("%d\n", "fmt")
-                                        .as_pointer_value();
-
-                                    // Call the print_function with the compiled expression
-                                    self.builder.build_call(
-                                        self.printf_function,
-                                        &[string_format_ptr.into(), output.into()],
-                                        "printf_call",
-                                    );
-                                } else {
-                                    panic!("Expected a left bracket.");
-                                }
-                            }
-                            Token::Unknown => {
-                                panic!("Unexpected token: {:?}", tokens[index]);
-                            }
-                            _ => {
-                                panic!("Unexpected token: {:?}", tokens[index]);
-                            }
+    fn compile_expression(&mut self, expr: &Expr) -> LLVMValueRef {
+        match expr {
+            Expr::Integer(value) => unsafe { LLVMConstInt(self.i32_type, *value as u64, 0) },
+            Expr::Identifier(name) => self.variables.get(name).copied().unwrap_or_else(|| {
+                panic!("Undefined variable: {}", name);
+            }),
+            Expr::Binary { left, op, right } => {
+                let lhs = self.compile_expression(left);
+                let rhs = self.compile_expression(right);
+                unsafe {
+                    match op {
+                        BinaryOp::Add => {
+                            let tmp = CString::new("addtmp").unwrap();
+                            LLVMBuildAdd(self.builder, lhs, rhs, tmp.as_ptr())
                         }
-                    } else {
-                        panic!("Code should be inside 'fn main' function.");
+                        BinaryOp::Sub => {
+                            let tmp = CString::new("subtmp").unwrap();
+                            LLVMBuildSub(self.builder, lhs, rhs, tmp.as_ptr())
+                        }
+                        BinaryOp::Mul => {
+                            let tmp = CString::new("multmp").unwrap();
+                            LLVMBuildMul(self.builder, lhs, rhs, tmp.as_ptr())
+                        }
+                        BinaryOp::Div => {
+                            let tmp = CString::new("divtmp").unwrap();
+                            LLVMBuildSDiv(self.builder, lhs, rhs, tmp.as_ptr())
+                        }
                     }
                 }
             }
         }
-
-        self.builder.build_return(None);
     }
 
     pub fn print_ir(&self) {
-        println!("{}", self.module.print_to_string().to_string());
+        unsafe {
+            let ir_string = LLVMPrintModuleToString(self.module);
+            if ir_string.is_null() {
+                return;
+            }
+            let message = CStr::from_ptr(ir_string).to_string_lossy().into_owned();
+            LLVMDisposeMessage(ir_string);
+            println!("{}", message);
+        }
     }
 
     pub fn write_ir_to_file(&self, file_name: &str) -> Result<(), String> {
-        match self.module.print_to_file(file_name) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e.to_string()),
+        unsafe {
+            let c_file = CString::new(file_name)
+                .map_err(|_| "File name contains a null byte".to_string())?;
+            let mut error = ptr::null_mut();
+            let result = LLVMPrintModuleToFile(self.module, c_file.as_ptr(), &mut error);
+            if result == 0 {
+                Ok(())
+            } else {
+                if !error.is_null() {
+                    let message = CStr::from_ptr(error).to_string_lossy().into_owned();
+                    LLVMDisposeMessage(error);
+                    Err(message)
+                } else {
+                    Err("Failed to write LLVM IR".into())
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Compiler {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.builder.is_null() {
+                LLVMDisposeBuilder(self.builder);
+            }
+            if !self.module.is_null() {
+                LLVMDisposeModule(self.module);
+            }
+            if !self.context.is_null() {
+                LLVMContextDispose(self.context);
+            }
         }
     }
 }

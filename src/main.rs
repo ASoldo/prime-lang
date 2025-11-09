@@ -4,12 +4,11 @@ mod lsp;
 mod parser;
 
 use compiler::Compiler;
-use inkwell::context::Context;
 use interpreter::interpret;
-use parser::tokenize;
+use parser::{parse, tokenize};
 use std::env;
 use std::fs;
-use std::process::Command; // Add this line
+use std::process::Command;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -33,17 +32,18 @@ fn main() {
     match command.as_str() {
         "run" => {
             println!("Tokens: {:?}", tokens);
-            interpret(tokens);
+            let program = parse(&tokens).expect("Failed to parse program");
+            interpret(&program);
         }
         "build" => {
             println!("Tokens: {:?}", tokens);
+            let program = parse(&tokens).expect("Failed to parse program");
 
-            // Initialize LLVM context and create the compiler instance
-            let context = Context::create();
-            let mut compiler = Compiler::new(&context);
+            // Initialize the compiler instance backed by llvm-sys
+            let mut compiler = Compiler::new();
 
             // Compile the code
-            compiler.compile(&tokens);
+            compiler.compile(&program);
             compiler.print_ir();
             compiler
                 .write_ir_to_file("output.ll")
