@@ -11,8 +11,9 @@ use tower_lsp_server::lsp_types::{
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
     DocumentSymbolParams, DocumentSymbolResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MarkupContent, MarkupKind, MessageType, OneOf, Position, Range, ServerCapabilities,
-    SymbolInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    MarkupContent, MarkupKind, MessageType, OneOf, Position, PrepareRenameResponse, Range,
+    RenameParams, ServerCapabilities, SymbolInformation, SymbolKind, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -88,6 +89,7 @@ impl LanguageServer for Backend {
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -186,6 +188,72 @@ impl LanguageServer for Backend {
         let tokens = tokenize(&text);
         let symbols = build_symbol_information(&uri, &text, &tokens);
         Ok(Some(DocumentSymbolResponse::Flat(symbols)))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> RpcResult<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let position = params.position;
+        let Some(text) = self.documents.get(&uri).await else {
+            return Ok(None);
+        };
+
+        let tokens = tokenize(&text);
+        let offset = position_to_offset(&text, position);
+        if let Some((name, span)) = identifier_at(&tokens, offset) {
+            let range = span_range(&text, span.start, span_len(&span));
+            return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+                range,
+                placeholder: name,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    async fn rename(&self, params: RenameParams) -> RpcResult<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let new_name = params.new_name;
+        let Some(text) = self.documents.get(&uri).await else {
+            return Ok(None);
+        };
+
+        if new_name.trim().is_empty() {
+            return Ok(None);
+        }
+
+        let tokens = tokenize(&text);
+        let program = parse(&tokens).ok();
+
+        let offset = position_to_offset(&text, position);
+        let Some((target_name, _span)) = identifier_at(&tokens, offset) else {
+            return Ok(None);
+        };
+
+        if !is_valid_identifier(&new_name) {
+            return Ok(None);
+        }
+
+        let occurrences = collect_identifier_spans(program.as_ref(), &tokens, &target_name);
+        if occurrences.is_empty() {
+            return Ok(None);
+        }
+
+        let edits: Vec<_> = occurrences
+            .into_iter()
+            .map(|span| TextEdit {
+                range: span_range(&text, span.start, span_len(&span)),
+                new_text: new_name.clone(),
+            })
+            .collect();
+
+        Ok(Some(WorkspaceEdit {
+            changes: Some([(uri, edits)].into_iter().collect()),
+            ..Default::default()
+        }))
     }
 }
 
@@ -393,6 +461,55 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
     }
 }
 
+fn collect_identifier_spans(
+    program: Option<&Program>,
+    tokens: &[LexToken],
+    target: &str,
+) -> Vec<std::ops::Range<usize>> {
+    let mut spans: Vec<_> = tokens
+        .iter()
+        .filter_map(|token| match &token.token {
+            Token::Identifier(name) if name == target => Some(token.span.clone()),
+            _ => None,
+        })
+        .collect();
+
+    if let Some(program) = program {
+        for statement in &program.statements {
+            match statement {
+                Statement::Output(expr) => collect_expr_spans(expr, target, &mut spans),
+                Statement::Let { value, .. } => collect_expr_spans(value, target, &mut spans),
+            }
+        }
+    }
+
+    spans.sort_unstable_by_key(|span| span.start);
+    spans.dedup_by(|a, b| a.start == b.start && a.end == b.end);
+    spans
+}
+
+fn collect_expr_spans(expr: &Expr, target: &str, spans: &mut Vec<std::ops::Range<usize>>) {
+    match expr {
+        Expr::Identifier(name) if name == target => {
+            // spans already collected via tokens; nothing extra needed
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_expr_spans(left, target, spans);
+            collect_expr_spans(right, target, spans);
+        }
+        Expr::Integer(_) | Expr::Identifier(_) => {}
+    }
+}
+
+fn is_valid_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(ch) if ch.is_ascii_alphabetic() || ch == '_' => (),
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
 #[derive(Debug, Clone)]
 struct VarInfo {
     name: String,
@@ -435,6 +552,20 @@ fn token_at<'a>(tokens: &'a [LexToken], offset: usize) -> Option<&'a LexToken> {
     tokens
         .iter()
         .find(|token| offset >= token.span.start && offset < token.span.end)
+}
+
+fn identifier_at(
+    tokens: &[LexToken],
+    offset: usize,
+) -> Option<(String, std::ops::Range<usize>)> {
+    token_at(tokens, offset).and_then(|tok| match &tok.token {
+        Token::Identifier(name) => Some((name.clone(), tok.span.clone())),
+        _ => None,
+    })
+}
+
+fn span_len(span: &std::ops::Range<usize>) -> usize {
+    span.end.saturating_sub(span.start)
 }
 
 fn position_to_offset(text: &str, position: Position) -> usize {
