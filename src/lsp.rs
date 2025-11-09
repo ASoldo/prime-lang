@@ -11,8 +11,8 @@ use tower_lsp_server::lsp_types::{
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
     DocumentSymbolParams, DocumentSymbolResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MarkedString, MessageType, OneOf, Position, Range, ServerCapabilities, SymbolInformation,
-    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    MarkupContent, MarkupKind, MessageType, OneOf, Position, Range, ServerCapabilities,
+    SymbolInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -140,13 +140,24 @@ impl LanguageServer for Backend {
             .await;
     }
 
-    async fn hover(&self, _: HoverParams) -> RpcResult<Option<Hover>> {
-        Ok(Some(Hover {
-            contents: HoverContents::Scalar(MarkedString::String(
-                "Prime language file".to_string(),
-            )),
-            range: None,
-        }))
+    async fn hover(&self, params: HoverParams) -> RpcResult<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(text) = self.documents.get(&uri).await else {
+            return Ok(None);
+        };
+
+        let tokens = tokenize(&text);
+        let vars = collect_var_infos(&text, &tokens);
+        let offset = position_to_offset(&text, position);
+
+        if let Some(token) = token_at(&tokens, offset) {
+            if let Some(hover) = hover_for_token(&text, token, &vars) {
+                return Ok(Some(hover));
+            }
+        }
+
+        Ok(None)
     }
 
     async fn formatting(
@@ -302,4 +313,101 @@ fn find_statement_end(tokens: &[LexToken], start_idx: usize) -> usize {
         }
     }
     end
+}
+
+#[derive(Debug, Clone)]
+struct VarInfo {
+    name: String,
+    expr_text: String,
+}
+
+fn collect_var_infos(text: &str, tokens: &[LexToken]) -> Vec<VarInfo> {
+    let mut vars = Vec::new();
+    let mut idx = 0;
+    while idx < tokens.len() {
+        if matches!(tokens[idx].token, Token::LetInt) {
+            if let Some(Token::Identifier(name)) = tokens.get(idx + 1).map(|t| &t.token) {
+                if matches!(tokens.get(idx + 2).map(|t| &t.token), Some(Token::Equals)) {
+                    let mut semi = idx + 3;
+                    while semi < tokens.len() && !matches!(tokens[semi].token, Token::SemiColon) {
+                        semi += 1;
+                    }
+                    if semi < tokens.len() && semi > idx + 3 {
+                        let expr_start = tokens[idx + 3].span.start;
+                        let expr_end = tokens[semi - 1].span.end;
+                        let expr_text = text
+                            .get(expr_start..expr_end)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        vars.push(VarInfo {
+                            name: name.clone(),
+                            expr_text,
+                        });
+                    }
+                }
+            }
+        }
+        idx += 1;
+    }
+    vars
+}
+
+fn token_at<'a>(tokens: &'a [LexToken], offset: usize) -> Option<&'a LexToken> {
+    tokens
+        .iter()
+        .find(|token| offset >= token.span.start && offset < token.span.end)
+}
+
+fn position_to_offset(text: &str, position: Position) -> usize {
+    let mut offset = 0usize;
+    let mut current_line = 0u32;
+    for line in text.split_inclusive('\n') {
+        if current_line == position.line {
+            let mut col_bytes = 0usize;
+            for ch in line.chars().take(position.character as usize) {
+                col_bytes += ch.len_utf8();
+            }
+            offset += col_bytes;
+            return offset;
+        }
+        offset += line.len();
+        current_line += 1;
+    }
+    text.len()
+}
+
+fn hover_for_token(text: &str, token: &LexToken, vars: &[VarInfo]) -> Option<Hover> {
+    match &token.token {
+        Token::Identifier(name) => {
+            let info = vars.iter().rev().find(|var| var.name == *name)?;
+            let contents = format!(
+                "```prime\nlet int {} = {};\n```\nType: `int`",
+                info.name, info.expr_text
+            );
+            Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: contents,
+                }),
+                range: Some(span_range(
+                    text,
+                    token.span.start,
+                    token.span.end.saturating_sub(token.span.start),
+                )),
+            })
+        }
+        Token::Integer(value) => Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("Integer literal `{}`", value),
+            }),
+            range: Some(span_range(
+                text,
+                token.span.start,
+                token.span.end.saturating_sub(token.span.start),
+            )),
+        }),
+        _ => None,
+    }
 }
