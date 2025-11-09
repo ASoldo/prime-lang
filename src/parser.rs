@@ -338,7 +338,14 @@ impl<'a> AstParser<'a> {
                     .peek_lex()
                     .map(|lex| to_source_span(&lex.span))
                     .unwrap_or_else(|| self.eof_span());
-                Err(self.error(format!("Unexpected token {:?} in statement", token), span))
+                let mut err = self.error(
+                    format!("Unexpected token {:?} in statement", token),
+                    span,
+                );
+                if matches!(token, Token::Identifier(name) if name == "let") {
+                    err.help = Some(let_syntax_help());
+                }
+                Err(err)
             }
             None => Err(self.error(
                 "Unexpected end of input while reading statement",
@@ -353,17 +360,36 @@ impl<'a> AstParser<'a> {
             Some(lex) => match &lex.token {
                 Token::Identifier(name) => name.clone(),
                 _ => {
-                    return Err(self.error(
+                    let mut err = self.error(
                         "Expected identifier after 'let int'",
                         to_source_span(&lex.span),
-                    ));
+                    );
+                    err.help = Some(let_syntax_help());
+                    return Err(err);
                 }
             },
-            None => return Err(self.error("Expected identifier after 'let int'", self.eof_span())),
+            None => {
+                let mut err =
+                    self.error("Expected identifier after 'let int'", self.eof_span());
+                err.help = Some(let_syntax_help());
+                return Err(err);
+            }
         };
-        self.consume(&Token::Equals, "Expected '=' after identifier")?;
+        self.consume_with_hint(
+            &Token::Equals,
+            "Expected '=' after identifier",
+            None,
+            Some(let_assignment_help(&name)),
+        )?;
         let value = self.parse_expression()?;
-        self.consume(&Token::SemiColon, "Expected ';' after expression")?;
+        let value_preview = value.as_source();
+        let hint = Some(self.span_after_last());
+        self.consume_with_hint(
+            &Token::SemiColon,
+            "Expected ';' after expression",
+            hint,
+            Some(let_semicolon_help(&name, &value_preview)),
+        )?;
         Ok(Statement::Let { name, value })
     }
 
@@ -388,16 +414,12 @@ impl<'a> AstParser<'a> {
         let expr_preview = expr.as_source();
         self.consume(&Token::RightBracket, "Expected ')' after expression")?;
         let hint = Some(self.span_after_last());
-        if let Err(mut err) = self.consume_with_hint(
+        self.consume_with_hint(
             &Token::SemiColon,
             "Expected ';' after output expression",
             hint,
-        ) {
-            const RED: &str = "\u{001b}[1;31m";
-            const RESET: &str = "\u{001b}[0m";
-            err.help = Some(format!("Try: out({}){};{}", expr_preview, RED, RESET));
-            return Err(err);
-        }
+            Some(format!("Try: out({}){}", expr_preview, highlight_symbol(";"))),
+        )?;
         Ok(Statement::Output(expr))
     }
 
@@ -466,7 +488,7 @@ impl<'a> AstParser<'a> {
     }
 
     fn consume(&mut self, expected: &Token, message: &str) -> Result<(), ParseError> {
-        self.consume_with_hint(expected, message, None)
+        self.consume_with_hint(expected, message, None, None)
     }
 
     fn consume_with_hint(
@@ -474,6 +496,7 @@ impl<'a> AstParser<'a> {
         expected: &Token,
         message: &str,
         hint: Option<SourceSpan>,
+        help: Option<String>,
     ) -> Result<(), ParseError> {
         match self.peek_lex() {
             Some(lex) if &lex.token == expected => {
@@ -482,12 +505,19 @@ impl<'a> AstParser<'a> {
             }
             Some(lex) => {
                 let span = hint.unwrap_or_else(|| to_source_span(&lex.span));
-                Err(self.error(format!("{}: found {:?}", message, lex.token), span))
+                let mut err =
+                    self.error(format!("{}: found {:?}", message, lex.token), span);
+                err.help = help;
+                Err(err)
             }
-            None => Err(self.error(
-                format!("{}: reached end of input", message),
-                hint.unwrap_or_else(|| self.eof_span()),
-            )),
+            None => {
+                let mut err = self.error(
+                    format!("{}: reached end of input", message),
+                    hint.unwrap_or_else(|| self.eof_span()),
+                );
+                err.help = help;
+                Err(err)
+            }
         }
     }
 
@@ -566,4 +596,37 @@ impl<'a> AstParser<'a> {
 
 fn to_source_span(range: &Range<usize>) -> SourceSpan {
     (range.start, range.end.saturating_sub(range.start)).into()
+}
+
+const HIGHLIGHT: &str = "\u{001b}[1;31m";
+const RESET: &str = "\u{001b}[0m";
+
+fn highlight_symbol(symbol: &str) -> String {
+    format!("{HIGHLIGHT}{symbol}{RESET}")
+}
+
+fn let_syntax_help() -> String {
+    format!(
+        "Syntax: let int <name> {} <value>{}",
+        highlight_symbol("="),
+        highlight_symbol(";")
+    )
+}
+
+fn let_assignment_help(name: &str) -> String {
+    format!(
+        "Try: let int {} {} <value>{}",
+        name,
+        highlight_symbol("="),
+        highlight_symbol(";")
+    )
+}
+
+fn let_semicolon_help(name: &str, value: &str) -> String {
+    format!(
+        "Try: let int {} = {}{}",
+        name,
+        value,
+        highlight_symbol(";")
+    )
 }
