@@ -4,5 +4,6 @@ fn main() {
   let int c = 2;
   let int d = 2;
   let int e = 4;
+  let int f = 6;
   out(((a + b) - ((c * d) / e)));
 }
