@@ -1,37 +1,47 @@
-use crate::parser::ParseError;
-use miette::{Diagnostic, NamedSource, Report};
+use crate::{language::errors::SyntaxError, project::FileErrors, runtime::error::RuntimeError};
+use miette::{Diagnostic, NamedSource, Report, SourceSpan};
 use std::path::Path;
 use thiserror::Error;
 
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Error, Diagnostic, Clone)]
 #[error("{message}")]
-pub struct ParserDiagnostic {
-    pub message: String,
-    pub label: String,
+pub struct SyntaxDiagnostic {
     #[source_code]
-    pub src: NamedSource<String>,
+    src: NamedSource<String>,
     #[label("{label}")]
-    pub span: miette::SourceSpan,
-    #[help("{help_msg}")]
-    pub help_msg: Option<String>,
+    span: SourceSpan,
+    #[help]
+    help: Option<String>,
+    message: String,
+    label: String,
 }
 
-impl ParserDiagnostic {
-    pub fn from_error(src: NamedSource<String>, err: ParseError) -> Self {
+impl SyntaxDiagnostic {
+    pub fn from_error(src: NamedSource<String>, err: SyntaxError) -> Self {
         Self {
-            message: err.message,
-            label: err.label,
-            span: err.span,
             src,
-            help_msg: err.help,
+            span: err.to_source_span(),
+            help: err.help.clone(),
+            message: err.message.clone(),
+            label: err.message,
         }
     }
 }
 
-pub fn emit_parse_errors(path: &Path, source: &str, errors: &[ParseError]) {
-    let named = NamedSource::new(path.display().to_string(), source.to_string());
-    for err in errors {
-        let diagnostic = ParserDiagnostic::from_error(named.clone(), err.clone());
-        eprintln!("{:?}", Report::new(diagnostic));
+pub fn emit_syntax_errors(errors: &[FileErrors]) {
+    for file in errors {
+        let src = NamedSource::new(file.path.display().to_string(), file.source.clone());
+        for err in &file.errors {
+            let diagnostic = SyntaxDiagnostic::from_error(src.clone(), err.clone());
+            eprintln!("{:?}", Report::new(diagnostic));
+        }
     }
+}
+
+pub fn report_runtime_error(error: &RuntimeError) {
+    eprintln!("Runtime error: {}", error);
+}
+
+pub fn report_io_error(path: &Path, error: &std::io::Error) {
+    eprintln!("Failed to access {}: {}", path.display(), error);
 }

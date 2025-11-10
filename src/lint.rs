@@ -1,25 +1,21 @@
-use crate::diagnostics::emit_parse_errors;
-use crate::parser::{LexToken, Token, parse, tokenize};
-use miette::{Diagnostic, NamedSource, Report, Result, SourceSpan};
+use crate::language::{errors::SyntaxError, lexer::lex, parser::parse_module};
+use miette::{Diagnostic, NamedSource, Report, SourceSpan};
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::error::Error;
-use std::fs;
-use std::path::Path;
-use std::sync::mpsc;
-use std::time::Duration;
+use std::{error::Error, fs, path::Path, sync::mpsc, time::Duration};
 use thiserror::Error;
 
-#[derive(Error, Debug, Diagnostic)]
-#[error("Unknown token spotted:")]
-#[diagnostic(code(main::prime::error), url(docsrs))]
-struct UnknownTokenDiagnostic {
+#[derive(Debug, Error, Diagnostic)]
+#[error("Lexing error: {message}")]
+#[diagnostic(code(prime::lint::lex))]
+struct LexDiagnostic {
     #[source_code]
     src: NamedSource<String>,
-    #[label("unknown token")]
-    bad_bit: SourceSpan,
+    #[label("{message}")]
+    span: SourceSpan,
+    message: String,
 }
 
-pub fn run_lint(file_path: &Path, watch: bool) -> Result<(), Box<dyn Error + Sync + Send>> {
+pub fn run_lint(file_path: &Path, watch: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
     run_single_check(file_path)?;
 
     if !watch {
@@ -32,20 +28,22 @@ pub fn run_lint(file_path: &Path, watch: bool) -> Result<(), Box<dyn Error + Syn
     watcher.watch(&path_buf, RecursiveMode::NonRecursive)?;
 
     println!(
-        "Watching {} for changes. Press Ctrl+C to stop...",
+        "Watching {} for changes. Press Ctrl+C to stop…",
         path_buf.display()
     );
 
-    for res in rx {
-        match res {
-            Ok(event) => match event.kind {
-                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
+    for event in rx {
+        match event {
+            Ok(evt) => {
+                if matches!(
+                    evt.kind,
+                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                ) {
                     if let Err(err) = run_single_check(&path_buf) {
                         eprintln!("lint error: {err}");
                     }
                 }
-                _ => {}
-            },
+            }
             Err(err) => eprintln!("watch error: {err}"),
         }
     }
@@ -67,45 +65,48 @@ fn build_watcher(
     })
 }
 
-fn run_single_check(file_path: &Path) -> Result<(), Box<dyn Error + Sync + Send>> {
-    let content = fs::read_to_string(file_path)?;
-    let tokens = tokenize(&content);
+fn run_single_check(path: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let source = fs::read_to_string(path)?;
+    let module_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("main")
+        .to_string();
 
-    let mut emitted = emit_unknown_tokens(file_path, &content, &tokens);
+    let _tokens = match lex(&source) {
+        Ok(tokens) => tokens,
+        Err(errors) => {
+            report_lex_errors(path, &source, &errors);
+            return Ok(());
+        }
+    };
 
-    if let Err(errors) = parse(&tokens) {
-        emit_parse_errors(file_path, &content, &errors);
-        emitted = true;
-    }
-
-    if !emitted {
-        println!("{}: no diagnostics", file_path.display());
+    match parse_module(&module_name, path.to_path_buf(), &source) {
+        Ok(_) => {
+            println!("{}: no diagnostics", path.display());
+        }
+        Err(errs) => emit_syntax_errors_for_source(path, &source, &errs.errors),
     }
 
     Ok(())
 }
 
-fn emit_unknown_tokens(file_path: &Path, content: &str, tokens: &[LexToken]) -> bool {
-    let mut found = false;
-    for (index, token) in tokens.iter().enumerate() {
-        if matches!(token.token, Token::Unknown) {
-            found = true;
-            println!("Element 'Unknown' at position {}", index);
-            let span: SourceSpan = (
-                token.span.start,
-                token.span.end.saturating_sub(token.span.start),
-            )
-                .into();
-            emit_unknown_diagnostic(file_path, content, span);
-        }
+fn report_lex_errors(path: &Path, source: &str, errors: &[crate::language::lexer::LexError]) {
+    let named = NamedSource::new(path.display().to_string(), source.to_string());
+    for err in errors {
+        let diag = LexDiagnostic {
+            src: named.clone(),
+            span: (err.span.start, err.span.len()).into(),
+            message: err.message.clone(),
+        };
+        eprintln!("{:?}", Report::new(diag));
     }
-    found
 }
 
-fn emit_unknown_diagnostic(file_path: &Path, content: &str, span: SourceSpan) {
-    let diag = UnknownTokenDiagnostic {
-        src: NamedSource::new(file_path.display().to_string(), content.to_string()),
-        bad_bit: span,
-    };
-    eprintln!("{:?}", Report::new(diag));
+fn emit_syntax_errors_for_source(path: &Path, source: &str, errors: &[SyntaxError]) {
+    let named = NamedSource::new(path.display().to_string(), source.to_string());
+    for err in errors {
+        let diag = crate::diagnostics::SyntaxDiagnostic::from_error(named.clone(), err.clone());
+        eprintln!("{:?}", Report::new(diag));
+    }
 }

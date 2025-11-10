@@ -1,0 +1,15 @@
+struct Vec2 {
+  x: float32;
+  y: float32;
+}
+
+struct Player {
+  Vec2;
+  name: string;
+  hp: int32;
+}
+
+enum Damage {
+  Flat(int32),
+  Percent(float32),
+}

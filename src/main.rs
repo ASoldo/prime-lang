@@ -1,22 +1,25 @@
 mod compiler;
 mod diagnostics;
 mod formatter;
-mod interpreter;
+mod language;
 mod lint;
 mod lsp;
-mod parser;
+mod project;
+mod runtime;
 
 use clap::{Parser, Subcommand};
 use compiler::Compiler;
-use diagnostics::emit_parse_errors;
-use formatter::format_program;
-use interpreter::interpret;
+use diagnostics::{emit_syntax_errors, report_io_error, report_runtime_error};
+use formatter::format_module;
+use language::parser::parse_module;
 use lint::run_lint;
-use parser::{LexToken, Program, parse, tokenize};
-use std::ffi::OsStr;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use project::{FileErrors, PackageError, load_package};
+use runtime::Interpreter;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -33,136 +36,194 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Interpret a Prime source file directly
-    Run {
-        /// Path to the .prime file
-        file: PathBuf,
-    },
-    /// Build a Prime source file down to a native executable
+    Run { file: PathBuf },
+    /// Build a Prime source file down to LLVM IR and native binary
     Build {
-        /// Path to the .prime file
         file: PathBuf,
+        /// Base name for generated artifacts
+        #[arg(long, default_value = "output")]
+        name: String,
     },
     /// Lint a file once or continuously
     Lint {
-        #[arg(short, long)]
         file: PathBuf,
         #[arg(long, default_value_t = false)]
         watch: bool,
     },
-    /// Format a source file and emit or write the result
+    /// Format a Prime source file
     Fmt {
-        #[arg(short, long)]
         file: PathBuf,
-        /// Overwrite the source file with the formatted output
         #[arg(long, default_value_t = false)]
         write: bool,
     },
-    /// Start the LSP server over stdio (used by editors)
+    /// Start the LSP server over stdio
     Lsp,
 }
 
 fn main() {
     let cli = Cli::parse();
-
     match cli.command {
-        Commands::Run { file } => {
-            ensure_prime_file(&file);
-            let (source, tokens) = read_source(&file);
-            log_tokens(&tokens);
-            let program = parse_or_report(&file, &source, &tokens);
-            interpret(&program);
-        }
-        Commands::Build { file } => {
-            ensure_prime_file(&file);
-            let (source, tokens) = read_source(&file);
-            log_tokens(&tokens);
-            let program = parse_or_report(&file, &source, &tokens);
-            build_program(&program);
-        }
+        Commands::Run { file } => run_entry(&file),
+        Commands::Build { file, name } => build_entry(&file, &name),
         Commands::Lint { file, watch } => {
             ensure_prime_file(&file);
-            run_lint(&file, watch).expect("Failed to run lint");
+            if let Err(err) = run_lint(&file, watch) {
+                eprintln!("lint failed: {err}");
+                std::process::exit(1);
+            }
         }
         Commands::Fmt { file, write } => {
             ensure_prime_file(&file);
-            format_file(&file, write);
+            if let Err(err) = format_file(&file, write) {
+                eprintln!("format failed: {err}");
+                std::process::exit(1);
+            }
         }
         Commands::Lsp => {
-            lsp::serve_stdio().expect("Failed to start LSP server");
+            if let Err(err) = lsp::serve_stdio() {
+                eprintln!("LSP server failed: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+fn run_entry(path: &Path) {
+    ensure_prime_file(path);
+    match load_package(path) {
+        Ok(package) => {
+            let mut interpreter = Interpreter::new(package.clone());
+            if let Err(err) = interpreter.run() {
+                report_runtime_error(&err);
+                std::process::exit(1);
+            }
+        }
+        Err(PackageError::Io { path, error }) => {
+            report_io_error(&path, &error);
+            std::process::exit(1);
+        }
+        Err(PackageError::Syntax(errors)) => {
+            emit_syntax_errors(&errors);
+            std::process::exit(1);
         }
     }
 }
 
-fn ensure_prime_file(path: &Path) {
-    if path.extension().and_then(OsStr::to_str) != Some("prime") {
-        eprintln!("{} is not a .prime file", path.display());
-        std::process::exit(1);
+fn build_entry(path: &Path, name: &str) {
+    ensure_prime_file(path);
+    match load_package(path) {
+        Ok(package) => {
+            let mut compiler = Compiler::new();
+            if let Err(err) = compiler.compile_program(&package.program) {
+                eprintln!("Build failed: {err}");
+                std::process::exit(1);
+            }
+            let build_root = Path::new(".build.prime");
+            if let Err(err) = fs::create_dir_all(build_root) {
+                eprintln!("Failed to create build directory: {err}");
+                std::process::exit(1);
+            }
+            let artifact_dir = build_root.join(name);
+            if let Err(err) = fs::create_dir_all(&artifact_dir) {
+                eprintln!("Failed to create artifact directory: {err}");
+                std::process::exit(1);
+            }
+            let ir_path = artifact_dir.join(format!("{name}.ll"));
+            if let Err(err) = compiler.write_ir_to(&ir_path) {
+                eprintln!("Failed to write IR: {err}");
+                std::process::exit(1);
+            }
+            let obj_path = artifact_dir.join(format!("{name}.o"));
+            if let Err(err) = run_llc(&ir_path, &obj_path) {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+            let bin_path = artifact_dir.join(name);
+            if let Err(err) = run_gcc(&obj_path, &bin_path) {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+            println!("Artifacts written to {}", artifact_dir.display());
+        }
+        Err(PackageError::Io { path, error }) => {
+            report_io_error(&path, &error);
+            std::process::exit(1);
+        }
+        Err(PackageError::Syntax(errors)) => {
+            emit_syntax_errors(&errors);
+            std::process::exit(1);
+        }
     }
 }
 
-fn read_source(path: &Path) -> (String, Vec<LexToken>) {
-    let content = fs::read_to_string(path).unwrap_or_else(|err| {
-        eprintln!("Failed to read {}: {}", path.display(), err);
-        std::process::exit(1);
-    });
-    let tokens = tokenize(&content);
-    (content, tokens)
+fn format_file(path: &Path, write: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let source = fs::read_to_string(path)?;
+    let module_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("main")
+        .to_string();
+    let module = match parse_module(&module_name, path.to_path_buf(), &source) {
+        Ok(module) => module,
+        Err(errs) => {
+            emit_syntax_errors(&[FileErrors {
+                path: path.to_path_buf(),
+                source: source.clone(),
+                errors: errs.errors,
+            }]);
+            return Err("failed to parse module".into());
+        }
+    };
+    let formatted = format_module(&module);
+    if write {
+        fs::write(path, formatted)?;
+    } else {
+        print!("{formatted}");
+    }
+    Ok(())
 }
 
-fn log_tokens(tokens: &[LexToken]) {
-    let display: Vec<_> = tokens.iter().map(|lex| &lex.token).collect();
-    println!("Tokens: {:?}", display);
-}
-
-fn build_program(program: &Program) {
-    let mut compiler = Compiler::new();
-    compiler.compile(program);
-    compiler.print_ir();
-    compiler
-        .write_ir_to_file("output.ll")
-        .expect("Failed to write LLVM IR to file");
-
+fn run_llc(ir_path: &Path, obj_path: &Path) -> Result<(), String> {
     let output = Command::new("llc")
         .arg("-relocation-model=pic")
         .arg("-filetype=obj")
-        .arg("output.ll")
+        .arg(ir_path)
         .arg("-o")
-        .arg("output.o")
+        .arg(obj_path)
         .output()
-        .expect("Failed to execute llc");
-    println!("llc stdout: {}", String::from_utf8_lossy(&output.stdout));
-    println!("llc stderr: {}", String::from_utf8_lossy(&output.stderr));
-
-    let output = Command::new("gcc")
-        .arg("output.o")
-        .arg("-o")
-        .arg("output")
-        .output()
-        .expect("Failed to execute gcc");
-    println!("gcc stdout: {}", String::from_utf8_lossy(&output.stdout));
-    println!("gcc stderr: {}", String::from_utf8_lossy(&output.stderr));
-}
-
-fn parse_or_report(path: &Path, source: &str, tokens: &[LexToken]) -> Program {
-    match parse(tokens) {
-        Ok(program) => program,
-        Err(errors) => {
-            emit_parse_errors(path, source, &errors);
-            std::process::exit(1);
-        }
+        .map_err(|err| format!("Failed to execute llc: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "llc failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
+    Ok(())
 }
 
-fn format_file(path: &Path, write: bool) {
-    let (source, tokens) = read_source(path);
-    let program = parse_or_report(path, &source, &tokens);
-    let formatted = format_program(&program);
-    if write {
-        if let Err(err) = fs::write(path, formatted) {
-            eprintln!("Failed to write {}: {}", path.display(), err);
-            std::process::exit(1);
-        }
-    } else {
-        print!("{}", formatted);
+fn run_gcc(obj_path: &Path, bin_path: &Path) -> Result<(), String> {
+    let output = Command::new("gcc")
+        .arg(obj_path)
+        .arg("-o")
+        .arg(bin_path)
+        .output()
+        .map_err(|err| format!("Failed to execute gcc: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "gcc failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_prime_file(path: &Path) {
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext != "prime")
+        .unwrap_or(true)
+    {
+        eprintln!("{} is not a .prime file", path.display());
+        std::process::exit(1);
     }
 }

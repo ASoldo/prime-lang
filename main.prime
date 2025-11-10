@@ -1,29 +1,7 @@
+import "types";
+
+
 fn main() {
-  let int a = 6;
-  let int b = 10;
-  let int c = 2;
-  let int d = 2;
-  let int e = 4;
-  let int f = 6;
-  out(((a + b) - ((c * d) / e)));
-  let int f0 = 0;
-  let int f1 = 1;
-  let int f2 = (f0 + f1);
-  let int f3 = (f1 + f2);
-  let int f4 = (f2 + f3);
-  let int f5 = (f3 + f4);
-  let int f6 = (f4 + f5);
-  let int f7 = (f5 + f6);
-  let int f8 = (f6 + f7);
-  let int f9 = (f7 + f8);
-  out(f0);
-  out(f1);
-  out(f2);
-  out(f3);
-  out(f4);
-  out(f5);
-  out(f6);
-  out(f7);
-  out(f8);
-  out(f9);
+  let int32 a = 4;
+  out(a);
 }
