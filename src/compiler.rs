@@ -163,6 +163,15 @@ impl Compiler {
             Expr::Literal(Literal::Int(value, _)) => unsafe {
                 Ok(LLVMConstInt(self.i32_type, *value as u64, 0))
             },
+            Expr::Literal(Literal::Bool(value, _)) => unsafe {
+                Ok(LLVMConstInt(self.i32_type, if *value { 1 } else { 0 }, 0))
+            },
+            Expr::Literal(Literal::Float(value, _)) => unsafe {
+                Ok(LLVMConstInt(self.i32_type, *value as i64 as u64, 0))
+            },
+            Expr::Literal(Literal::String(_, _) | Literal::Rune(_, _)) => unsafe {
+                Ok(LLVMConstInt(self.i32_type, 0, 0))
+            },
             Expr::Identifier(ident) => self
                 .values
                 .get(&ident.name)

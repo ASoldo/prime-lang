@@ -1,7 +1,7 @@
 import "types";
 
 fn main() {
-  let a = 40;
+  let a = (40 + 2);
   let b = "String";
   let c = 40;
   let d = 40;
