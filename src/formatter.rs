@@ -37,7 +37,7 @@ fn format_struct(out: &mut String, def: &StructDef) {
             if let Some(name) = &field.name {
                 out.push_str(&format!("  {};\n", name));
             } else {
-                out.push_str("  // embedded field\n");
+                out.push_str(&format!("  {};\n", format_type(&field.ty.ty)));
             }
         } else if let Some(name) = &field.name {
             out.push_str(&format!("  {}: {};\n", name, format_type(&field.ty.ty)));
