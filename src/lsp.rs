@@ -1,12 +1,16 @@
 use crate::{
     formatter::format_module,
     language::{
-        ast::{Block, Expr, FunctionBody, Item, Module, RangeExpr, Statement, StructLiteralKind},
+        ast::{
+            Block, Expr, FunctionBody, Item, LetStmt, Module, RangeExpr, Statement,
+            StructLiteralKind,
+        },
         errors::{SyntaxError, SyntaxErrors},
         lexer::{LexError, lex},
         parser::parse_module,
         span::Span,
         token::{Token, TokenKind},
+        types::TypeExpr,
     },
 };
 use std::{
@@ -20,6 +24,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::RwLock;
 use tower_lsp_server::jsonrpc::Result as RpcResult;
 use tower_lsp_server::lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
     DocumentSymbolParams, DocumentSymbolResponse, Hover, HoverContents, HoverParams,
@@ -102,6 +107,10 @@ impl LanguageServer for Backend {
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".into()]),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -265,6 +274,50 @@ impl LanguageServer for Backend {
             changes: Some([(uri, edits)].into_iter().collect()),
             ..Default::default()
         }))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> RpcResult<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let Some(text) = self.docs.get(&uri).await else {
+            return Ok(None);
+        };
+        let Ok(module) = parse_module_from_uri(&uri, &text) else {
+            return Ok(None);
+        };
+        let offset = position_to_offset(&text, position);
+        let Some(base_ident) = identifier_before_dot(&text, offset) else {
+            return Ok(None);
+        };
+
+        let struct_fields = collect_struct_fields(&module);
+        let var_types = collect_variable_types(&module);
+
+        let type_name = var_types.get(&base_ident).cloned().or_else(|| {
+            struct_fields
+                .contains_key(&base_ident)
+                .then(|| base_ident.clone())
+        });
+
+        let Some(struct_name) = type_name else {
+            return Ok(None);
+        };
+
+        let Some(fields) = struct_fields.get(&struct_name) else {
+            return Ok(None);
+        };
+
+        let items: Vec<CompletionItem> = fields
+            .iter()
+            .map(|field| CompletionItem {
+                label: field.name.clone(),
+                kind: Some(CompletionItemKind::FIELD),
+                detail: field.ty.clone(),
+                ..Default::default()
+            })
+            .collect();
+
+        Ok(Some(CompletionResponse::Array(items)))
     }
 }
 
@@ -970,4 +1023,148 @@ fn prettify_error_message(message: &str) -> String {
         "Expected Semi" => "Expected Semicolon ';'".to_string(),
         other => other.to_string(),
     }
+}
+
+#[derive(Clone)]
+struct StructFieldInfo {
+    name: String,
+    ty: Option<String>,
+}
+
+fn collect_struct_fields(module: &Module) -> HashMap<String, Vec<StructFieldInfo>> {
+    let mut fields = HashMap::new();
+    for item in &module.items {
+        if let Item::Struct(def) = item {
+            let mut struct_fields = Vec::new();
+            for field in &def.fields {
+                if let Some(name) = &field.name {
+                    struct_fields.push(StructFieldInfo {
+                        name: name.clone(),
+                        ty: format_type_expr(&field.ty.ty),
+                    });
+                }
+            }
+            fields.insert(def.name.clone(), struct_fields);
+        }
+    }
+    fields
+}
+
+fn collect_variable_types(module: &Module) -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    for item in &module.items {
+        if let Item::Function(func) = item {
+            match &func.body {
+                FunctionBody::Block(block) => collect_variable_types_from_block(block, &mut vars),
+                FunctionBody::Expr(expr) => collect_variable_types_from_expr(&expr.node, &mut vars),
+            }
+        }
+    }
+    vars
+}
+
+fn collect_variable_types_from_block(block: &Block, vars: &mut HashMap<String, String>) {
+    for statement in &block.statements {
+        match statement {
+            Statement::Let(stmt) => {
+                if let Some(ty) = infer_type_from_let(stmt) {
+                    vars.insert(stmt.name.clone(), ty);
+                }
+            }
+            Statement::Block(inner) => collect_variable_types_from_block(inner, vars),
+            Statement::If(if_stmt) => {
+                collect_variable_types_from_block(&if_stmt.then_branch, vars);
+                if let Some(else_branch) = &if_stmt.else_branch {
+                    collect_variable_types_from_block(else_branch, vars);
+                }
+            }
+            Statement::While(while_stmt) => {
+                collect_variable_types_from_block(&while_stmt.body, vars)
+            }
+            Statement::ForRange(for_stmt) => {
+                collect_variable_types_from_block(&for_stmt.body, vars)
+            }
+            Statement::Match(match_stmt) => {
+                for arm in &match_stmt.arms {
+                    collect_variable_types_from_block(&arm.body, vars);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_variable_types_from_expr(tail, vars);
+    }
+}
+
+fn collect_variable_types_from_expr(expr: &Expr, vars: &mut HashMap<String, String>) {
+    match expr {
+        Expr::Block(block) => collect_variable_types_from_block(block, vars),
+        Expr::If(if_expr) => {
+            collect_variable_types_from_block(&if_expr.then_branch, vars);
+            if let Some(else_branch) = &if_expr.else_branch {
+                collect_variable_types_from_block(else_branch, vars);
+            }
+        }
+        Expr::Match(match_expr) => {
+            for arm in &match_expr.arms {
+                collect_variable_types_from_expr(&arm.value, vars);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn infer_type_from_let(stmt: &LetStmt) -> Option<String> {
+    if let Some(annotation) = &stmt.ty {
+        return type_expr_name(&annotation.ty);
+    }
+    if let Some(value) = &stmt.value {
+        if let Expr::StructLiteral { name, .. } = value {
+            return Some(name.clone());
+        }
+    }
+    None
+}
+
+fn type_expr_name(expr: &TypeExpr) -> Option<String> {
+    match expr {
+        TypeExpr::Named(name, _) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn format_type_expr(expr: &TypeExpr) -> Option<String> {
+    type_expr_name(expr)
+}
+
+fn identifier_before_dot(text: &str, offset: usize) -> Option<String> {
+    if offset == 0 {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut idx = offset;
+    while idx > 0 && bytes[idx - 1].is_ascii_whitespace() {
+        idx -= 1;
+    }
+    if idx == 0 || bytes[idx - 1] != b'.' {
+        return None;
+    }
+    let dot = idx - 1;
+    if dot == 0 {
+        return None;
+    }
+    let mut start = dot;
+    while start > 0 {
+        let ch = bytes[start - 1];
+        if ch.is_ascii_alphanumeric() || ch == b'_' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    if start == dot {
+        return None;
+    }
+    Some(text[start..dot].to_string())
 }
