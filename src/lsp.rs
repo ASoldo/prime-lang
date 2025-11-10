@@ -302,22 +302,23 @@ fn lex_error_to_lsp(text: &str, err: LexError) -> Diagnostic {
         range: span_to_range(text, err.span),
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some("prime-lang".into()),
-        message: err.message,
+        message: error_with_context(&err.message, None, text, err.span),
         ..Default::default()
     }
 }
 
 fn syntax_error_to_lsp(text: &str, err: SyntaxError) -> Diagnostic {
-    let mut message = err.message;
-    if let Some(help) = err.help {
-        message.push('\n');
-        message.push_str(&help);
-    }
+    let span = if err.span.start < err.span.end && err.message.starts_with("Expected") {
+        let fallback = adjust_zero_length_offset(text, err.span.start);
+        Span::new(fallback, fallback.saturating_add(1).min(text.len()))
+    } else {
+        err.span
+    };
     Diagnostic {
-        range: span_to_range(text, err.span),
+        range: span_to_range(text, span),
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some("prime-lang".into()),
-        message,
+        message: error_with_context(&err.message, err.help.as_deref(), text, err.span),
         ..Default::default()
     }
 }
@@ -817,9 +818,22 @@ fn is_valid_identifier(name: &str) -> bool {
 }
 
 fn span_to_range(text: &str, span: Span) -> Range {
-    let start = offset_to_position(text, span.start);
-    let end = offset_to_position(text, span.end);
-    Range { start, end }
+    let len = text.len();
+    let start_offset = span.start.min(len);
+    let end_offset = span.end.min(len);
+    if start_offset < end_offset {
+        Range {
+            start: offset_to_position(text, start_offset),
+            end: offset_to_position(text, end_offset),
+        }
+    } else {
+        let reference = adjust_zero_length_offset(text, start_offset);
+        let (line_start, line_end) = line_bounds_at(text, reference);
+        Range {
+            start: offset_to_position(text, line_start),
+            end: offset_to_position(text, line_end),
+        }
+    }
 }
 
 fn full_range(text: &str) -> Range {
@@ -878,4 +892,68 @@ fn url_to_path(url: &Uri) -> Option<PathBuf> {
         Cow::Owned(path) => path,
         Cow::Borrowed(path) => path.to_path_buf(),
     })
+}
+
+fn adjust_zero_length_offset(text: &str, offset: usize) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let len = text.len();
+    let mut idx = offset.min(len);
+    if idx > 0 {
+        idx = prev_char_boundary(text, idx);
+    }
+    let prefix = &text[..idx];
+    for (byte_idx, ch) in prefix.char_indices().rev() {
+        if ch == '\n' {
+            return byte_idx.saturating_sub(1);
+        }
+        if !ch.is_whitespace() {
+            return byte_idx;
+        }
+    }
+    0
+}
+
+fn prev_char_boundary(text: &str, mut idx: usize) -> usize {
+    let len = text.len();
+    if idx > len {
+        idx = len;
+    }
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+fn line_bounds_at(text: &str, mut offset: usize) -> (usize, usize) {
+    if text.is_empty() {
+        return (0, 0);
+    }
+    let len = text.len();
+    if offset >= len {
+        offset = len - 1;
+    }
+    let bytes = text.as_bytes();
+    let mut start = offset;
+    while start > 0 && bytes[start - 1] != b'\n' {
+        start -= 1;
+    }
+    let mut end = offset;
+    while end < len && bytes[end] != b'\n' {
+        end += 1;
+    }
+    (start, end)
+}
+
+fn error_with_context(base: &str, help: Option<&str>, _text: &str, _span: Span) -> String {
+    match help {
+        Some(help) if !help.trim().is_empty() => {
+            let mut msg = base.to_string();
+            msg.push_str("\n");
+            msg.push_str(help);
+            msg
+        }
+        _ => base.to_string(),
+    }
 }
