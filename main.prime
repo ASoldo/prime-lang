@@ -2,7 +2,7 @@ import "types";
 
 fn main() {
   let a = 40;
-  let b = "String"
+  let b = "String";
   let c = 40;
   let d = 40;
   out(a);

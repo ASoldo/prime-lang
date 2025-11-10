@@ -308,6 +308,13 @@ fn lex_error_to_lsp(text: &str, err: LexError) -> Diagnostic {
 }
 
 fn syntax_error_to_lsp(text: &str, err: SyntaxError) -> Diagnostic {
+    let mut message = prettify_error_message(&err.message);
+    if let Some(help) = &err.help {
+        if !help.trim().is_empty() {
+            message.push('\n');
+            message.push_str(help);
+        }
+    }
     let span = if err.span.start < err.span.end && err.message.starts_with("Expected") {
         let fallback = adjust_zero_length_offset(text, err.span.start);
         Span::new(fallback, fallback.saturating_add(1).min(text.len()))
@@ -318,7 +325,7 @@ fn syntax_error_to_lsp(text: &str, err: SyntaxError) -> Diagnostic {
         range: span_to_range(text, span),
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some("prime-lang".into()),
-        message: error_with_context(&err.message, err.help.as_deref(), text, err.span),
+        message,
         ..Default::default()
     }
 }
@@ -955,5 +962,12 @@ fn error_with_context(base: &str, help: Option<&str>, _text: &str, _span: Span) 
             msg
         }
         _ => base.to_string(),
+    }
+}
+
+fn prettify_error_message(message: &str) -> String {
+    match message {
+        "Expected Semi" => "Expected Semicolon ';'".to_string(),
+        other => other.to_string(),
     }
 }
