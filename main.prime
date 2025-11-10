@@ -1,7 +1,9 @@
 import "types";
 
-
 fn main() {
-  let int32 a = 4;
+  let a = 40;
+  let b = "String";
+  let c = 40;
+  let d = 40;
   out(a);
 }

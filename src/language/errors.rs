@@ -4,14 +4,17 @@ use miette::SourceSpan;
 #[derive(Clone, Debug)]
 pub struct SyntaxError {
     pub message: String,
+    pub label: String,
     pub span: Span,
     pub help: Option<String>,
 }
 
 impl SyntaxError {
     pub fn new(message: impl Into<String>, span: Span) -> Self {
+        let message = message.into();
         Self {
-            message: message.into(),
+            label: message.clone(),
+            message,
             span,
             help: None,
         }

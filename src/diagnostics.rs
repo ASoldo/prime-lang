@@ -23,7 +23,7 @@ impl SyntaxDiagnostic {
             span: err.to_source_span(),
             help: err.help.clone(),
             message: err.message.clone(),
-            label: err.message,
+            label: err.label,
         }
     }
 }

@@ -52,7 +52,15 @@ enum Commands {
     },
     /// Format a Prime source file
     Fmt {
-        file: PathBuf,
+        #[arg(value_name = "FILE", required_unless_present = "file_flag")]
+        path: Option<PathBuf>,
+        #[arg(
+            short = 'f',
+            long = "file",
+            value_name = "FILE",
+            conflicts_with = "path"
+        )]
+        file_flag: Option<PathBuf>,
         #[arg(long, default_value_t = false)]
         write: bool,
     },
@@ -72,7 +80,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Fmt { file, write } => {
+        Commands::Fmt {
+            path,
+            file_flag,
+            write,
+        } => {
+            let file = path.or(file_flag).expect("clap enforces an input path");
             ensure_prime_file(&file);
             if let Err(err) = format_file(&file, write) {
                 eprintln!("format failed: {err}");
