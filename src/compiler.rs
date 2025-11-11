@@ -1,4 +1,4 @@
-use crate::language::ast::*;
+use crate::language::{ast::*, types::TypeExpr};
 use llvm_sys::{
     LLVMLinkage,
     core::{
@@ -26,7 +26,14 @@ pub struct Compiler {
     printf_type: LLVMTypeRef,
     printf: LLVMValueRef,
     main_fn: LLVMValueRef,
-    values: HashMap<String, LLVMValueRef>,
+    values: HashMap<String, Value>,
+    structs: HashMap<String, StructDef>,
+}
+
+#[derive(Clone)]
+enum Value {
+    Int(LLVMValueRef),
+    Struct(HashMap<String, Value>),
 }
 
 impl Compiler {
@@ -45,6 +52,7 @@ impl Compiler {
                 printf: ptr::null_mut(),
                 main_fn: ptr::null_mut(),
                 values: HashMap::new(),
+                structs: HashMap::new(),
             };
             compiler.reset_module();
             compiler
@@ -54,6 +62,14 @@ impl Compiler {
     pub fn compile_program(&mut self, program: &Program) -> Result<(), String> {
         self.reset_module();
         self.values.clear();
+        self.structs.clear();
+        for module in &program.modules {
+            for item in &module.items {
+                if let Item::Struct(def) = item {
+                    self.structs.insert(def.name.clone(), def.clone());
+                }
+            }
+        }
 
         let main_fn = program
             .modules
@@ -131,7 +147,7 @@ impl Compiler {
                 let value = if let Some(expr) = &stmt.value {
                     self.emit_expression(expr)?
                 } else {
-                    unsafe { LLVMConstInt(self.i32_type, 0, 0) }
+                    Value::Int(unsafe { LLVMConstInt(self.i32_type, 0, 0) })
                 };
                 self.values.insert(stmt.name.clone(), value);
             }
@@ -140,7 +156,8 @@ impl Compiler {
                     if let Expr::Identifier(ident) = callee.as_ref() {
                         if ident.name == "out" && args.len() == 1 {
                             let arg = self.emit_expression(&args[0])?;
-                            self.emit_out(arg);
+                            let int = self.expect_int(arg)?;
+                            self.emit_out(int);
                             return Ok(());
                         }
                     }
@@ -158,33 +175,43 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_expression(&mut self, expr: &Expr) -> Result<LLVMValueRef, String> {
+    fn emit_expression(&mut self, expr: &Expr) -> Result<Value, String> {
         match expr {
             Expr::Literal(Literal::Int(value, _)) => unsafe {
-                Ok(LLVMConstInt(self.i32_type, *value as u64, 0))
+                Ok(Value::Int(LLVMConstInt(self.i32_type, *value as u64, 0)))
             },
             Expr::Literal(Literal::Bool(value, _)) => unsafe {
-                Ok(LLVMConstInt(self.i32_type, if *value { 1 } else { 0 }, 0))
+                Ok(Value::Int(LLVMConstInt(
+                    self.i32_type,
+                    if *value { 1 } else { 0 },
+                    0,
+                )))
             },
             Expr::Literal(Literal::Float(value, _)) => unsafe {
-                Ok(LLVMConstInt(self.i32_type, *value as i64 as u64, 0))
+                Ok(Value::Int(LLVMConstInt(
+                    self.i32_type,
+                    *value as i64 as u64,
+                    0,
+                )))
             },
             Expr::Literal(Literal::String(_, _) | Literal::Rune(_, _)) => unsafe {
-                Ok(LLVMConstInt(self.i32_type, 0, 0))
+                Ok(Value::Int(LLVMConstInt(self.i32_type, 0, 0)))
             },
             Expr::Identifier(ident) => self
                 .values
                 .get(&ident.name)
-                .copied()
+                .cloned()
                 .ok_or_else(|| format!("Unknown variable {}", ident.name)),
             Expr::Binary {
                 op, left, right, ..
             } => {
                 let lhs = self.emit_expression(left)?;
                 let rhs = self.emit_expression(right)?;
+                let lhs = self.expect_int(lhs)?;
+                let rhs = self.expect_int(rhs)?;
                 unsafe {
                     let name = CString::new("tmp").unwrap();
-                    Ok(match op {
+                    Ok(Value::Int(match op {
                         BinaryOp::Add => LLVMBuildAdd(self.builder, lhs, rhs, name.as_ptr()),
                         BinaryOp::Sub => LLVMBuildSub(self.builder, lhs, rhs, name.as_ptr()),
                         BinaryOp::Mul => LLVMBuildMul(self.builder, lhs, rhs, name.as_ptr()),
@@ -192,7 +219,18 @@ impl Compiler {
                         _ => {
                             return Err("Only +, -, *, / supported in build mode".into());
                         }
-                    })
+                    }))
+                }
+            }
+            Expr::StructLiteral { name, fields, .. } => self.build_struct_literal(name, fields),
+            Expr::FieldAccess { base, field, .. } => {
+                let base_value = self.emit_expression(base)?;
+                match base_value {
+                    Value::Struct(map) => map
+                        .get(field)
+                        .cloned()
+                        .ok_or_else(|| format!("Field {} not found", field)),
+                    Value::Int(_) => Err("Cannot access field on integer value".into()),
                 }
             }
             _ => Err("Expression not supported in build mode".into()),
@@ -218,6 +256,58 @@ impl Compiler {
                 args.len() as u32,
                 call_name.as_ptr(),
             );
+        }
+    }
+
+    fn expect_int(&self, value: Value) -> Result<LLVMValueRef, String> {
+        match value {
+            Value::Int(v) => Ok(v),
+            Value::Struct(_) => Err("Expected integer value in build mode".into()),
+        }
+    }
+
+    fn build_struct_literal(
+        &mut self,
+        name: &str,
+        fields: &StructLiteralKind,
+    ) -> Result<Value, String> {
+        match fields {
+            StructLiteralKind::Named(named) => {
+                let mut map = HashMap::new();
+                for field in named {
+                    let value = self.emit_expression(&field.value)?;
+                    map.insert(field.name.clone(), value);
+                }
+                Ok(Value::Struct(map))
+            }
+            StructLiteralKind::Positional(values) => {
+                let def = self
+                    .structs
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| format!("Unknown struct {}", name))?;
+                if def.fields.len() != values.len() {
+                    return Err(format!(
+                        "Struct `{}` expects {} fields, got {}",
+                        name,
+                        def.fields.len(),
+                        values.len()
+                    ));
+                }
+                let mut map = HashMap::new();
+                for (field_def, expr) in def.fields.iter().zip(values.iter()) {
+                    let key = field_def
+                        .name
+                        .clone()
+                        .or_else(|| type_name_from_type_expr(&field_def.ty.ty))
+                        .ok_or_else(|| {
+                            "Unable to determine field name for embedded field".to_string()
+                        })?;
+                    let value = self.emit_expression(expr)?;
+                    map.insert(key, value);
+                }
+                Ok(Value::Struct(map))
+            }
         }
     }
 
@@ -258,5 +348,12 @@ impl Drop for Compiler {
                 LLVMContextDispose(self.context);
             }
         }
+    }
+}
+
+fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
+    match expr {
+        TypeExpr::Named(name, _) => Some(name.clone()),
+        _ => None,
     }
 }

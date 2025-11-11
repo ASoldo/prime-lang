@@ -1,9 +1,15 @@
 import "types";
 
 fn main() {
-  let a = (40 + 2);
-  let b = "String";
-  let c = 40;
-  let d = 40;
-  out(a);
+  let Player hero = Player{
+    Vec2{ 10.0, 20.0 },
+    "Prime Hero",
+    100,
+  };
+  let Player wounded = Player{
+    hero.Vec2,
+    hero.name,
+    hero.hp - 55,
+  };
+  out(wounded.name);
 }

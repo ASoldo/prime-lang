@@ -729,6 +729,9 @@ impl Parser {
                         positional.push(self.parse_expression()?);
                     }
                     if self.matches(TokenKind::Comma) {
+                        if self.check(TokenKind::RBrace) {
+                            break;
+                        }
                         continue;
                     }
                     break;
