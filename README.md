@@ -249,7 +249,3 @@ get a complete Prime editing experience: diagnostics and formatting via LSP,
 syntax highlighting via Treesitter, and a sample toolchain for learning how
 language infrastructure fits together.
 
-Resume last session
-```sh
-codex resume 019a6f8f-c843-75e3-9c06-3a43494c00cb
-```

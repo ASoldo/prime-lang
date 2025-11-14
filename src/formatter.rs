@@ -90,6 +90,9 @@ fn format_function(out: &mut String, def: &FunctionDef) {
     }
     out.push_str(" {\n");
     if let FunctionBody::Block(block) = &def.body {
+        if needs_leading_blank_line(block) {
+            out.push('\n');
+        }
         format_block(out, block, 2);
     } else if let FunctionBody::Expr(expr) = &def.body {
         out.push_str(&format!("  {}\n", format_expr(&expr.node)));
@@ -100,28 +103,15 @@ fn format_function(out: &mut String, def: &FunctionDef) {
 fn format_block(out: &mut String, block: &Block, indent: usize) {
     let prefix = " ".repeat(indent);
     for statement in &block.statements {
-        let formatted = match statement {
+        let (formatted, extra_blank) = match statement {
             Statement::Let(stmt) => {
-                let mutability = if stmt.mutability.is_mutable() {
-                    "mut "
-                } else {
-                    ""
-                };
-                let binding = if let Some(ty) = &stmt.ty {
-                    format!("{} {}", format_type(&ty.ty), stmt.name)
-                } else {
-                    stmt.name.clone()
-                };
-                if let Some(expr) = &stmt.value {
-                    format!("let {}{} = {};", mutability, binding, format_expr(expr))
-                } else {
-                    format!("let {}{};", mutability, binding)
-                }
+                let result = format_let_statement(stmt, indent);
+                (result.0, result.1)
             }
-            Statement::Expr(expr) => format!("{};", format_expr(&expr.expr)),
+            Statement::Expr(expr) => (format!("{};", format_expr(&expr.expr)), false),
             Statement::Return(ret) => {
                 if ret.values.is_empty() {
-                    "return;".into()
+                    ("return;".into(), false)
                 } else {
                     let values = ret
                         .values
@@ -129,18 +119,46 @@ fn format_block(out: &mut String, block: &Block, indent: usize) {
                         .map(|expr| format_expr(expr))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    format!("return {};", values)
+                    (format!("return {};", values), false)
                 }
             }
-            other => format!("// unsupported statement: {:?}", other),
+            other => (format!("// unsupported statement: {:?}", other), false),
         };
         out.push_str(&prefix);
         out.push_str(&formatted);
         out.push('\n');
+        if extra_blank {
+            out.push('\n');
+        }
     }
     if let Some(tail) = &block.tail {
         out.push_str(&prefix);
         out.push_str(&format!("{};\n", format_expr(tail)));
+    }
+}
+
+fn format_let_statement(stmt: &LetStmt, indent: usize) -> (String, bool) {
+    let mutability = if stmt.mutability.is_mutable() {
+        "mut "
+    } else {
+        ""
+    };
+    let binding = if let Some(ty) = &stmt.ty {
+        format!("{} {}", format_type(&ty.ty), stmt.name)
+    } else {
+        stmt.name.clone()
+    };
+    if let Some(expr) = &stmt.value {
+        if let Expr::StructLiteral { name, fields, .. } = expr {
+            let text = format_struct_literal_binding(mutability, &binding, name, fields, indent);
+            return (text, true);
+        }
+        (
+            format!("let {}{} = {};", mutability, binding, format_expr(expr)),
+            false,
+        )
+    } else {
+        (format!("let {}{};", mutability, binding), false)
     }
 }
 
@@ -202,6 +220,43 @@ fn format_expr(expr: &Expr) -> String {
             format!("{base_str}.{field}")
         }
         _ => "/* unsupported expr */".into(),
+    }
+}
+
+fn format_struct_literal_binding(
+    mutability: &str,
+    binding: &str,
+    name: &str,
+    fields: &StructLiteralKind,
+    indent: usize,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("let {}{} = {}{{\n", mutability, binding, name));
+    let field_indent = " ".repeat(indent + 2);
+    match fields {
+        StructLiteralKind::Named(named) => {
+            for field in named {
+                out.push_str(&field_indent);
+                out.push_str(&format!("{}: {},\n", field.name, format_expr(&field.value)));
+            }
+        }
+        StructLiteralKind::Positional(values) => {
+            for value in values {
+                out.push_str(&field_indent);
+                out.push_str(&format!("{},\n", format_expr(value)));
+            }
+        }
+    }
+    out.push_str(&" ".repeat(indent));
+    out.push_str("};");
+    out
+}
+
+fn needs_leading_blank_line(block: &Block) -> bool {
+    match (block.statements.as_slice(), block.tail.as_ref()) {
+        ([], None) => false,
+        ([Statement::Expr(_)], None) => false,
+        _ => true,
     }
 }
 

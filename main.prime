@@ -1,10 +1,21 @@
 import "types";
 
 fn main() {
-  let Player hero = Player{ Vec2{ 10.0, 20.0 }, "Prime Hero", 100 };
-  let Player wounded = Player{ hero.Vec2, hero.name, (hero.hp - 55) };
+
+  let Player hero = Player{
+    Vec2{ 10.0, 20.0 },
+    "Prime Hero",
+    100,
+  };
+
+  let Player wounded = Player{
+    hero.Vec2,
+    hero.name,
+    (hero.hp - 55),
+  };
+
   out(hero.hp);
-  out(wounded.hp);
+  out(wounded.name);
   my_funcion();
 }
 
