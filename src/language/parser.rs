@@ -388,12 +388,7 @@ impl Parser {
             ))));
         }
 
-        if self
-            .peek_kind()
-            .map(|t| matches!(t, TokenKind::Identifier(_)))
-            .unwrap_or(false)
-            && self.peek_kind_n(1) == Some(TokenKind::Eq)
-        {
+        if self.is_assignment_start() {
             let stmt = self.parse_assignment()?;
             return Ok(StatementOrTail::Statement(Statement::Assign(stmt)));
         }
@@ -417,6 +412,33 @@ impl Parser {
         } else {
             Err(self.error_here("Expected ';' after expression"))
         }
+    }
+
+    fn is_assignment_start(&self) -> bool {
+        match self.peek_kind() {
+            Some(TokenKind::Identifier(_)) => self.assignment_eq_after_path(1),
+            Some(TokenKind::Star) => {
+                matches!(self.peek_kind_n(1), Some(TokenKind::Identifier(_)))
+                    && self.assignment_eq_after_path(2)
+            }
+            _ => false,
+        }
+    }
+
+    fn assignment_eq_after_path(&self, mut index: usize) -> bool {
+        loop {
+            match self.peek_kind_n(index) {
+                Some(TokenKind::Dot) => {
+                    index += 1;
+                    if !matches!(self.peek_kind_n(index), Some(TokenKind::Identifier(_))) {
+                        return false;
+                    }
+                    index += 1;
+                }
+                _ => break,
+            }
+        }
+        self.peek_kind_n(index) == Some(TokenKind::Eq)
     }
 
     fn parse_let(&mut self, start: usize) -> Result<LetStmt, SyntaxError> {
@@ -468,13 +490,32 @@ impl Parser {
 
     fn parse_assignment(&mut self) -> Result<AssignStmt, SyntaxError> {
         let start = self.current_span_start();
-        let target_ident = self.expect_identifier("Expected assignment target")?;
+        let target = if self.matches(TokenKind::Star) {
+            let ident = self.expect_identifier("Expected target after '*'")?;
+            let span = Span::new(start, ident.span.end);
+            Expr::Deref {
+                expr: Box::new(Expr::Identifier(ident)),
+                span,
+            }
+        } else {
+            let mut expr = Expr::Identifier(self.expect_identifier("Expected assignment target")?);
+            while self.matches(TokenKind::Dot) {
+                let field = self.expect_identifier("Expected field name after '.'")?;
+                let span = expr_span(&expr).union(field.span);
+                expr = Expr::FieldAccess {
+                    base: Box::new(expr),
+                    field: field.name,
+                    span,
+                };
+            }
+            expr
+        };
         self.expect(TokenKind::Eq)?;
         let value = self.parse_expression()?;
         self.expect(TokenKind::Semi)?;
         let span = Span::new(start, expr_span(&value).end);
         Ok(AssignStmt {
-            target: Expr::Identifier(target_ident),
+            target,
             value,
             span,
         })

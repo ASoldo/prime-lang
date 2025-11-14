@@ -6,7 +6,7 @@ use crate::project::Package;
 use crate::runtime::{
     environment::Environment,
     error::{RuntimeError, RuntimeResult},
-    value::{EnumValue, RangeValue, StructInstance, Value},
+    value::{EnumValue, RangeValue, ReferenceValue, StructInstance, Value},
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -223,13 +223,36 @@ impl Interpreter {
                 Ok(None)
             }
             Statement::Assign(stmt) => {
-                let value = self.eval_expression(&stmt.value)?;
-                if let Expr::Identifier(ident) = &stmt.target {
-                    self.env.assign(&ident.name, value)?;
-                } else {
-                    return Err(RuntimeError::Unsupported {
-                        message: "Only simple assignments are supported".into(),
-                    });
+                match &stmt.target {
+                    Expr::Identifier(ident) => {
+                        let value = self.eval_expression(&stmt.value)?;
+                        self.env.assign(&ident.name, value)?;
+                    }
+                    Expr::Deref { expr, .. } => {
+                        let target = self.eval_expression(expr)?;
+                        match target {
+                            Value::Reference(reference) => {
+                                if !reference.mutable {
+                                    return Err(RuntimeError::Panic {
+                                        message: "Cannot assign through immutable reference".into(),
+                                    });
+                                }
+                                let value = self.eval_expression(&stmt.value)?;
+                                *reference.cell.borrow_mut() = value;
+                            }
+                            _ => {
+                                return Err(RuntimeError::TypeMismatch {
+                                    message: "Cannot assign through non-reference value".into(),
+                                });
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(RuntimeError::Unsupported {
+                            message: "Only identifier or dereference assignments are supported"
+                                .into(),
+                        });
+                    }
                 }
                 Ok(None)
             }
@@ -482,11 +505,11 @@ impl Interpreter {
                 let range_value = self.eval_range_expr(range)?;
                 Ok(Value::Range(range_value))
             }
-            Expr::Reference { expr, .. } => self.build_reference(expr),
+            Expr::Reference { mutable, expr, .. } => self.build_reference(expr, *mutable),
             Expr::Deref { expr, .. } => {
                 let value = self.eval_expression(expr)?;
                 match value {
-                    Value::Reference(cell) => Ok(cell.borrow().clone()),
+                    Value::Reference(reference) => Ok(reference.cell.borrow().clone()),
                     _ => Err(RuntimeError::TypeMismatch {
                         message: "Cannot dereference non-reference value".into(),
                     }),
@@ -517,20 +540,28 @@ impl Interpreter {
         }
     }
 
-    fn build_reference(&mut self, expr: &Expr) -> RuntimeResult<Value> {
+    fn build_reference(&mut self, expr: &Expr, mutable: bool) -> RuntimeResult<Value> {
         match expr {
             Expr::Identifier(ident) => {
-                let cell =
+                let (cell, binding_mut) =
                     self.env
                         .get_cell(&ident.name)
                         .ok_or_else(|| RuntimeError::UnknownSymbol {
                             name: ident.name.clone(),
                         })?;
-                Ok(Value::Reference(cell))
+                if mutable && !binding_mut {
+                    return Err(RuntimeError::ImmutableBinding {
+                        name: ident.name.clone(),
+                    });
+                }
+                Ok(Value::Reference(ReferenceValue { cell, mutable }))
             }
             _ => {
                 let value = self.eval_expression(expr)?;
-                Ok(Value::Reference(Rc::new(RefCell::new(value))))
+                Ok(Value::Reference(ReferenceValue {
+                    cell: Rc::new(RefCell::new(value)),
+                    mutable,
+                }))
             }
         }
     }
@@ -556,7 +587,11 @@ impl Interpreter {
         match pattern {
             Pattern::Wildcard(_) => Ok(true),
             Pattern::Identifier(name, _) => {
-                self.env.declare(name, value.clone(), false)?;
+                let concrete = match value {
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                self.env.declare(name, concrete, false)?;
                 Ok(true)
             }
             Pattern::Literal(lit) => {
@@ -568,7 +603,7 @@ impl Interpreter {
                     Literal::Rune(v, _) => Value::Int(*v as i128),
                 };
                 let target = match value {
-                    Value::Reference(cell) => cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
                     other => other.clone(),
                 };
                 Ok(match (target, lit_value) {
@@ -585,7 +620,11 @@ impl Interpreter {
                 bindings,
                 ..
             } => {
-                if let Value::Enum(enum_value) = value {
+                let target = match value {
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                if let Value::Enum(enum_value) = target {
                     if &enum_value.variant == variant
                         && enum_name
                             .as_ref()
@@ -765,11 +804,11 @@ impl Interpreter {
 
     fn values_equal(&self, left: &Value, right: &Value) -> RuntimeResult<bool> {
         let left_val = match left {
-            Value::Reference(cell) => cell.borrow().clone(),
+            Value::Reference(reference) => reference.cell.borrow().clone(),
             other => other.clone(),
         };
         let right_val = match right {
-            Value::Reference(cell) => cell.borrow().clone(),
+            Value::Reference(reference) => reference.cell.borrow().clone(),
             other => other.clone(),
         };
         match (left_val, right_val) {

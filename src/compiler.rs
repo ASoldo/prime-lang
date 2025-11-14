@@ -1,4 +1,4 @@
-use crate::language::{ast::*, types::TypeExpr};
+use crate::language::{ast::*, types::{Mutability, TypeExpr}};
 use llvm_sys::{
     LLVMLinkage,
     core::{
@@ -12,10 +12,12 @@ use llvm_sys::{
     prelude::*,
 };
 use std::{
+    cell::RefCell,
     collections::HashMap,
     ffi::{CStr, CString},
     path::Path,
     ptr,
+    rc::Rc,
 };
 
 pub struct Compiler {
@@ -26,7 +28,7 @@ pub struct Compiler {
     printf_type: LLVMTypeRef,
     printf: LLVMValueRef,
     main_fn: LLVMValueRef,
-    scopes: Vec<HashMap<String, Value>>,
+    scopes: Vec<HashMap<String, Binding>>,
     structs: HashMap<String, StructDef>,
     functions: HashMap<String, FunctionDef>,
     enum_variants: HashMap<String, EnumVariantInfo>,
@@ -41,6 +43,7 @@ enum Value {
     Enum(EnumValue),
     Tuple(Vec<Value>),
     Unit,
+    Reference(ReferenceValue),
 }
 
 #[derive(Clone)]
@@ -54,6 +57,18 @@ struct EnumValue {
 struct IntValue {
     llvm: LLVMValueRef,
     constant: Option<i128>,
+}
+
+#[derive(Clone)]
+struct ReferenceValue {
+    cell: Rc<RefCell<Value>>,
+    mutable: bool,
+}
+
+#[derive(Clone)]
+struct Binding {
+    cell: Rc<RefCell<Value>>,
+    mutable: bool,
 }
 
 #[derive(Clone)]
@@ -169,7 +184,7 @@ impl Compiler {
 
         for const_def in self.consts.clone() {
             let value = self.emit_expression(&const_def.value)?;
-            self.insert_var(&const_def.name, value);
+            self.insert_var(&const_def.name, value, false);
         }
 
         let _ = self.execute_block_contents(body)?;
@@ -253,6 +268,11 @@ impl Compiler {
                 self.emit_printf_call("()", &mut []);
                 Ok(())
             }
+            Value::Reference(reference) => {
+                self.emit_printf_call("&", &mut []);
+                let inner = reference.cell.borrow().clone();
+                self.print_value(inner)
+            }
         }
     }
 
@@ -276,7 +296,7 @@ impl Compiler {
                 } else {
                     Value::Int(self.const_int_value(0))
                 };
-                self.insert_var(&stmt.name, value);
+                self.insert_var(&stmt.name, value, stmt.mutability == Mutability::Mutable);
             }
             Statement::Expr(expr_stmt) => self.eval_expression_statement(&expr_stmt.expr)?,
             Statement::Block(block) => {
@@ -285,16 +305,35 @@ impl Compiler {
                 self.pop_scope();
             }
             Statement::Defer(stmt) => self.eval_expression_statement(&stmt.expr)?,
-            Statement::Assign(stmt) => {
-                if let Expr::Identifier(ident) = &stmt.target {
+            Statement::Assign(stmt) => match &stmt.target {
+                Expr::Identifier(ident) => {
                     let value = self.emit_expression(&stmt.value)?;
                     self.assign_var(&ident.name, value)?;
-                } else {
-                    return Err(
-                        "Only assignments to identifiers are supported in build mode".into(),
-                    );
                 }
-            }
+                Expr::Deref { expr, .. } => {
+                    let target = self.emit_expression(expr)?;
+                    match target {
+                        Value::Reference(reference) => {
+                            if !reference.mutable {
+                                return Err("Cannot assign through immutable reference".into());
+                            }
+                            let value = self.emit_expression(&stmt.value)?;
+                            *reference.cell.borrow_mut() = value;
+                        }
+                        _ => {
+                            return Err(
+                                "Cannot assign through non-reference value in build mode".into()
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    return Err(
+                            "Only assignments to identifiers or dereferences are supported in build mode"
+                                .into(),
+                        );
+                }
+            },
             Statement::If(stmt) => {
                 let condition = self.emit_expression(&stmt.condition)?;
                 if self.value_to_bool(condition)? {
@@ -322,7 +361,11 @@ impl Compiler {
                 let limit = if inclusive { end + 1 } else { end };
                 while current < limit {
                     self.push_scope();
-                    self.insert_var(&stmt.binding, Value::Int(self.const_int_value(current)));
+                    self.insert_var(
+                        &stmt.binding,
+                        Value::Int(self.const_int_value(current)),
+                        false,
+                    );
                     let _ = self.execute_block_contents(&stmt.body)?;
                     self.pop_scope();
                     current += 1;
@@ -432,20 +475,39 @@ impl Compiler {
                 Ok(result.unwrap_or(Value::Unit))
             }
             Expr::If(if_expr) => self.emit_if_expression(if_expr),
-            Expr::Reference { expr, .. } => self.emit_expression(expr),
-            Expr::Deref { expr, .. } => self.emit_expression(expr),
+            Expr::Reference { mutable, expr, .. } => self.build_reference(expr, *mutable),
+            Expr::Deref { expr, .. } => {
+                let value = self.emit_expression(expr)?;
+                self.deref_value(value)
+            }
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = self.emit_expression(base)?;
-                match base_value {
-                    Value::Struct(map) => map
-                        .get(field)
-                        .cloned()
-                        .ok_or_else(|| format!("Field {} not found", field)),
-                    Value::Int(_) => Err("Cannot access field on integer value".into()),
-                    Value::Str(_) => Err("Cannot access field on string value".into()),
-                    Value::Enum(_) => Err("Cannot access field on enum value".into()),
-                    Value::Tuple(_) => Err("Cannot access field on tuple value".into()),
-                    Value::Unit => Err("Cannot access field on unit value".into()),
+                let mut current = base_value;
+                loop {
+                    current = match current {
+                        Value::Struct(map) => {
+                            return map
+                                .get(field)
+                                .cloned()
+                                .ok_or_else(|| format!("Field {} not found", field));
+                        }
+                        Value::Reference(reference) => reference.cell.borrow().clone(),
+                        Value::Int(_) => {
+                            return Err("Cannot access field on integer value".into());
+                        }
+                        Value::Str(_) => {
+                            return Err("Cannot access field on string value".into());
+                        }
+                        Value::Enum(_) => {
+                            return Err("Cannot access field on enum value".into());
+                        }
+                        Value::Tuple(_) => {
+                            return Err("Cannot access field on tuple value".into());
+                        }
+                        Value::Unit => {
+                            return Err("Cannot access field on unit value".into());
+                        }
+                    };
                 }
             }
             Expr::Call { callee, args, .. } => self.emit_call_expression(callee, args),
@@ -488,6 +550,37 @@ impl Compiler {
         }
     }
 
+    fn build_reference(&mut self, expr: &Expr, mutable: bool) -> Result<Value, String> {
+        match expr {
+            Expr::Identifier(ident) => {
+                let (cell, binding_mut) = self
+                    .get_binding(&ident.name)
+                    .ok_or_else(|| format!("Unknown variable {}", ident.name))?;
+                if mutable && !binding_mut {
+                    return Err(format!(
+                        "Variable `{}` is immutable and cannot be borrowed as mutable",
+                        ident.name
+                    ));
+                }
+                Ok(Value::Reference(ReferenceValue { cell, mutable }))
+            }
+            _ => {
+                let value = self.emit_expression(expr)?;
+                Ok(Value::Reference(ReferenceValue {
+                    cell: Rc::new(RefCell::new(value)),
+                    mutable,
+                }))
+            }
+        }
+    }
+
+    fn deref_value(&self, value: Value) -> Result<Value, String> {
+        match value {
+            Value::Reference(reference) => Ok(reference.cell.borrow().clone()),
+            _ => Err("Cannot dereference non-reference value in build mode".into()),
+        }
+    }
+
     fn emit_match_expression(&mut self, match_expr: &MatchExpr) -> Result<Value, String> {
         let target = self.emit_expression(&match_expr.expr)?;
         for arm in &match_expr.arms {
@@ -502,11 +595,16 @@ impl Compiler {
         Err("No match arm matched in build mode".into())
     }
 
+
     fn match_pattern(&mut self, value: &Value, pattern: &Pattern) -> Result<bool, String> {
         match pattern {
             Pattern::Wildcard(_) => Ok(true),
             Pattern::Identifier(name, _) => {
-                self.insert_var(name, value.clone());
+                let concrete = match value {
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                self.insert_var(name, concrete, false);
                 Ok(true)
             }
             Pattern::Literal(lit) => self.match_literal(value.clone(), lit),
@@ -516,7 +614,11 @@ impl Compiler {
                 bindings,
                 ..
             } => {
-                if let Value::Enum(enum_value) = value.clone() {
+                let concrete = match value {
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                if let Value::Enum(enum_value) = concrete {
                     if enum_value.variant != *variant {
                         return Ok(false);
                     }
@@ -548,7 +650,11 @@ impl Compiler {
     }
 
     fn match_literal(&self, value: Value, literal: &Literal) -> Result<bool, String> {
-        match (literal, value) {
+        let concrete = match value {
+            Value::Reference(reference) => reference.cell.borrow().clone(),
+            other => other,
+        };
+        match (literal, concrete) {
             (Literal::Int(expected, _), Value::Int(int_value)) => int_value
                 .constant()
                 .map(|val| val == *expected)
@@ -595,6 +701,10 @@ impl Compiler {
     fn expect_int(&self, value: Value) -> Result<IntValue, String> {
         match value {
             Value::Int(v) => Ok(v),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.expect_int(inner)
+            }
             other => Err(format!(
                 "Expected integer value in build mode, got {}",
                 describe_value(&other)
@@ -749,7 +859,7 @@ impl Compiler {
 
         self.push_scope();
         for (param, value) in func.params.iter().zip(evaluated_args.into_iter()) {
-            self.insert_var(&param.name, value);
+            self.insert_var(&param.name, value, param.mutability == Mutability::Mutable);
         }
         let result = match &func.body {
             FunctionBody::Block(block) => self.execute_block_contents(block)?,
@@ -777,8 +887,11 @@ impl Compiler {
 
     fn assign_var(&mut self, name: &str, value: Value) -> Result<(), String> {
         for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(name) {
-                scope.insert(name.to_string(), value);
+            if let Some(binding) = scope.get_mut(name) {
+                if !binding.mutable {
+                    return Err(format!("Variable {} is immutable", name));
+                }
+                *binding.cell.borrow_mut() = value;
                 return Ok(());
             }
         }
@@ -786,7 +899,11 @@ impl Compiler {
     }
 
     fn value_to_bool(&self, value: Value) -> Result<bool, String> {
-        let int_value = self.expect_int(value)?;
+        let concrete = match value {
+            Value::Reference(reference) => reference.cell.borrow().clone(),
+            other => other,
+        };
+        let int_value = self.expect_int(concrete)?;
         let constant = int_value
             .constant()
             .ok_or_else(|| "Non-constant condition not supported in build mode".to_string())?;
@@ -815,16 +932,31 @@ impl Compiler {
         self.scopes.pop();
     }
 
-    fn insert_var(&mut self, name: &str, value: Value) {
+    fn insert_var(&mut self, name: &str, value: Value, mutable: bool) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), value);
+            scope.insert(
+                name.to_string(),
+                Binding {
+                    cell: Rc::new(RefCell::new(value)),
+                    mutable,
+                },
+            );
         }
     }
 
     fn get_var(&self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter().rev() {
-            if let Some(value) = scope.get(name) {
-                return Some(value.clone());
+            if let Some(binding) = scope.get(name) {
+                return Some(binding.cell.borrow().clone());
+            }
+        }
+        None
+    }
+
+    fn get_binding(&self, name: &str) -> Option<(Rc<RefCell<Value>>, bool)> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(binding) = scope.get(name) {
+                return Some((binding.cell.clone(), binding.mutable));
             }
         }
         None
@@ -906,5 +1038,6 @@ fn describe_value(value: &Value) -> &'static str {
         Value::Enum(_) => "enum",
         Value::Tuple(_) => "tuple",
         Value::Unit => "unit",
+        Value::Reference(_) => "reference",
     }
 }

@@ -90,10 +90,10 @@ impl Environment {
         None
     }
 
-    pub fn get_cell(&self, name: &str) -> Option<Rc<RefCell<Value>>> {
+    pub fn get_cell(&self, name: &str) -> Option<(Rc<RefCell<Value>>, bool)> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.bindings.get(name) {
-                return Some(binding.cell.clone());
+                return Some((binding.cell.clone(), binding.mutable));
             }
         }
         None

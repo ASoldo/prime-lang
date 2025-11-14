@@ -6,7 +6,7 @@ fn main() {
 
   out("=== prime-lang gameplay demo ===");
 
-  let Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
+  let mut Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
   let Player scout = spawn_player("Sparrow", Vec2{ 5.0, 12.5 }, 90);
 
   describe_player(hero);
@@ -64,7 +64,7 @@ fn main() {
       out("Training slot assigned:");
       out(value);
     },
-    None => {
+    None() => {
       out("Training slots unavailable");
     },
   };
@@ -79,6 +79,10 @@ fn main() {
       out(msg);
     },
   };
+
+  refill_hp(&mut hero, 12);
+  out("Hero after field medic response:");
+  describe_player(hero);
 
   calibrate_station("Signal tower");
 
@@ -270,6 +274,17 @@ fn peek_hp(target: &Player) -> int32 {
   snapshot.hp
 }
 
+fn refill_hp(target: &mut Player, amount: int32) {
+  let Player snapshot = *target;
+  let Player refreshed = Player{
+    Transform{ snapshot.position, snapshot.velocity },
+    Stats{ snapshot.hp + amount, snapshot.stamina },
+    snapshot.name,
+    snapshot.level,
+  };
+  *target = refreshed;
+}
+
 fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
   if ready {
     Completed(name)
@@ -292,7 +307,7 @@ fn describe_event(event: MissionEvent) {
       out("mission failed:");
       out(reason);
     },
-    Waiting => {
+    Waiting() => {
       out("mission awaiting clearance");
     },
   }
@@ -302,7 +317,7 @@ fn summarize_event(event: MissionEvent) -> string {
   match event {
     Completed(stage) => stage,
     Failed(reason) => reason,
-    Waiting => "Awaiting assignment",
+    Waiting() => "Awaiting assignment",
   }
 }
 

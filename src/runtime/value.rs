@@ -15,7 +15,7 @@ pub enum Value {
     Enum(EnumValue),
     Tuple(Vec<Value>),
     Range(RangeValue),
-    Reference(Rc<RefCell<Value>>),
+    Reference(ReferenceValue),
 }
 
 impl Value {
@@ -26,7 +26,7 @@ impl Value {
             Value::Float(f) => *f != 0.0,
             Value::String(s) => !s.is_empty(),
             Value::Struct(_) | Value::Enum(_) | Value::Tuple(_) | Value::Range(_) => true,
-            Value::Reference(cell) => cell.borrow().as_bool(),
+            Value::Reference(reference) => reference.cell.borrow().as_bool(),
             Value::Unit => false,
         }
     }
@@ -74,11 +74,15 @@ impl fmt::Display for Value {
                 if range.inclusive { "..=" } else { ".." },
                 range.end
             ),
-            Value::Reference(cell) => {
-                write!(f, "&{}", cell.borrow())
-            }
+            Value::Reference(reference) => write!(f, "&{}", reference.cell.borrow()),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct ReferenceValue {
+    pub cell: Rc<RefCell<Value>>,
+    pub mutable: bool,
 }
 
 #[derive(Clone, Debug)]
