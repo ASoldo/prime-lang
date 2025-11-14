@@ -46,6 +46,10 @@ fn main() {
 
   simulate_patrol("River path", 4);
 
+  let int32 borrowed_hp = peek_hp(&hero);
+  out("Borrowed hero hp:");
+  out(borrowed_hp);
+
   let MissionEvent ridge = plan_mission("Ridge scouting", true, true);
   let MissionEvent harbor = plan_mission("Harbor sweep", false, true);
   describe_event(ridge);
@@ -53,6 +57,28 @@ fn main() {
   let string pending = summarize_event(Waiting());
   out("Mission summary hint:");
   out(pending);
+
+  let OptionalInt slot = find_training_slot(TRAINING_LIMIT);
+  match slot {
+    Some(value) => {
+      out("Training slot assigned:");
+      out(value);
+    },
+    None => {
+      out("Training slots unavailable");
+    },
+  };
+
+  match resolve_attack(leveled, brute.attack) {
+    Ok(survivor) => {
+      out("Hero resisted the heavy blow:");
+      describe_player(survivor);
+    },
+    Err(msg) => {
+      out("Hero staggered:");
+      out(msg);
+    },
+  };
 
   calibrate_station("Signal tower");
 
@@ -218,6 +244,32 @@ fn simulate_patrol(name: string, steps: int32) {
   out("--- patrol complete ---");
 }
 
+fn find_training_slot(day: int32) -> OptionalInt {
+  if day % 2 == 0 {
+    Some(day)
+  } else {
+    None()
+  }
+}
+
+fn resolve_attack(hero: Player, damage: Damage) -> EncounterResult {
+  match damage {
+    Flat(amount) => Ok(apply_damage(hero, Flat(amount))),
+    Percent(percent) => {
+      if percent < 20 {
+        Ok(apply_damage(hero, Percent(percent)))
+      } else {
+        Err("impact too high")
+      }
+    },
+  }
+}
+
+fn peek_hp(target: &Player) -> int32 {
+  let Player snapshot = *target;
+  snapshot.hp
+}
+
 fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
   if ready {
     Completed(name)
@@ -225,7 +277,7 @@ fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
     if slots_open {
       Failed("requires tide shift")
     } else {
-      Waiting
+      Waiting()
     }
   }
 }

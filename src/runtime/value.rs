@@ -1,6 +1,8 @@
 use crate::language::span::Span;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::rc::Rc;
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -13,6 +15,7 @@ pub enum Value {
     Enum(EnumValue),
     Tuple(Vec<Value>),
     Range(RangeValue),
+    Reference(Rc<RefCell<Value>>),
 }
 
 impl Value {
@@ -23,6 +26,7 @@ impl Value {
             Value::Float(f) => *f != 0.0,
             Value::String(s) => !s.is_empty(),
             Value::Struct(_) | Value::Enum(_) | Value::Tuple(_) | Value::Range(_) => true,
+            Value::Reference(cell) => cell.borrow().as_bool(),
             Value::Unit => false,
         }
     }
@@ -38,6 +42,7 @@ impl Value {
             Value::Enum(_) => "enum",
             Value::Tuple(_) => "tuple",
             Value::Range(_) => "range",
+            Value::Reference(_) => "reference",
         }
     }
 }
@@ -69,6 +74,9 @@ impl fmt::Display for Value {
                 if range.inclusive { "..=" } else { ".." },
                 range.end
             ),
+            Value::Reference(cell) => {
+                write!(f, "&{}", cell.borrow())
+            }
         }
     }
 }

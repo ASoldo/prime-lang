@@ -1,10 +1,12 @@
 use crate::language::ast::Expr;
 use crate::runtime::{error::RuntimeError, value::Value};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Clone)]
 struct Binding {
-    value: Value,
+    cell: Rc<RefCell<Value>>,
     mutable: bool,
 }
 
@@ -47,9 +49,13 @@ impl Environment {
 
     pub fn declare(&mut self, name: &str, value: Value, mutable: bool) -> Result<(), RuntimeError> {
         if let Some(scope) = self.scopes.last_mut() {
-            scope
-                .bindings
-                .insert(name.to_string(), Binding { value, mutable });
+            scope.bindings.insert(
+                name.to_string(),
+                Binding {
+                    cell: Rc::new(RefCell::new(value)),
+                    mutable,
+                },
+            );
             Ok(())
         } else {
             Err(RuntimeError::Panic {
@@ -66,7 +72,7 @@ impl Environment {
                         name: name.to_string(),
                     });
                 }
-                binding.value = value;
+                *binding.cell.borrow_mut() = value;
                 return Ok(());
             }
         }
@@ -78,7 +84,16 @@ impl Environment {
     pub fn get(&self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.bindings.get(name) {
-                return Some(binding.value.clone());
+                return Some(binding.cell.borrow().clone());
+            }
+        }
+        None
+    }
+
+    pub fn get_cell(&self, name: &str) -> Option<Rc<RefCell<Value>>> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(binding) = scope.bindings.get(name) {
+                return Some(binding.cell.clone());
             }
         }
         None

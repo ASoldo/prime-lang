@@ -432,6 +432,8 @@ impl Compiler {
                 Ok(result.unwrap_or(Value::Unit))
             }
             Expr::If(if_expr) => self.emit_if_expression(if_expr),
+            Expr::Reference { expr, .. } => self.emit_expression(expr),
+            Expr::Deref { expr, .. } => self.emit_expression(expr),
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = self.emit_expression(base)?;
                 match base_value {
@@ -718,9 +720,10 @@ impl Compiler {
                     Err("Only direct function calls are supported in build mode".into())
                 }
             }
-            _ => Err(
-                "Only function calls are supported as standalone expressions in build mode".into(),
-            ),
+            _ => {
+                self.emit_expression(expr)?;
+                Ok(())
+            }
         }
     }
 

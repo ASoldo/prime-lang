@@ -24,6 +24,16 @@ enum MissionEvent {
   Waiting,
 }
 
+enum OptionalInt {
+  Some(int32),
+  None,
+}
+
+enum EncounterResult {
+  Ok(Player),
+  Err(string),
+}
+
 struct Player {
   Transform;
   Stats;

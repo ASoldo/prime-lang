@@ -8,7 +8,9 @@ use crate::runtime::{
     error::{RuntimeError, RuntimeResult},
     value::{EnumValue, RangeValue, StructInstance, Value},
 };
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 pub struct Interpreter {
     package: Package,
@@ -480,8 +482,16 @@ impl Interpreter {
                 let range_value = self.eval_range_expr(range)?;
                 Ok(Value::Range(range_value))
             }
-            Expr::Reference { expr, .. } => self.eval_expression(expr),
-            Expr::Deref { expr, .. } => self.eval_expression(expr),
+            Expr::Reference { expr, .. } => self.build_reference(expr),
+            Expr::Deref { expr, .. } => {
+                let value = self.eval_expression(expr)?;
+                match value {
+                    Value::Reference(cell) => Ok(cell.borrow().clone()),
+                    _ => Err(RuntimeError::TypeMismatch {
+                        message: "Cannot dereference non-reference value".into(),
+                    }),
+                }
+            }
             Expr::EnumLiteral {
                 enum_name,
                 variant,
@@ -504,6 +514,24 @@ impl Interpreter {
             Expr::ArrayLiteral(_, _) => Err(RuntimeError::Unsupported {
                 message: "Array literals not yet supported".into(),
             }),
+        }
+    }
+
+    fn build_reference(&mut self, expr: &Expr) -> RuntimeResult<Value> {
+        match expr {
+            Expr::Identifier(ident) => {
+                let cell =
+                    self.env
+                        .get_cell(&ident.name)
+                        .ok_or_else(|| RuntimeError::UnknownSymbol {
+                            name: ident.name.clone(),
+                        })?;
+                Ok(Value::Reference(cell))
+            }
+            _ => {
+                let value = self.eval_expression(expr)?;
+                Ok(Value::Reference(Rc::new(RefCell::new(value))))
+            }
         }
     }
 
@@ -539,11 +567,15 @@ impl Interpreter {
                     Literal::String(v, _) => Value::String(v.clone()),
                     Literal::Rune(v, _) => Value::Int(*v as i128),
                 };
-                Ok(match (value, lit_value) {
-                    (Value::Int(lhs), Value::Int(rhs)) => lhs == &rhs,
-                    (Value::Float(lhs), Value::Float(rhs)) => lhs == &rhs,
-                    (Value::Bool(lhs), Value::Bool(rhs)) => lhs == &rhs,
-                    (Value::String(lhs), Value::String(rhs)) => lhs == &rhs,
+                let target = match value {
+                    Value::Reference(cell) => cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                Ok(match (target, lit_value) {
+                    (Value::Int(lhs), Value::Int(rhs)) => lhs == rhs,
+                    (Value::Float(lhs), Value::Float(rhs)) => lhs == rhs,
+                    (Value::Bool(lhs), Value::Bool(rhs)) => lhs == rhs,
+                    (Value::String(lhs), Value::String(rhs)) => lhs == rhs,
                     _ => false,
                 })
             }
@@ -732,7 +764,15 @@ impl Interpreter {
     }
 
     fn values_equal(&self, left: &Value, right: &Value) -> RuntimeResult<bool> {
-        match (left, right) {
+        let left_val = match left {
+            Value::Reference(cell) => cell.borrow().clone(),
+            other => other.clone(),
+        };
+        let right_val = match right {
+            Value::Reference(cell) => cell.borrow().clone(),
+            other => other.clone(),
+        };
+        match (left_val, right_val) {
             (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
             (Value::Int(a), Value::Int(b)) => Ok(a == b),
             (Value::Float(a), Value::Float(b)) => Ok(a == b),
