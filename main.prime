@@ -1,5 +1,7 @@
 import "types";
 
+const TRAINING_LIMIT: int32 = 3;
+
 fn main() {
 
   out("=== prime-lang gameplay demo ===");
@@ -14,7 +16,7 @@ fn main() {
   out("After repositioning:");
   describe_player(relocated);
 
-  let Player wounded = apply_damage(relocated, 30);
+  let Player wounded = apply_damage(relocated, Flat(30));
   out("Hero after heavy hit:");
   describe_player(wounded);
 
@@ -26,7 +28,7 @@ fn main() {
   out("Hero after leveling:");
   describe_player(leveled);
 
-  let Enemy brute = spawn_enemy("Emerald brute", Vec2{ 18.0, 24.0 }, 18);
+  let Enemy brute = spawn_enemy("Emerald brute", Vec2{ 18.0, 24.0 }, Percent(15));
   describe_enemy(brute);
 
   let Quest quest = Quest{
@@ -40,9 +42,23 @@ fn main() {
   run_encounter(leveled, scout, brute);
 
   out("Training countdown:");
-  countdown(3);
+  countdown(TRAINING_LIMIT);
 
   simulate_patrol("River path", 4);
+
+  let MissionEvent ridge = plan_mission("Ridge scouting", true, true);
+  let MissionEvent harbor = plan_mission("Harbor sweep", false, true);
+  describe_event(ridge);
+  describe_event(harbor);
+  let string pending = summarize_event(Waiting());
+  out("Mission summary hint:");
+  out(pending);
+
+  calibrate_station("Signal tower");
+
+  let divmod_result = divmod(22, TRAINING_LIMIT);
+  out("divmod(22, TRAINING_LIMIT):");
+  out(divmod_result);
 
   announce_session("Session complete");
 }
@@ -56,7 +72,7 @@ fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
   }
 }
 
-fn spawn_enemy(kind: string, position: Vec2, attack: int32) -> Enemy {
+fn spawn_enemy(kind: string, position: Vec2, attack: Damage) -> Enemy {
   Enemy{
     Transform{ position, Vec2{ 0.0, 0.0 } },
     kind,
@@ -83,7 +99,20 @@ fn describe_enemy(enemy: Enemy) {
   out(enemy.kind);
   out(enemy.position.x);
   out(enemy.position.y);
-  out(enemy.attack);
+  describe_damage(enemy.attack);
+}
+
+fn describe_damage(damage: Damage) {
+  match damage {
+    Flat(amount) => {
+      out("attack: flat");
+      out(amount);
+    },
+    Percent(rate) => {
+      out("attack: percent");
+      out(rate);
+    },
+  }
 }
 
 fn describe_quest(quest: Quest) {
@@ -111,13 +140,23 @@ fn add_vec2(a: Vec2, b: Vec2) -> Vec2 {
   Vec2{ a.x + b.x, a.y + b.y }
 }
 
-fn apply_damage(p: Player, amount: int32) -> Player {
-  let int32 remaining = p.hp - amount;
-  Player{
-    Transform{ p.position, p.velocity },
-    Stats{ remaining, p.stamina },
-    p.name,
-    p.level,
+fn apply_damage(p: Player, damage: Damage) -> Player {
+  match damage {
+    Flat(amount) => Player{
+      Transform{ p.position, p.velocity },
+      Stats{ p.hp - amount, p.stamina },
+      p.name,
+      p.level,
+    },
+    Percent(percent) => {
+      let int32 scaled = p.hp * percent / 100;
+      Player{
+        Transform{ p.position, p.velocity },
+        Stats{ p.hp - scaled, p.stamina },
+        p.name,
+        p.level,
+      }
+    },
   }
 }
 
@@ -177,4 +216,58 @@ fn simulate_patrol(name: string, steps: int32) {
     out(i);
   }
   out("--- patrol complete ---");
+}
+
+fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
+  if ready {
+    Completed(name)
+  } else {
+    if slots_open {
+      Failed("requires tide shift")
+    } else {
+      Waiting
+    }
+  }
+}
+
+fn describe_event(event: MissionEvent) {
+  match event {
+    Completed(stage) => {
+      out("mission completed:");
+      out(stage);
+    },
+    Failed(reason) => {
+      out("mission failed:");
+      out(reason);
+    },
+    Waiting => {
+      out("mission awaiting clearance");
+    },
+  }
+}
+
+fn summarize_event(event: MissionEvent) -> string {
+  match event {
+    Completed(stage) => stage,
+    Failed(reason) => reason,
+    Waiting => "Awaiting assignment",
+  }
+}
+
+fn calibrate_station(name: string) {
+  out("Calibrating station:");
+  out(name);
+  defer out("Station teardown complete");
+  let mut int32 probes = 0;
+  while probes < 2 {
+    out("probe");
+    out(probes);
+    probes = probes + 1;
+  }
+}
+
+fn divmod(a: int32, b: int32) -> (int32, int32) {
+  let int32 q = a / b;
+  let int32 r = a % b;
+  (q, r)
 }

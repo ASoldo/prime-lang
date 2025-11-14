@@ -13,6 +13,17 @@ struct Stats {
   stamina: int32;
 }
 
+enum Damage {
+  Flat(int32),
+  Percent(int32),
+}
+
+enum MissionEvent {
+  Completed(string),
+  Failed(string),
+  Waiting,
+}
+
 struct Player {
   Transform;
   Stats;
@@ -23,7 +34,7 @@ struct Player {
 struct Enemy {
   Transform;
   kind: string;
-  attack: int32;
+  attack: Damage;
 }
 
 struct Quest {

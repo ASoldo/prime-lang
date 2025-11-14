@@ -29,6 +29,8 @@ pub struct Compiler {
     scopes: Vec<HashMap<String, Value>>,
     structs: HashMap<String, StructDef>,
     functions: HashMap<String, FunctionDef>,
+    enum_variants: HashMap<String, EnumVariantInfo>,
+    consts: Vec<ConstDef>,
 }
 
 #[derive(Clone)]
@@ -36,13 +38,28 @@ enum Value {
     Int(IntValue),
     Str(LLVMValueRef),
     Struct(HashMap<String, Value>),
+    Enum(EnumValue),
+    Tuple(Vec<Value>),
     Unit,
+}
+
+#[derive(Clone)]
+struct EnumValue {
+    enum_name: String,
+    variant: String,
+    values: Vec<Value>,
 }
 
 #[derive(Clone)]
 struct IntValue {
     llvm: LLVMValueRef,
     constant: Option<i128>,
+}
+
+#[derive(Clone)]
+struct EnumVariantInfo {
+    enum_name: String,
+    fields: usize,
 }
 
 impl IntValue {
@@ -77,6 +94,8 @@ impl Compiler {
                 scopes: Vec::new(),
                 structs: HashMap::new(),
                 functions: HashMap::new(),
+                enum_variants: HashMap::new(),
+                consts: Vec::new(),
             };
             compiler.reset_module();
             compiler
@@ -96,16 +115,31 @@ impl Compiler {
         self.push_scope();
         self.structs.clear();
         self.functions.clear();
+        self.enum_variants.clear();
+        self.consts.clear();
         for module in &program.modules {
             for item in &module.items {
                 match item {
                     Item::Struct(def) => {
                         self.structs.insert(def.name.clone(), def.clone());
                     }
+                    Item::Enum(def) => {
+                        for variant in &def.variants {
+                            self.enum_variants.insert(
+                                variant.name.clone(),
+                                EnumVariantInfo {
+                                    enum_name: def.name.clone(),
+                                    fields: variant.fields.len(),
+                                },
+                            );
+                        }
+                    }
                     Item::Function(func) => {
                         self.functions.insert(func.name.clone(), func.clone());
                     }
-                    _ => {}
+                    Item::Const(const_def) => {
+                        self.consts.push(const_def.clone());
+                    }
                 }
             }
         }
@@ -131,6 +165,11 @@ impl Compiler {
             let entry = CString::new("entry").unwrap();
             let block = LLVMAppendBasicBlockInContext(self.context, self.main_fn, entry.as_ptr());
             LLVMPositionBuilderAtEnd(self.builder, block);
+        }
+
+        for const_def in self.consts.clone() {
+            let value = self.emit_expression(&const_def.value)?;
+            self.insert_var(&const_def.name, value);
         }
 
         let _ = self.execute_block_contents(body)?;
@@ -165,17 +204,55 @@ impl Compiler {
     }
 
     fn emit_out_value(&mut self, value: Value) -> Result<(), String> {
+        self.print_value(value)?;
+        self.emit_printf_call("\n", &mut []);
+        Ok(())
+    }
+
+    fn print_value(&mut self, value: Value) -> Result<(), String> {
         match value {
             Value::Int(int_value) => {
-                self.emit_printf_call("%d\n", &mut [int_value.llvm()]);
+                self.emit_printf_call("%d", &mut [int_value.llvm()]);
                 Ok(())
             }
             Value::Str(ptr) => {
-                self.emit_printf_call("%s\n", &mut [ptr]);
+                self.emit_printf_call("%s", &mut [ptr]);
                 Ok(())
             }
+            Value::Tuple(values) => {
+                self.emit_printf_call("(", &mut []);
+                for (idx, item) in values.into_iter().enumerate() {
+                    if idx > 0 {
+                        self.emit_printf_call(", ", &mut []);
+                    }
+                    self.print_value(item)?;
+                }
+                self.emit_printf_call(")", &mut []);
+                Ok(())
+            }
+            Value::Enum(enum_value) => {
+                if enum_value.values.is_empty() {
+                    let label = format!("{}::{}", enum_value.enum_name, enum_value.variant);
+                    self.emit_printf_call(&label, &mut []);
+                    Ok(())
+                } else {
+                    let prefix = format!("{}::{}(", enum_value.enum_name, enum_value.variant);
+                    self.emit_printf_call(&prefix, &mut []);
+                    for (idx, item) in enum_value.values.into_iter().enumerate() {
+                        if idx > 0 {
+                            self.emit_printf_call(", ", &mut []);
+                        }
+                        self.print_value(item)?;
+                    }
+                    self.emit_printf_call(")", &mut []);
+                    Ok(())
+                }
+            }
             Value::Struct(_) => Err("Cannot print struct value in build mode".into()),
-            Value::Unit => Err("Cannot print unit value in build mode".into()),
+            Value::Unit => {
+                self.emit_printf_call("()", &mut []);
+                Ok(())
+            }
         }
     }
 
@@ -207,6 +284,7 @@ impl Compiler {
                 let _ = self.execute_block_contents(block)?;
                 self.pop_scope();
             }
+            Statement::Defer(stmt) => self.eval_expression_statement(&stmt.expr)?,
             Statement::Assign(stmt) => {
                 if let Expr::Identifier(ident) = &stmt.target {
                     let value = self.emit_expression(&stmt.value)?;
@@ -251,10 +329,7 @@ impl Compiler {
                 }
             }
             _ => {
-                return Err(
-                    "Only let statements, nested blocks, and function calls are supported in build mode"
-                        .into(),
-                );
+                return Err("Statement not supported in build mode".into());
             }
         }
         Ok(())
@@ -336,6 +411,26 @@ impl Compiler {
                 }
             }
             Expr::StructLiteral { name, fields, .. } => self.build_struct_literal(name, fields),
+            Expr::EnumLiteral {
+                enum_name,
+                variant,
+                values,
+                ..
+            } => self.build_enum_literal(enum_name.as_deref(), variant, values),
+            Expr::Match(match_expr) => self.emit_match_expression(match_expr),
+            Expr::Tuple(values, _) => {
+                let mut items = Vec::new();
+                for value in values {
+                    items.push(self.emit_expression(value)?);
+                }
+                Ok(Value::Tuple(items))
+            }
+            Expr::Block(block) => {
+                self.push_scope();
+                let result = self.execute_block_contents(block)?;
+                self.pop_scope();
+                Ok(result.unwrap_or(Value::Unit))
+            }
             Expr::If(if_expr) => self.emit_if_expression(if_expr),
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = self.emit_expression(base)?;
@@ -346,6 +441,8 @@ impl Compiler {
                         .ok_or_else(|| format!("Field {} not found", field)),
                     Value::Int(_) => Err("Cannot access field on integer value".into()),
                     Value::Str(_) => Err("Cannot access field on string value".into()),
+                    Value::Enum(_) => Err("Cannot access field on enum value".into()),
+                    Value::Tuple(_) => Err("Cannot access field on tuple value".into()),
                     Value::Unit => Err("Cannot access field on unit value".into()),
                 }
             }
@@ -359,6 +456,9 @@ impl Compiler {
 
     fn emit_call_expression(&mut self, callee: &Expr, args: &[Expr]) -> Result<Value, String> {
         if let Expr::Identifier(ident) = callee {
+            if let Some(info) = self.enum_variants.get(&ident.name).cloned() {
+                return self.build_enum_literal(Some(info.enum_name.as_str()), &ident.name, args);
+            }
             if ident.name == "out" {
                 return Err("out() cannot be used in expressions in build mode".into());
             }
@@ -386,6 +486,89 @@ impl Compiler {
         }
     }
 
+    fn emit_match_expression(&mut self, match_expr: &MatchExpr) -> Result<Value, String> {
+        let target = self.emit_expression(&match_expr.expr)?;
+        for arm in &match_expr.arms {
+            self.push_scope();
+            if self.match_pattern(&target, &arm.pattern)? {
+                let value = self.emit_expression(&arm.value)?;
+                self.pop_scope();
+                return Ok(value);
+            }
+            self.pop_scope();
+        }
+        Err("No match arm matched in build mode".into())
+    }
+
+    fn match_pattern(&mut self, value: &Value, pattern: &Pattern) -> Result<bool, String> {
+        match pattern {
+            Pattern::Wildcard(_) => Ok(true),
+            Pattern::Identifier(name, _) => {
+                self.insert_var(name, value.clone());
+                Ok(true)
+            }
+            Pattern::Literal(lit) => self.match_literal(value.clone(), lit),
+            Pattern::EnumVariant {
+                enum_name,
+                variant,
+                bindings,
+                ..
+            } => {
+                if let Value::Enum(enum_value) = value.clone() {
+                    if enum_value.variant != *variant {
+                        return Ok(false);
+                    }
+                    if enum_name
+                        .as_ref()
+                        .map(|name| enum_value.enum_name == *name)
+                        .unwrap_or(true)
+                    {
+                        if bindings.len() != enum_value.values.len() {
+                            return Err(format!(
+                                "Variant `{}` expects {} bindings, got {}",
+                                variant,
+                                enum_value.values.len(),
+                                bindings.len()
+                            ));
+                        }
+                        for (binding, field_value) in bindings.iter().zip(enum_value.values.iter())
+                        {
+                            if !self.match_pattern(field_value, binding)? {
+                                return Ok(false);
+                            }
+                        }
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+        }
+    }
+
+    fn match_literal(&self, value: Value, literal: &Literal) -> Result<bool, String> {
+        match (literal, value) {
+            (Literal::Int(expected, _), Value::Int(int_value)) => int_value
+                .constant()
+                .map(|val| val == *expected)
+                .ok_or_else(|| "Non-constant integer pattern in build mode".into()),
+            (Literal::Bool(expected, _), Value::Int(int_value)) => {
+                let want = if *expected { 1 } else { 0 };
+                int_value
+                    .constant()
+                    .map(|val| val == want)
+                    .ok_or_else(|| "Non-constant boolean pattern in build mode".into())
+            }
+            (Literal::Rune(expected, _), Value::Int(int_value)) => {
+                let want = *expected as i128;
+                int_value
+                    .constant()
+                    .map(|val| val == want)
+                    .ok_or_else(|| "Non-constant rune pattern in build mode".into())
+            }
+            _ => Err("Literal pattern not supported in build mode".into()),
+        }
+    }
+
     fn emit_printf_call(&mut self, fmt: &str, args: &mut [LLVMValueRef]) {
         unsafe {
             let fmt_literal = CString::new(fmt).unwrap();
@@ -410,9 +593,10 @@ impl Compiler {
     fn expect_int(&self, value: Value) -> Result<IntValue, String> {
         match value {
             Value::Int(v) => Ok(v),
-            Value::Str(_) => Err("Expected integer value in build mode".into()),
-            Value::Struct(_) => Err("Expected integer value in build mode".into()),
-            Value::Unit => Err("Expected integer value in build mode".into()),
+            other => Err(format!(
+                "Expected integer value in build mode, got {}",
+                describe_value(&other)
+            )),
         }
     }
 
@@ -472,6 +656,44 @@ impl Compiler {
                 Ok(Value::Struct(map))
             }
         }
+    }
+
+    fn build_enum_literal(
+        &mut self,
+        enum_name: Option<&str>,
+        variant: &str,
+        values: &[Expr],
+    ) -> Result<Value, String> {
+        let info = self
+            .enum_variants
+            .get(variant)
+            .cloned()
+            .ok_or_else(|| format!("Unknown enum variant {}", variant))?;
+        if let Some(name) = enum_name {
+            if name != info.enum_name {
+                return Err(format!(
+                    "Variant `{}` does not belong to enum `{}`",
+                    variant, name
+                ));
+            }
+        }
+        if info.fields != values.len() {
+            return Err(format!(
+                "Variant `{}` expects {} values, got {}",
+                variant,
+                info.fields,
+                values.len()
+            ));
+        }
+        let mut evaluated = Vec::new();
+        for expr in values {
+            evaluated.push(self.emit_expression(expr)?);
+        }
+        Ok(Value::Enum(EnumValue {
+            enum_name: info.enum_name.clone(),
+            variant: variant.to_string(),
+            values: evaluated,
+        }))
     }
 
     fn eval_expression_statement(&mut self, expr: &Expr) -> Result<(), String> {
@@ -534,10 +756,8 @@ impl Compiler {
 
         if func.returns.is_empty() {
             Ok(None)
-        } else if func.returns.len() == 1 {
-            Ok(result)
         } else {
-            Err("Functions returning multiple values are not supported in build mode".into())
+            Ok(result)
         }
     }
 
@@ -672,5 +892,16 @@ fn describe_expr(expr: &Expr) -> &'static str {
         Expr::Range(_) => "range",
         Expr::Reference { .. } => "reference",
         Expr::Deref { .. } => "deref",
+    }
+}
+
+fn describe_value(value: &Value) -> &'static str {
+    match value {
+        Value::Int(_) => "int",
+        Value::Str(_) => "string",
+        Value::Struct(_) => "struct",
+        Value::Enum(_) => "enum",
+        Value::Tuple(_) => "tuple",
+        Value::Unit => "unit",
     }
 }
