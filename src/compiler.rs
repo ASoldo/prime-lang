@@ -154,6 +154,8 @@ impl Compiler {
                     }
                     Item::Function(func) => {
                         self.functions.insert(func.name.clone(), func.clone());
+                        let qualified = format!("{}::{}", module.name, func.name);
+                        self.functions.insert(qualified, func.clone());
                     }
                     Item::Const(const_def) => {
                         self.consts.push(const_def.clone());
@@ -522,17 +524,36 @@ impl Compiler {
     }
 
     fn emit_call_expression(&mut self, callee: &Expr, args: &[Expr]) -> Result<Value, String> {
-        if let Expr::Identifier(ident) = callee {
-            if let Some(info) = self.enum_variants.get(&ident.name).cloned() {
-                return self.build_enum_literal(Some(info.enum_name.as_str()), &ident.name, args);
+        match callee {
+            Expr::Identifier(ident) => {
+                if let Some(info) = self.enum_variants.get(&ident.name).cloned() {
+                    return self.build_enum_literal(
+                        Some(info.enum_name.as_str()),
+                        &ident.name,
+                        args,
+                    );
+                }
+                if ident.name == "out" {
+                    return Err("out() cannot be used in expressions in build mode".into());
+                }
+                let result = self.invoke_function(&ident.name, args)?;
+                result.ok_or_else(|| format!("Function `{}` does not return a value", ident.name))
             }
-            if ident.name == "out" {
-                return Err("out() cannot be used in expressions in build mode".into());
+            Expr::FieldAccess { base, field, .. } => {
+                if let Expr::Identifier(module_ident) = base.as_ref() {
+                    let qualified = format!("{}::{}", module_ident.name, field);
+                    let result = self.invoke_function(&qualified, args)?;
+                    return result.ok_or_else(|| {
+                        format!("Function `{}` does not return a value", qualified)
+                    });
+                }
+                let mut method_args = Vec::with_capacity(args.len() + 1);
+                method_args.push((**base).clone());
+                method_args.extend(args.iter().cloned());
+                let result = self.invoke_function(field, &method_args)?;
+                result.ok_or_else(|| format!("Function `{}` does not return a value", field))
             }
-            let result = self.invoke_function(&ident.name, args)?;
-            result.ok_or_else(|| format!("Function `{}` does not return a value", ident.name))
-        } else {
-            Err("Only direct function calls are supported in build mode expressions".into())
+            _ => Err("Only direct function calls are supported in build mode expressions".into()),
         }
     }
 
@@ -813,23 +834,46 @@ impl Compiler {
     fn eval_expression_statement(&mut self, expr: &Expr) -> Result<(), String> {
         match expr {
             Expr::Call { callee, args, .. } => {
-                if let Expr::Identifier(ident) = callee.as_ref() {
-                    if ident.name == "out" {
-                        if args.len() != 1 {
-                            return Err("out() expects exactly one argument".into());
+                match callee.as_ref() {
+                    Expr::Identifier(ident) => {
+                        if ident.name == "out" {
+                            if args.len() != 1 {
+                                return Err("out() expects exactly one argument".into());
+                            }
+                            let value = self.emit_expression(&args[0])?;
+                            self.emit_out_value(value)
+                        } else {
+                            let result = self.invoke_function(&ident.name, args)?;
+                            if result.is_some() {
+                                Err("Functions returning values are not supported in expression statements during build mode".into())
+                            } else {
+                                Ok(())
+                            }
                         }
-                        let value = self.emit_expression(&args[0])?;
-                        self.emit_out_value(value)
-                    } else {
-                        let result = self.invoke_function(&ident.name, args)?;
+                    }
+                    Expr::FieldAccess { base, field, .. } => {
+                        if let Expr::Identifier(module_ident) = base.as_ref() {
+                            let qualified = format!("{}::{}", module_ident.name, field);
+                            let result = self.invoke_function(&qualified, args)?;
+                            if result.is_some() {
+                                return Err(
+                                    "Functions returning values are not supported in expression statements during build mode"
+                                        .into(),
+                                );
+                            }
+                            return Ok(());
+                        }
+                        let mut method_args = Vec::with_capacity(args.len() + 1);
+                        method_args.push((**base).clone());
+                        method_args.extend(args.iter().cloned());
+                        let result = self.invoke_function(field, &method_args)?;
                         if result.is_some() {
                             Err("Functions returning values are not supported in expression statements during build mode".into())
                         } else {
                             Ok(())
                         }
                     }
-                } else {
-                    Err("Only direct function calls are supported in build mode".into())
+                    _ => Err("Only direct function calls are supported in build mode".into()),
                 }
             }
             _ => {

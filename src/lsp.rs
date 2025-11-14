@@ -11,7 +11,7 @@ use crate::{
         parser::parse_module,
         span::Span,
         token::{Token, TokenKind},
-        types::TypeExpr,
+        types::{Mutability, TypeExpr},
     },
 };
 use std::{
@@ -324,11 +324,11 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let struct_fields = collect_struct_fields(&module);
+        let struct_info = collect_struct_info(&module);
         let var_types = collect_variable_types(&module);
 
         let type_name = var_types.get(&base_ident).cloned().or_else(|| {
-            struct_fields
+            struct_info
                 .contains_key(&base_ident)
                 .then(|| base_ident.clone())
         });
@@ -337,11 +337,12 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let Some(fields) = struct_fields.get(&struct_name) else {
+        let Some(info) = struct_info.get(&struct_name) else {
             return Ok(None);
         };
 
-        let items: Vec<CompletionItem> = fields
+        let mut items: Vec<CompletionItem> = info
+            .fields
             .iter()
             .map(|field| CompletionItem {
                 label: field.name.clone(),
@@ -350,6 +351,13 @@ impl LanguageServer for Backend {
                 ..Default::default()
             })
             .collect();
+
+        items.extend(info.methods.iter().map(|method| CompletionItem {
+            label: method.name.clone(),
+            kind: Some(CompletionItemKind::METHOD),
+            detail: Some(method.signature.clone()),
+            ..Default::default()
+        }));
 
         Ok(Some(CompletionResponse::Array(items)))
     }
@@ -507,6 +515,18 @@ struct DeclInfo {
     span: Span,
     scope: Span,
     available_from: usize,
+    ty: Option<String>,
+    value_span: Option<Span>,
+    mutability: Mutability,
+    kind: DeclKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclKind {
+    Param,
+    Let,
+    ForBinding,
+    Pattern,
 }
 
 fn collect_decl_spans(module: &Module) -> Vec<DeclInfo> {
@@ -524,6 +544,10 @@ fn collect_decl_spans(module: &Module) -> Vec<DeclInfo> {
                     span: param.span,
                     scope: body_span,
                     available_from,
+                    ty: Some(format_type_expr(&param.ty.ty)),
+                    value_span: None,
+                    mutability: param.mutability,
+                    kind: DeclKind::Param,
                 });
             }
             if let FunctionBody::Block(block) = &func.body {
@@ -538,14 +562,17 @@ fn scope_contains(scope: Span, offset: usize) -> bool {
     offset >= scope.start && offset < scope.end
 }
 
-fn find_local_definition_span(module: &Module, name: &str, offset: usize) -> Option<Span> {
+fn find_local_decl(module: &Module, name: &str, offset: usize) -> Option<DeclInfo> {
     collect_decl_spans(module)
         .into_iter()
         .filter(|decl| decl.name == name)
         .filter(|decl| scope_contains(decl.scope, offset))
         .filter(|decl| offset >= decl.available_from)
         .max_by_key(|decl| decl.span.start)
-        .map(|decl| decl.span)
+}
+
+fn find_local_definition_span(module: &Module, name: &str, offset: usize) -> Option<Span> {
+    find_local_decl(module, name, offset).map(|decl| decl.span)
 }
 
 fn find_global_definition_span(module: &Module, name: &str) -> Option<Span> {
@@ -581,6 +608,13 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                     span: stmt.span,
                     scope,
                     available_from: stmt.span.end,
+                    ty: stmt
+                        .ty
+                        .as_ref()
+                        .map(|annotation| format_type_expr(&annotation.ty)),
+                    value_span: stmt.value.as_ref().map(expr_span),
+                    mutability: stmt.mutability,
+                    kind: DeclKind::Let,
                 });
             }
             Statement::Assign(stmt) => {
@@ -612,6 +646,10 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                     span: for_stmt.span,
                     scope: body_span,
                     available_from: body_span.start,
+                    ty: None,
+                    value_span: None,
+                    mutability: Mutability::Immutable,
+                    kind: DeclKind::ForBinding,
                 });
                 collect_decl_from_block(&for_stmt.body, decls);
             }
@@ -619,7 +657,12 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                 collect_decl_from_expr(&match_stmt.expr, decls);
                 for arm in &match_stmt.arms {
                     let arm_scope = arm.body.span;
-                    collect_pattern_decls(&arm.pattern, arm_scope, arm_scope.start, decls);
+                    collect_pattern_decls(
+                        &arm.pattern,
+                        arm_scope,
+                        arm_scope.start,
+                        decls,
+                    );
                     if let Some(guard) = &arm.guard {
                         collect_decl_from_expr(guard, decls);
                     }
@@ -715,6 +758,10 @@ fn collect_pattern_decls(
             span: *span,
             scope,
             available_from,
+            ty: None,
+            value_span: None,
+            mutability: Mutability::Immutable,
+            kind: DeclKind::Pattern,
         }),
         Pattern::EnumVariant { bindings, .. } => {
             for binding in bindings {
@@ -957,6 +1004,34 @@ fn hover_for_token(
                     "Built-in output function **out(expr)**\n\nPrints the evaluated expression."
                         .to_string(),
                 )
+            } else if let Some(module) = module {
+                if let Some(decl) = find_local_decl(module, name, span.start) {
+                    return Some(hover_for_local_decl(text, span, &decl));
+                }
+                if let Some(hover) = hover_for_module_symbol(text, span, module, name) {
+                    return Some(hover);
+                }
+                if let Some(info) = vars.iter().rev().find(|var| var.name == *name) {
+                    let mut snippet = String::from("```prime\nlet ");
+                    snippet.push_str(&info.name);
+                    if let Some(ty) = &info.ty {
+                        snippet.push_str(": ");
+                        snippet.push_str(ty);
+                    }
+                    if let Some(expr) = &info.expr_text {
+                        snippet.push_str(" = ");
+                        snippet.push_str(expr);
+                    }
+                    snippet.push_str(";\n```\n");
+                    if let Some(ty) = &info.ty {
+                        snippet.push_str(&format!("Type: `{ty}`"));
+                    } else {
+                        snippet.push_str("Type: inferred");
+                    }
+                    Some(snippet)
+                } else {
+                    Some(format!("Identifier `{name}`"))
+                }
             } else if let Some(info) = vars.iter().rev().find(|var| var.name == *name) {
                 let mut snippet = String::from("```prime\nlet ");
                 snippet.push_str(&info.name);
@@ -975,11 +1050,6 @@ fn hover_for_token(
                     snippet.push_str("Type: inferred");
                 }
                 Some(snippet)
-            } else if let Some(module) = module {
-                if let Some(hover) = hover_for_module_symbol(text, span, module, name) {
-                    return Some(hover);
-                }
-                Some(format!("Identifier `{name}`"))
             } else {
                 Some(format!("Identifier `{name}`"))
             }
@@ -1080,6 +1150,51 @@ fn hover_for_module_symbol(
         }
     }
     None
+}
+
+fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover {
+    let mut snippet = extract_text(text, decl.span.start, decl.span.end).trim().to_string();
+    if snippet.is_empty() {
+        snippet = decl.name.clone();
+    }
+    let mut value = String::from("```prime\n");
+    value.push_str(&snippet);
+    if !snippet.ends_with('\n') {
+        value.push('\n');
+    }
+    value.push_str("```\n");
+    value.push_str(&format!("Name: `{}`", decl.name));
+    if let Some(ty) = &decl.ty {
+        value.push_str(&format!("\nType: `{ty}`"));
+    } else {
+        value.push_str("\nType: `inferred`");
+    }
+    value.push_str(&format!(
+        "\nMutable: {}",
+        if decl.mutability.is_mutable() {
+            "`mut`"
+        } else {
+            "`let`"
+        }
+    ));
+    value.push_str(&format!("\nKind: {}", format_decl_kind(decl.kind)));
+    if let Some(span) = decl.value_span {
+        let raw = extract_text(text, span.start, span.end).trim().to_string();
+        if !raw.is_empty() {
+            let single_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+            value.push_str(&format!("\nValue: `{single_line}`"));
+        }
+    }
+    markdown_hover(text, usage_span, value)
+}
+
+fn format_decl_kind(kind: DeclKind) -> &'static str {
+    match kind {
+        DeclKind::Param => "parameter",
+        DeclKind::Let => "local binding",
+        DeclKind::ForBinding => "loop binding",
+        DeclKind::Pattern => "pattern binding",
+    }
 }
 
 fn format_function_signature(func: &FunctionDef) -> String {
@@ -1385,8 +1500,20 @@ struct StructFieldInfo {
     ty: String,
 }
 
-fn collect_struct_fields(module: &Module) -> HashMap<String, Vec<StructFieldInfo>> {
-    let mut fields = HashMap::new();
+#[derive(Clone)]
+struct MethodInfo {
+    name: String,
+    signature: String,
+}
+
+#[derive(Clone)]
+struct StructInfo {
+    fields: Vec<StructFieldInfo>,
+    methods: Vec<MethodInfo>,
+}
+
+fn collect_struct_info(module: &Module) -> HashMap<String, StructInfo> {
+    let mut info = HashMap::new();
     for item in &module.items {
         if let Item::Struct(def) = item {
             let mut struct_fields = Vec::new();
@@ -1398,10 +1525,32 @@ fn collect_struct_fields(module: &Module) -> HashMap<String, Vec<StructFieldInfo
                     });
                 }
             }
-            fields.insert(def.name.clone(), struct_fields);
+            info.insert(
+                def.name.clone(),
+                StructInfo {
+                    fields: struct_fields,
+                    methods: Vec::new(),
+                },
+            );
         }
     }
-    fields
+    for item in &module.items {
+        if let Item::Function(func) = item {
+            if let Some(first_param) = func.params.first() {
+                if let Some(receiver) = receiver_type_name(&first_param.ty.ty) {
+                    let entry = info.entry(receiver).or_insert_with(|| StructInfo {
+                        fields: Vec::new(),
+                        methods: Vec::new(),
+                    });
+                    entry.methods.push(MethodInfo {
+                        name: func.name.clone(),
+                        signature: format_function_signature(func),
+                    });
+                }
+            }
+        }
+    }
+    info
 }
 
 fn collect_variable_types(module: &Module) -> HashMap<String, String> {
@@ -1471,7 +1620,7 @@ fn collect_variable_types_from_expr(expr: &Expr, vars: &mut HashMap<String, Stri
 
 fn infer_type_from_let(stmt: &LetStmt) -> Option<String> {
     if let Some(annotation) = &stmt.ty {
-        return type_expr_name(&annotation.ty);
+        return receiver_type_name(&annotation.ty);
     }
     if let Some(value) = &stmt.value {
         if let Expr::StructLiteral { name, .. } = value {
@@ -1484,6 +1633,14 @@ fn infer_type_from_let(stmt: &LetStmt) -> Option<String> {
 fn type_expr_name(expr: &TypeExpr) -> Option<String> {
     match expr {
         TypeExpr::Named(name, _) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn receiver_type_name(expr: &TypeExpr) -> Option<String> {
+    match expr {
+        TypeExpr::Named(name, _) => Some(name.clone()),
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => receiver_type_name(ty),
         _ => None,
     }
 }

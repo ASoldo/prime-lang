@@ -342,11 +342,15 @@ impl Parser {
             if self.matches(TokenKind::Semi) {
                 continue;
             }
-            match self.parse_statement(true)? {
-                StatementOrTail::Statement(stmt) => statements.push(stmt),
-                StatementOrTail::Tail(expr) => {
+            match self.parse_statement(true) {
+                Ok(StatementOrTail::Statement(stmt)) => statements.push(stmt),
+                Ok(StatementOrTail::Tail(expr)) => {
                     tail = Some(Box::new(expr));
                     break;
+                }
+                Err(err) => {
+                    self.report(err);
+                    self.synchronize_statement();
                 }
             }
         }
@@ -434,6 +438,32 @@ impl Parser {
             Ok(StatementOrTail::Tail(expr))
         } else {
             Err(self.error_here("Expected ';' after expression"))
+        }
+    }
+
+    fn synchronize_statement(&mut self) {
+        while !self.is_eof() {
+            match self.peek_kind() {
+                Some(TokenKind::Semi) => {
+                    self.advance();
+                    break;
+                }
+                Some(
+                    TokenKind::RBrace
+                        | TokenKind::Let
+                        | TokenKind::Return
+                        | TokenKind::If
+                        | TokenKind::While
+                        | TokenKind::For
+                        | TokenKind::Match
+                        | TokenKind::Break
+                        | TokenKind::Continue
+                        | TokenKind::Defer,
+                ) => break,
+                _ => {
+                    self.advance();
+                }
+            }
         }
     }
 

@@ -3,53 +3,40 @@ import "types";
 const TRAINING_LIMIT: int32 = 3;
 
 fn main() {
-
   out("=== prime-lang gameplay demo ===");
-
   let mut Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
   let Player scout = spawn_player("Sparrow", Vec2{ 5.0, 12.5 }, 90);
-
   describe_player(hero);
   describe_player(scout);
-
   let Player relocated = move_player(hero, Vec2{ 2.0, 3.0 });
   out("After repositioning:");
   describe_player(relocated);
-
   let Player wounded = apply_damage(relocated, Flat(30));
   out("Hero after heavy hit:");
   describe_player(wounded);
-
   let Player healed = drink_potion(wounded, 24);
   out("Hero after potion:");
   describe_player(healed);
-
   let Player leveled = level_up(healed, 2);
   out("Hero after leveling:");
   describe_player(leveled);
-
   let Enemy brute = spawn_enemy("Emerald brute", Vec2{ 18.0, 24.0 }, Percent(15));
   describe_enemy(brute);
-
   let Quest quest = Quest{
     "Defend the valley",
     450,
     false,
   };
-  describe_quest(quest);
 
+  describe_quest(quest);
   out("Encounter simulation:");
   run_encounter(leveled, scout, brute);
-
   out("Training countdown:");
   countdown(TRAINING_LIMIT);
-
   simulate_patrol("River path", 4);
-
   let int32 borrowed_hp = peek_hp(&hero);
   out("Borrowed hero hp:");
   out(borrowed_hp);
-
   let MissionEvent ridge = plan_mission("Ridge scouting", true, true);
   let MissionEvent harbor = plan_mission("Harbor sweep", false, true);
   describe_event(ridge);
@@ -57,7 +44,6 @@ fn main() {
   let string pending = summarize_event(Waiting());
   out("Mission summary hint:");
   out(pending);
-
   let Option[int32] slot = find_training_slot(TRAINING_LIMIT);
   match slot {
     Some(value) => {
@@ -68,7 +54,6 @@ fn main() {
       out("Training slots unavailable");
     },
   };
-
   match resolve_attack(leveled, brute.attack) {
     Ok(survivor) => {
       out("Hero resisted the heavy blow:");
@@ -79,24 +64,29 @@ fn main() {
       out(msg);
     },
   };
-
   refill_hp(&mut hero, 12);
   out("Hero after field medic response:");
   describe_player(hero);
-
   calibrate_station("Signal tower");
-
   let divmod_result = divmod(22, TRAINING_LIMIT);
   out("divmod(22, TRAINING_LIMIT):");
   out(divmod_result);
-
   announce_session("Session complete");
 }
 
 fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
   Player{
-    Transform{ position, Vec2{ 0.0, 0.0 } },
-    Stats{ hp, hp / 2 },
+    Transform{
+      position,
+      Vec2{
+        0.0,
+        0.0,
+      },
+    },
+    Stats{
+      hp,
+      hp / 2,
+    },
     name,
     1,
   }
@@ -104,7 +94,13 @@ fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
 
 fn spawn_enemy(kind: string, position: Vec2, attack: Damage) -> Enemy {
   Enemy{
-    Transform{ position, Vec2{ 0.0, 0.0 } },
+    Transform{
+      position,
+      Vec2{
+        0.0,
+        0.0,
+      },
+    },
     kind,
     attack,
   }
@@ -159,30 +155,51 @@ fn describe_quest(quest: Quest) {
 fn move_player(p: Player, offset: Vec2) -> Player {
   let Vec2 next = add_vec2(p.position, offset);
   Player{
-    Transform{ next, p.velocity },
-    Stats{ p.hp, p.stamina },
+    Transform{
+      next,
+      p.velocity,
+    },
+    Stats{
+      p.hp,
+      p.stamina,
+    },
     p.name,
     p.level,
   }
 }
 
 fn add_vec2(a: Vec2, b: Vec2) -> Vec2 {
-  Vec2{ a.x + b.x, a.y + b.y }
+  Vec2{
+    a.x + b.x,
+    a.y + b.y,
+  }
 }
 
 fn apply_damage(p: Player, damage: Damage) -> Player {
   match damage {
-    Flat(amount) => Player{
-      Transform{ p.position, p.velocity },
-      Stats{ p.hp - amount, p.stamina },
+    Flat(amount) =>     Player{
+      Transform{
+        p.position,
+        p.velocity,
+      },
+      Stats{
+        p.hp - amount,
+        p.stamina,
+      },
       p.name,
       p.level,
     },
     Percent(percent) => {
       let int32 scaled = p.hp * percent / 100;
       Player{
-        Transform{ p.position, p.velocity },
-        Stats{ p.hp - scaled, p.stamina },
+        Transform{
+          p.position,
+          p.velocity,
+        },
+        Stats{
+          p.hp - scaled,
+          p.stamina,
+        },
         p.name,
         p.level,
       }
@@ -193,8 +210,14 @@ fn apply_damage(p: Player, damage: Damage) -> Player {
 fn drink_potion(p: Player, heal: int32) -> Player {
   let int32 boosted = p.hp + heal;
   Player{
-    Transform{ p.position, p.velocity },
-    Stats{ boosted, p.stamina + heal / 2 },
+    Transform{
+      p.position,
+      p.velocity,
+    },
+    Stats{
+      boosted,
+      p.stamina + heal / 2,
+    },
     p.name,
     p.level,
   }
@@ -203,8 +226,14 @@ fn drink_potion(p: Player, heal: int32) -> Player {
 fn level_up(p: Player, levels: int32) -> Player {
   let int32 bonus = levels * 5;
   Player{
-    Transform{ p.position, p.velocity },
-    Stats{ p.hp + bonus, p.stamina + bonus },
+    Transform{
+      p.position,
+      p.velocity,
+    },
+    Stats{
+      p.hp + bonus,
+      p.stamina + bonus,
+    },
     p.name,
     p.level + levels,
   }
@@ -282,6 +311,7 @@ fn refill_hp(target: &mut Player, amount: int32) {
     snapshot.name,
     snapshot.level,
   };
+
   *target = refreshed;
 }
 

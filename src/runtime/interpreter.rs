@@ -366,6 +366,12 @@ impl Interpreter {
         Ok(())
     }
 
+    fn eval_arguments(&mut self, args: &[Expr]) -> RuntimeResult<Vec<Value>> {
+        args.iter()
+            .map(|expr| self.eval_expression(expr))
+            .collect()
+    }
+
     fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {
         match expr {
             Expr::Identifier(ident) => {
@@ -404,28 +410,26 @@ impl Interpreter {
                     UnaryOp::Deref => Ok(value),
                 }
             }
-            Expr::Call { callee, args, .. } => {
-                let arg_values = args
-                    .iter()
-                    .map(|expr| self.eval_expression(expr))
-                    .collect::<RuntimeResult<Vec<_>>>()?;
-                match callee.as_ref() {
-                    Expr::Identifier(ident) => {
-                        if let Some(variant) = self.enum_variants.get(&ident.name) {
-                            let enum_name = variant.enum_name.clone();
-                            let variant_name = ident.name.clone();
-                            return self.instantiate_enum(&enum_name, &variant_name, arg_values);
-                        }
-                        let results = self.call_function(&ident.name, arg_values)?;
-                        Ok(match results.len() {
-                            0 => Value::Unit,
-                            1 => results.into_iter().next().unwrap(),
-                            _ => Value::Tuple(results),
-                        })
+            Expr::Call { callee, args, .. } => match callee.as_ref() {
+                Expr::Identifier(ident) => {
+                    let arg_values = self.eval_arguments(args)?;
+                    if let Some(variant) = self.enum_variants.get(&ident.name) {
+                        let enum_name = variant.enum_name.clone();
+                        let variant_name = ident.name.clone();
+                        return self.instantiate_enum(&enum_name, &variant_name, arg_values);
                     }
-                    Expr::FieldAccess { base, field, .. } => {
-                        if let Expr::Identifier(module_ident) = base.as_ref() {
-                            let qualified = format!("{}::{}", module_ident.name, field);
+                    let results = self.call_function(&ident.name, arg_values)?;
+                    Ok(match results.len() {
+                        0 => Value::Unit,
+                        1 => results.into_iter().next().unwrap(),
+                        _ => Value::Tuple(results),
+                    })
+                }
+                Expr::FieldAccess { base, field, .. } => {
+                    if let Expr::Identifier(module_ident) = base.as_ref() {
+                        let qualified = format!("{}::{}", module_ident.name, field);
+                        if self.functions.contains_key(&qualified) {
+                            let arg_values = self.eval_arguments(args)?;
                             let results = self.call_function(&qualified, arg_values)?;
                             return Ok(match results.len() {
                                 0 => Value::Unit,
@@ -433,15 +437,24 @@ impl Interpreter {
                                 _ => Value::Tuple(results),
                             });
                         }
-                        Err(RuntimeError::Unsupported {
-                            message: "Unsupported call target".into(),
-                        })
                     }
-                    _ => Err(RuntimeError::Unsupported {
-                        message: "Unsupported call target".into(),
-                    }),
+                    let receiver = self.eval_expression(base)?;
+                    let mut method_args = Vec::with_capacity(args.len() + 1);
+                    method_args.push(receiver);
+                    for expr in args {
+                        method_args.push(self.eval_expression(expr)?);
+                    }
+                    let results = self.call_function(field, method_args)?;
+                    Ok(match results.len() {
+                        0 => Value::Unit,
+                        1 => results.into_iter().next().unwrap(),
+                        _ => Value::Tuple(results),
+                    })
                 }
-            }
+                _ => Err(RuntimeError::Unsupported {
+                    message: "Unsupported call target".into(),
+                }),
+            },
             Expr::FieldAccess { base, field, .. } => {
                 let value = self.eval_expression(base)?;
                 match value {
