@@ -2,12 +2,13 @@ use crate::language::{ast::*, types::TypeExpr};
 use llvm_sys::{
     LLVMLinkage,
     core::{
-        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMBuildAdd, LLVMBuildCall2, LLVMBuildMul,
-        LLVMBuildRetVoid, LLVMBuildSDiv, LLVMBuildSub, LLVMConstInt, LLVMContextCreate,
-        LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage,
-        LLVMDisposeModule, LLVMFunctionType, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
-        LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilderAtEnd,
-        LLVMPrintModuleToFile, LLVMPrintModuleToString, LLVMSetLinkage, LLVMVoidTypeInContext,
+        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMBuildAdd, LLVMBuildCall2,
+        LLVMBuildGlobalString, LLVMBuildMul, LLVMBuildRetVoid, LLVMBuildSDiv, LLVMBuildSub,
+        LLVMConstInt, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext,
+        LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMFunctionType,
+        LLVMInt8TypeInContext, LLVMInt32TypeInContext, LLVMModuleCreateWithNameInContext,
+        LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile, LLVMPrintModuleToString,
+        LLVMSetLinkage, LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -26,13 +27,15 @@ pub struct Compiler {
     printf_type: LLVMTypeRef,
     printf: LLVMValueRef,
     main_fn: LLVMValueRef,
-    values: HashMap<String, Value>,
+    scopes: Vec<HashMap<String, Value>>,
     structs: HashMap<String, StructDef>,
+    functions: HashMap<String, FunctionDef>,
 }
 
 #[derive(Clone)]
 enum Value {
     Int(LLVMValueRef),
+    Str(LLVMValueRef),
     Struct(HashMap<String, Value>),
 }
 
@@ -51,8 +54,9 @@ impl Compiler {
                 printf_type: ptr::null_mut(),
                 printf: ptr::null_mut(),
                 main_fn: ptr::null_mut(),
-                values: HashMap::new(),
+                scopes: Vec::new(),
                 structs: HashMap::new(),
+                functions: HashMap::new(),
             };
             compiler.reset_module();
             compiler
@@ -61,12 +65,20 @@ impl Compiler {
 
     pub fn compile_program(&mut self, program: &Program) -> Result<(), String> {
         self.reset_module();
-        self.values.clear();
+        self.scopes.clear();
+        self.push_scope();
         self.structs.clear();
+        self.functions.clear();
         for module in &program.modules {
             for item in &module.items {
-                if let Item::Struct(def) = item {
-                    self.structs.insert(def.name.clone(), def.clone());
+                match item {
+                    Item::Struct(def) => {
+                        self.structs.insert(def.name.clone(), def.clone());
+                    }
+                    Item::Function(func) => {
+                        self.functions.insert(func.name.clone(), func.clone());
+                    }
+                    _ => {}
                 }
             }
         }
@@ -94,12 +106,8 @@ impl Compiler {
             LLVMPositionBuilderAtEnd(self.builder, block);
         }
 
-        for stmt in &body.statements {
-            self.emit_statement(stmt)?;
-        }
-        if let Some(tail) = &body.tail {
-            self.emit_expression(tail)?;
-        }
+        let _ = self.execute_block_contents(body)?;
+        self.pop_scope();
 
         unsafe {
             LLVMBuildRetVoid(self.builder);
@@ -129,6 +137,20 @@ impl Compiler {
         Ok(())
     }
 
+    fn emit_out_value(&mut self, value: Value) -> Result<(), String> {
+        match value {
+            Value::Int(v) => {
+                self.emit_printf_call("%d\n", &mut [v]);
+                Ok(())
+            }
+            Value::Str(ptr) => {
+                self.emit_printf_call("%s\n", &mut [ptr]);
+                Ok(())
+            }
+            Value::Struct(_) => Err("Cannot print struct value in build mode".into()),
+        }
+    }
+
     pub fn print_ir(&self) {
         unsafe {
             let ir_string = LLVMPrintModuleToString(self.module);
@@ -149,26 +171,18 @@ impl Compiler {
                 } else {
                     Value::Int(unsafe { LLVMConstInt(self.i32_type, 0, 0) })
                 };
-                self.values.insert(stmt.name.clone(), value);
+                self.insert_var(&stmt.name, value);
             }
-            Statement::Expr(expr_stmt) => {
-                if let Expr::Call { callee, args, .. } = &expr_stmt.expr {
-                    if let Expr::Identifier(ident) = callee.as_ref() {
-                        if ident.name == "out" && args.len() == 1 {
-                            let arg = self.emit_expression(&args[0])?;
-                            let int = self.expect_int(arg)?;
-                            self.emit_out(int);
-                            return Ok(());
-                        }
-                    }
-                }
-                return Err(
-                    "Only out() calls are supported as standalone expressions in build mode".into(),
-                );
+            Statement::Expr(expr_stmt) => self.eval_expression_statement(&expr_stmt.expr)?,
+            Statement::Block(block) => {
+                self.push_scope();
+                let _ = self.execute_block_contents(block)?;
+                self.pop_scope();
             }
             _ => {
                 return Err(
-                    "Only let statements and out() calls are supported in build mode".into(),
+                    "Only let statements, nested blocks, and function calls are supported in build mode"
+                        .into(),
                 );
             }
         }
@@ -194,13 +208,23 @@ impl Compiler {
                     0,
                 )))
             },
-            Expr::Literal(Literal::String(_, _) | Literal::Rune(_, _)) => unsafe {
-                Ok(Value::Int(LLVMConstInt(self.i32_type, 0, 0)))
+            Expr::Literal(Literal::String(value, _)) => {
+                let c_value = CString::new(value.as_str())
+                    .map_err(|_| "String literal contains null byte".to_string())?;
+                let name = CString::new("str_lit").unwrap();
+                unsafe {
+                    Ok(Value::Str(LLVMBuildGlobalString(
+                        self.builder,
+                        c_value.as_ptr(),
+                        name.as_ptr(),
+                    )))
+                }
+            }
+            Expr::Literal(Literal::Rune(value, _)) => unsafe {
+                Ok(Value::Int(LLVMConstInt(self.i32_type, *value as u64, 0)))
             },
             Expr::Identifier(ident) => self
-                .values
-                .get(&ident.name)
-                .cloned()
+                .get_var(&ident.name)
                 .ok_or_else(|| format!("Unknown variable {}", ident.name)),
             Expr::Binary {
                 op, left, right, ..
@@ -231,29 +255,29 @@ impl Compiler {
                         .cloned()
                         .ok_or_else(|| format!("Field {} not found", field)),
                     Value::Int(_) => Err("Cannot access field on integer value".into()),
+                    Value::Str(_) => Err("Cannot access field on string value".into()),
                 }
             }
             _ => Err("Expression not supported in build mode".into()),
         }
     }
 
-    fn emit_out(&mut self, value: LLVMValueRef) {
+    fn emit_printf_call(&mut self, fmt: &str, args: &mut [LLVMValueRef]) {
         unsafe {
-            let fmt_literal = CString::new("%d\n").unwrap();
+            let fmt_literal = CString::new(fmt).unwrap();
             let fmt_name = CString::new("fmt").unwrap();
-            let fmt_ptr = llvm_sys::core::LLVMBuildGlobalString(
-                self.builder,
-                fmt_literal.as_ptr(),
-                fmt_name.as_ptr(),
-            );
+            let fmt_ptr =
+                LLVMBuildGlobalString(self.builder, fmt_literal.as_ptr(), fmt_name.as_ptr());
             let call_name = CString::new("printf_call").unwrap();
-            let mut args = [fmt_ptr, value];
+            let mut call_args = Vec::with_capacity(args.len() + 1);
+            call_args.push(fmt_ptr);
+            call_args.extend_from_slice(args);
             LLVMBuildCall2(
                 self.builder,
                 self.printf_type,
                 self.printf,
-                args.as_mut_ptr(),
-                args.len() as u32,
+                call_args.as_mut_ptr(),
+                call_args.len() as u32,
                 call_name.as_ptr(),
             );
         }
@@ -262,6 +286,7 @@ impl Compiler {
     fn expect_int(&self, value: Value) -> Result<LLVMValueRef, String> {
         match value {
             Value::Int(v) => Ok(v),
+            Value::Str(_) => Err("Expected integer value in build mode".into()),
             Value::Struct(_) => Err("Expected integer value in build mode".into()),
         }
     }
@@ -309,6 +334,107 @@ impl Compiler {
                 Ok(Value::Struct(map))
             }
         }
+    }
+
+    fn eval_expression_statement(&mut self, expr: &Expr) -> Result<(), String> {
+        match expr {
+            Expr::Call { callee, args, .. } => {
+                if let Expr::Identifier(ident) = callee.as_ref() {
+                    if ident.name == "out" {
+                        if args.len() != 1 {
+                            return Err("out() expects exactly one argument".into());
+                        }
+                        let value = self.emit_expression(&args[0])?;
+                        self.emit_out_value(value)
+                    } else {
+                        let result = self.invoke_function(&ident.name, args)?;
+                        if result.is_some() {
+                            Err("Functions returning values are not supported in expression statements during build mode".into())
+                        } else {
+                            Ok(())
+                        }
+                    }
+                } else {
+                    Err("Only direct function calls are supported in build mode".into())
+                }
+            }
+            _ => Err(
+                "Only function calls are supported as standalone expressions in build mode".into(),
+            ),
+        }
+    }
+
+    fn invoke_function(&mut self, name: &str, args: &[Expr]) -> Result<Option<Value>, String> {
+        let func = self
+            .functions
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("Unknown function {}", name))?;
+        if func.params.len() != args.len() {
+            return Err(format!(
+                "Function `{}` expects {} arguments, got {}",
+                name,
+                func.params.len(),
+                args.len()
+            ));
+        }
+
+        let mut evaluated_args = Vec::new();
+        for expr in args {
+            evaluated_args.push(self.emit_expression(expr)?);
+        }
+
+        self.push_scope();
+        for (param, value) in func.params.iter().zip(evaluated_args.into_iter()) {
+            self.insert_var(&param.name, value);
+        }
+        let result = match &func.body {
+            FunctionBody::Block(block) => self.execute_block_contents(block)?,
+            FunctionBody::Expr(expr) => Some(self.emit_expression(&expr.node)?),
+        };
+        self.pop_scope();
+
+        if func.returns.is_empty() {
+            Ok(None)
+        } else if func.returns.len() == 1 {
+            Ok(result)
+        } else {
+            Err("Functions returning multiple values are not supported in build mode".into())
+        }
+    }
+
+    fn execute_block_contents(&mut self, block: &Block) -> Result<Option<Value>, String> {
+        for statement in &block.statements {
+            self.emit_statement(statement)?;
+        }
+        if let Some(tail) = &block.tail {
+            self.emit_expression(tail).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn insert_var(&mut self, name: &str, value: Value) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), value);
+        }
+    }
+
+    fn get_var(&self, name: &str) -> Option<Value> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(value) = scope.get(name) {
+                return Some(value.clone());
+            }
+        }
+        None
     }
 
     fn reset_module(&mut self) {

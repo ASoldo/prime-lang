@@ -102,17 +102,21 @@ fn format_block(out: &mut String, block: &Block, indent: usize) {
     for statement in &block.statements {
         let formatted = match statement {
             Statement::Let(stmt) => {
-                let value = stmt
-                    .value
-                    .as_ref()
-                    .map(|expr| format_expr(expr))
-                    .unwrap_or_else(|| "0".into());
                 let mutability = if stmt.mutability.is_mutable() {
                     "mut "
                 } else {
                     ""
                 };
-                format!("let {}{} = {};", mutability, stmt.name, value)
+                let binding = if let Some(ty) = &stmt.ty {
+                    format!("{} {}", format_type(&ty.ty), stmt.name)
+                } else {
+                    stmt.name.clone()
+                };
+                if let Some(expr) = &stmt.value {
+                    format!("let {}{} = {};", mutability, binding, format_expr(expr))
+                } else {
+                    format!("let {}{};", mutability, binding)
+                }
             }
             Statement::Expr(expr) => format!("{};", format_expr(&expr.expr)),
             Statement::Return(ret) => {
@@ -143,9 +147,16 @@ fn format_block(out: &mut String, block: &Block, indent: usize) {
 fn format_expr(expr: &Expr) -> String {
     match expr {
         Expr::Literal(Literal::Int(value, _)) => value.to_string(),
-        Expr::Literal(Literal::Float(value, _)) => value.to_string(),
+        Expr::Literal(Literal::Float(value, _)) => {
+            if value.fract() == 0.0 {
+                format!("{:.1}", value)
+            } else {
+                value.to_string()
+            }
+        }
         Expr::Literal(Literal::Bool(value, _)) => value.to_string(),
-        Expr::Literal(Literal::String(value, _)) => format!("\"{}\"", value),
+        Expr::Literal(Literal::String(value, _)) => format!("\"{}\"", escape_string(value)),
+        Expr::Literal(Literal::Rune(value, _)) => format!("'{}'", escape_rune(*value)),
         Expr::Identifier(ident) => ident.name.clone(),
         Expr::Binary {
             op, left, right, ..
@@ -183,7 +194,39 @@ fn format_expr(expr: &Expr) -> String {
                 format!("{}{{ {} }}", name, inner)
             }
         },
+        Expr::FieldAccess { base, field, .. } => {
+            let base_str = match base.as_ref() {
+                Expr::Identifier(_) | Expr::FieldAccess { .. } => format_expr(base),
+                _ => format!("({})", format_expr(base)),
+            };
+            format!("{base_str}.{field}")
+        }
         _ => "/* unsupported expr */".into(),
+    }
+}
+
+fn escape_string(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\\' => "\\\\".into(),
+            '"' => "\\\"".into(),
+            '\n' => "\\n".into(),
+            '\r' => "\\r".into(),
+            '\t' => "\\t".into(),
+            other => other.to_string(),
+        })
+        .collect::<String>()
+}
+
+fn escape_rune(value: char) -> String {
+    match value {
+        '\\' => "\\\\".into(),
+        '\'' => "\\'".into(),
+        '\n' => "\\n".into(),
+        '\r' => "\\r".into(),
+        '\t' => "\\t".into(),
+        other => other.to_string(),
     }
 }
 
