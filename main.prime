@@ -36,6 +36,14 @@ fn main() {
   };
   describe_quest(quest);
 
+  out("Encounter simulation:");
+  run_encounter(leveled, scout, brute);
+
+  out("Training countdown:");
+  countdown(3);
+
+  simulate_patrol("River path", 4);
+
   announce_session("Session complete");
 }
 
@@ -63,6 +71,11 @@ fn describe_player(p: Player) {
   out(p.position.y);
   out(p.hp);
   out(p.stamina);
+  if p.hp < 50 {
+    out("status: fragile");
+  } else {
+    out("status: ready");
+  }
 }
 
 fn describe_enemy(enemy: Enemy) {
@@ -77,7 +90,11 @@ fn describe_quest(quest: Quest) {
   out("--- quest ---");
   out(quest.title);
   out(quest.reward);
-  out(quest.completed);
+  if quest.completed {
+    out("state: completed");
+  } else {
+    out("state: in progress");
+  }
 }
 
 fn move_player(p: Player, offset: Vec2) -> Player {
@@ -127,4 +144,37 @@ fn level_up(p: Player, levels: int32) -> Player {
 fn announce_session(message: string) {
   out("--- session log ---");
   out(message);
+}
+
+fn run_encounter(hero: Player, ally: Player, enemy: Enemy) {
+  let mut int32 round = 0;
+  let mut Player current = hero;
+  while round < 3 {
+    out("round");
+    out(round);
+    current = apply_damage(current, enemy.attack);
+    round = round + 1;
+  }
+  out("Post-encounter hero:");
+  describe_player(current);
+  out("Ally remained ready:");
+  describe_player(ally);
+}
+
+fn countdown(limit: int32) {
+  let mut int32 step = 0;
+  while step < limit {
+    out(step);
+    step = step + 1;
+  }
+}
+
+fn simulate_patrol(name: string, steps: int32) {
+  out("--- patrol start ---");
+  out(name);
+  for i in 0..steps {
+    out("step");
+    out(i);
+  }
+  out("--- patrol complete ---");
 }

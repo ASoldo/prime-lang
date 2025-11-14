@@ -2,13 +2,12 @@ use crate::language::{ast::*, types::TypeExpr};
 use llvm_sys::{
     LLVMLinkage,
     core::{
-        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMBuildAdd, LLVMBuildCall2,
-        LLVMBuildGlobalString, LLVMBuildMul, LLVMBuildRetVoid, LLVMBuildSDiv, LLVMBuildSub,
-        LLVMConstInt, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext,
-        LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMFunctionType,
-        LLVMInt8TypeInContext, LLVMInt32TypeInContext, LLVMModuleCreateWithNameInContext,
-        LLVMPointerType, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile, LLVMPrintModuleToString,
-        LLVMSetLinkage, LLVMVoidTypeInContext,
+        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMBuildCall2, LLVMBuildGlobalString,
+        LLVMBuildRetVoid, LLVMConstInt, LLVMContextCreate, LLVMContextDispose,
+        LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
+        LLVMFunctionType, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
+        LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilderAtEnd,
+        LLVMPrintModuleToFile, LLVMPrintModuleToString, LLVMSetLinkage, LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -34,9 +33,30 @@ pub struct Compiler {
 
 #[derive(Clone)]
 enum Value {
-    Int(LLVMValueRef),
+    Int(IntValue),
     Str(LLVMValueRef),
     Struct(HashMap<String, Value>),
+    Unit,
+}
+
+#[derive(Clone)]
+struct IntValue {
+    llvm: LLVMValueRef,
+    constant: Option<i128>,
+}
+
+impl IntValue {
+    fn new(llvm: LLVMValueRef, constant: Option<i128>) -> Self {
+        Self { llvm, constant }
+    }
+
+    fn llvm(&self) -> LLVMValueRef {
+        self.llvm
+    }
+
+    fn constant(&self) -> Option<i128> {
+        self.constant
+    }
 }
 
 impl Compiler {
@@ -60,6 +80,13 @@ impl Compiler {
             };
             compiler.reset_module();
             compiler
+        }
+    }
+
+    fn const_int_value(&self, value: i128) -> IntValue {
+        unsafe {
+            let llvm = LLVMConstInt(self.i32_type, value as u64, 0);
+            IntValue::new(llvm, Some(value))
         }
     }
 
@@ -139,8 +166,8 @@ impl Compiler {
 
     fn emit_out_value(&mut self, value: Value) -> Result<(), String> {
         match value {
-            Value::Int(v) => {
-                self.emit_printf_call("%d\n", &mut [v]);
+            Value::Int(int_value) => {
+                self.emit_printf_call("%d\n", &mut [int_value.llvm()]);
                 Ok(())
             }
             Value::Str(ptr) => {
@@ -148,6 +175,7 @@ impl Compiler {
                 Ok(())
             }
             Value::Struct(_) => Err("Cannot print struct value in build mode".into()),
+            Value::Unit => Err("Cannot print unit value in build mode".into()),
         }
     }
 
@@ -169,7 +197,7 @@ impl Compiler {
                 let value = if let Some(expr) = &stmt.value {
                     self.emit_expression(expr)?
                 } else {
-                    Value::Int(unsafe { LLVMConstInt(self.i32_type, 0, 0) })
+                    Value::Int(self.const_int_value(0))
                 };
                 self.insert_var(&stmt.name, value);
             }
@@ -178,6 +206,49 @@ impl Compiler {
                 self.push_scope();
                 let _ = self.execute_block_contents(block)?;
                 self.pop_scope();
+            }
+            Statement::Assign(stmt) => {
+                if let Expr::Identifier(ident) = &stmt.target {
+                    let value = self.emit_expression(&stmt.value)?;
+                    self.assign_var(&ident.name, value)?;
+                } else {
+                    return Err(
+                        "Only assignments to identifiers are supported in build mode".into(),
+                    );
+                }
+            }
+            Statement::If(stmt) => {
+                let condition = self.emit_expression(&stmt.condition)?;
+                if self.value_to_bool(condition)? {
+                    self.push_scope();
+                    let _ = self.execute_block_contents(&stmt.then_branch)?;
+                    self.pop_scope();
+                } else if let Some(else_branch) = &stmt.else_branch {
+                    self.push_scope();
+                    let _ = self.execute_block_contents(else_branch)?;
+                    self.pop_scope();
+                }
+            }
+            Statement::While(stmt) => loop {
+                let condition = self.emit_expression(&stmt.condition)?;
+                if !self.value_to_bool(condition)? {
+                    break;
+                }
+                self.push_scope();
+                let _ = self.execute_block_contents(&stmt.body)?;
+                self.pop_scope();
+            },
+            Statement::ForRange(stmt) => {
+                let (start, end, inclusive) = self.evaluate_range(&stmt.range)?;
+                let mut current = start;
+                let limit = if inclusive { end + 1 } else { end };
+                while current < limit {
+                    self.push_scope();
+                    self.insert_var(&stmt.binding, Value::Int(self.const_int_value(current)));
+                    let _ = self.execute_block_contents(&stmt.body)?;
+                    self.pop_scope();
+                    current += 1;
+                }
             }
             _ => {
                 return Err(
@@ -191,23 +262,16 @@ impl Compiler {
 
     fn emit_expression(&mut self, expr: &Expr) -> Result<Value, String> {
         match expr {
-            Expr::Literal(Literal::Int(value, _)) => unsafe {
-                Ok(Value::Int(LLVMConstInt(self.i32_type, *value as u64, 0)))
-            },
-            Expr::Literal(Literal::Bool(value, _)) => unsafe {
-                Ok(Value::Int(LLVMConstInt(
-                    self.i32_type,
-                    if *value { 1 } else { 0 },
-                    0,
-                )))
-            },
-            Expr::Literal(Literal::Float(value, _)) => unsafe {
-                Ok(Value::Int(LLVMConstInt(
-                    self.i32_type,
-                    *value as i64 as u64,
-                    0,
-                )))
-            },
+            Expr::Literal(Literal::Int(value, _)) => {
+                Ok(Value::Int(self.const_int_value(*value as i128)))
+            }
+            Expr::Literal(Literal::Bool(value, _)) => {
+                let int_value = if *value { 1 } else { 0 };
+                Ok(Value::Int(self.const_int_value(int_value)))
+            }
+            Expr::Literal(Literal::Float(value, _)) => {
+                Ok(Value::Int(self.const_int_value(*value as i128)))
+            }
             Expr::Literal(Literal::String(value, _)) => {
                 let c_value = CString::new(value.as_str())
                     .map_err(|_| "String literal contains null byte".to_string())?;
@@ -220,9 +284,9 @@ impl Compiler {
                     )))
                 }
             }
-            Expr::Literal(Literal::Rune(value, _)) => unsafe {
-                Ok(Value::Int(LLVMConstInt(self.i32_type, *value as u64, 0)))
-            },
+            Expr::Literal(Literal::Rune(value, _)) => {
+                Ok(Value::Int(self.const_int_value(*value as i128)))
+            }
             Expr::Identifier(ident) => self
                 .get_var(&ident.name)
                 .ok_or_else(|| format!("Unknown variable {}", ident.name)),
@@ -233,20 +297,46 @@ impl Compiler {
                 let rhs = self.emit_expression(right)?;
                 let lhs = self.expect_int(lhs)?;
                 let rhs = self.expect_int(rhs)?;
-                unsafe {
-                    let name = CString::new("tmp").unwrap();
-                    Ok(Value::Int(match op {
-                        BinaryOp::Add => LLVMBuildAdd(self.builder, lhs, rhs, name.as_ptr()),
-                        BinaryOp::Sub => LLVMBuildSub(self.builder, lhs, rhs, name.as_ptr()),
-                        BinaryOp::Mul => LLVMBuildMul(self.builder, lhs, rhs, name.as_ptr()),
-                        BinaryOp::Div => LLVMBuildSDiv(self.builder, lhs, rhs, name.as_ptr()),
-                        _ => {
-                            return Err("Only +, -, *, / supported in build mode".into());
-                        }
-                    }))
+                let result = match op {
+                    BinaryOp::Add => lhs.constant().zip(rhs.constant()).map(|(a, b)| a + b),
+                    BinaryOp::Sub => lhs.constant().zip(rhs.constant()).map(|(a, b)| a - b),
+                    BinaryOp::Mul => lhs.constant().zip(rhs.constant()).map(|(a, b)| a * b),
+                    BinaryOp::Div => lhs.constant().zip(rhs.constant()).map(|(a, b)| a / b),
+                    BinaryOp::Rem => lhs.constant().zip(rhs.constant()).map(|(a, b)| a % b),
+                    BinaryOp::Lt => lhs
+                        .constant()
+                        .zip(rhs.constant())
+                        .map(|(a, b)| if a < b { 1 } else { 0 }),
+                    BinaryOp::LtEq => lhs
+                        .constant()
+                        .zip(rhs.constant())
+                        .map(|(a, b)| if a <= b { 1 } else { 0 }),
+                    BinaryOp::Gt => lhs
+                        .constant()
+                        .zip(rhs.constant())
+                        .map(|(a, b)| if a > b { 1 } else { 0 }),
+                    BinaryOp::GtEq => lhs
+                        .constant()
+                        .zip(rhs.constant())
+                        .map(|(a, b)| if a >= b { 1 } else { 0 }),
+                    BinaryOp::Eq => lhs
+                        .constant()
+                        .zip(rhs.constant())
+                        .map(|(a, b)| if a == b { 1 } else { 0 }),
+                    BinaryOp::NotEq => lhs
+                        .constant()
+                        .zip(rhs.constant())
+                        .map(|(a, b)| if a != b { 1 } else { 0 }),
+                    _ => None,
+                };
+                if let Some(value) = result {
+                    Ok(Value::Int(self.const_int_value(value)))
+                } else {
+                    Err("Operation not supported in build mode".into())
                 }
             }
             Expr::StructLiteral { name, fields, .. } => self.build_struct_literal(name, fields),
+            Expr::If(if_expr) => self.emit_if_expression(if_expr),
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = self.emit_expression(base)?;
                 match base_value {
@@ -256,10 +346,14 @@ impl Compiler {
                         .ok_or_else(|| format!("Field {} not found", field)),
                     Value::Int(_) => Err("Cannot access field on integer value".into()),
                     Value::Str(_) => Err("Cannot access field on string value".into()),
+                    Value::Unit => Err("Cannot access field on unit value".into()),
                 }
             }
             Expr::Call { callee, args, .. } => self.emit_call_expression(callee, args),
-            _ => Err("Expression not supported in build mode".into()),
+            other => Err(format!(
+                "Expression `{}` not supported in build mode",
+                describe_expr(other)
+            )),
         }
     }
 
@@ -272,6 +366,23 @@ impl Compiler {
             result.ok_or_else(|| format!("Function `{}` does not return a value", ident.name))
         } else {
             Err("Only direct function calls are supported in build mode expressions".into())
+        }
+    }
+
+    fn emit_if_expression(&mut self, if_expr: &IfExpr) -> Result<Value, String> {
+        let condition = self.emit_expression(&if_expr.condition)?;
+        if self.value_to_bool(condition)? {
+            self.push_scope();
+            let value = self.execute_block_contents(&if_expr.then_branch)?;
+            self.pop_scope();
+            Ok(value.unwrap_or(Value::Unit))
+        } else if let Some(else_block) = &if_expr.else_branch {
+            self.push_scope();
+            let value = self.execute_block_contents(else_block)?;
+            self.pop_scope();
+            Ok(value.unwrap_or(Value::Unit))
+        } else {
+            Ok(Value::Unit)
         }
     }
 
@@ -296,11 +407,12 @@ impl Compiler {
         }
     }
 
-    fn expect_int(&self, value: Value) -> Result<LLVMValueRef, String> {
+    fn expect_int(&self, value: Value) -> Result<IntValue, String> {
         match value {
             Value::Int(v) => Ok(v),
             Value::Str(_) => Err("Expected integer value in build mode".into()),
             Value::Struct(_) => Err("Expected integer value in build mode".into()),
+            Value::Unit => Err("Expected integer value in build mode".into()),
         }
     }
 
@@ -339,8 +451,9 @@ impl Compiler {
                         let embedded_struct = match value {
                             Value::Struct(inner) => inner,
                             _ => {
-                                return Err("Embedded field must be initialized with a struct value"
-                                    .into())
+                                return Err(
+                                    "Embedded field must be initialized with a struct value".into(),
+                                );
                             }
                         };
                         for (key, val) in embedded_struct {
@@ -349,9 +462,10 @@ impl Compiler {
                     } else if let Some(key) = &field_def.name {
                         map.insert(key.clone(), value);
                     } else {
-                        let fallback = type_name_from_type_expr(&field_def.ty.ty).ok_or_else(|| {
-                            "Unable to determine field name for struct field".to_string()
-                        })?;
+                        let fallback =
+                            type_name_from_type_expr(&field_def.ty.ty).ok_or_else(|| {
+                                "Unable to determine field name for struct field".to_string()
+                            })?;
                         map.insert(fallback, value);
                     }
                 }
@@ -438,6 +552,38 @@ impl Compiler {
         }
     }
 
+    fn assign_var(&mut self, name: &str, value: Value) -> Result<(), String> {
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.contains_key(name) {
+                scope.insert(name.to_string(), value);
+                return Ok(());
+            }
+        }
+        Err(format!("Unknown variable {}", name))
+    }
+
+    fn value_to_bool(&self, value: Value) -> Result<bool, String> {
+        let int_value = self.expect_int(value)?;
+        let constant = int_value
+            .constant()
+            .ok_or_else(|| "Non-constant condition not supported in build mode".to_string())?;
+        Ok(constant != 0)
+    }
+
+    fn evaluate_range(&mut self, range: &RangeExpr) -> Result<(i128, i128, bool), String> {
+        let start_expr = self.emit_expression(&range.start)?;
+        let start_value = self.expect_int(start_expr)?;
+        let end_expr = self.emit_expression(&range.end)?;
+        let end_value = self.expect_int(end_expr)?;
+        let start_const = start_value
+            .constant()
+            .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
+        let end_const = end_value
+            .constant()
+            .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
+        Ok((start_const, end_const, range.inclusive))
+    }
+
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
     }
@@ -505,5 +651,26 @@ fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
     match expr {
         TypeExpr::Named(name, _) => Some(name.clone()),
         _ => None,
+    }
+}
+
+fn describe_expr(expr: &Expr) -> &'static str {
+    match expr {
+        Expr::Identifier(_) => "identifier",
+        Expr::Literal(_) => "literal",
+        Expr::Binary { .. } => "binary",
+        Expr::Unary { .. } => "unary",
+        Expr::Call { .. } => "call",
+        Expr::FieldAccess { .. } => "field access",
+        Expr::StructLiteral { .. } => "struct literal",
+        Expr::EnumLiteral { .. } => "enum literal",
+        Expr::Block(_) => "block",
+        Expr::If(_) => "if expression",
+        Expr::Match(_) => "match expression",
+        Expr::Tuple(_, _) => "tuple",
+        Expr::ArrayLiteral(_, _) => "array literal",
+        Expr::Range(_) => "range",
+        Expr::Reference { .. } => "reference",
+        Expr::Deref { .. } => "deref",
     }
 }

@@ -29,6 +29,8 @@ struct Parser {
     pos: usize,
     errors: Vec<SyntaxError>,
     suppress_block_literal: bool,
+    block_context_stack: Vec<usize>,
+    paren_depth: usize,
     last_span: Option<Range<usize>>,
 }
 
@@ -47,6 +49,8 @@ impl Parser {
             pos: 0,
             errors: Vec::new(),
             suppress_block_literal: false,
+            block_context_stack: Vec::new(),
+            paren_depth: 0,
             last_span: None,
         }
     }
@@ -384,6 +388,16 @@ impl Parser {
             ))));
         }
 
+        if self
+            .peek_kind()
+            .map(|t| matches!(t, TokenKind::Identifier(_)))
+            .unwrap_or(false)
+            && self.peek_kind_n(1) == Some(TokenKind::Eq)
+        {
+            let stmt = self.parse_assignment()?;
+            return Ok(StatementOrTail::Statement(Statement::Assign(stmt)));
+        }
+
         self.parse_expression_statement(allow_tail)
     }
 
@@ -452,6 +466,20 @@ impl Parser {
         })
     }
 
+    fn parse_assignment(&mut self) -> Result<AssignStmt, SyntaxError> {
+        let start = self.current_span_start();
+        let target_ident = self.expect_identifier("Expected assignment target")?;
+        self.expect(TokenKind::Eq)?;
+        let value = self.parse_expression()?;
+        self.expect(TokenKind::Semi)?;
+        let span = Span::new(start, expr_span(&value).end);
+        Ok(AssignStmt {
+            target: Expr::Identifier(target_ident),
+            value,
+            span,
+        })
+    }
+
     fn parse_return(&mut self) -> Result<ReturnStmt, SyntaxError> {
         let start = self
             .previous_span()
@@ -483,7 +511,10 @@ impl Parser {
             .previous_span()
             .map(|s| s.start)
             .unwrap_or_else(|| self.current_span_start());
-        let condition = self.parse_expression()?;
+        self.enter_block_context();
+        let condition = self.parse_expression();
+        self.exit_block_context();
+        let condition = condition?;
         let body = self.parse_block()?;
         let body_end = body.span.end;
         Ok(WhileStmt {
@@ -500,7 +531,10 @@ impl Parser {
             .unwrap_or_else(|| self.current_span_start());
         let binding = self.expect_identifier("Expected loop binding")?;
         self.expect(TokenKind::In)?;
-        let range_expr = self.parse_expression()?;
+        self.enter_block_context();
+        let range_expr = self.parse_expression();
+        self.exit_block_context();
+        let range_expr = range_expr?;
         let range = if let Expr::Range(expr) = range_expr {
             expr
         } else {
@@ -614,6 +648,7 @@ impl Parser {
         let mut expr = self.parse_primary()?;
         loop {
             if self.matches(TokenKind::LParen) {
+                self.enter_paren();
                 let span_start = expr_span(&expr).start;
                 let mut args = Vec::new();
                 if !self.check(TokenKind::RParen) {
@@ -625,7 +660,14 @@ impl Parser {
                         break;
                     }
                 }
-                let end = self.expect(TokenKind::RParen)?.span.end;
+                let end = match self.expect(TokenKind::RParen) {
+                    Ok(token) => token.span.end,
+                    Err(err) => {
+                        self.exit_paren();
+                        return Err(err);
+                    }
+                };
+                self.exit_paren();
                 expr = Expr::Call {
                     callee: Box::new(expr),
                     args,
@@ -677,6 +719,7 @@ impl Parser {
             }
             Some(TokenKind::LParen) => {
                 let start = self.advance().span.start;
+                self.enter_paren();
                 let mut values = Vec::new();
                 if !self.check(TokenKind::RParen) {
                     loop {
@@ -687,7 +730,14 @@ impl Parser {
                         break;
                     }
                 }
-                let end = self.expect(TokenKind::RParen)?.span.end;
+                let end = match self.expect(TokenKind::RParen) {
+                    Ok(token) => token.span.end,
+                    Err(err) => {
+                        self.exit_paren();
+                        return Err(err);
+                    }
+                };
+                self.exit_paren();
                 if values.len() == 1 {
                     Ok(values.into_iter().next().unwrap())
                 } else {
@@ -700,7 +750,7 @@ impl Parser {
 
     fn parse_identifier_expression(&mut self) -> Result<Expr, SyntaxError> {
         let ident = self.expect_identifier("Expected identifier")?;
-        if self.matches(TokenKind::LBrace) {
+        if self.struct_literals_allowed() && self.matches(TokenKind::LBrace) {
             // struct literal detection
             let mut named_fields = Vec::new();
             let mut positional = Vec::new();
@@ -753,6 +803,31 @@ impl Parser {
         Ok(Expr::Identifier(ident))
     }
 
+    fn enter_block_context(&mut self) {
+        self.block_context_stack.push(self.paren_depth);
+    }
+
+    fn exit_block_context(&mut self) {
+        self.block_context_stack.pop();
+    }
+
+    fn struct_literals_allowed(&self) -> bool {
+        !self
+            .block_context_stack
+            .iter()
+            .any(|&depth| depth == self.paren_depth)
+    }
+
+    fn enter_paren(&mut self) {
+        self.paren_depth += 1;
+    }
+
+    fn exit_paren(&mut self) {
+        if self.paren_depth > 0 {
+            self.paren_depth -= 1;
+        }
+    }
+
     fn parse_match_expression(&mut self) -> Result<Expr, SyntaxError> {
         let start = self
             .previous_span()
@@ -760,7 +835,16 @@ impl Parser {
             .unwrap_or_else(|| self.current_span_start());
         let prev_flag = self.suppress_block_literal;
         self.suppress_block_literal = true;
-        let expr = self.parse_expression()?;
+        self.enter_block_context();
+        let expr = match self.parse_expression() {
+            Ok(expr) => expr,
+            Err(err) => {
+                self.exit_block_context();
+                self.suppress_block_literal = prev_flag;
+                return Err(err);
+            }
+        };
+        self.exit_block_context();
         self.suppress_block_literal = prev_flag;
         self.expect(TokenKind::LBrace)?;
         let mut arms = Vec::new();
@@ -795,7 +879,15 @@ impl Parser {
             .previous_span()
             .map(|s| s.start)
             .unwrap_or_else(|| self.current_span_start());
-        let condition = self.parse_expression()?;
+        self.enter_block_context();
+        let condition = match self.parse_expression() {
+            Ok(expr) => expr,
+            Err(err) => {
+                self.exit_block_context();
+                return Err(err);
+            }
+        };
+        self.exit_block_context();
         let then_branch = self.parse_block()?;
         let else_branch = if self.matches(TokenKind::Else) {
             Some(self.parse_block()?)
