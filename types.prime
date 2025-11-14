@@ -3,13 +3,31 @@ struct Vec2 {
   y: float32;
 }
 
-struct Player {
-  Vec2;
-  name: string;
-  hp: int32;
+struct Transform {
+  position: Vec2;
+  velocity: Vec2;
 }
 
-enum Damage {
-  Flat(int32),
-  Percent(float32),
+struct Stats {
+  hp: int32;
+  stamina: int32;
+}
+
+struct Player {
+  Transform;
+  Stats;
+  name: string;
+  level: int32;
+}
+
+struct Enemy {
+  Transform;
+  kind: string;
+  attack: int32;
+}
+
+struct Quest {
+  title: string;
+  reward: int32;
+  completed: bool;
 }

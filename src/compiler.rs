@@ -258,7 +258,20 @@ impl Compiler {
                     Value::Str(_) => Err("Cannot access field on string value".into()),
                 }
             }
+            Expr::Call { callee, args, .. } => self.emit_call_expression(callee, args),
             _ => Err("Expression not supported in build mode".into()),
+        }
+    }
+
+    fn emit_call_expression(&mut self, callee: &Expr, args: &[Expr]) -> Result<Value, String> {
+        if let Expr::Identifier(ident) = callee {
+            if ident.name == "out" {
+                return Err("out() cannot be used in expressions in build mode".into());
+            }
+            let result = self.invoke_function(&ident.name, args)?;
+            result.ok_or_else(|| format!("Function `{}` does not return a value", ident.name))
+        } else {
+            Err("Only direct function calls are supported in build mode expressions".into())
         }
     }
 
@@ -321,15 +334,26 @@ impl Compiler {
                 }
                 let mut map = HashMap::new();
                 for (field_def, expr) in def.fields.iter().zip(values.iter()) {
-                    let key = field_def
-                        .name
-                        .clone()
-                        .or_else(|| type_name_from_type_expr(&field_def.ty.ty))
-                        .ok_or_else(|| {
-                            "Unable to determine field name for embedded field".to_string()
-                        })?;
                     let value = self.emit_expression(expr)?;
-                    map.insert(key, value);
+                    if field_def.embedded {
+                        let embedded_struct = match value {
+                            Value::Struct(inner) => inner,
+                            _ => {
+                                return Err("Embedded field must be initialized with a struct value"
+                                    .into())
+                            }
+                        };
+                        for (key, val) in embedded_struct {
+                            map.insert(key, val);
+                        }
+                    } else if let Some(key) = &field_def.name {
+                        map.insert(key.clone(), value);
+                    } else {
+                        let fallback = type_name_from_type_expr(&field_def.ty.ty).ok_or_else(|| {
+                            "Unable to determine field name for struct field".to_string()
+                        })?;
+                        map.insert(fallback, value);
+                    }
                 }
                 Ok(Value::Struct(map))
             }

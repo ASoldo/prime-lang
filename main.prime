@@ -2,23 +2,129 @@ import "types";
 
 fn main() {
 
-  let Player hero = Player{
-    Vec2{ 10.0, 20.0 },
-    "Prime Hero",
-    100,
-  };
+  out("=== prime-lang gameplay demo ===");
 
-  let Player wounded = Player{
-    hero.Vec2,
-    hero.name,
-    (hero.hp - 55),
-  };
+  let Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
+  let Player scout = spawn_player("Sparrow", Vec2{ 5.0, 12.5 }, 90);
 
-  out(hero.hp);
-  out(wounded.name);
-  my_funcion();
+  describe_player(hero);
+  describe_player(scout);
+
+  let Player relocated = move_player(hero, Vec2{ 2.0, 3.0 });
+  out("After repositioning:");
+  describe_player(relocated);
+
+  let Player wounded = apply_damage(relocated, 30);
+  out("Hero after heavy hit:");
+  describe_player(wounded);
+
+  let Player healed = drink_potion(wounded, 24);
+  out("Hero after potion:");
+  describe_player(healed);
+
+  let Player leveled = level_up(healed, 2);
+  out("Hero after leveling:");
+  describe_player(leveled);
+
+  let Enemy brute = spawn_enemy("Emerald brute", Vec2{ 18.0, 24.0 }, 18);
+  describe_enemy(brute);
+
+  let Quest quest = Quest{
+    "Defend the valley",
+    450,
+    false,
+  };
+  describe_quest(quest);
+
+  announce_session("Session complete");
 }
 
-fn my_funcion() {
-  out(1);
+fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
+  Player{
+    Transform{ position, Vec2{ 0.0, 0.0 } },
+    Stats{ hp, hp / 2 },
+    name,
+    1,
+  }
+}
+
+fn spawn_enemy(kind: string, position: Vec2, attack: int32) -> Enemy {
+  Enemy{
+    Transform{ position, Vec2{ 0.0, 0.0 } },
+    kind,
+    attack,
+  }
+}
+
+fn describe_player(p: Player) {
+  out("----- player -----");
+  out(p.name);
+  out(p.position.x);
+  out(p.position.y);
+  out(p.hp);
+  out(p.stamina);
+}
+
+fn describe_enemy(enemy: Enemy) {
+  out("--- enemy ---");
+  out(enemy.kind);
+  out(enemy.position.x);
+  out(enemy.position.y);
+  out(enemy.attack);
+}
+
+fn describe_quest(quest: Quest) {
+  out("--- quest ---");
+  out(quest.title);
+  out(quest.reward);
+  out(quest.completed);
+}
+
+fn move_player(p: Player, offset: Vec2) -> Player {
+  let Vec2 next = add_vec2(p.position, offset);
+  Player{
+    Transform{ next, p.velocity },
+    Stats{ p.hp, p.stamina },
+    p.name,
+    p.level,
+  }
+}
+
+fn add_vec2(a: Vec2, b: Vec2) -> Vec2 {
+  Vec2{ a.x + b.x, a.y + b.y }
+}
+
+fn apply_damage(p: Player, amount: int32) -> Player {
+  let int32 remaining = p.hp - amount;
+  Player{
+    Transform{ p.position, p.velocity },
+    Stats{ remaining, p.stamina },
+    p.name,
+    p.level,
+  }
+}
+
+fn drink_potion(p: Player, heal: int32) -> Player {
+  let int32 boosted = p.hp + heal;
+  Player{
+    Transform{ p.position, p.velocity },
+    Stats{ boosted, p.stamina + heal / 2 },
+    p.name,
+    p.level,
+  }
+}
+
+fn level_up(p: Player, levels: int32) -> Player {
+  let int32 bonus = levels * 5;
+  Player{
+    Transform{ p.position, p.velocity },
+    Stats{ p.hp + bonus, p.stamina + bonus },
+    p.name,
+    p.level + levels,
+  }
+}
+
+fn announce_session(message: string) {
+  out("--- session log ---");
+  out(message);
 }
