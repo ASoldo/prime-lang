@@ -1,3 +1,13 @@
+enum Option[T] {
+  Some(T),
+  None,
+}
+
+enum Result[T, E] {
+  Ok(T),
+  Err(E),
+}
+
 struct Vec2 {
   x: float32;
   y: float32;
@@ -22,16 +32,6 @@ enum MissionEvent {
   Completed(string),
   Failed(string),
   Waiting,
-}
-
-enum OptionalInt {
-  Some(int32),
-  None,
-}
-
-enum EncounterResult {
-  Ok(Player),
-  Err(string),
 }
 
 struct Player {

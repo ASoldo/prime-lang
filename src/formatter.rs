@@ -31,7 +31,8 @@ pub fn format_module(module: &Module) -> String {
 }
 
 fn format_struct(out: &mut String, def: &StructDef) {
-    out.push_str(&format!("struct {} {{\n", def.name));
+    let params = format_type_params(&def.type_params);
+    out.push_str(&format!("struct {}{} {{\n", def.name, params));
     for field in &def.fields {
         if field.embedded {
             if let Some(name) = &field.name {
@@ -47,7 +48,8 @@ fn format_struct(out: &mut String, def: &StructDef) {
 }
 
 fn format_enum(out: &mut String, def: &EnumDef) {
-    out.push_str(&format!("enum {} {{\n", def.name));
+    let params = format_type_params(&def.type_params);
+    out.push_str(&format!("enum {}{} {{\n", def.name, params));
     for variant in &def.variants {
         if variant.fields.is_empty() {
             out.push_str(&format!("  {},\n", variant.name));
@@ -287,7 +289,14 @@ fn escape_rune(value: char) -> String {
 
 fn format_type(ty: &TypeExpr) -> String {
     match ty {
-        TypeExpr::Named(name, _) => name.clone(),
+        TypeExpr::Named(name, args) => {
+            if args.is_empty() {
+                name.clone()
+            } else {
+                let params = args.iter().map(format_type).collect::<Vec<_>>().join(", ");
+                format!("{name}[{params}]")
+            }
+        }
         TypeExpr::Slice(inner) => format!("[]{}", format_type(inner)),
         TypeExpr::Array { size, ty } => format!("[{}]{}", size, format_type(ty)),
         TypeExpr::Reference { mutable, ty } => {
@@ -309,6 +318,14 @@ fn format_type(ty: &TypeExpr) -> String {
             format!("({})", inner)
         }
         TypeExpr::Unit => "()".into(),
+    }
+}
+
+fn format_type_params(params: &[String]) -> String {
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", params.join(", "))
     }
 }
 

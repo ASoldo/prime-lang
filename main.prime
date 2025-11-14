@@ -58,13 +58,13 @@ fn main() {
   out("Mission summary hint:");
   out(pending);
 
-  let OptionalInt slot = find_training_slot(TRAINING_LIMIT);
+  let Option[int32] slot = find_training_slot(TRAINING_LIMIT);
   match slot {
     Some(value) => {
       out("Training slot assigned:");
       out(value);
     },
-    None() => {
+    None => {
       out("Training slots unavailable");
     },
   };
@@ -248,7 +248,7 @@ fn simulate_patrol(name: string, steps: int32) {
   out("--- patrol complete ---");
 }
 
-fn find_training_slot(day: int32) -> OptionalInt {
+fn find_training_slot(day: int32) -> Option[int32] {
   if day % 2 == 0 {
     Some(day)
   } else {
@@ -256,7 +256,7 @@ fn find_training_slot(day: int32) -> OptionalInt {
   }
 }
 
-fn resolve_attack(hero: Player, damage: Damage) -> EncounterResult {
+fn resolve_attack(hero: Player, damage: Damage) -> Result[Player, string] {
   match damage {
     Flat(amount) => Ok(apply_damage(hero, Flat(amount))),
     Percent(percent) => {
@@ -307,7 +307,7 @@ fn describe_event(event: MissionEvent) {
       out("mission failed:");
       out(reason);
     },
-    Waiting() => {
+    Waiting => {
       out("mission awaiting clearance");
     },
   }
@@ -317,7 +317,7 @@ fn summarize_event(event: MissionEvent) -> string {
   match event {
     Completed(stage) => stage,
     Failed(reason) => reason,
-    Waiting() => "Awaiting assignment",
+    Waiting => "Awaiting assignment",
   }
 }
 

@@ -128,6 +128,7 @@ impl Parser {
 
     fn parse_struct(&mut self) -> Result<StructDef, SyntaxError> {
         let name = self.expect_identifier("Expected struct name")?;
+        let type_params = self.parse_type_params()?;
         let start = name.span.start;
         self.expect(TokenKind::LBrace)?;
         let mut fields = Vec::new();
@@ -167,6 +168,7 @@ impl Parser {
         let end = self.expect(TokenKind::RBrace)?.span.end;
         Ok(StructDef {
             name: name.name,
+            type_params,
             fields,
             span: Span::new(start, end),
         })
@@ -174,6 +176,7 @@ impl Parser {
 
     fn parse_enum(&mut self) -> Result<EnumDef, SyntaxError> {
         let name = self.expect_identifier("Expected enum name")?;
+        let type_params = self.parse_type_params()?;
         let start = name.span.start;
         self.expect(TokenKind::LBrace)?;
         let mut variants = Vec::new();
@@ -208,9 +211,29 @@ impl Parser {
         let end = self.expect(TokenKind::RBrace)?.span.end;
         Ok(EnumDef {
             name: name.name,
+            type_params,
             variants,
             span: Span::new(start, end),
         })
+    }
+
+    fn parse_type_params(&mut self) -> Result<Vec<String>, SyntaxError> {
+        if !self.matches(TokenKind::LBracket) {
+            return Ok(Vec::new());
+        }
+        let mut params = Vec::new();
+        if !self.check(TokenKind::RBracket) {
+            loop {
+                let ident = self.expect_identifier("Expected type parameter name")?;
+                params.push(ident.name);
+                if self.matches(TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RBracket)?;
+        Ok(params)
     }
 
     fn parse_function(&mut self) -> Result<FunctionDef, SyntaxError> {
@@ -458,6 +481,15 @@ impl Parser {
                 span: first.span,
             };
             ty = Some(inferred_type);
+            let second = self.expect_identifier("Expected binding name")?;
+            name = second;
+        } else if self.check(TokenKind::LBracket) {
+            self.expect(TokenKind::LBracket)?;
+            let (args, end) = self.parse_type_arguments()?;
+            ty = Some(TypeAnnotation {
+                ty: TypeExpr::Named(first.name.clone(), args),
+                span: Span::new(first.span.start, end),
+            });
             let second = self.expect_identifier("Expected binding name")?;
             name = second;
         } else if self.matches(TokenKind::Colon) {
@@ -1104,6 +1136,21 @@ impl Parser {
             return Ok(TypeExpr::Named(ident.name, args));
         }
         Err(self.error_here("Expected type"))
+    }
+
+    fn parse_type_arguments(&mut self) -> Result<(Vec<TypeExpr>, usize), SyntaxError> {
+        let mut args = Vec::new();
+        if !self.check(TokenKind::RBracket) {
+            loop {
+                args.push(self.parse_type_expr()?);
+                if self.matches(TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
+        }
+        let end = self.expect(TokenKind::RBracket)?.span.end;
+        Ok((args, end))
     }
 
     fn current_binary_op(&self) -> Option<(BinaryOp, u8)> {

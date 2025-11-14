@@ -1,4 +1,7 @@
-use crate::language::{ast::*, types::{Mutability, TypeExpr}};
+use crate::language::{
+    ast::*,
+    types::{Mutability, TypeExpr},
+};
 use llvm_sys::{
     LLVMLinkage,
     core::{
@@ -594,7 +597,6 @@ impl Compiler {
         }
         Err("No match arm matched in build mode".into())
     }
-
 
     fn match_pattern(&mut self, value: &Value, pattern: &Pattern) -> Result<bool, String> {
         match pattern {

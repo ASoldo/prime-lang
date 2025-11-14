@@ -2,8 +2,9 @@ use crate::{
     formatter::format_module,
     language::{
         ast::{
-            Block, Expr, FunctionBody, Item, LetStmt, Module, RangeExpr, Statement,
-            StructLiteralKind,
+            Block, ConstDef, EnumDef, EnumVariant, Expr, FunctionBody, FunctionDef,
+            FunctionParam, Item, LetStmt, Literal, Module, Pattern, RangeExpr, Statement,
+            StructDef, StructLiteralKind,
         },
         errors::{SyntaxError, SyntaxErrors},
         lexer::{LexError, lex},
@@ -27,11 +28,12 @@ use tower_lsp_server::lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    DocumentSymbolParams, DocumentSymbolResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MarkupContent, MarkupKind, MessageType, OneOf, Position, PrepareRenameResponse, Range,
-    RenameParams, ServerCapabilities, SymbolInformation, SymbolKind, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind, MessageType, OneOf,
+    Position, PrepareRenameResponse, Range, RenameParams, ServerCapabilities, SymbolInformation,
+    SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Uri, WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
@@ -167,16 +169,48 @@ impl LanguageServer for Backend {
         let Some(text) = self.docs.get(&uri).await else {
             return Ok(None);
         };
-        let tokens = lex(&text).ok();
-        let Some(tokens) = tokens else {
-            return Ok(None);
+        let tokens = match lex(&text) {
+            Ok(tokens) => tokens,
+            Err(_) => return Ok(None),
         };
+        let module = parse_module_from_uri(&uri, &text).ok();
         let vars = collect_var_infos(&text, &tokens);
         let offset = position_to_offset(&text, position);
         if let Some(token) = token_at(&tokens, offset) {
-            if let Some(hover) = hover_for_token(&text, token, &vars) {
+            if let Some(hover) = hover_for_token(&text, token, &vars, module.as_ref()) {
                 return Ok(Some(hover));
             }
+        }
+        Ok(None)
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> RpcResult<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(text) = self.docs.get(&uri).await else {
+            return Ok(None);
+        };
+        let tokens = match lex(&text) {
+            Ok(tokens) => tokens,
+            Err(_) => return Ok(None),
+        };
+        let Ok(module) = parse_module_from_uri(&uri, &text) else {
+            return Ok(None);
+        };
+        let offset = position_to_offset(&text, position);
+        let Some((name, _)) = identifier_at(&tokens, offset) else {
+            return Ok(None);
+        };
+        if let Some(span) = find_local_definition_span(&module, &name, offset) {
+            let location = Location::new(uri.clone(), span_to_range(&text, span));
+            return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+        }
+        if let Some(span) = find_global_definition_span(&module, &name) {
+            let location = Location::new(uri.clone(), span_to_range(&text, span));
+            return Ok(Some(GotoDefinitionResponse::Scalar(location)));
         }
         Ok(None)
     }
@@ -312,7 +346,7 @@ impl LanguageServer for Backend {
             .map(|field| CompletionItem {
                 label: field.name.clone(),
                 kind: Some(CompletionItemKind::FIELD),
-                detail: field.ty.clone(),
+                detail: Some(field.ty.clone()),
                 ..Default::default()
             })
             .collect();
@@ -471,12 +505,27 @@ fn unused_variable_diagnostics(module: &Module, text: &str) -> Vec<Diagnostic> {
 struct DeclInfo {
     name: String,
     span: Span,
+    scope: Span,
+    available_from: usize,
 }
 
 fn collect_decl_spans(module: &Module) -> Vec<DeclInfo> {
     let mut decls = Vec::new();
     for item in &module.items {
         if let Item::Function(func) = item {
+            let body_span = match &func.body {
+                FunctionBody::Block(block) => block.span,
+                FunctionBody::Expr(expr) => expr.span,
+            };
+            let available_from = body_span.start;
+            for param in &func.params {
+                decls.push(DeclInfo {
+                    name: param.name.clone(),
+                    span: param.span,
+                    scope: body_span,
+                    available_from,
+                });
+            }
             if let FunctionBody::Block(block) = &func.body {
                 collect_decl_from_block(block, &mut decls);
             }
@@ -485,28 +534,101 @@ fn collect_decl_spans(module: &Module) -> Vec<DeclInfo> {
     decls
 }
 
+fn scope_contains(scope: Span, offset: usize) -> bool {
+    offset >= scope.start && offset < scope.end
+}
+
+fn find_local_definition_span(module: &Module, name: &str, offset: usize) -> Option<Span> {
+    collect_decl_spans(module)
+        .into_iter()
+        .filter(|decl| decl.name == name)
+        .filter(|decl| scope_contains(decl.scope, offset))
+        .filter(|decl| offset >= decl.available_from)
+        .max_by_key(|decl| decl.span.start)
+        .map(|decl| decl.span)
+}
+
+fn find_global_definition_span(module: &Module, name: &str) -> Option<Span> {
+    for item in &module.items {
+        match item {
+            Item::Function(func) if func.name == name => return Some(func.span),
+            Item::Struct(def) if def.name == name => return Some(def.span),
+            Item::Enum(def) => {
+                if def.name == name {
+                    return Some(def.span);
+                }
+                if let Some(variant) = def.variants.iter().find(|variant| variant.name == name) {
+                    return Some(variant.span);
+                }
+            }
+            Item::Const(def) if def.name == name => return Some(def.span),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
+    let scope = block.span;
     for statement in &block.statements {
         match statement {
-            Statement::Let(stmt) => decls.push(DeclInfo {
-                name: stmt.name.clone(),
-                span: stmt.span,
-            }),
-            Statement::Block(inner) => collect_decl_from_block(inner, decls),
+            Statement::Let(stmt) => {
+                if let Some(value) = &stmt.value {
+                    collect_decl_from_expr(value, decls);
+                }
+                decls.push(DeclInfo {
+                    name: stmt.name.clone(),
+                    span: stmt.span,
+                    scope,
+                    available_from: stmt.span.end,
+                });
+            }
+            Statement::Assign(stmt) => {
+                collect_decl_from_expr(&stmt.target, decls);
+                collect_decl_from_expr(&stmt.value, decls);
+            }
+            Statement::Expr(expr_stmt) => collect_decl_from_expr(&expr_stmt.expr, decls),
+            Statement::Return(ret) => {
+                for value in &ret.values {
+                    collect_decl_from_expr(value, decls);
+                }
+            }
             Statement::If(if_stmt) => {
+                collect_decl_from_expr(&if_stmt.condition, decls);
                 collect_decl_from_block(&if_stmt.then_branch, decls);
                 if let Some(else_branch) = &if_stmt.else_branch {
                     collect_decl_from_block(else_branch, decls);
                 }
             }
-            Statement::While(while_stmt) => collect_decl_from_block(&while_stmt.body, decls),
-            Statement::ForRange(for_stmt) => collect_decl_from_block(&for_stmt.body, decls),
+            Statement::While(while_stmt) => {
+                collect_decl_from_expr(&while_stmt.condition, decls);
+                collect_decl_from_block(&while_stmt.body, decls);
+            }
+            Statement::ForRange(for_stmt) => {
+                collect_decl_from_range(&for_stmt.range, decls);
+                let body_span = for_stmt.body.span;
+                decls.push(DeclInfo {
+                    name: for_stmt.binding.clone(),
+                    span: for_stmt.span,
+                    scope: body_span,
+                    available_from: body_span.start,
+                });
+                collect_decl_from_block(&for_stmt.body, decls);
+            }
             Statement::Match(match_stmt) => {
+                collect_decl_from_expr(&match_stmt.expr, decls);
                 for arm in &match_stmt.arms {
+                    let arm_scope = arm.body.span;
+                    collect_pattern_decls(&arm.pattern, arm_scope, arm_scope.start, decls);
+                    if let Some(guard) = &arm.guard {
+                        collect_decl_from_expr(guard, decls);
+                    }
                     collect_decl_from_block(&arm.body, decls);
                 }
             }
-            _ => {}
+            Statement::Defer(defer_stmt) => collect_decl_from_expr(&defer_stmt.expr, decls),
+            Statement::Block(inner) => collect_decl_from_block(inner, decls),
+            Statement::Break(_) | Statement::Continue(_) => {}
         }
     }
     if let Some(tail) = &block.tail {
@@ -516,16 +638,87 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
 
 fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
     match expr {
+        Expr::Identifier(_) | Expr::Literal(_) => {}
+        Expr::Binary { left, right, .. } => {
+            collect_decl_from_expr(left, decls);
+            collect_decl_from_expr(right, decls);
+        }
+        Expr::Unary { expr: inner, .. } => collect_decl_from_expr(inner, decls),
+        Expr::Call { callee, args, .. } => {
+            collect_decl_from_expr(callee, decls);
+            for arg in args {
+                collect_decl_from_expr(arg, decls);
+            }
+        }
+        Expr::FieldAccess { base, .. } => collect_decl_from_expr(base, decls),
+        Expr::StructLiteral { fields, .. } => match fields {
+            StructLiteralKind::Named(named) => {
+                for field in named {
+                    collect_decl_from_expr(&field.value, decls);
+                }
+            }
+            StructLiteralKind::Positional(values) => {
+                for value in values {
+                    collect_decl_from_expr(value, decls);
+                }
+            }
+        },
+        Expr::EnumLiteral { values, .. } => {
+            for value in values {
+                collect_decl_from_expr(value, decls);
+            }
+        }
         Expr::Block(block) => collect_decl_from_block(block, decls),
         Expr::If(if_expr) => {
+            collect_decl_from_expr(&if_expr.condition, decls);
             collect_decl_from_block(&if_expr.then_branch, decls);
             if let Some(else_branch) = &if_expr.else_branch {
                 collect_decl_from_block(else_branch, decls);
             }
         }
         Expr::Match(match_expr) => {
+            collect_decl_from_expr(&match_expr.expr, decls);
             for arm in &match_expr.arms {
+                let value_span = expr_span(&arm.value);
+                collect_pattern_decls(&arm.pattern, value_span, value_span.start, decls);
+                if let Some(guard) = &arm.guard {
+                    collect_decl_from_expr(guard, decls);
+                }
                 collect_decl_from_expr(&arm.value, decls);
+            }
+        }
+        Expr::Tuple(values, _) | Expr::ArrayLiteral(values, _) => {
+            for value in values {
+                collect_decl_from_expr(value, decls);
+            }
+        }
+        Expr::Range(range) => collect_decl_from_range(range, decls),
+        Expr::Reference { expr: inner, .. } => collect_decl_from_expr(inner, decls),
+        Expr::Deref { expr: inner, .. } => collect_decl_from_expr(inner, decls),
+    }
+}
+
+fn collect_decl_from_range(range: &RangeExpr, decls: &mut Vec<DeclInfo>) {
+    collect_decl_from_expr(&range.start, decls);
+    collect_decl_from_expr(&range.end, decls);
+}
+
+fn collect_pattern_decls(
+    pattern: &Pattern,
+    scope: Span,
+    available_from: usize,
+    decls: &mut Vec<DeclInfo>,
+) {
+    match pattern {
+        Pattern::Identifier(name, span) => decls.push(DeclInfo {
+            name: name.clone(),
+            span: *span,
+            scope,
+            available_from,
+        }),
+        Pattern::EnumVariant { bindings, .. } => {
+            for binding in bindings {
+                collect_pattern_decls(binding, scope, available_from, decls);
             }
         }
         _ => {}
@@ -750,7 +943,12 @@ struct VarInfo {
     expr_text: Option<String>,
 }
 
-fn hover_for_token(text: &str, token: &Token, vars: &[VarInfo]) -> Option<Hover> {
+fn hover_for_token(
+    text: &str,
+    token: &Token,
+    vars: &[VarInfo],
+    module: Option<&Module>,
+) -> Option<Hover> {
     let span = token.span;
     let hover = match &token.kind {
         TokenKind::Identifier(name) => {
@@ -777,6 +975,11 @@ fn hover_for_token(text: &str, token: &Token, vars: &[VarInfo]) -> Option<Hover>
                     snippet.push_str("Type: inferred");
                 }
                 Some(snippet)
+            } else if let Some(module) = module {
+                if let Some(hover) = hover_for_module_symbol(text, span, module, name) {
+                    return Some(hover);
+                }
+                Some(format!("Identifier `{name}`"))
             } else {
                 Some(format!("Identifier `{name}`"))
             }
@@ -830,6 +1033,157 @@ fn hover_for_token(text: &str, token: &Token, vars: &[VarInfo]) -> Option<Hover>
         _ => None,
     }?;
     Some(markdown_hover(text, span, hover.to_string()))
+}
+
+fn hover_for_module_symbol(
+    text: &str,
+    usage_span: Span,
+    module: &Module,
+    name: &str,
+) -> Option<Hover> {
+    for item in &module.items {
+        match item {
+            Item::Function(func) if func.name == name => {
+                let signature = format_function_signature(func);
+                let value = format!("```prime\n{}\n```", signature);
+                return Some(markdown_hover(text, usage_span, value));
+            }
+            Item::Struct(def) if def.name == name => {
+                let snippet = format_struct_hover(def);
+                let value = format!("```prime\n{}\n```", snippet);
+                return Some(markdown_hover(text, usage_span, value));
+            }
+            Item::Enum(def) => {
+                if def.name == name {
+                    let snippet = format_enum_hover(def);
+                    let value = format!("```prime\n{}\n```", snippet);
+                    return Some(markdown_hover(text, usage_span, value));
+                }
+                if let Some(variant) = def.variants.iter().find(|variant| variant.name == name) {
+                    let signature = format_enum_variant_signature(variant);
+                    let params = format_type_params(&def.type_params);
+                    let mut value = String::from("```prime\n");
+                    value.push_str(&def.name);
+                    value.push_str(&params);
+                    value.push_str(" :: ");
+                    value.push_str(&signature);
+                    value.push_str("\n```");
+                    return Some(markdown_hover(text, usage_span, value));
+                }
+            }
+            Item::Const(def) if def.name == name => {
+                let snippet = format_const_snippet(text, def);
+                let value = format!("```prime\n{}\n```", snippet);
+                return Some(markdown_hover(text, usage_span, value));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn format_function_signature(func: &FunctionDef) -> String {
+    let mut signature = String::from("fn ");
+    signature.push_str(&func.name);
+    signature.push('(');
+    let params = func
+        .params
+        .iter()
+        .map(format_function_param)
+        .collect::<Vec<_>>()
+        .join(", ");
+    signature.push_str(&params);
+    signature.push(')');
+    if !func.returns.is_empty() {
+        signature.push_str(" -> ");
+        if func.returns.len() == 1 {
+            signature.push_str(&format_type_expr(&func.returns[0].ty));
+        } else {
+            let returns = func
+                .returns
+                .iter()
+                .map(|ret| format_type_expr(&ret.ty))
+                .collect::<Vec<_>>()
+                .join(", ");
+            signature.push('(');
+            signature.push_str(&returns);
+            signature.push(')');
+        }
+    }
+    signature
+}
+
+fn format_function_param(param: &FunctionParam) -> String {
+    let mut text = String::new();
+    if param.mutability.is_mutable() {
+        text.push_str("mut ");
+    }
+    text.push_str(&param.name);
+    text.push_str(": ");
+    text.push_str(&format_type_expr(&param.ty.ty));
+    text
+}
+
+fn format_struct_hover(def: &StructDef) -> String {
+    let mut lines = Vec::new();
+    let mut header = format!("struct {}{}", def.name, format_type_params(&def.type_params));
+    header.push_str(" {");
+    lines.push(header);
+    for field in &def.fields {
+        let mut line = String::from("  ");
+        if let Some(name) = &field.name {
+            line.push_str(name);
+            line.push_str(": ");
+            line.push_str(&format_type_expr(&field.ty.ty));
+        } else if field.embedded {
+            line.push_str(&format_type_expr(&field.ty.ty));
+        } else {
+            line.push_str("<anonymous field>");
+        }
+        line.push(';');
+        lines.push(line);
+    }
+    lines.push("}".into());
+    lines.join("\n")
+}
+
+fn format_enum_hover(def: &EnumDef) -> String {
+    let mut lines = Vec::new();
+    let mut header = format!("enum {}{}", def.name, format_type_params(&def.type_params));
+    header.push_str(" {");
+    lines.push(header);
+    for variant in &def.variants {
+        lines.push(format!("  {},", format_enum_variant_signature(variant)));
+    }
+    lines.push("}".into());
+    lines.join("\n")
+}
+
+fn format_enum_variant_signature(variant: &EnumVariant) -> String {
+    if variant.fields.is_empty() {
+        return variant.name.clone();
+    }
+    let fields = variant
+        .fields
+        .iter()
+        .map(|field| format_type_expr(&field.ty))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}({})", variant.name, fields)
+}
+
+fn format_const_snippet(text: &str, def: &ConstDef) -> String {
+    let snippet = extract_text(text, def.span.start, def.span.end).trim().to_string();
+    if snippet.is_empty() {
+        let mut fallback = format!("const {}", def.name);
+        if let Some(ty) = &def.ty {
+            fallback.push_str(": ");
+            fallback.push_str(&format_type_expr(&ty.ty));
+        }
+        fallback
+    } else {
+        snippet
+    }
 }
 
 fn markdown_hover(text: &str, span: Span, value: String) -> Hover {
@@ -1028,7 +1382,7 @@ fn prettify_error_message(message: &str) -> String {
 #[derive(Clone)]
 struct StructFieldInfo {
     name: String,
-    ty: Option<String>,
+    ty: String,
 }
 
 fn collect_struct_fields(module: &Module) -> HashMap<String, Vec<StructFieldInfo>> {
@@ -1134,8 +1488,46 @@ fn type_expr_name(expr: &TypeExpr) -> Option<String> {
     }
 }
 
-fn format_type_expr(expr: &TypeExpr) -> Option<String> {
-    type_expr_name(expr)
+fn format_type_expr(expr: &TypeExpr) -> String {
+    match expr {
+        TypeExpr::Named(name, args) => {
+            if args.is_empty() {
+                name.clone()
+            } else {
+                let params = args.iter().map(format_type_expr).collect::<Vec<_>>().join(", ");
+                format!("{name}[{params}]")
+            }
+        }
+        TypeExpr::Slice(inner) => format!("[]{}", format_type_expr(inner)),
+        TypeExpr::Array { size, ty } => format!("[{}]{}", size, format_type_expr(ty)),
+        TypeExpr::Reference { mutable, ty } => {
+            if *mutable {
+                format!("&mut {}", format_type_expr(ty))
+            } else {
+                format!("&{}", format_type_expr(ty))
+            }
+        }
+        TypeExpr::Pointer { mutable, ty } => {
+            if *mutable {
+                format!("*mut {}", format_type_expr(ty))
+            } else {
+                format!("*{}", format_type_expr(ty))
+            }
+        }
+        TypeExpr::Tuple(types) => {
+            let inner = types.iter().map(format_type_expr).collect::<Vec<_>>().join(", ");
+            format!("({})", inner)
+        }
+        TypeExpr::Unit => "()".into(),
+    }
+}
+
+fn format_type_params(params: &[String]) -> String {
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", params.join(", "))
+    }
 }
 
 fn identifier_before_dot(text: &str, offset: usize) -> Option<String> {
@@ -1167,4 +1559,29 @@ fn identifier_before_dot(text: &str, offset: usize) -> Option<String> {
         return None;
     }
     Some(text[start..dot].to_string())
+}
+
+fn expr_span(expr: &Expr) -> Span {
+    match expr {
+        Expr::Identifier(ident) => ident.span,
+        Expr::Literal(Literal::Int(_, span))
+        | Expr::Literal(Literal::Float(_, span))
+        | Expr::Literal(Literal::Bool(_, span))
+        | Expr::Literal(Literal::String(_, span))
+        | Expr::Literal(Literal::Rune(_, span)) => *span,
+        Expr::Binary { span, .. } => *span,
+        Expr::Unary { span, .. } => *span,
+        Expr::Call { span, .. } => *span,
+        Expr::FieldAccess { span, .. } => *span,
+        Expr::StructLiteral { span, .. } => *span,
+        Expr::EnumLiteral { span, .. } => *span,
+        Expr::Block(block) => block.span,
+        Expr::If(if_expr) => if_expr.span,
+        Expr::Match(match_expr) => match_expr.span,
+        Expr::Tuple(_, span) => *span,
+        Expr::ArrayLiteral(_, span) => *span,
+        Expr::Range(range) => range.span,
+        Expr::Reference { span, .. } => *span,
+        Expr::Deref { span, .. } => *span,
+    }
 }

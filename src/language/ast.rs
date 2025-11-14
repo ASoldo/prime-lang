@@ -36,6 +36,7 @@ pub enum Item {
 #[derive(Clone, Debug)]
 pub struct StructDef {
     pub name: String,
+    pub type_params: Vec<String>,
     pub fields: Vec<StructField>,
     pub span: Span,
 }
@@ -51,6 +52,7 @@ pub struct StructField {
 #[derive(Clone, Debug)]
 pub struct EnumDef {
     pub name: String,
+    pub type_params: Vec<String>,
     pub variants: Vec<EnumVariant>,
     pub span: Span,
 }
