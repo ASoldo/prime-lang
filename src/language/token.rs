@@ -20,6 +20,8 @@ pub enum TokenKind {
     Const,
     Struct,
     Enum,
+    Interface,
+    Impl,
     Import,
     Using,
     Return,

@@ -844,6 +844,13 @@ fn collect_symbols(uri: &Uri, text: &str, module: &Module) -> Vec<SymbolInformat
                 SymbolKind::ENUM,
                 def.span,
             )),
+            Item::Interface(def) => symbols.push(make_symbol(
+                uri,
+                text,
+                &def.name,
+                SymbolKind::INTERFACE,
+                def.span,
+            )),
             Item::Const(def) => symbols.push(make_symbol(
                 uri,
                 text,
@@ -851,6 +858,7 @@ fn collect_symbols(uri: &Uri, text: &str, module: &Module) -> Vec<SymbolInformat
                 SymbolKind::CONSTANT,
                 def.span,
             )),
+            Item::Impl(_) => {}
         }
     }
     symbols
@@ -926,30 +934,40 @@ enum DeclKind {
 fn collect_decl_spans(module: &Module) -> Vec<DeclInfo> {
     let mut decls = Vec::new();
     for item in &module.items {
-        if let Item::Function(func) = item {
-            let body_span = match &func.body {
-                FunctionBody::Block(block) => block.span,
-                FunctionBody::Expr(expr) => expr.span,
-            };
-            let available_from = body_span.start;
-            for param in &func.params {
-                decls.push(DeclInfo {
-                    name: param.name.clone(),
-                    span: param.span,
-                    scope: body_span,
-                    available_from,
-                    ty: Some(format_type_expr(&param.ty.ty)),
-                    value_span: None,
-                    mutability: param.mutability,
-                    kind: DeclKind::Param,
-                });
+        match item {
+            Item::Function(func) => collect_decl_from_function(func, &mut decls),
+            Item::Impl(block) => {
+                for func in &block.methods {
+                    collect_decl_from_function(func, &mut decls);
+                }
             }
-            if let FunctionBody::Block(block) = &func.body {
-                collect_decl_from_block(block, &mut decls);
-            }
+            _ => {}
         }
     }
     decls
+}
+
+fn collect_decl_from_function(func: &FunctionDef, decls: &mut Vec<DeclInfo>) {
+    let body_span = match &func.body {
+        FunctionBody::Block(block) => block.span,
+        FunctionBody::Expr(expr) => expr.span,
+    };
+    let available_from = body_span.start;
+    for param in &func.params {
+        decls.push(DeclInfo {
+            name: param.name.clone(),
+            span: param.span,
+            scope: body_span,
+            available_from,
+            ty: Some(format_type_expr(&param.ty.ty)),
+            value_span: None,
+            mutability: param.mutability,
+            kind: DeclKind::Param,
+        });
+    }
+    if let FunctionBody::Block(block) = &func.body {
+        collect_decl_from_block(block, decls);
+    }
 }
 
 fn scope_contains(scope: Span, offset: usize) -> bool {
@@ -2169,7 +2187,11 @@ fn module_symbol_definitions(module: &Module) -> Vec<(String, Span, SymbolKind)>
                     defs.push((variant.name.clone(), variant.span, SymbolKind::ENUM_MEMBER));
                 }
             }
+            Item::Interface(def) => {
+                defs.push((def.name.clone(), def.span, SymbolKind::INTERFACE));
+            }
             Item::Const(def) => defs.push((def.name.clone(), def.span, SymbolKind::CONSTANT)),
+            Item::Impl(_) => {}
         }
     }
     defs
@@ -2303,6 +2325,12 @@ fn general_completion_items(
                 )),
                 ..Default::default()
             }),
+            Item::Interface(def) => items.push(CompletionItem {
+                label: def.name.clone(),
+                kind: Some(CompletionItemKind::INTERFACE),
+                detail: Some(format!("interface {}", def.name)),
+                ..Default::default()
+            }),
             Item::Const(def) => items.push(CompletionItem {
                 label: def.name.clone(),
                 kind: Some(CompletionItemKind::CONSTANT),
@@ -2313,6 +2341,7 @@ fn general_completion_items(
                     .or(Some("const".into())),
                 ..Default::default()
             }),
+            Item::Impl(_) => {}
         }
     }
 
@@ -2326,8 +2355,8 @@ fn general_completion_items(
 
 fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
     const KEYWORDS: &[&str] = &[
-        "fn", "let", "mut", "struct", "enum", "const", "match", "if", "else", "for", "while",
-        "return", "defer", "import", "break", "continue",
+        "fn", "let", "mut", "struct", "enum", "interface", "impl", "const", "match", "if", "else",
+        "for", "while", "return", "defer", "import", "break", "continue",
     ];
     KEYWORDS
         .iter()

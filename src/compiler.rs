@@ -280,27 +280,14 @@ impl Compiler {
                             );
                         }
                     }
-                    Item::Function(func) => {
-                        let receiver = receiver_type_name(func, &self.structs);
-                        let key = FunctionKey {
-                            name: func.name.clone(),
-                            receiver: receiver.clone(),
-                        };
-                        if self.functions.contains_key(&key) {
-                            return Err(format!(
-                                "Duplicate function `{}` for receiver `{:?}`",
-                                func.name, receiver
-                            ));
+                    Item::Interface(_) => {}
+                    Item::Impl(block) => {
+                        for method in &block.methods {
+                            self.register_function(method, &module.name)?;
                         }
-                        self.functions.insert(key, func.clone());
-                        let qualified = format!("{}::{}", module.name, func.name);
-                        self.functions.insert(
-                            FunctionKey {
-                                name: qualified,
-                                receiver,
-                            },
-                            func.clone(),
-                        );
+                    }
+                    Item::Function(func) => {
+                        self.register_function(func, &module.name)?;
                     }
                     Item::Const(const_def) => {
                         self.consts.push(const_def.clone());
@@ -1192,6 +1179,30 @@ impl Compiler {
         } else {
             Ok(result)
         }
+    }
+
+    fn register_function(&mut self, func: &FunctionDef, module: &str) -> Result<(), String> {
+        let receiver = receiver_type_name(func, &self.structs);
+        let key = FunctionKey {
+            name: func.name.clone(),
+            receiver: receiver.clone(),
+        };
+        if self.functions.contains_key(&key) {
+            return Err(format!(
+                "Duplicate function `{}` for receiver `{:?}`",
+                func.name, receiver
+            ));
+        }
+        self.functions.insert(key, func.clone());
+        let qualified = format!("{}::{}", module, func.name);
+        self.functions.insert(
+            FunctionKey {
+                name: qualified,
+                receiver,
+            },
+            func.clone(),
+        );
+        Ok(())
     }
 
     fn lookup_function(&self, name: &str, receiver: Option<&str>) -> Option<FunctionDef> {

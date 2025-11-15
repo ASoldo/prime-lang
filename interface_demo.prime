@@ -1,0 +1,22 @@
+struct Hero {
+  name: string;
+}
+
+interface Nameable {
+  fn label(hero: Hero) -> string;
+}
+
+impl Nameable for Hero {
+  fn label(hero: Hero) -> string {
+    hero.name
+  }
+}
+
+fn main() {
+  let Hero hero = Hero{
+    "Prime Hero",
+  };
+
+  out(label(hero));
+  out(hero.label());
+}

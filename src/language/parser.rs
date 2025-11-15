@@ -117,6 +117,12 @@ impl Parser {
         if self.matches(TokenKind::Enum) {
             return self.parse_enum().map(Item::Enum);
         }
+        if self.matches(TokenKind::Interface) {
+            return self.parse_interface().map(Item::Interface);
+        }
+        if self.matches(TokenKind::Impl) {
+            return self.parse_impl().map(Item::Impl);
+        }
         if self.matches(TokenKind::Fn) {
             return self.parse_function().map(Item::Function);
         }
@@ -213,6 +219,88 @@ impl Parser {
             name: name.name,
             type_params,
             variants,
+            span: Span::new(start, end),
+        })
+    }
+
+    fn parse_interface(&mut self) -> Result<InterfaceDef, SyntaxError> {
+        let name = self.expect_identifier("Expected interface name")?;
+        let start = name.span.start;
+        self.expect(TokenKind::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.check(TokenKind::RBrace) && !self.is_eof() {
+            if self.matches(TokenKind::Semi) {
+                continue;
+            }
+            self.expect(TokenKind::Fn)?;
+            let method_name = self.expect_identifier("Expected method name")?;
+            self.expect(TokenKind::LParen)?;
+            let mut params = Vec::new();
+            if !self.check(TokenKind::RParen) {
+                loop {
+                    params.push(self.parse_param()?);
+                    if self.matches(TokenKind::Comma) {
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            let mut returns = Vec::new();
+            if self.matches(TokenKind::Arrow) {
+                if self.matches(TokenKind::LParen) {
+                    if !self.check(TokenKind::RParen) {
+                        loop {
+                            returns.push(self.parse_type_annotation()?);
+                            if self.matches(TokenKind::Comma) {
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                } else {
+                    returns.push(self.parse_type_annotation()?);
+                }
+            }
+            self.expect(TokenKind::Semi)?;
+            methods.push(InterfaceMethod {
+                name: method_name.name,
+                params,
+                returns,
+                span: Span::new(method_name.span.start, self.last_span_end(method_name.span.start)),
+            });
+        }
+        let end = self.expect(TokenKind::RBrace)?.span.end;
+        Ok(InterfaceDef {
+            name: name.name,
+            methods,
+            span: Span::new(start, end),
+        })
+    }
+
+    fn parse_impl(&mut self) -> Result<ImplBlock, SyntaxError> {
+        let start = self
+            .previous_span()
+            .map(|s| s.start)
+            .unwrap_or_else(|| self.current_span_start());
+        let interface = self.expect_identifier("Expected interface name")?;
+        self.expect(TokenKind::For)?;
+        let target = self.expect_identifier("Expected target type")?;
+        self.expect(TokenKind::LBrace)?;
+        let mut methods = Vec::new();
+        while !self.check(TokenKind::RBrace) && !self.is_eof() {
+            if self.matches(TokenKind::Semi) {
+                continue;
+            }
+            self.expect(TokenKind::Fn)?;
+            methods.push(self.parse_function()?);
+        }
+        let end = self.expect(TokenKind::RBrace)?.span.end;
+        Ok(ImplBlock {
+            interface: interface.name,
+            target: target.name,
+            methods,
             span: Span::new(start, end),
         })
     }

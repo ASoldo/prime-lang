@@ -20,6 +20,8 @@ pub fn format_module(module: &Module) -> String {
         match item {
             Item::Struct(def) => format_struct(&mut out, def),
             Item::Enum(def) => format_enum(&mut out, def),
+            Item::Interface(def) => format_interface(&mut out, def),
+            Item::Impl(block) => format_impl(&mut out, block),
             Item::Function(def) => format_function(&mut out, def),
             Item::Const(def) => format_const(&mut out, def),
         }
@@ -63,6 +65,55 @@ fn format_enum(out: &mut String, def: &EnumDef) {
     out.push_str("}\n");
 }
 
+fn format_interface(out: &mut String, def: &InterfaceDef) {
+    out.push_str(&format!("interface {} {{\n", def.name));
+    for method in &def.methods {
+        out.push_str("  fn ");
+        out.push_str(&method.name);
+        out.push('(');
+        let params = method
+            .params
+            .iter()
+            .map(|param| {
+                let mut prefix = String::new();
+                if param.mutability.is_mutable() {
+                    prefix.push_str("mut ");
+                }
+                format!("{}{}: {}", prefix, param.name, format_type(&param.ty.ty))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&params);
+        out.push(')');
+        if !method.returns.is_empty() {
+            if method.returns.len() == 1 {
+                out.push_str(&format!(" -> {}", format_type(&method.returns[0].ty)));
+            } else {
+                let returns = method
+                    .returns
+                    .iter()
+                    .map(|ty| format_type(&ty.ty))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&format!(" -> ({})", returns));
+            }
+        }
+        out.push_str(";\n");
+    }
+    out.push_str("}\n");
+}
+
+fn format_impl(out: &mut String, block: &ImplBlock) {
+    out.push_str(&format!("impl {} for {} {{\n", block.interface, block.target));
+    for (idx, method) in block.methods.iter().enumerate() {
+        format_function_with_indent(out, method, 2);
+        if idx + 1 < block.methods.len() {
+            out.push('\n');
+        }
+    }
+    out.push_str("}\n");
+}
+
 fn format_function(out: &mut String, def: &FunctionDef) {
     out.push_str(&format!("fn {}(", def.name));
     for (idx, param) in def.params.iter().enumerate() {
@@ -95,8 +146,49 @@ fn format_function(out: &mut String, def: &FunctionDef) {
         }
         format_block(out, block, 2);
     } else if let FunctionBody::Expr(expr) = &def.body {
-        out.push_str(&format!("  {}\n", format_expr(&expr.node)));
+        write_indent(out, 2);
+        out.push_str(&format!("{}\n", format_expr(&expr.node)));
     }
+    out.push_str("}\n");
+}
+
+fn format_function_with_indent(out: &mut String, def: &FunctionDef, indent: usize) {
+    write_indent(out, indent);
+    out.push_str(&format!("fn {}(", def.name));
+    for (idx, param) in def.params.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        if param.mutability.is_mutable() {
+            out.push_str("mut ");
+        }
+        out.push_str(&format!("{}: {}", param.name, format_type(&param.ty.ty)));
+    }
+    out.push(')');
+    if !def.returns.is_empty() {
+        let ret = def
+            .returns
+            .iter()
+            .map(|ty| format_type(&ty.ty))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if def.returns.len() == 1 {
+            out.push_str(&format!(" -> {}", ret));
+        } else {
+            out.push_str(&format!(" -> ({})", ret));
+        }
+    }
+    out.push_str(" {\n");
+    if let FunctionBody::Block(block) = &def.body {
+        if needs_leading_blank_line(block) {
+            out.push('\n');
+        }
+        format_block(out, block, indent + 2);
+    } else if let FunctionBody::Expr(expr) = &def.body {
+        write_indent(out, indent + 2);
+        out.push_str(&format!("{}\n", format_expr(&expr.node)));
+    }
+    write_indent(out, indent);
     out.push_str("}\n");
 }
 

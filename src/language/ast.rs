@@ -29,6 +29,8 @@ pub struct Import {
 pub enum Item {
     Struct(StructDef),
     Enum(EnumDef),
+    Interface(InterfaceDef),
+    Impl(ImplBlock),
     Function(FunctionDef),
     Const(ConstDef),
 }
@@ -61,6 +63,29 @@ pub struct EnumDef {
 pub struct EnumVariant {
     pub name: String,
     pub fields: Vec<TypeAnnotation>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct InterfaceDef {
+    pub name: String,
+    pub methods: Vec<InterfaceMethod>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct InterfaceMethod {
+    pub name: String,
+    pub params: Vec<FunctionParam>,
+    pub returns: Vec<TypeAnnotation>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImplBlock {
+    pub interface: String,
+    pub target: String,
+    pub methods: Vec<FunctionDef>,
     pub span: Span,
 }
 

@@ -131,6 +131,8 @@ impl<'a> Lexer<'a> {
             "const" => TokenKind::Const,
             "struct" => TokenKind::Struct,
             "enum" => TokenKind::Enum,
+            "interface" => TokenKind::Interface,
+            "impl" => TokenKind::Impl,
             "import" => TokenKind::Import,
             "using" => TokenKind::Using,
             "return" => TokenKind::Return,

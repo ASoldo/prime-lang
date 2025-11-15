@@ -21,6 +21,8 @@ pub struct Interpreter {
     structs: HashMap<String, StructDef>,
     enum_variants: HashMap<String, EnumVariantInfo>,
     functions: HashMap<FunctionKey, FunctionInfo>,
+    interfaces: HashMap<String, InterfaceDef>,
+    impls: HashSet<(String, String)>,
     consts: Vec<ConstDef>,
     deprecated_warnings: HashSet<String>,
 }
@@ -63,6 +65,8 @@ impl Interpreter {
             structs: HashMap::new(),
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
+            interfaces: HashMap::new(),
+            impls: HashSet::new(),
             consts: Vec::new(),
             deprecated_warnings: HashSet::new(),
         }
@@ -105,6 +109,12 @@ impl Interpreter {
                                 },
                             );
                         }
+                    }
+                    Item::Interface(def) => {
+                        self.register_interface(def.clone())?;
+                    }
+                    Item::Impl(block) => {
+                        self.register_impl(&module.name, block.clone())?;
                     }
                     Item::Function(def) => {
                         self.register_function(&module.name, def.clone())?;
@@ -159,6 +169,68 @@ impl Interpreter {
                 def,
             },
         );
+        Ok(())
+    }
+
+    fn register_interface(&mut self, def: InterfaceDef) -> RuntimeResult<()> {
+        if self.interfaces.contains_key(&def.name) {
+            return Err(RuntimeError::Panic {
+                message: format!("Duplicate interface `{}`", def.name),
+            });
+        }
+        self.interfaces.insert(def.name.clone(), def);
+        Ok(())
+    }
+
+    fn register_impl(&mut self, module: &str, block: ImplBlock) -> RuntimeResult<()> {
+        if !self.interfaces.contains_key(&block.interface) {
+            return Err(RuntimeError::Panic {
+                message: format!("Unknown interface `{}`", block.interface),
+            });
+        }
+        if !self.structs.contains_key(&block.target) {
+            return Err(RuntimeError::Panic {
+                message: format!("Unknown target type `{}`", block.target),
+            });
+        }
+        let key = (block.interface.clone(), block.target.clone());
+        if self.impls.contains(&key) {
+            return Err(RuntimeError::Panic {
+                message: format!(
+                    "`{}` already implemented for `{}`",
+                    block.interface, block.target
+                ),
+            });
+        }
+        let iface = self.interfaces.get(&block.interface).cloned().unwrap();
+        let mut provided: HashSet<String> = HashSet::new();
+        for method in &block.methods {
+            provided.insert(method.name.clone());
+            if let Some(first) = method.params.first() {
+                if let Some(name) = type_name_from_annotation(&first.ty) {
+                    if name != block.target {
+                        return Err(RuntimeError::Panic {
+                            message: format!(
+                                "First parameter of `{}` must be `{}`",
+                                method.name, block.target
+                            ),
+                        });
+                    }
+                }
+            }
+            self.register_function(module, method.clone())?;
+        }
+        for sig in iface.methods {
+            if !provided.contains(&sig.name) {
+                return Err(RuntimeError::Panic {
+                    message: format!(
+                        "`{}` missing method `{}` required by interface `{}`",
+                        block.target, sig.name, block.interface
+                    ),
+                });
+            }
+        }
+        self.impls.insert(key);
         Ok(())
     }
 
