@@ -367,9 +367,7 @@ impl Interpreter {
     }
 
     fn eval_arguments(&mut self, args: &[Expr]) -> RuntimeResult<Vec<Value>> {
-        args.iter()
-            .map(|expr| self.eval_expression(expr))
-            .collect()
+        args.iter().map(|expr| self.eval_expression(expr)).collect()
     }
 
     fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {

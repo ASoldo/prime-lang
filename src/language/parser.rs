@@ -450,15 +450,15 @@ impl Parser {
                 }
                 Some(
                     TokenKind::RBrace
-                        | TokenKind::Let
-                        | TokenKind::Return
-                        | TokenKind::If
-                        | TokenKind::While
-                        | TokenKind::For
-                        | TokenKind::Match
-                        | TokenKind::Break
-                        | TokenKind::Continue
-                        | TokenKind::Defer,
+                    | TokenKind::Let
+                    | TokenKind::Return
+                    | TokenKind::If
+                    | TokenKind::While
+                    | TokenKind::For
+                    | TokenKind::Match
+                    | TokenKind::Break
+                    | TokenKind::Continue
+                    | TokenKind::Defer,
                 ) => break,
                 _ => {
                     self.advance();

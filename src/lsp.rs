@@ -2,9 +2,9 @@ use crate::{
     formatter::format_module,
     language::{
         ast::{
-            Block, ConstDef, EnumDef, EnumVariant, Expr, FunctionBody, FunctionDef,
-            FunctionParam, Item, LetStmt, Literal, Module, Pattern, RangeExpr, Statement,
-            StructDef, StructLiteralKind,
+            Block, ConstDef, EnumDef, EnumVariant, Expr, FunctionBody, FunctionDef, FunctionParam,
+            Item, LetStmt, Literal, Module, Pattern, RangeExpr, Statement, StructDef,
+            StructLiteralKind,
         },
         errors::{SyntaxError, SyntaxErrors},
         lexer::{LexError, lex},
@@ -25,15 +25,15 @@ use tokio::runtime::Runtime;
 use tokio::sync::RwLock;
 use tower_lsp_server::jsonrpc::Result as RpcResult;
 use tower_lsp_server::lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-    Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind, MessageType, OneOf,
-    Position, PrepareRenameResponse, Range, RenameParams, ServerCapabilities, SymbolInformation,
-    SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextEdit, Uri, WorkspaceEdit,
+    CompletionContext, CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams,
+    CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
+    MessageType, OneOf, Position, PrepareRenameResponse, Range, RenameParams, ServerCapabilities,
+    SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
@@ -67,9 +67,29 @@ impl Documents {
     }
 }
 
+#[derive(Default)]
+struct ModuleCache {
+    inner: RwLock<HashMap<Uri, Module>>,
+}
+
+impl ModuleCache {
+    async fn insert(&self, uri: Uri, module: Module) {
+        self.inner.write().await.insert(uri, module);
+    }
+
+    async fn get(&self, uri: &Uri) -> Option<Module> {
+        self.inner.read().await.get(uri).cloned()
+    }
+
+    async fn remove(&self, uri: &Uri) {
+        self.inner.write().await.remove(uri);
+    }
+}
+
 struct Backend {
     client: Client,
     docs: Arc<Documents>,
+    modules: Arc<ModuleCache>,
 }
 
 impl Backend {
@@ -77,6 +97,7 @@ impl Backend {
         Self {
             client,
             docs: Arc::new(Documents::default()),
+            modules: Arc::new(ModuleCache::default()),
         }
     }
 
@@ -96,10 +117,21 @@ impl Backend {
         let module = parse_module(&module_name, path, text).ok()?;
         Some(format_module(&module))
     }
+
+    async fn parse_cached_module(&self, uri: &Uri, text: &str) -> Option<Module> {
+        match parse_module_from_uri(uri, text) {
+            Ok(module) => {
+                self.modules.insert(uri.clone(), module.clone()).await;
+                Some(module)
+            }
+            Err(_) => self.modules.get(uri).await,
+        }
+    }
 }
 
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> RpcResult<InitializeResult> {
+        let completion_trigger_characters = completion_trigger_characters();
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -110,7 +142,7 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".into()]),
+                    trigger_characters: Some(completion_trigger_characters),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -132,16 +164,18 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
-        self.docs
-            .insert(uri.clone(), params.text_document.text)
-            .await;
+        let text = params.text_document.text;
+        self.docs.insert(uri.clone(), text.clone()).await;
+        let _ = self.parse_cached_module(&uri, &text).await;
         self.publish_diagnostics(&uri).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if let Some(change) = params.content_changes.last() {
             let uri = params.text_document.uri.clone();
-            self.docs.insert(uri.clone(), change.text.clone()).await;
+            let text = change.text.clone();
+            self.docs.insert(uri.clone(), text.clone()).await;
+            let _ = self.parse_cached_module(&uri, &text).await;
             self.publish_diagnostics(&uri).await;
         }
     }
@@ -149,15 +183,22 @@ impl LanguageServer for Backend {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         if let Some(text) = params.text {
             let uri = params.text_document.uri.clone();
-            self.docs.insert(uri.clone(), text).await;
+            let text_clone = text.clone();
+            self.docs.insert(uri.clone(), text_clone.clone()).await;
+            let _ = self.parse_cached_module(&uri, &text_clone).await;
             self.publish_diagnostics(&uri).await;
         } else {
-            self.publish_diagnostics(&params.text_document.uri).await;
+            let uri = params.text_document.uri.clone();
+            if let Some(current) = self.docs.get(&uri).await {
+                let _ = self.parse_cached_module(&uri, &current).await;
+            }
+            self.publish_diagnostics(&uri).await;
         }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         self.docs.remove(&params.text_document.uri).await;
+        self.modules.remove(&params.text_document.uri).await;
         self.client
             .publish_diagnostics(params.text_document.uri, vec![], None)
             .await;
@@ -173,7 +214,7 @@ impl LanguageServer for Backend {
             Ok(tokens) => tokens,
             Err(_) => return Ok(None),
         };
-        let module = parse_module_from_uri(&uri, &text).ok();
+        let module = self.parse_cached_module(&uri, &text).await;
         let vars = collect_var_infos(&text, &tokens);
         let offset = position_to_offset(&text, position);
         if let Some(token) = token_at(&tokens, offset) {
@@ -206,7 +247,7 @@ impl LanguageServer for Backend {
             Ok(tokens) => tokens,
             Err(_) => return Ok(None),
         };
-        let Ok(module) = parse_module_from_uri(&uri, &text) else {
+        let Some(module) = self.parse_cached_module(&uri, &text).await else {
             return Ok(None);
         };
         let offset = position_to_offset(&text, position);
@@ -250,7 +291,7 @@ impl LanguageServer for Backend {
         let Some(text) = self.docs.get(&uri).await else {
             return Ok(None);
         };
-        let Some(module) = parse_module_from_uri(&uri, &text).ok() else {
+        let Some(module) = self.parse_cached_module(&uri, &text).await else {
             return Ok(None);
         };
         let symbols = collect_symbols(&uri, &text, &module);
@@ -322,57 +363,35 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> RpcResult<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
+        let context = params.context;
         let Some(text) = self.docs.get(&uri).await else {
             return Ok(None);
         };
-        let Ok(module) = parse_module_from_uri(&uri, &text) else {
-            return Ok(None);
-        };
+        let module_opt = self.parse_cached_module(&uri, &text).await;
         let offset = position_to_offset(&text, position);
-        let struct_info = collect_struct_info(&module);
-        let var_types = collect_variable_types(&module);
-        if let Some(chain) = expression_chain_before_dot(&text, offset) {
-            let Some((target_type, _)) =
-                resolve_chain_type(&chain, &var_types, &struct_info)
-            else {
-                return Ok(None);
-            };
+        let prefix = completion_prefix(&text, offset, context.as_ref());
+        let prefix_ref = prefix.as_deref();
+        if let Some(module) = module_opt {
+            let struct_info = collect_struct_info(&module);
+            let var_types = collect_variable_types(&module);
+            if let Some(chain) = expression_chain_before_dot(&text, offset) {
+                if let Some(items) =
+                    struct_member_completion_items(&chain, &var_types, &struct_info, prefix_ref)
+                {
+                    return Ok(Some(CompletionResponse::Array(items)));
+                }
+            }
 
-            let Some(struct_name) = struct_name_from_type(&target_type).map(|s| s.to_string())
-            else {
-                return Ok(None);
-            };
-
-            let Some(info) = struct_info.get(&struct_name) else {
-                return Ok(None);
-            };
-
-            let mut items: Vec<CompletionItem> = info
-                .fields
-                .iter()
-                .map(|field| CompletionItem {
-                    label: field.name.clone(),
-                    kind: Some(CompletionItemKind::FIELD),
-                    detail: Some(format_type_expr(&field.ty)),
-                    ..Default::default()
-                })
-                .collect();
-
-            items.extend(info.methods.iter().map(|method| CompletionItem {
-                label: method.name.clone(),
-                kind: Some(CompletionItemKind::METHOD),
-                detail: Some(method.signature.clone()),
-                ..Default::default()
-            }));
-
-            return Ok(Some(CompletionResponse::Array(items)));
-        }
-
-        let general_items = general_completion_items(&module, &var_types, Some(offset));
-        if general_items.is_empty() {
-            Ok(None)
-        } else {
+            let general_items =
+                general_completion_items(&module, &var_types, Some(offset), prefix_ref);
             Ok(Some(CompletionResponse::Array(general_items)))
+        } else {
+            let keywords = keyword_completion_items(prefix_ref);
+            if keywords.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(CompletionResponse::Array(keywords)))
+            }
         }
     }
 }
@@ -671,12 +690,7 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                 collect_decl_from_expr(&match_stmt.expr, decls);
                 for arm in &match_stmt.arms {
                     let arm_scope = arm.body.span;
-                    collect_pattern_decls(
-                        &arm.pattern,
-                        arm_scope,
-                        arm_scope.start,
-                        decls,
-                    );
+                    collect_pattern_decls(&arm.pattern, arm_scope, arm_scope.start, decls);
                     if let Some(guard) = &arm.guard {
                         collect_decl_from_expr(guard, decls);
                     }
@@ -1178,7 +1192,9 @@ fn hover_for_module_symbol(
 }
 
 fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover {
-    let mut snippet = extract_text(text, decl.span.start, decl.span.end).trim().to_string();
+    let mut snippet = extract_text(text, decl.span.start, decl.span.end)
+        .trim()
+        .to_string();
     if snippet.is_empty() {
         snippet = decl.name.clone();
     }
@@ -1228,7 +1244,12 @@ fn hover_for_field_usage(
     let mut value = String::new();
     value.push_str(&format!("Field `{}`\n\n", field.name));
     value.push_str(&format!("Type: `{}`", format_type_expr(&field.ty)));
-    value.push_str(&format!("\nParent: `{}`", parent_name));
+    value.push_str(&format!("\nDefined on: `{}`", field.declared_in));
+    if field.declared_in != parent_name {
+        value.push_str(&format!("\nPromoted through: `{}`", parent_name));
+    } else {
+        value.push_str(&format!("\nParent: `{}`", parent_name));
+    }
     Some(markdown_hover(text, span, value))
 }
 
@@ -1285,7 +1306,11 @@ fn format_function_param(param: &FunctionParam) -> String {
 
 fn format_struct_hover(def: &StructDef) -> String {
     let mut lines = Vec::new();
-    let mut header = format!("struct {}{}", def.name, format_type_params(&def.type_params));
+    let mut header = format!(
+        "struct {}{}",
+        def.name,
+        format_type_params(&def.type_params)
+    );
     header.push_str(" {");
     lines.push(header);
     for field in &def.fields {
@@ -1332,7 +1357,9 @@ fn format_enum_variant_signature(variant: &EnumVariant) -> String {
 }
 
 fn format_const_snippet(text: &str, def: &ConstDef) -> String {
-    let snippet = extract_text(text, def.span.start, def.span.end).trim().to_string();
+    let snippet = extract_text(text, def.span.start, def.span.end)
+        .trim()
+        .to_string();
     if snippet.is_empty() {
         let mut fallback = format!("const {}", def.name);
         if let Some(ty) = &def.ty {
@@ -1451,6 +1478,70 @@ fn position_to_offset(text: &str, position: Position) -> usize {
     text.len()
 }
 
+fn completion_trigger_characters() -> Vec<String> {
+    const TRIGGER_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.";
+    TRIGGER_CHARS.chars().map(|ch| ch.to_string()).collect()
+}
+
+fn completion_prefix(
+    text: &str,
+    offset: usize,
+    context: Option<&CompletionContext>,
+) -> Option<String> {
+    let base = identifier_prefix_slice(text, offset).map(str::to_string);
+    let trigger = context
+        .and_then(|ctx| ctx.trigger_character.as_ref())
+        .filter(|ch| is_ident_string(ch));
+
+    match (base, trigger) {
+        (Some(mut prefix), Some(trigger)) => {
+            if !prefix.ends_with(trigger) {
+                prefix.push_str(trigger);
+            }
+            Some(prefix)
+        }
+        (Some(prefix), None) => Some(prefix),
+        (None, Some(trigger)) => Some(trigger.to_string()),
+        _ => None,
+    }
+}
+
+fn identifier_prefix_slice<'a>(text: &'a str, offset: usize) -> Option<&'a str> {
+    if text.is_empty() {
+        return None;
+    }
+    let len = text.len();
+    let mut end = offset.min(len);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let bytes = text.as_bytes();
+    let mut start = end;
+    while start > 0 {
+        let ch = bytes[start - 1];
+        if is_ident_char(ch) {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    if start == end {
+        None
+    } else {
+        text.get(start..end)
+    }
+}
+
+fn prefix_matches(name: &str, prefix: Option<&str>) -> bool {
+    match prefix {
+        Some(prefix) => name.starts_with(prefix),
+        None => true,
+    }
+}
+
+fn is_ident_string(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(is_ident_char)
+}
 fn extract_text(text: &str, start: usize, end: usize) -> String {
     let len = text.len();
     if start >= len || start >= end {
@@ -1542,12 +1633,14 @@ fn prettify_error_message(message: &str) -> String {
 struct StructFieldInfo {
     name: String,
     ty: TypeExpr,
+    declared_in: String,
 }
 
 #[derive(Clone)]
 struct MethodInfo {
     name: String,
     signature: String,
+    declared_in: String,
 }
 
 #[derive(Clone)]
@@ -1556,23 +1649,37 @@ struct StructInfo {
     methods: Vec<MethodInfo>,
 }
 
+#[derive(Default, Clone)]
+struct RawStructInfo {
+    fields: Vec<StructFieldInfo>,
+    embedded: Vec<String>,
+    methods: Vec<MethodInfo>,
+}
+
 fn collect_struct_info(module: &Module) -> HashMap<String, StructInfo> {
-    let mut info = HashMap::new();
+    let mut raw = HashMap::new();
     for item in &module.items {
         if let Item::Struct(def) = item {
             let mut struct_fields = Vec::new();
+            let mut embedded = Vec::new();
             for field in &def.fields {
                 if let Some(name) = &field.name {
                     struct_fields.push(StructFieldInfo {
                         name: name.clone(),
                         ty: field.ty.ty.clone(),
+                        declared_in: def.name.clone(),
                     });
+                } else if field.embedded {
+                    if let Some(target) = struct_name_from_type(&field.ty.ty) {
+                        embedded.push(target.to_string());
+                    }
                 }
             }
-            info.insert(
+            raw.insert(
                 def.name.clone(),
-                StructInfo {
+                RawStructInfo {
                     fields: struct_fields,
+                    embedded,
                     methods: Vec::new(),
                 },
             );
@@ -1582,25 +1689,103 @@ fn collect_struct_info(module: &Module) -> HashMap<String, StructInfo> {
         if let Item::Function(func) = item {
             if let Some(first_param) = func.params.first() {
                 if let Some(receiver) = receiver_type_name(&first_param.ty.ty) {
-                    let entry = info.entry(receiver).or_insert_with(|| StructInfo {
-                        fields: Vec::new(),
-                        methods: Vec::new(),
-                    });
+                    let entry = raw.entry(receiver.clone()).or_default();
                     entry.methods.push(MethodInfo {
                         name: func.name.clone(),
                         signature: format_function_signature(func),
+                        declared_in: receiver,
                     });
                 }
             }
         }
     }
+    let mut info = HashMap::new();
+    let mut fields_cache = HashMap::new();
+    let mut methods_cache = HashMap::new();
+    let struct_names: Vec<String> = raw.keys().cloned().collect();
+    for name in struct_names {
+        let mut field_stack = HashSet::new();
+        let fields = flatten_struct_fields(&name, &raw, &mut fields_cache, &mut field_stack);
+        let mut method_stack = HashSet::new();
+        let methods = flatten_struct_methods(&name, &raw, &mut methods_cache, &mut method_stack);
+        info.insert(name.clone(), StructInfo { fields, methods });
+    }
     info
+}
+
+fn flatten_struct_fields(
+    name: &str,
+    raw: &HashMap<String, RawStructInfo>,
+    cache: &mut HashMap<String, Vec<StructFieldInfo>>,
+    stack: &mut HashSet<String>,
+) -> Vec<StructFieldInfo> {
+    if let Some(cached) = cache.get(name) {
+        return cached.clone();
+    }
+    if !stack.insert(name.to_string()) {
+        return Vec::new();
+    }
+    let mut fields = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(info) = raw.get(name) {
+        for field in &info.fields {
+            if seen.insert(field.name.clone()) {
+                fields.push(field.clone());
+            }
+        }
+        for embedded in &info.embedded {
+            let nested = flatten_struct_fields(embedded, raw, cache, stack);
+            for field in nested {
+                if seen.insert(field.name.clone()) {
+                    fields.push(field);
+                }
+            }
+        }
+    }
+    stack.remove(name);
+    cache.insert(name.to_string(), fields.clone());
+    fields
+}
+
+fn flatten_struct_methods(
+    name: &str,
+    raw: &HashMap<String, RawStructInfo>,
+    cache: &mut HashMap<String, Vec<MethodInfo>>,
+    stack: &mut HashSet<String>,
+) -> Vec<MethodInfo> {
+    if let Some(cached) = cache.get(name) {
+        return cached.clone();
+    }
+    if !stack.insert(name.to_string()) {
+        return Vec::new();
+    }
+    let mut methods = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(info) = raw.get(name) {
+        for method in &info.methods {
+            if seen.insert(method.name.clone()) {
+                methods.push(method.clone());
+            }
+        }
+        for embedded in &info.embedded {
+            let nested = flatten_struct_methods(embedded, raw, cache, stack);
+            for method in nested {
+                if seen.insert(method.name.clone()) {
+                    methods.push(method);
+                }
+            }
+        }
+    }
+    stack.remove(name);
+    cache.insert(name.to_string(), methods.clone());
+    methods
 }
 
 fn general_completion_items(
     module: &Module,
     vars: &HashMap<String, TypeExpr>,
     offset: Option<usize>,
+    prefix: Option<&str>,
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     if let Some(offset) = offset {
@@ -1669,7 +1854,71 @@ fn general_completion_items(
         }
     }
 
+    items.extend(keyword_completion_items(prefix));
+
     items
+        .into_iter()
+        .filter(|item| prefix_matches(&item.label, prefix))
+        .collect()
+}
+
+fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
+    const KEYWORDS: &[&str] = &[
+        "fn", "let", "mut", "struct", "enum", "const", "match", "if", "else", "for", "while",
+        "return", "defer", "import", "break", "continue",
+    ];
+    KEYWORDS
+        .iter()
+        .filter(|kw| prefix_matches(kw, prefix))
+        .map(|kw| CompletionItem {
+            label: kw.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn struct_member_completion_items(
+    chain: &[String],
+    var_types: &HashMap<String, TypeExpr>,
+    struct_info: &HashMap<String, StructInfo>,
+    prefix: Option<&str>,
+) -> Option<Vec<CompletionItem>> {
+    let (target_type, _) = resolve_chain_type(chain, var_types, struct_info)?;
+    let struct_name = struct_name_from_type(&target_type)?;
+    let info = struct_info.get(struct_name)?;
+    let mut items = Vec::new();
+
+    for field in &info.fields {
+        if prefix_matches(&field.name, prefix) {
+            items.push(CompletionItem {
+                label: field.name.clone(),
+                kind: Some(CompletionItemKind::FIELD),
+                detail: Some(format!(
+                    "{} (from {})",
+                    format_type_expr(&field.ty),
+                    field.declared_in
+                )),
+                ..Default::default()
+            });
+        }
+    }
+
+    for method in &info.methods {
+        if prefix_matches(&method.name, prefix) {
+            items.push(CompletionItem {
+                label: method.name.clone(),
+                kind: Some(CompletionItemKind::METHOD),
+                detail: Some(format!(
+                    "{} (from {})",
+                    method.signature, method.declared_in
+                )),
+                ..Default::default()
+            });
+        }
+    }
+
+    if items.is_empty() { None } else { Some(items) }
 }
 
 fn visible_locals(module: &Module, offset: usize) -> Vec<DeclInfo> {
@@ -1774,7 +2023,11 @@ fn format_type_expr(expr: &TypeExpr) -> String {
             if args.is_empty() {
                 name.clone()
             } else {
-                let params = args.iter().map(format_type_expr).collect::<Vec<_>>().join(", ");
+                let params = args
+                    .iter()
+                    .map(format_type_expr)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("{name}[{params}]")
             }
         }
@@ -1795,7 +2048,11 @@ fn format_type_expr(expr: &TypeExpr) -> String {
             }
         }
         TypeExpr::Tuple(types) => {
-            let inner = types.iter().map(format_type_expr).collect::<Vec<_>>().join(", ");
+            let inner = types
+                .iter()
+                .map(format_type_expr)
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("({})", inner)
         }
         TypeExpr::Unit => "()".into(),

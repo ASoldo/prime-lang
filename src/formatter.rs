@@ -502,13 +502,23 @@ fn precedence(op: BinaryOp) -> u8 {
         BinaryOp::Add | BinaryOp::Sub => 30,
         BinaryOp::BitAnd => 28,
         BinaryOp::BitOr | BinaryOp::BitXor => 26,
-        BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => 24,
+        BinaryOp::Eq
+        | BinaryOp::NotEq
+        | BinaryOp::Lt
+        | BinaryOp::LtEq
+        | BinaryOp::Gt
+        | BinaryOp::GtEq => 24,
         BinaryOp::And => 20,
         BinaryOp::Or => 18,
     }
 }
 
-fn format_struct_literal_inline(out: &mut String, indent: usize, name: &str, fields: &StructLiteralKind) {
+fn format_struct_literal_inline(
+    out: &mut String,
+    indent: usize,
+    name: &str,
+    fields: &StructLiteralKind,
+) {
     out.push_str(&format!("{name}{{\n"));
     let field_indent = " ".repeat(indent + 2);
     match fields {
@@ -644,7 +654,6 @@ fn format_literal(lit: &Literal) -> String {
         Literal::Rune(value, _) => format!("'{}'", escape_rune(*value)),
     }
 }
-
 
 fn needs_leading_blank_line(_block: &Block) -> bool {
     false

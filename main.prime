@@ -6,12 +6,11 @@ fn main() {
   out("=== prime-lang gameplay demo ===");
   let mut Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
   out("=== heal() ===");
-  hero = heal(hero, 10000);
   let Player scout = spawn_player("Sparrow", Vec2{ 5.0, 12.5 }, 90);
   describe_player(hero);
   describe_player(scout);
   let Player relocated = move_player(hero, Vec2{ 2.0, 3.0 });
-  out("After repositioning:");
+  relocated.out("After repositioning:");
   describe_player(relocated);
   let Player wounded = apply_damage(relocated, Flat(30));
   out("Hero after heavy hit:");
