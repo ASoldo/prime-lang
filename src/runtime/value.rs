@@ -1,4 +1,4 @@
-use crate::language::span::Span;
+use crate::language::{span::Span, types::TypeExpr};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -19,6 +19,7 @@ pub enum Value {
     Boxed(BoxValue),
     Slice(SliceValue),
     Map(MapValue),
+    Moved,
 }
 
 impl Value {
@@ -34,6 +35,7 @@ impl Value {
             Value::Slice(slice) => !slice.items.borrow().is_empty(),
             Value::Map(map) => !map.entries.borrow().is_empty(),
             Value::Unit => false,
+            Value::Moved => panic!("attempted to read moved value"),
         }
     }
 
@@ -52,6 +54,7 @@ impl Value {
             Value::Boxed(_) => "Box",
             Value::Slice(_) => "Slice",
             Value::Map(_) => "Map",
+            Value::Moved => "moved",
         }
     }
 }
@@ -107,6 +110,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Moved => write!(f, "<moved>"),
         }
     }
 }
@@ -115,6 +119,7 @@ impl fmt::Display for Value {
 pub struct ReferenceValue {
     pub cell: Rc<RefCell<Value>>,
     pub mutable: bool,
+    pub origin: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -211,25 +216,58 @@ impl BoxValue {
 #[derive(Clone, Debug)]
 pub struct SliceValue {
     pub items: Rc<RefCell<Vec<Value>>>,
+    pub elem_type: Option<TypeExpr>,
 }
 
 impl SliceValue {
-    pub fn new() -> Self {
+    pub fn new(elem_type: Option<TypeExpr>) -> Self {
         Self {
             items: Rc::new(RefCell::new(Vec::new())),
+            elem_type,
         }
+    }
+
+    pub fn from_vec(items: Vec<Value>, elem_type: Option<TypeExpr>) -> Self {
+        Self {
+            items: Rc::new(RefCell::new(items)),
+            elem_type,
+        }
+    }
+
+    pub fn push(&self, value: Value) {
+        self.items.borrow_mut().push(value);
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.borrow().len()
+    }
+
+    pub fn get(&self, index: usize) -> Option<Value> {
+        self.items.borrow().get(index).cloned()
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct MapValue {
     pub entries: Rc<RefCell<BTreeMap<String, Value>>>,
+    pub key_type: Option<TypeExpr>,
+    pub value_type: Option<TypeExpr>,
 }
 
 impl MapValue {
-    pub fn new() -> Self {
+    pub fn new(key_type: Option<TypeExpr>, value_type: Option<TypeExpr>) -> Self {
         Self {
             entries: Rc::new(RefCell::new(BTreeMap::new())),
+            key_type,
+            value_type,
         }
+    }
+
+    pub fn insert(&self, key: String, value: Value) {
+        self.entries.borrow_mut().insert(key, value);
+    }
+
+    pub fn get(&self, key: &str) -> Option<Value> {
+        self.entries.borrow().get(key).cloned()
     }
 }

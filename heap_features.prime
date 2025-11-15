@@ -1,0 +1,31 @@
+import "types";
+
+fn describe_slice(label: string, collection: []string) {
+  out(label);
+  let int32 total = slice_len(collection);
+  for i in 0..total {
+    match slice_get(collection, i) {
+      Some(value) => out(value),
+      None => {},
+    };
+  }
+}
+
+fn move_box_demo() {
+  let Box[int32] payload = box_new(72);
+  let Box[int32] relocated = move payload;
+  out("moved box value:");
+  out(box_get(relocated));
+}
+
+fn move_slice_demo() {
+  let []string squad = ["Prime Hero", "Sparrow", "Northwatch"];
+  let []string redeployed = move squad;
+  describe_slice("redeployed squad:", redeployed);
+}
+
+fn main() {
+  out("=== heap features ===");
+  move_box_demo();
+  move_slice_demo();
+}

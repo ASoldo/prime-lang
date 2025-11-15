@@ -471,6 +471,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
                 .join(", ");
             format!("[{inner}]")
         }
+        Expr::Move { expr, .. } => format!("move {}", format_expr_prec(expr, 100)),
         Expr::Range(range) => format_range(range),
         Expr::Reference { mutable, expr, .. } => {
             if *mutable {

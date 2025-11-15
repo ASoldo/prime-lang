@@ -10,6 +10,8 @@ pub enum RuntimeError {
     UnknownSymbol { name: String },
     #[error("Immutable binding `{name}` cannot be reassigned")]
     ImmutableBinding { name: String },
+    #[error("Value `{name}` has been moved")]
+    MovedValue { name: String },
     #[error("Type mismatch: {message}")]
     TypeMismatch { message: String },
     #[error("Operation not supported: {message}")]

@@ -16,7 +16,7 @@ use llvm_sys::{
 };
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::{CStr, CString},
     path::Path,
     ptr,
@@ -36,6 +36,9 @@ pub struct Compiler {
     functions: HashMap<String, FunctionDef>,
     enum_variants: HashMap<String, EnumVariantInfo>,
     consts: Vec<ConstDef>,
+    active_mut_borrows: HashSet<String>,
+    borrow_frames: Vec<Vec<String>>,
+    deprecated_warnings: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -50,6 +53,7 @@ enum Value {
     Boxed(BoxValue),
     Slice(SliceValue),
     Map(MapValue),
+    Moved,
 }
 
 #[derive(Clone)]
@@ -69,6 +73,7 @@ struct IntValue {
 struct ReferenceValue {
     cell: Rc<RefCell<Value>>,
     mutable: bool,
+    origin: Option<String>,
 }
 
 #[derive(Clone)]
@@ -85,11 +90,14 @@ struct BoxValue {
 #[derive(Clone)]
 struct SliceValue {
     items: Rc<RefCell<Vec<Value>>>,
+    elem_type: Option<TypeExpr>,
 }
 
 #[derive(Clone)]
 struct MapValue {
     entries: Rc<RefCell<BTreeMap<String, Value>>>,
+    key_type: Option<TypeExpr>,
+    value_type: Option<TypeExpr>,
 }
 
 #[derive(Clone)]
@@ -117,18 +125,48 @@ impl BoxValue {
 }
 
 impl SliceValue {
-    fn new() -> Self {
+    fn new(elem_type: Option<TypeExpr>) -> Self {
         Self {
             items: Rc::new(RefCell::new(Vec::new())),
+            elem_type,
         }
+    }
+
+    fn from_vec(items: Vec<Value>, elem_type: Option<TypeExpr>) -> Self {
+        Self {
+            items: Rc::new(RefCell::new(items)),
+            elem_type,
+        }
+    }
+
+    fn push(&self, value: Value) {
+        self.items.borrow_mut().push(value);
+    }
+
+    fn len(&self) -> usize {
+        self.items.borrow().len()
+    }
+
+    fn get(&self, index: usize) -> Option<Value> {
+        self.items.borrow().get(index).cloned()
     }
 }
 
 impl MapValue {
-    fn new() -> Self {
+    fn new(key_type: Option<TypeExpr>, value_type: Option<TypeExpr>) -> Self {
         Self {
             entries: Rc::new(RefCell::new(BTreeMap::new())),
+            key_type,
+            value_type,
         }
+    }
+
+    fn insert(&self, key: String, value: Value) {
+        self.entries.borrow_mut().insert(key, value);
+    }
+
+    fn get(&self, key: &str) -> Option<Value> {
+        self.entries.borrow().get(key).cloned()
     }
 }
 
@@ -172,6 +210,9 @@ impl Compiler {
                 functions: HashMap::new(),
                 enum_variants: HashMap::new(),
                 consts: Vec::new(),
+                active_mut_borrows: HashSet::new(),
+                borrow_frames: Vec::new(),
+                deprecated_warnings: HashSet::new(),
             };
             compiler.reset_module();
             compiler
@@ -188,6 +229,9 @@ impl Compiler {
     pub fn compile_program(&mut self, program: &Program) -> Result<(), String> {
         self.reset_module();
         self.scopes.clear();
+        self.active_mut_borrows.clear();
+        self.borrow_frames.clear();
+        self.borrow_frames.push(Vec::new());
         self.push_scope();
         self.structs.clear();
         self.functions.clear();
@@ -247,7 +291,7 @@ impl Compiler {
 
         for const_def in self.consts.clone() {
             let value = self.emit_expression(&const_def.value)?;
-            self.insert_var(&const_def.name, value, false);
+            self.insert_var(&const_def.name, value, false)?;
         }
 
         let _ = self.execute_block_contents(body)?;
@@ -339,6 +383,7 @@ impl Compiler {
             Value::Boxed(_) | Value::Slice(_) | Value::Map(_) => {
                 Err("Cannot print heap value in build mode".into())
             }
+            Value::Moved => Err("Cannot print moved value in build mode".into()),
         }
     }
 
@@ -362,7 +407,7 @@ impl Compiler {
                 } else {
                     Value::Int(self.const_int_value(0))
                 };
-                self.insert_var(&stmt.name, value, stmt.mutability == Mutability::Mutable);
+                self.insert_var(&stmt.name, value, stmt.mutability == Mutability::Mutable)?;
             }
             Statement::Expr(expr_stmt) => self.eval_expression_statement(&expr_stmt.expr)?,
             Statement::Block(block) => {
@@ -431,7 +476,7 @@ impl Compiler {
                         &stmt.binding,
                         Value::Int(self.const_int_value(current)),
                         false,
-                    );
+                    )?;
                     let _ = self.execute_block_contents(&stmt.body)?;
                     self.pop_scope();
                     current += 1;
@@ -469,9 +514,15 @@ impl Compiler {
             Expr::Literal(Literal::Rune(value, _)) => {
                 Ok(Value::Int(self.const_int_value(*value as i128)))
             }
-            Expr::Identifier(ident) => self
-                .get_var(&ident.name)
-                .ok_or_else(|| format!("Unknown variable {}", ident.name)),
+            Expr::Identifier(ident) => {
+                let value = self
+                    .get_var(&ident.name)
+                    .ok_or_else(|| format!("Unknown variable {}", ident.name))?;
+                if matches!(value, Value::Moved) {
+                    return Err(format!("Value `{}` has been moved", ident.name));
+                }
+                Ok(value)
+            }
             Expr::Binary {
                 op, left, right, ..
             } => {
@@ -532,6 +583,7 @@ impl Compiler {
                 }
                 Ok(Value::Tuple(items))
             }
+            Expr::ArrayLiteral(values, _) => self.emit_array_literal(values),
             Expr::Block(block) => {
                 self.push_scope();
                 let result = self.execute_block_contents(block)?;
@@ -544,6 +596,7 @@ impl Compiler {
                 let value = self.emit_expression(expr)?;
                 self.deref_value(value)
             }
+            Expr::Move { expr, .. } => self.emit_move_expression(expr),
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = self.emit_expression(base)?;
                 let mut current = base_value;
@@ -573,6 +626,9 @@ impl Compiler {
                         }
                         Value::Boxed(_) | Value::Slice(_) | Value::Map(_) => {
                             return Err("Cannot access field on heap value in build mode".into());
+                        }
+                        Value::Moved => {
+                            return Err("Cannot access field on moved value".into());
                         }
                     };
                 }
@@ -685,16 +741,66 @@ impl Compiler {
                         ident.name
                     ));
                 }
-                Ok(Value::Reference(ReferenceValue { cell, mutable }))
+                if matches!(*cell.borrow(), Value::Moved) {
+                    return Err(format!("Value `{}` has been moved", ident.name));
+                }
+                Ok(Value::Reference(ReferenceValue {
+                    cell,
+                    mutable,
+                    origin: Some(ident.name.clone()),
+                }))
             }
             _ => {
                 let value = self.emit_expression(expr)?;
                 Ok(Value::Reference(ReferenceValue {
                     cell: Rc::new(RefCell::new(value)),
                     mutable,
+                    origin: None,
                 }))
             }
         }
+    }
+
+    fn emit_array_literal(&mut self, values: &[Expr]) -> Result<Value, String> {
+        let mut items = Vec::with_capacity(values.len());
+        for expr in values {
+            items.push(self.emit_expression(expr)?);
+        }
+        Ok(Value::Slice(SliceValue::from_vec(items, None)))
+    }
+
+    fn emit_move_expression(&mut self, expr: &Expr) -> Result<Value, String> {
+        match expr {
+            Expr::Identifier(ident) => {
+                let (cell, _) = self
+                    .get_binding(&ident.name)
+                    .ok_or_else(|| format!("Unknown variable {}", ident.name))?;
+                if self.is_mut_borrowed(&ident.name) {
+                    return Err(format!(
+                        "Cannot move `{}` while it is mutably borrowed",
+                        ident.name
+                    ));
+                }
+                let mut slot = cell.borrow_mut();
+                if matches!(*slot, Value::Moved) {
+                    return Err(format!("Value `{}` has been moved", ident.name));
+                }
+                if !Self::is_heap_value(&slot) {
+                    return Err(format!(
+                        "`{}` cannot be moved; only boxes, slices, and maps support move semantics",
+                        ident.name
+                    ));
+                }
+                let moved = std::mem::replace(&mut *slot, Value::Moved);
+                self.register_move(&ident.name);
+                Ok(moved)
+            }
+            _ => Err("move expressions require identifiers in build mode".into()),
+        }
+    }
+
+    fn is_heap_value(value: &Value) -> bool {
+        matches!(value, Value::Boxed(_) | Value::Slice(_) | Value::Map(_))
     }
 
     fn deref_value(&self, value: Value) -> Result<Value, String> {
@@ -726,7 +832,7 @@ impl Compiler {
                     Value::Reference(reference) => reference.cell.borrow().clone(),
                     other => other.clone(),
                 };
-                self.insert_var(name, concrete, false);
+                self.insert_var(name, concrete, false)?;
                 Ok(true)
             }
             Pattern::Literal(lit) => self.match_literal(value.clone(), lit),
@@ -1020,7 +1126,7 @@ impl Compiler {
 
         self.push_scope();
         for (param, value) in func.params.iter().zip(evaluated_args.into_iter()) {
-            self.insert_var(&param.name, value, param.mutability == Mutability::Mutable);
+            self.insert_var(&param.name, value, param.mutability == Mutability::Mutable)?;
         }
         let result = match &func.body {
             FunctionBody::Block(block) => self.execute_block_contents(block)?,
@@ -1032,6 +1138,72 @@ impl Compiler {
             Ok(None)
         } else {
             Ok(result)
+        }
+    }
+
+    fn begin_mut_borrow_in_scope(
+        &mut self,
+        name: &str,
+        scope_index: usize,
+    ) -> Result<(), String> {
+        if self.active_mut_borrows.contains(name) {
+            return Err(format!("`{}` is already mutably borrowed", name));
+        }
+        self.active_mut_borrows.insert(name.to_string());
+        if let Some(frame) = self.borrow_frames.get_mut(scope_index) {
+            frame.push(name.to_string());
+        }
+        Ok(())
+    }
+
+    fn begin_mut_borrow(&mut self, name: &str) -> Result<(), String> {
+        let idx = self.borrow_frames.len().saturating_sub(1);
+        self.begin_mut_borrow_in_scope(name, idx)
+    }
+
+    fn end_mut_borrow(&mut self, name: &str) {
+        self.active_mut_borrows.remove(name);
+    }
+
+    fn is_mut_borrowed(&self, name: &str) -> bool {
+        self.active_mut_borrows.contains(name)
+    }
+
+    fn register_move(&mut self, name: &str) {
+        self.end_mut_borrow(name);
+    }
+
+    fn track_reference_borrow_in_scope(
+        &mut self,
+        value: &Value,
+        scope_index: usize,
+    ) -> Result<(), String> {
+        if let Value::Reference(reference) = value {
+            if reference.mutable {
+                if let Some(origin) = &reference.origin {
+                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn release_reference_borrow(&mut self, value: &Value) {
+        if let Value::Reference(reference) = value {
+            if reference.mutable {
+                if let Some(origin) = &reference.origin {
+                    self.end_mut_borrow(origin);
+                }
+            }
+        }
+    }
+
+    fn warn_deprecated(&mut self, name: &str) {
+        if self.deprecated_warnings.insert(name.to_string()) {
+            eprintln!(
+                "warning: `{}` is deprecated; prefer slice/map literals or direct methods",
+                name
+            );
         }
     }
 
@@ -1113,33 +1285,37 @@ impl Compiler {
         Ok(boxed.replace(Value::Unit))
     }
 
-    fn builtin_slice_new(&self, args: Vec<Value>) -> Result<Value, String> {
+    fn builtin_slice_new(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        self.warn_deprecated("slice_new");
         if !args.is_empty() {
             return Err("slice_new expects 0 arguments".into());
         }
-        Ok(Value::Slice(SliceValue::new()))
+        Ok(Value::Slice(SliceValue::new(None)))
     }
 
-    fn builtin_slice_push(&self, mut args: Vec<Value>) -> Result<Value, String> {
+    fn builtin_slice_push(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        self.warn_deprecated("slice_push");
         if args.len() != 2 {
             return Err("slice_push expects 2 arguments".into());
         }
         let value = args.pop().unwrap();
         let slice = self.expect_slice_value(args.pop().unwrap(), "slice_push")?;
-        slice.items.borrow_mut().push(value);
+        slice.push(value);
         Ok(Value::Unit)
     }
 
-    fn builtin_slice_len(&self, mut args: Vec<Value>) -> Result<Value, String> {
+    fn builtin_slice_len(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        self.warn_deprecated("slice_len");
         if args.len() != 1 {
             return Err("slice_len expects 1 argument".into());
         }
         let slice = self.expect_slice_value(args.pop().unwrap(), "slice_len")?;
-        let len = slice.items.borrow().len() as i128;
+        let len = slice.len() as i128;
         Ok(Value::Int(self.const_int_value(len)))
     }
 
-    fn builtin_slice_get(&self, mut args: Vec<Value>) -> Result<Value, String> {
+    fn builtin_slice_get(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        self.warn_deprecated("slice_get");
         if args.len() != 2 {
             return Err("slice_get expects 2 arguments".into());
         }
@@ -1149,43 +1325,47 @@ impl Compiler {
         let idx = int_value
             .constant()
             .ok_or_else(|| "slice_get index must be constant in build mode".to_string())?;
-        let items = slice.items.borrow();
-        if idx < 0 || (idx as usize) >= items.len() {
+        if idx < 0 {
             return self.instantiate_enum_variant("None", Vec::new());
         }
-        let value = items[idx as usize].clone();
+        let value = slice.get(idx as usize);
+        if value.is_none() {
+            return self.instantiate_enum_variant("None", Vec::new());
+        }
+        let value = value.unwrap();
         self.instantiate_enum_variant("Some", vec![value])
     }
 
-    fn builtin_map_new(&self, args: Vec<Value>) -> Result<Value, String> {
+    fn builtin_map_new(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        self.warn_deprecated("map_new");
         if !args.is_empty() {
             return Err("map_new expects 0 arguments".into());
         }
-        Ok(Value::Map(MapValue::new()))
+        Ok(Value::Map(MapValue::new(None, None)))
     }
 
-    fn builtin_map_insert(&self, mut args: Vec<Value>) -> Result<Value, String> {
+    fn builtin_map_insert(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        self.warn_deprecated("map_insert");
         if args.len() != 3 {
             return Err("map_insert expects 3 arguments".into());
         }
         let value = args.pop().unwrap();
         let key = self.expect_string_value(args.pop().unwrap(), "map_insert")?;
         let map = self.expect_map_value(args.pop().unwrap(), "map_insert")?;
-        map.entries.borrow_mut().insert(key, value);
+        map.insert(key, value);
         Ok(Value::Unit)
     }
 
-    fn builtin_map_get(&self, mut args: Vec<Value>) -> Result<Value, String> {
+    fn builtin_map_get(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        self.warn_deprecated("map_get");
         if args.len() != 2 {
             return Err("map_get expects 2 arguments".into());
         }
         let key = self.expect_string_value(args.pop().unwrap(), "map_get")?;
         let map = self.expect_map_value(args.pop().unwrap(), "map_get")?;
-        let entries = map.entries.borrow();
-        if let Some(value) = entries.get(&key) {
-            self.instantiate_enum_variant("Some", vec![value.clone()])
-        } else {
-            self.instantiate_enum_variant("None", Vec::new())
+        match map.get(&key) {
+            Some(value) => self.instantiate_enum_variant("Some", vec![value]),
+            None => self.instantiate_enum_variant("None", Vec::new()),
         }
     }
 
@@ -1201,12 +1381,18 @@ impl Compiler {
     }
 
     fn assign_var(&mut self, name: &str, value: Value) -> Result<(), String> {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.get_mut(name) {
+        for index in (0..self.scopes.len()).rev() {
+            if let Some(binding) = self.scopes[index].get(name) {
                 if !binding.mutable {
                     return Err(format!("Variable {} is immutable", name));
                 }
-                *binding.cell.borrow_mut() = value;
+                let cell = binding.cell.clone();
+                self.track_reference_borrow_in_scope(&value, index)?;
+                {
+                    let current = cell.borrow();
+                    self.release_reference_borrow(&current);
+                }
+                *cell.borrow_mut() = value;
                 return Ok(());
             }
         }
@@ -1241,22 +1427,38 @@ impl Compiler {
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.borrow_frames.push(Vec::new());
     }
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
+        if let Some(frame) = self.borrow_frames.pop() {
+            for name in frame {
+                self.active_mut_borrows.remove(&name);
+            }
+        }
+        if self.borrow_frames.is_empty() {
+            self.borrow_frames.push(Vec::new());
+        }
     }
 
-    fn insert_var(&mut self, name: &str, value: Value, mutable: bool) {
+    fn insert_var(&mut self, name: &str, value: Value, mutable: bool) -> Result<(), String> {
+        let scope_index = self.scopes.len().saturating_sub(1);
+        let cell = Rc::new(RefCell::new(value));
+        {
+            let stored = cell.borrow();
+            self.track_reference_borrow_in_scope(&stored, scope_index)?;
+        }
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
                 name.to_string(),
                 Binding {
-                    cell: Rc::new(RefCell::new(value)),
+                    cell,
                     mutable,
                 },
             );
         }
+        Ok(())
     }
 
     fn get_var(&self, name: &str) -> Option<Value> {
@@ -1339,6 +1541,7 @@ fn describe_expr(expr: &Expr) -> &'static str {
         Expr::Match(_) => "match expression",
         Expr::Tuple(_, _) => "tuple",
         Expr::ArrayLiteral(_, _) => "array literal",
+        Expr::Move { .. } => "move expression",
         Expr::Range(_) => "range",
         Expr::Reference { .. } => "reference",
         Expr::Deref { .. } => "deref",
@@ -1357,5 +1560,6 @@ fn describe_value(value: &Value) -> &'static str {
         Value::Boxed(_) => "box",
         Value::Slice(_) => "slice",
         Value::Map(_) => "map",
+        Value::Moved => "moved",
     }
 }

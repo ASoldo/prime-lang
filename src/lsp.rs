@@ -1107,6 +1107,7 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
         Expr::Range(range) => collect_decl_from_range(range, decls),
         Expr::Reference { expr: inner, .. } => collect_decl_from_expr(inner, decls),
         Expr::Deref { expr: inner, .. } => collect_decl_from_expr(inner, decls),
+        Expr::Move { expr: inner, .. } => collect_decl_from_expr(inner, decls),
     }
 }
 
@@ -1276,6 +1277,7 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
         Expr::Range(range) => collect_range_expr(range, used),
         Expr::Reference { expr, .. } => collect_expr_idents(expr, used),
         Expr::Deref { expr, .. } => collect_expr_idents(expr, used),
+        Expr::Move { expr, .. } => collect_expr_idents(expr, used),
     }
 }
 
@@ -2693,5 +2695,6 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Range(range) => range.span,
         Expr::Reference { span, .. } => *span,
         Expr::Deref { span, .. } => *span,
+        Expr::Move { span, .. } => *span,
     }
 }

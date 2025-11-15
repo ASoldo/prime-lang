@@ -32,6 +32,7 @@ pub enum TokenKind {
     Break,
     Continue,
     Defer,
+    Move,
     True,
     False,
     As,

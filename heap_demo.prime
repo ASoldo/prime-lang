@@ -5,9 +5,7 @@ fn main() {
   bump_counter(&counter, 5);
   out("box counter:");
   out(box_get(counter));
-  let mut []string explorers = slice_new();
-  slice_push(&mut explorers, "Prime Hero");
-  slice_push(&mut explorers, "Sparrow");
+  let mut []string explorers = ["Prime Hero", "Sparrow"];
   out("slice len:");
   out(slice_len(explorers));
   out("first explorer:");

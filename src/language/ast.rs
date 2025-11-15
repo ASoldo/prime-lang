@@ -254,6 +254,10 @@ pub enum Expr {
         expr: Box<Expr>,
         span: Span,
     },
+    Move {
+        expr: Box<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug)]

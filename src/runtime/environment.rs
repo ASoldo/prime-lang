@@ -1,7 +1,7 @@
 use crate::language::ast::Expr;
 use crate::runtime::{error::RuntimeError, value::Value};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 #[derive(Clone)]
@@ -27,32 +27,51 @@ impl Scope {
 
 pub struct Environment {
     scopes: Vec<Scope>,
+    active_mut_borrows: HashSet<String>,
+    borrow_frames: Vec<Vec<String>>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         Self {
             scopes: vec![Scope::new()],
+            active_mut_borrows: HashSet::new(),
+            borrow_frames: vec![Vec::new()],
         }
     }
 
     pub fn push_scope(&mut self) {
         self.scopes.push(Scope::new());
+        self.borrow_frames.push(Vec::new());
     }
 
     pub fn pop_scope(&mut self) {
         self.scopes.pop();
+        if let Some(frame) = self.borrow_frames.pop() {
+            for name in frame {
+                self.active_mut_borrows.remove(&name);
+            }
+        }
         if self.scopes.is_empty() {
             self.scopes.push(Scope::new());
+        }
+        if self.borrow_frames.is_empty() {
+            self.borrow_frames.push(Vec::new());
         }
     }
 
     pub fn declare(&mut self, name: &str, value: Value, mutable: bool) -> Result<(), RuntimeError> {
+        let scope_index = self.scopes.len().saturating_sub(1);
+        let cell = Rc::new(RefCell::new(value));
+        {
+            let stored = cell.borrow();
+            self.track_reference_borrow_in_scope(&stored, scope_index)?;
+        }
         if let Some(scope) = self.scopes.last_mut() {
             scope.bindings.insert(
                 name.to_string(),
                 Binding {
-                    cell: Rc::new(RefCell::new(value)),
+                    cell,
                     mutable,
                 },
             );
@@ -65,14 +84,20 @@ impl Environment {
     }
 
     pub fn assign(&mut self, name: &str, value: Value) -> Result<(), RuntimeError> {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(binding) = scope.bindings.get_mut(name) {
+        for index in (0..self.scopes.len()).rev() {
+            if let Some(binding) = self.scopes[index].bindings.get(name) {
                 if !binding.mutable {
                     return Err(RuntimeError::ImmutableBinding {
                         name: name.to_string(),
                     });
                 }
-                *binding.cell.borrow_mut() = value;
+                let cell = binding.cell.clone();
+                self.track_reference_borrow_in_scope(&value, index)?;
+                {
+                    let current = cell.borrow();
+                    self.release_reference_borrow(&current);
+                }
+                *cell.borrow_mut() = value;
                 return Ok(());
             }
         }
@@ -97,6 +122,69 @@ impl Environment {
             }
         }
         None
+    }
+
+    fn begin_mut_borrow_in_scope(
+        &mut self,
+        name: &str,
+        scope_index: usize,
+    ) -> Result<(), RuntimeError> {
+        if self.active_mut_borrows.contains(name) {
+            return Err(RuntimeError::Panic {
+                message: format!("`{name}` is already mutably borrowed"),
+            });
+        }
+        self.active_mut_borrows.insert(name.to_string());
+        if let Some(frame) = self.borrow_frames.get_mut(scope_index) {
+            frame.push(name.to_string());
+        }
+        Ok(())
+    }
+
+    pub fn begin_mut_borrow(&mut self, name: &str) -> Result<(), RuntimeError> {
+        let idx = self
+            .borrow_frames
+            .len()
+            .checked_sub(1)
+            .unwrap_or(0);
+        self.begin_mut_borrow_in_scope(name, idx)
+    }
+
+    pub fn end_mut_borrow(&mut self, name: &str) {
+        self.active_mut_borrows.remove(name);
+    }
+
+    pub fn is_mut_borrowed(&self, name: &str) -> bool {
+        self.active_mut_borrows.contains(name)
+    }
+
+    pub fn register_move(&mut self, name: &str) {
+        self.end_mut_borrow(name);
+    }
+
+    fn track_reference_borrow_in_scope(
+        &mut self,
+        value: &Value,
+        scope_index: usize,
+    ) -> Result<(), RuntimeError> {
+        if let Value::Reference(reference) = value {
+            if reference.mutable {
+                if let Some(origin) = &reference.origin {
+                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn release_reference_borrow(&mut self, value: &Value) {
+        if let Value::Reference(reference) = value {
+            if reference.mutable {
+                if let Some(origin) = &reference.origin {
+                    self.end_mut_borrow(origin);
+                }
+            }
+        }
     }
 
     pub fn defer(&mut self, expr: Expr) {

@@ -759,6 +759,18 @@ impl Parser {
                 span,
             });
         }
+        if self.matches(TokenKind::Move) {
+            let start = self
+                .previous_span()
+                .map(|s| s.start)
+                .unwrap_or_else(|| self.current_span_start());
+            let expr = self.parse_unary()?;
+            let span = Span::new(start, expr_span(&expr).end);
+            return Ok(Expr::Move {
+                expr: Box::new(expr),
+                span,
+            });
+        }
         self.parse_postfix()
     }
 
@@ -861,6 +873,24 @@ impl Parser {
                 } else {
                     Ok(Expr::Tuple(values, Span::new(start, end)))
                 }
+            }
+            Some(TokenKind::LBracket) => {
+                let start = self.advance().span.start;
+                let mut values = Vec::new();
+                if !self.check(TokenKind::RBracket) {
+                    loop {
+                        values.push(self.parse_expression()?);
+                        if self.matches(TokenKind::Comma) {
+                            if self.check(TokenKind::RBracket) {
+                                break;
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                let end = self.expect(TokenKind::RBracket)?.span.end;
+                Ok(Expr::ArrayLiteral(values, Span::new(start, end)))
             }
             _ => Err(self.error_here("Unexpected token in expression")),
         }
@@ -1387,5 +1417,6 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Range(range) => range.span,
         Expr::Reference { span, .. } => *span,
         Expr::Deref { span, .. } => *span,
+        Expr::Move { span, .. } => *span,
     }
 }

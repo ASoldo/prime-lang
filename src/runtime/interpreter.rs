@@ -12,7 +12,7 @@ use crate::runtime::{
     },
 };
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 pub struct Interpreter {
@@ -22,6 +22,7 @@ pub struct Interpreter {
     enum_variants: HashMap<String, EnumVariantInfo>,
     functions: HashMap<String, FunctionInfo>,
     consts: Vec<ConstDef>,
+    deprecated_warnings: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -56,6 +57,7 @@ impl Interpreter {
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
             consts: Vec::new(),
+            deprecated_warnings: HashSet::new(),
         }
     }
 
@@ -217,6 +219,15 @@ impl Interpreter {
         Ok(Vec::new())
     }
 
+    fn warn_deprecated(&mut self, name: &str) {
+        if self.deprecated_warnings.insert(name.to_string()) {
+            eprintln!(
+                "warning: `{}` is deprecated; prefer slice/map literals or direct methods",
+                name
+            );
+        }
+    }
+
     fn call_builtin(&mut self, name: &str, args: Vec<Value>) -> Option<RuntimeResult<Vec<Value>>> {
         let result = match name {
             "box_new" => self.builtin_box_new(args),
@@ -287,8 +298,9 @@ impl Interpreter {
     }
 
     fn builtin_slice_new(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.warn_deprecated("slice_new");
         self.expect_arity("slice_new", &args, 0)?;
-        Ok(vec![Value::Slice(SliceValue::new())])
+        Ok(vec![Value::Slice(SliceValue::new(None))])
     }
 
     fn expect_slice(&self, name: &str, value: Value) -> RuntimeResult<SliceValue> {
@@ -305,6 +317,7 @@ impl Interpreter {
     }
 
     fn builtin_slice_push(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.warn_deprecated("slice_push");
         if args.len() != 2 {
             return Err(RuntimeError::ArityMismatch {
                 name: "slice_push".into(),
@@ -314,18 +327,20 @@ impl Interpreter {
         }
         let slice = self.expect_slice("slice_push", args.remove(0))?;
         let value = args.remove(0);
-        slice.items.borrow_mut().push(value);
+        slice.push(value);
         Ok(Vec::new())
     }
 
     fn builtin_slice_len(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.warn_deprecated("slice_len");
         self.expect_arity("slice_len", &args, 1)?;
         let slice = self.expect_slice("slice_len", args.remove(0))?;
-        let len = slice.items.borrow().len() as i128;
+        let len = slice.len() as i128;
         Ok(vec![Value::Int(len)])
     }
 
     fn builtin_slice_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.warn_deprecated("slice_get");
         self.expect_arity("slice_get", &args, 2)?;
         let slice = self.expect_slice("slice_get", args.remove(0))?;
         let index = match args.remove(0) {
@@ -336,19 +351,24 @@ impl Interpreter {
                 });
             }
         };
-        let items = slice.items.borrow();
-        if index < 0 || (index as usize) >= items.len() {
+        if index < 0 {
             let none = self.instantiate_enum("Option", "None", Vec::new())?;
             return Ok(vec![none]);
         }
-        let value = items[index as usize].clone();
+        let value = slice.get(index as usize);
+        if value.is_none() {
+            let none = self.instantiate_enum("Option", "None", Vec::new())?;
+            return Ok(vec![none]);
+        }
+        let value = value.unwrap();
         let some = self.instantiate_enum("Option", "Some", vec![value])?;
         Ok(vec![some])
     }
 
     fn builtin_map_new(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.warn_deprecated("map_new");
         self.expect_arity("map_new", &args, 0)?;
-        Ok(vec![Value::Map(MapValue::new())])
+        Ok(vec![Value::Map(MapValue::new(None, None))])
     }
 
     fn expect_map(&self, name: &str, value: Value) -> RuntimeResult<MapValue> {
@@ -375,6 +395,7 @@ impl Interpreter {
     }
 
     fn builtin_map_insert(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.warn_deprecated("map_insert");
         if args.len() != 3 {
             return Err(RuntimeError::ArityMismatch {
                 name: "map_insert".into(),
@@ -385,16 +406,16 @@ impl Interpreter {
         let map = self.expect_map("map_insert", args.remove(0))?;
         let key = self.expect_string("map_insert", args.remove(0))?;
         let value = args.remove(0);
-        map.entries.borrow_mut().insert(key, value);
+        map.insert(key, value);
         Ok(Vec::new())
     }
 
     fn builtin_map_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.warn_deprecated("map_get");
         self.expect_arity("map_get", &args, 2)?;
         let map = self.expect_map("map_get", args.remove(0))?;
         let key = self.expect_string("map_get", args.remove(0))?;
-        let entries = map.entries.borrow();
-        if let Some(value) = entries.get(&key) {
+        if let Some(value) = map.get(&key) {
             let some = self.instantiate_enum("Option", "Some", vec![value.clone()])?;
             Ok(vec![some])
         } else {
@@ -565,11 +586,18 @@ impl Interpreter {
     fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {
         match expr {
             Expr::Identifier(ident) => {
-                self.env
+                let value = self
+                    .env
                     .get(&ident.name)
                     .ok_or_else(|| RuntimeError::UnknownSymbol {
                         name: ident.name.clone(),
-                    })
+                    })?;
+                if matches!(value, Value::Moved) {
+                    return Err(RuntimeError::MovedValue {
+                        name: ident.name.clone(),
+                    });
+                }
+                Ok(value)
             }
             Expr::Literal(lit) => Ok(match lit {
                 Literal::Int(value, _) => Value::Int(*value),
@@ -737,9 +765,8 @@ impl Interpreter {
                 };
                 self.instantiate_enum(&enum_name, variant, args)
             }
-            Expr::ArrayLiteral(_, _) => Err(RuntimeError::Unsupported {
-                message: "Array literals not yet supported".into(),
-            }),
+            Expr::ArrayLiteral(values, _) => self.eval_array_literal(values),
+            Expr::Move { expr, .. } => self.eval_move_expression(expr),
         }
     }
 
@@ -757,16 +784,76 @@ impl Interpreter {
                         name: ident.name.clone(),
                     });
                 }
-                Ok(Value::Reference(ReferenceValue { cell, mutable }))
+                if matches!(*cell.borrow(), Value::Moved) {
+                    return Err(RuntimeError::MovedValue {
+                        name: ident.name.clone(),
+                    });
+                }
+                Ok(Value::Reference(ReferenceValue {
+                    cell,
+                    mutable,
+                    origin: Some(ident.name.clone()),
+                }))
             }
             _ => {
                 let value = self.eval_expression(expr)?;
                 Ok(Value::Reference(ReferenceValue {
                     cell: Rc::new(RefCell::new(value)),
                     mutable,
+                    origin: None,
                 }))
             }
         }
+    }
+
+    fn eval_array_literal(&mut self, values: &[Expr]) -> RuntimeResult<Value> {
+        let mut items = Vec::with_capacity(values.len());
+        for expr in values {
+            items.push(self.eval_expression(expr)?);
+        }
+        Ok(Value::Slice(SliceValue::from_vec(items, None)))
+    }
+
+    fn eval_move_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {
+        match expr {
+            Expr::Identifier(ident) => {
+                let (cell, _) = self
+                    .env
+                    .get_cell(&ident.name)
+                    .ok_or_else(|| RuntimeError::UnknownSymbol {
+                        name: ident.name.clone(),
+                    })?;
+                if self.env.is_mut_borrowed(&ident.name) {
+                    return Err(RuntimeError::Panic {
+                        message: format!("Cannot move `{}` while it is borrowed", ident.name),
+                    });
+                }
+                let mut slot = cell.borrow_mut();
+                if matches!(*slot, Value::Moved) {
+                    return Err(RuntimeError::MovedValue {
+                        name: ident.name.clone(),
+                    });
+                }
+                if !Self::is_heap_value(&slot) {
+                    return Err(RuntimeError::Panic {
+                        message: format!(
+                            "`{}` cannot be moved; only boxes, slices, and maps support move semantics",
+                            ident.name
+                        ),
+                    });
+                }
+                let moved = std::mem::replace(&mut *slot, Value::Moved);
+                self.env.register_move(&ident.name);
+                Ok(moved)
+            }
+            _ => Err(RuntimeError::Unsupported {
+                message: "move expressions require identifiers".into(),
+            }),
+        }
+    }
+
+    fn is_heap_value(value: &Value) -> bool {
+        matches!(value, Value::Boxed(_) | Value::Slice(_) | Value::Map(_))
     }
 
     fn eval_match(&mut self, expr: &MatchExpr) -> RuntimeResult<Value> {
