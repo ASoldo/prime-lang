@@ -368,3 +368,8 @@ fn divmod(a: int32, b: int32) -> (int32, int32) {
   let int32 r = a % b;
   (q, r)
 }
+
+fn heal(mut player: Player, boost: int32) -> Player {
+  player.hp = player.hp + boost;
+  player
+}

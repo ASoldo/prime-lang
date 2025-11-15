@@ -177,7 +177,16 @@ impl LanguageServer for Backend {
         let vars = collect_var_infos(&text, &tokens);
         let offset = position_to_offset(&text, position);
         if let Some(token) = token_at(&tokens, offset) {
-            if let Some(hover) = hover_for_token(&text, token, &vars, module.as_ref()) {
+            let struct_info = module.as_ref().map(collect_struct_info);
+            let var_types = module.as_ref().map(collect_variable_types);
+            if let Some(hover) = hover_for_token(
+                &text,
+                token,
+                &vars,
+                module.as_ref(),
+                struct_info.as_ref(),
+                var_types.as_ref(),
+            ) {
                 return Ok(Some(hover));
             }
         }
@@ -320,20 +329,20 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let offset = position_to_offset(&text, position);
-        let Some(base_ident) = identifier_before_dot(&text, offset) else {
+        let Some(chain) = expression_chain_before_dot(&text, offset) else {
             return Ok(None);
         };
 
         let struct_info = collect_struct_info(&module);
         let var_types = collect_variable_types(&module);
 
-        let type_name = var_types.get(&base_ident).cloned().or_else(|| {
-            struct_info
-                .contains_key(&base_ident)
-                .then(|| base_ident.clone())
-        });
+        let Some((target_type, _)) =
+            resolve_chain_type(&chain, &var_types, &struct_info)
+        else {
+            return Ok(None);
+        };
 
-        let Some(struct_name) = type_name else {
+        let Some(struct_name) = struct_name_from_type(&target_type).map(|s| s.to_string()) else {
             return Ok(None);
         };
 
@@ -347,7 +356,7 @@ impl LanguageServer for Backend {
             .map(|field| CompletionItem {
                 label: field.name.clone(),
                 kind: Some(CompletionItemKind::FIELD),
-                detail: Some(field.ty.clone()),
+                detail: Some(format_type_expr(&field.ty)),
                 ..Default::default()
             })
             .collect();
@@ -995,6 +1004,8 @@ fn hover_for_token(
     token: &Token,
     vars: &[VarInfo],
     module: Option<&Module>,
+    struct_info: Option<&HashMap<String, StructInfo>>,
+    var_types: Option<&HashMap<String, TypeExpr>>,
 ) -> Option<Hover> {
     let span = token.span;
     let hover = match &token.kind {
@@ -1005,6 +1016,15 @@ fn hover_for_token(
                         .to_string(),
                 )
             } else if let Some(module) = module {
+                if let Some(struct_info) = struct_info {
+                    if let Some(var_types) = var_types {
+                        if let Some(hover) =
+                            hover_for_field_usage(text, span, name, struct_info, var_types)
+                        {
+                            return Some(hover);
+                        }
+                    }
+                }
                 if let Some(decl) = find_local_decl(module, name, span.start) {
                     return Some(hover_for_local_decl(text, span, &decl));
                 }
@@ -1186,6 +1206,25 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
         }
     }
     markdown_hover(text, usage_span, value)
+}
+
+fn hover_for_field_usage(
+    text: &str,
+    span: Span,
+    _field_name: &str,
+    struct_info: &HashMap<String, StructInfo>,
+    var_types: &HashMap<String, TypeExpr>,
+) -> Option<Hover> {
+    let chain = chain_for_field_token(text, span)?;
+    let (_, field_info) = resolve_chain_type(&chain, var_types, struct_info)?;
+    let Some((parent_name, field)) = field_info else {
+        return None;
+    };
+    let mut value = String::new();
+    value.push_str(&format!("Field `{}`\n\n", field.name));
+    value.push_str(&format!("Type: `{}`", format_type_expr(&field.ty)));
+    value.push_str(&format!("\nParent: `{}`", parent_name));
+    Some(markdown_hover(text, span, value))
 }
 
 fn format_decl_kind(kind: DeclKind) -> &'static str {
@@ -1497,7 +1536,7 @@ fn prettify_error_message(message: &str) -> String {
 #[derive(Clone)]
 struct StructFieldInfo {
     name: String,
-    ty: String,
+    ty: TypeExpr,
 }
 
 #[derive(Clone)]
@@ -1521,7 +1560,7 @@ fn collect_struct_info(module: &Module) -> HashMap<String, StructInfo> {
                 if let Some(name) = &field.name {
                     struct_fields.push(StructFieldInfo {
                         name: name.clone(),
-                        ty: format_type_expr(&field.ty.ty),
+                        ty: field.ty.ty.clone(),
                     });
                 }
             }
@@ -1553,10 +1592,13 @@ fn collect_struct_info(module: &Module) -> HashMap<String, StructInfo> {
     info
 }
 
-fn collect_variable_types(module: &Module) -> HashMap<String, String> {
+fn collect_variable_types(module: &Module) -> HashMap<String, TypeExpr> {
     let mut vars = HashMap::new();
     for item in &module.items {
         if let Item::Function(func) = item {
+            for param in &func.params {
+                vars.insert(param.name.clone(), param.ty.ty.clone());
+            }
             match &func.body {
                 FunctionBody::Block(block) => collect_variable_types_from_block(block, &mut vars),
                 FunctionBody::Expr(expr) => collect_variable_types_from_expr(&expr.node, &mut vars),
@@ -1566,7 +1608,7 @@ fn collect_variable_types(module: &Module) -> HashMap<String, String> {
     vars
 }
 
-fn collect_variable_types_from_block(block: &Block, vars: &mut HashMap<String, String>) {
+fn collect_variable_types_from_block(block: &Block, vars: &mut HashMap<String, TypeExpr>) {
     for statement in &block.statements {
         match statement {
             Statement::Let(stmt) => {
@@ -1600,7 +1642,7 @@ fn collect_variable_types_from_block(block: &Block, vars: &mut HashMap<String, S
     }
 }
 
-fn collect_variable_types_from_expr(expr: &Expr, vars: &mut HashMap<String, String>) {
+fn collect_variable_types_from_expr(expr: &Expr, vars: &mut HashMap<String, TypeExpr>) {
     match expr {
         Expr::Block(block) => collect_variable_types_from_block(block, vars),
         Expr::If(if_expr) => {
@@ -1618,23 +1660,16 @@ fn collect_variable_types_from_expr(expr: &Expr, vars: &mut HashMap<String, Stri
     }
 }
 
-fn infer_type_from_let(stmt: &LetStmt) -> Option<String> {
+fn infer_type_from_let(stmt: &LetStmt) -> Option<TypeExpr> {
     if let Some(annotation) = &stmt.ty {
-        return receiver_type_name(&annotation.ty);
+        return Some(annotation.ty.clone());
     }
     if let Some(value) = &stmt.value {
         if let Expr::StructLiteral { name, .. } = value {
-            return Some(name.clone());
+            return Some(TypeExpr::Named(name.clone(), Vec::new()));
         }
     }
     None
-}
-
-fn type_expr_name(expr: &TypeExpr) -> Option<String> {
-    match expr {
-        TypeExpr::Named(name, _) => Some(name.clone()),
-        _ => None,
-    }
 }
 
 fn receiver_type_name(expr: &TypeExpr) -> Option<String> {
@@ -1687,35 +1722,128 @@ fn format_type_params(params: &[String]) -> String {
     }
 }
 
-fn identifier_before_dot(text: &str, offset: usize) -> Option<String> {
+fn expression_chain_before_dot(text: &str, offset: usize) -> Option<Vec<String>> {
     if offset == 0 {
         return None;
     }
     let bytes = text.as_bytes();
-    let mut idx = offset;
-    while idx > 0 && bytes[idx - 1].is_ascii_whitespace() {
-        idx -= 1;
-    }
+    let mut idx = skip_ws_back(text, offset);
     if idx == 0 || bytes[idx - 1] != b'.' {
         return None;
     }
-    let dot = idx - 1;
-    if dot == 0 {
+    idx -= 1;
+    collect_chain_segments(text, idx)
+}
+
+fn chain_for_field_token(text: &str, span: Span) -> Option<Vec<String>> {
+    if span.start >= span.end || span.end > text.len() {
         return None;
     }
-    let mut start = dot;
-    while start > 0 {
-        let ch = bytes[start - 1];
-        if ch.is_ascii_alphanumeric() || ch == b'_' {
-            start -= 1;
+    let current = text.get(span.start..span.end)?.to_string();
+    let bytes = text.as_bytes();
+    let mut idx = skip_ws_back(text, span.start);
+    if idx == 0 || bytes[idx - 1] != b'.' {
+        return None;
+    }
+    idx -= 1;
+    let mut segments = collect_chain_segments(text, idx)?;
+    segments.push(current);
+    if segments.len() < 2 {
+        return None;
+    }
+    Some(segments)
+}
+
+fn skip_ws_back(text: &str, mut idx: usize) -> usize {
+    let bytes = text.as_bytes();
+    while idx > 0 {
+        let ch = bytes[idx - 1];
+        if ch.is_ascii_whitespace() {
+            idx -= 1;
         } else {
             break;
         }
     }
-    if start == dot {
+    idx
+}
+
+fn collect_chain_segments(text: &str, mut idx: usize) -> Option<Vec<String>> {
+    let bytes = text.as_bytes();
+    let mut segments = Vec::new();
+    loop {
+        idx = skip_ws_back(text, idx);
+        if idx == 0 {
+            break;
+        }
+        let end = idx;
+        let mut start = end;
+        while start > 0 {
+            let ch = bytes[start - 1];
+            if ch.is_ascii_alphanumeric() || ch == b'_' {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        if start == end {
+            return None;
+        }
+        segments.push(text[start..end].to_string());
+        idx = start;
+        idx = skip_ws_back(text, idx);
+        if idx == 0 || bytes[idx - 1] != b'.' {
+            break;
+        }
+        idx -= 1;
+    }
+    if segments.is_empty() {
+        None
+    } else {
+        segments.reverse();
+        Some(segments)
+    }
+}
+
+fn resolve_chain_type<'a>(
+    chain: &[String],
+    var_types: &HashMap<String, TypeExpr>,
+    structs: &'a HashMap<String, StructInfo>,
+) -> Option<(TypeExpr, Option<(String, &'a StructFieldInfo)>)> {
+    if chain.is_empty() {
         return None;
     }
-    Some(text[start..dot].to_string())
+    let mut current = type_for_identifier(&chain[0], var_types, structs)?;
+    let mut last_field = None;
+    for segment in chain.iter().skip(1) {
+        let struct_name = struct_name_from_type(&current)?.to_string();
+        let info = structs.get(&struct_name)?;
+        let field = info.fields.iter().find(|f| f.name == *segment)?;
+        current = field.ty.clone();
+        last_field = Some((struct_name, field));
+    }
+    Some((current, last_field))
+}
+
+fn type_for_identifier(
+    name: &str,
+    var_types: &HashMap<String, TypeExpr>,
+    structs: &HashMap<String, StructInfo>,
+) -> Option<TypeExpr> {
+    if let Some(ty) = var_types.get(name) {
+        return Some(ty.clone());
+    }
+    if structs.contains_key(name) {
+        return Some(TypeExpr::Named(name.to_string(), Vec::new()));
+    }
+    None
+}
+
+fn struct_name_from_type<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
+    match ty {
+        TypeExpr::Named(name, _) => Some(name),
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => struct_name_from_type(ty),
+        _ => None,
+    }
 }
 
 fn expr_span(expr: &Expr) -> Span {
