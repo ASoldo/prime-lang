@@ -5,6 +5,8 @@ const TRAINING_LIMIT: int32 = 3;
 fn main() {
   out("=== prime-lang gameplay demo ===");
   let mut Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
+  out("=== heal() ===");
+  hero = heal(hero, 10000);
   let Player scout = spawn_player("Sparrow", Vec2{ 5.0, 12.5 }, 90);
   describe_player(hero);
   describe_player(scout);
@@ -369,7 +371,17 @@ fn divmod(a: int32, b: int32) -> (int32, int32) {
   (q, r)
 }
 
-fn heal(mut player: Player, boost: int32) -> Player {
-  player.hp = player.hp + boost;
-  player
+fn heal(player: Player, boost: int32) -> Player {
+  Player{
+    Transform{
+      player.position,
+      player.velocity,
+    },
+    Stats{
+      player.hp + boost,
+      player.stamina,
+    },
+    player.name,
+    player.level,
+  }
 }

@@ -1728,6 +1728,10 @@ fn expression_chain_before_dot(text: &str, offset: usize) -> Option<Vec<String>>
     }
     let bytes = text.as_bytes();
     let mut idx = skip_ws_back(text, offset);
+    if idx > 0 && bytes[idx - 1].is_ascii_alphanumeric() {
+        idx = skip_identifier(text, idx);
+        idx = skip_ws_back(text, idx);
+    }
     if idx == 0 || bytes[idx - 1] != b'.' {
         return None;
     }
@@ -1757,8 +1761,20 @@ fn chain_for_field_token(text: &str, span: Span) -> Option<Vec<String>> {
 fn skip_ws_back(text: &str, mut idx: usize) -> usize {
     let bytes = text.as_bytes();
     while idx > 0 {
+        if bytes[idx - 1].is_ascii_whitespace() {
+            idx -= 1;
+        } else {
+            break;
+        }
+    }
+    idx
+}
+
+fn skip_identifier(text: &str, mut idx: usize) -> usize {
+    let bytes = text.as_bytes();
+    while idx > 0 {
         let ch = bytes[idx - 1];
-        if ch.is_ascii_whitespace() {
+        if is_ident_char(ch) {
             idx -= 1;
         } else {
             break;
@@ -1802,6 +1818,10 @@ fn collect_chain_segments(text: &str, mut idx: usize) -> Option<Vec<String>> {
         segments.reverse();
         Some(segments)
     }
+}
+
+fn is_ident_char(ch: u8) -> bool {
+    ch.is_ascii_alphanumeric() || ch == b'_'
 }
 
 fn resolve_chain_type<'a>(

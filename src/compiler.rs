@@ -334,9 +334,9 @@ impl Compiler {
                 }
                 _ => {
                     return Err(
-                            "Only assignments to identifiers or dereferences are supported in build mode"
-                                .into(),
-                        );
+                        "Only assignments to identifiers or dereferences are supported in build mode"
+                            .into(),
+                    );
                 }
             },
             Statement::If(stmt) => {
