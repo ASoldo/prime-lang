@@ -9,23 +9,214 @@ the CLI utilities you use while editing `.prime` files.
 
 ---
 
-## Language Snapshot
+## Quick Start
 
-* Single entry point: `fn main() { ... }`
-* Integer declarations: `let int name = <expression>;`
-* Output: `out(<expression>);`
-* Expressions: identifiers, integers, parentheses, and binary `+ - * /`
+```bash
+git clone https://github.com/asoldo/prime-lang.git
+cd prime-lang
+cargo install --path .
+prime-lang run main.prime         # interpret
+prime-lang build main.prime       # emit LLVM, link to ./.build.prime/output
+./.build.prime/output/output      # run the native binary
+```
+
+The repository ships with `main.prime` so you can confirm the full toolchain
+works end‑to‑end immediately after building.
+
+## Language Basics
+
+Prime keeps the syntax close to systems languages you already know. Key features
+in `main.prime` and `types.prime` demonstrate the core semantics:
+
+### Modules & Imports
 
 ```prime
-fn main() {
-  let int a = 5;
-  let int b = 10;
-  let int c = 2;
-  let int d = 2;
-  let int e = 4;
-  out(((a + b) - ((c * d) / e)));
+import "types";               // load structs/enums from types.prime
+import "math/random";         // relative paths become math/random.prime
+```
+
+Modules compile to the same package; there is no module system magic. Each file
+exposes the structs, enums, consts, and functions it defines.
+
+### Constants & Mutability
+
+```prime
+const TRAINING_LIMIT: int32 = 3;
+
+let Player scout = spawn_player("Sparrow", Vec2{ 5.0, 12.5 }, 90);
+let mut Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
+hero = refill_hp(hero, 12);
+```
+
+- `const NAME: Type = value;` creates an immutable global.
+- `let name =` introduces an immutable binding. Add `mut` to opt into mutation.
+- Types are explicit; the compiler infers only when the annotation is obvious.
+
+### Structs, Embedding & Enums
+
+```prime
+struct Vec2 {
+  x: float32;
+  y: float32;
+}
+
+struct Transform {
+  Vec2;                     // embedded; adds position.x/position.y directly
+  velocity: Vec2;
+}
+
+struct Player {
+  Transform;
+  Stats;
+  name: string;
+  level: int32;
+}
+
+enum Damage {
+  Flat(int32);
+  Percent(int32);
 }
 ```
+
+- Struct embedding flattens the fields of the embedded struct (`Transform` and
+  `Stats`), so `player.position.x` works without inheritance or vtables.
+- Enums are algebraic sum types; each variant carries its payload and is
+  exhaustively matched.
+
+### Functions & Multiple Return Values
+
+```prime
+fn divmod(a: int32, b: int32) -> (int32, int32) {
+  (a / b, a % b)
+}
+
+fn move_player(p: Player, delta: Vec2) -> Player {
+  Player{
+    Transform{ add_vec2(p.position, delta), p.velocity },
+    Stats{ p.hp, p.stamina },
+    p.name,
+    p.level,
+  }
+}
+```
+
+- Functions take explicit parameter lists with optional `mut` on the binding
+  itself.
+- Return types can be a single type or a tuple. Destructuring happens at call
+  sites: `let (quot, rem) = divmod(22, TRAINING_LIMIT);`.
+
+### Pattern Matching & Control Flow
+
+```prime
+match damage {
+  Flat(amount) => Player{ .. },
+  Percent(rate) => { /* block */ },
+};
+
+if hero.hp < 50 {
+  out("status: fragile");
+} else {
+  out("status: ready");
+}
+
+for i in 0..steps {
+  out(i);
+}
+
+while probes < 2 {
+  out("probe");
+  probes = probes + 1;
+}
+```
+
+- `match` is exhaustive and destructures enum payloads or patterns like
+  `let Vec2 next = add_vec2(...)`.
+- Loops include `for range`, `while`, and `match` drives branching.
+
+### References, Pointers & `defer`
+
+```prime
+fn peek_hp(target: &Player) -> int32 {
+  let Player snapshot = *target;
+  snapshot.hp
+}
+
+fn refill_hp(target: &mut Player, amount: int32) {
+  let Player snapshot = *target;
+  *target = Player{ .. };
+}
+
+fn calibrate_station(name: string) {
+  out("Calibrating station:");
+  out(name);
+  defer out("Station teardown complete");
+  // ...
+}
+```
+
+- `&T` is a reference. You must dereference explicitly (`*target`) when copying.
+- `&mut T` gates mutation.
+- `defer` schedules work to run when the current scope exits—ideal for cleanup.
+
+### Built-in I/O & APIs
+
+- `out(expr)` prints values (strings, numbers, tuples, structs implement a debug
+  representation).
+- `match Option[...]` and `Result[...]` mirror Rust semantics for optional and
+  fallible flows.
+
+```prime
+import "math";
+
+const LIMIT: int32 = 4;
+
+struct Vec2 {
+  x: float32;
+  y: float32;
+}
+
+struct Transform {
+  Vec2;              // embedded, exposes Vec2.x and Vec2.y
+  scale: float32;
+}
+
+enum Result[T, E] {
+  Ok(T),
+  Err(E),
+}
+
+fn translate(mut t: Transform, delta: Vec2) -> Transform {
+  t.x = t.x + delta.x;
+  t.y = t.y + delta.y;
+  t
+}
+
+fn divmod(a: int32, b: int32) -> (int32, int32) {
+  (a / b, a % b)
+}
+
+fn main() {
+  let Transform origin = Transform{ Vec2{0.0, 0.0}, 1.0 };
+  let Transform shifted = translate(origin, Vec2{1.0, 0.5});
+  let (quot, rem) = divmod(22, LIMIT);
+  out(shifted.x);
+  out((quot, rem));
+}
+```
+
+Key rules:
+
+- Locals are immutable unless you opt into `let mut name = ...`.
+- Struct embedding promotes the embedded fields and methods without inheritance.
+- Enums support Rust‑style algebraic variants that you destructure with `match`.
+- Loops: `for i in 0..n { ... }`, `while cond { ... }`, plus `break`/`continue`.
+- Functions return a single type or a tuple (`-> (T, U)`), and multiple return
+  values can be destructured immediately.
+- References (`&T`) and pointers (`*T`) are explicit; there is no implicit
+  borrowing or GC.
+
+With these primitives (plus features in `types.prime`) you can compose larger
+programs using additional modules and share code in reusable packages.
 
 
 ## CLI Usage
@@ -98,15 +289,53 @@ return {
 }
 ```
 
-Hover tips: the server now returns contextual documentation for every built-in.
-Press `K` on `fn`, `main`, `let`, `int`, `out`, literals, or identifiers to see
-the relevant description.
-Unused variable warnings are emitted as lint diagnostics (yellow) when a binding is declared but never referenced.
+### LSP & IDE Support
 
-## Treesitter Highlighting & Symbols
+`prime-lang lsp` speaks the same protocol as rust-analyzer, so Neovim,
+VS Code, Helix, and any other LSP client can plug in. Capabilities include:
+
+- diagnostics with ranges, severity, and warnings for unused bindings
+- hover, and signature help
+- structured completions (locals, structs, enums, constants, keywords)
+- `textDocument/formatting` via the built-in formatter
+- document symbols
+
+Minimal `nvim-lspconfig` setup (Blink’s capabilities optional but recommended):
+
+```lua
+local lspconfig = require "lspconfig"
+local configs = require "lspconfig.configs"
+local capabilities = require("blink.cmp").get_lsp_capabilities()
+
+vim.filetype.add { extension = { prime = "prime" } }
+
+if not configs.primelang then
+  configs.primelang = {
+    default_config = {
+      cmd = { "prime-lang", "lsp" },
+      filetypes = { "prime" },
+      root_dir = require("lspconfig.util").root_pattern(".git"),
+    },
+  }
+end
+
+lspconfig.primelang.setup {
+  capabilities = capabilities,
+  on_attach = function(client, bufnr)
+    if client.server_capabilities.documentFormattingProvider then
+      vim.api.nvim_create_autocmd("BufWritePre", {
+        buffer = bufnr,
+        callback = function() vim.lsp.buf.format { bufnr = bufnr } end,
+      })
+    end
+  end,
+}
+```
+
+### Treesitter Highlighting & Symbols
 
 Use the `prime_lang_treesitter` grammar repo plus a small Lazy spec to wire up
-highlighting and aerial symbols:
+syntax highlighting, locals view, and outline panes:
 
 ```lua
 return {
@@ -151,48 +380,6 @@ return {
       -- 5) Queries for quick preview (dev mode)
       local query_root = vim.fn.stdpath "data" .. "/site/queries/prime"
       vim.fn.mkdir(query_root, "p")
-
-      -- highlights.scm
-      do
-        local highlights = [[
-"fn"   @keyword
-"main" @function
-"let"  @keyword
-"int"  @type
-"out"  @function
-
-(let_statement
-  (identifier) @variable)
-
-(number)     @number
-(identifier) @identifier
-]]
-        local f = assert(io.open(query_root .. "/highlights.scm", "w"))
-        f:write(highlights)
-        f:close()
-      end
-
-      -- aerial.scm
-      do
-        local aerial = [[
-; fn main() { ... }
-((program
-    "fn"
-    "main" @name
-    "(" ")"
-    (block) @body) @symbol
-  (#set! "kind" "Function"))
-
-; let int a = 5;
-((let_statement
-    (identifier) @name
-    (_)*) @symbol
-  (#set! "kind" "Variable"))
-]]
-        local f = assert(io.open(query_root .. "/aerial.scm", "w"))
-        f:write(aerial)
-        f:close()
-      end
 
       return opts
     end,
@@ -248,4 +435,3 @@ With the CLI, LSP, formatter, lint watch, and Tree-sitter grammar in place, you
 get a complete Prime editing experience: diagnostics and formatting via LSP,
 syntax highlighting via Treesitter, and a sample toolchain for learning how
 language infrastructure fits together.
-
