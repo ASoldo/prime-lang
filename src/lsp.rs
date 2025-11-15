@@ -15,26 +15,34 @@ use crate::{
         types::{Mutability, TypeExpr},
     },
 };
+use serde_json::{Value, json};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     error::Error,
+    fs,
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::RwLock;
 use tower_lsp_server::jsonrpc::Result as RpcResult;
 use tower_lsp_server::lsp_types::{
-    CompletionContext, CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams,
-    CompletionResponse, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
+    CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams,
+    Command, CompletionContext, CompletionItem, CompletionItemKind, CompletionOptions,
+    CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    MessageType, OneOf, Position, PrepareRenameResponse, Range, RenameParams, ServerCapabilities,
-    SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    MessageType, OneOf, ParameterInformation, ParameterLabel, Position, PrepareRenameResponse,
+    Range, ReferenceParams, RenameParams, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
+    SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkspaceEdit, WorkspaceSymbol, WorkspaceSymbolParams,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
@@ -86,8 +94,70 @@ impl ModuleCache {
         self.inner.write().await.remove(uri);
     }
 
-    async fn snapshot(&self) -> Vec<Module> {
-        self.inner.read().await.values().cloned().collect()
+    async fn snapshot(&self) -> Vec<(Uri, Module)> {
+        self.inner
+            .read()
+            .await
+            .iter()
+            .map(|(uri, module)| (uri.clone(), module.clone()))
+            .collect()
+    }
+}
+
+#[derive(Clone)]
+struct SymbolLocation {
+    uri: Uri,
+    span: Span,
+    kind: SymbolKind,
+}
+
+#[derive(Default)]
+struct SymbolIndex {
+    inner: RwLock<HashMap<String, Vec<SymbolLocation>>>,
+}
+
+impl SymbolIndex {
+    async fn update_module(&self, uri: &Uri, module: &Module) {
+        let mut map = self.inner.write().await;
+        for locations in map.values_mut() {
+            locations.retain(|loc| &loc.uri != uri);
+        }
+        map.retain(|_, locations| !locations.is_empty());
+        for (name, span, kind) in module_symbol_definitions(module) {
+            map.entry(name).or_default().push(SymbolLocation {
+                uri: uri.clone(),
+                span,
+                kind,
+            });
+        }
+    }
+
+    async fn remove_module(&self, uri: &Uri) {
+        let mut map = self.inner.write().await;
+        map.retain(|_, locations| {
+            locations.retain(|loc| &loc.uri != uri);
+            !locations.is_empty()
+        });
+    }
+
+    async fn lookup(&self, name: &str) -> Vec<SymbolLocation> {
+        self.inner
+            .read()
+            .await
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    async fn search(&self, query: &str) -> Vec<(String, SymbolLocation)> {
+        let needle = query.to_lowercase();
+        self.inner
+            .read()
+            .await
+            .iter()
+            .filter(|(name, _)| name.to_lowercase().contains(&needle))
+            .flat_map(|(name, locs)| locs.iter().cloned().map(move |loc| (name.clone(), loc)))
+            .collect()
     }
 }
 
@@ -95,6 +165,7 @@ struct Backend {
     client: Client,
     docs: Arc<Documents>,
     modules: Arc<ModuleCache>,
+    symbols: Arc<SymbolIndex>,
 }
 
 impl Backend {
@@ -103,6 +174,7 @@ impl Backend {
             client,
             docs: Arc::new(Documents::default()),
             modules: Arc::new(ModuleCache::default()),
+            symbols: Arc::new(SymbolIndex::default()),
         }
     }
 
@@ -127,11 +199,15 @@ impl Backend {
         match parse_module_from_uri(uri, text) {
             Ok(module) => {
                 self.modules.insert(uri.clone(), module.clone()).await;
+                self.symbols.update_module(uri, &module).await;
                 if let Some(path) = url_to_path(uri) {
                     if let Ok(package) = load_package(&path) {
                         for pkg_module in package.program.modules {
                             if let Some(pkg_uri) = Uri::from_file_path(&pkg_module.path) {
-                                self.modules.insert(pkg_uri, pkg_module.clone()).await;
+                                self.modules
+                                    .insert(pkg_uri.clone(), pkg_module.clone())
+                                    .await;
+                                self.symbols.update_module(&pkg_uri, &pkg_module).await;
                             }
                         }
                     }
@@ -140,6 +216,14 @@ impl Backend {
             }
             Err(_) => self.modules.get(uri).await,
         }
+    }
+
+    async fn text_for_uri(&self, uri: &Uri) -> Option<String> {
+        if let Some(text) = self.docs.get(uri).await {
+            return Some(text);
+        }
+        let path = url_to_path(uri)?;
+        fs::read_to_string(path).ok()
     }
 }
 
@@ -155,9 +239,32 @@ impl LanguageServer for Backend {
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Options(
+                    CodeActionOptions {
+                        code_action_kinds: Some(vec![
+                            CodeActionKind::QUICKFIX,
+                            CodeActionKind::SOURCE,
+                        ]),
+                        ..Default::default()
+                    },
+                )),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".into(), ",".into()]),
+                    retrigger_characters: Some(vec![",".into()]),
+                    ..Default::default()
+                }),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(completion_trigger_characters),
                     ..Default::default()
+                }),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec!["prime.showReferences".into()],
+                    work_done_progress_options: Default::default(),
                 }),
                 ..Default::default()
             },
@@ -213,6 +320,7 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         self.docs.remove(&params.text_document.uri).await;
         self.modules.remove(&params.text_document.uri).await;
+        self.symbols.remove_module(&params.text_document.uri).await;
         self.client
             .publish_diagnostics(params.text_document.uri, vec![], None)
             .await;
@@ -229,7 +337,13 @@ impl LanguageServer for Backend {
             Err(_) => return Ok(None),
         };
         let module = self.parse_cached_module(&uri, &text).await;
-        let struct_modules = self.modules.snapshot().await;
+        let struct_modules = self
+            .modules
+            .snapshot()
+            .await
+            .into_iter()
+            .map(|(_, module)| module)
+            .collect::<Vec<_>>();
         let struct_info_map = collect_struct_info(&struct_modules);
         let struct_info = if struct_info_map.is_empty() {
             None
@@ -267,19 +381,32 @@ impl LanguageServer for Backend {
             Ok(tokens) => tokens,
             Err(_) => return Ok(None),
         };
-        let Some(module) = self.parse_cached_module(&uri, &text).await else {
-            return Ok(None);
-        };
+        let module = self.parse_cached_module(&uri, &text).await;
         let offset = position_to_offset(&text, position);
         let Some((name, _)) = identifier_at(&tokens, offset) else {
             return Ok(None);
         };
-        if let Some(span) = find_local_definition_span(&module, &name, offset) {
-            let location = Location::new(uri.clone(), span_to_range(&text, span));
-            return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+        if let Some(module) = module.as_ref() {
+            if let Some(span) = find_local_definition_span(module, &name, offset) {
+                let location = Location::new(uri.clone(), span_to_range(&text, span));
+                return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+            }
         }
-        if let Some(span) = find_global_definition_span(&module, &name) {
-            let location = Location::new(uri.clone(), span_to_range(&text, span));
+        let candidates = self.symbols.lookup(&name).await;
+        if let Some(symbol) = candidates
+            .iter()
+            .find(|loc| loc.uri == uri)
+            .or_else(|| candidates.first())
+            .cloned()
+        {
+            let range = if symbol.uri == uri {
+                span_to_range(&text, symbol.span)
+            } else if let Some(def_text) = self.text_for_uri(&symbol.uri).await {
+                span_to_range(&def_text, symbol.span)
+            } else {
+                return Ok(None);
+            };
+            let location = Location::new(symbol.uri, range);
             return Ok(Some(GotoDefinitionResponse::Scalar(location)));
         }
         Ok(None)
@@ -391,7 +518,13 @@ impl LanguageServer for Backend {
         let offset = position_to_offset(&text, position);
         let prefix = completion_prefix(&text, offset, context.as_ref());
         let prefix_ref = prefix.as_deref();
-        let struct_modules = self.modules.snapshot().await;
+        let struct_modules = self
+            .modules
+            .snapshot()
+            .await
+            .into_iter()
+            .map(|(_, module)| module)
+            .collect::<Vec<_>>();
         let struct_info = collect_struct_info(&struct_modules);
         if let Some(module) = module_opt {
             let var_types = collect_variable_types(&module);
@@ -413,6 +546,213 @@ impl LanguageServer for Backend {
             } else {
                 Ok(Some(CompletionResponse::Array(keywords)))
             }
+        }
+    }
+    async fn signature_help(
+        &self,
+        params: SignatureHelpParams,
+    ) -> RpcResult<Option<SignatureHelp>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(text) = self.docs.get(&uri).await else {
+            return Ok(None);
+        };
+        let offset = position_to_offset(&text, position);
+        let Some(ctx) = call_context(&text, offset) else {
+            return Ok(None);
+        };
+        let modules = self.modules.snapshot().await;
+        let mut signatures = Vec::new();
+        for (_, module) in modules {
+            for item in &module.items {
+                if let Item::Function(func) = item {
+                    if func.name == ctx.name {
+                        let params_info = func
+                            .params
+                            .iter()
+                            .map(|param| ParameterInformation {
+                                label: ParameterLabel::Simple(format_function_param(param)),
+                                documentation: None,
+                            })
+                            .collect();
+                        signatures.push(SignatureInformation {
+                            label: format_function_signature(func),
+                            documentation: None,
+                            parameters: Some(params_info),
+                            active_parameter: None,
+                        });
+                    }
+                }
+            }
+        }
+        if signatures.is_empty() {
+            return Ok(None);
+        }
+        let active_param = signatures[0]
+            .parameters
+            .as_ref()
+            .map(|params| ctx.arg_index.min(params.len().saturating_sub(1)));
+        Ok(Some(SignatureHelp {
+            signatures,
+            active_signature: Some(0),
+            active_parameter: active_param.map(|idx| idx as u32),
+        }))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> RpcResult<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri.clone();
+        let Some(text) = self.docs.get(&uri).await else {
+            return Ok(None);
+        };
+        let mut actions = Vec::new();
+        for diagnostic in &params.context.diagnostics {
+            if let Some(name) = unused_variable_name(&diagnostic.message) {
+                let mut edit_map = HashMap::new();
+                edit_map.insert(
+                    uri.clone(),
+                    vec![TextEdit {
+                        range: diagnostic.range,
+                        new_text: prefix_identifier(&text, &diagnostic.range),
+                    }],
+                );
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: format!("Prefix `{name}` with `_`"),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![diagnostic.clone()]),
+                    is_preferred: Some(true),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(edit_map),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }));
+            }
+        }
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(actions))
+        }
+    }
+
+    async fn references(&self, params: ReferenceParams) -> RpcResult<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let Some(text) = self.docs.get(&uri).await else {
+            return Ok(None);
+        };
+        let tokens = match lex(&text) {
+            Ok(tokens) => tokens,
+            Err(_) => return Ok(None),
+        };
+        let offset = position_to_offset(&text, position);
+        let Some((target_name, _)) = identifier_at(&tokens, offset) else {
+            return Ok(None);
+        };
+        let spans = collect_identifier_spans(&tokens, &target_name);
+        if spans.is_empty() {
+            return Ok(None);
+        }
+        let locations = spans
+            .into_iter()
+            .map(|span| Location::new(uri.clone(), span_to_range(&text, span)))
+            .collect();
+        Ok(Some(locations))
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> RpcResult<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
+        let entries = self.symbols.search(&params.query).await;
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let mut symbols = Vec::new();
+        for (name, loc) in entries {
+            if let Some(text) = self.text_for_uri(&loc.uri).await {
+                let range = span_to_range(&text, loc.span);
+                #[allow(deprecated)]
+                symbols.push(SymbolInformation {
+                    name,
+                    kind: loc.kind,
+                    location: Location::new(loc.uri.clone(), range),
+                    container_name: None,
+                    deprecated: None,
+                    tags: None,
+                });
+            }
+        }
+        if symbols.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(OneOf::Left(symbols)))
+        }
+    }
+
+    async fn code_lens(&self, params: CodeLensParams) -> RpcResult<Option<Vec<CodeLens>>> {
+        let uri = params.text_document.uri;
+        let Some(text) = self.docs.get(&uri).await else {
+            return Ok(None);
+        };
+        let tokens = match lex(&text) {
+            Ok(tokens) => tokens,
+            Err(_) => return Ok(None),
+        };
+        let module = match self.parse_cached_module(&uri, &text).await {
+            Some(module) => module,
+            None => return Ok(None),
+        };
+        let mut lenses = Vec::new();
+        for item in &module.items {
+            if let Item::Function(func) = item {
+                let spans = collect_identifier_spans(&tokens, &func.name);
+                let count = spans.len().saturating_sub(1);
+                lenses.push(CodeLens {
+                    range: span_to_range(&text, func.span),
+                    command: Some(Command::new(
+                        format!("{} reference{}", count, if count == 1 { "" } else { "s" }),
+                        "prime.showReferences".into(),
+                        Some(vec![json!({
+                            "uri": uri.to_string(),
+                            "name": func.name,
+                        })]),
+                    )),
+                    data: None,
+                });
+            }
+        }
+        Ok(Some(lenses))
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> RpcResult<Option<Value>> {
+        match params.command.as_str() {
+            "prime.showReferences" => {
+                if let Some(Value::Object(obj)) = params.arguments.into_iter().next() {
+                    if let (Some(Value::String(name)), Some(Value::String(uri_str))) =
+                        (obj.get("name"), obj.get("uri"))
+                    {
+                        if let Ok(uri) = Uri::from_str(uri_str.as_str()) {
+                            if let Some(text) = self.text_for_uri(&uri).await {
+                                if let Ok(tokens) = lex(&text) {
+                                    let spans = collect_identifier_spans(&tokens, name);
+                                    let count = spans.len().saturating_sub(1);
+                                    let message = format!(
+                                        "{} reference{} found for `{}`",
+                                        count,
+                                        if count == 1 { "" } else { "s" },
+                                        name
+                                    );
+                                    let _ =
+                                        self.client.show_message(MessageType::INFO, message).await;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
         }
     }
 }
@@ -627,26 +967,6 @@ fn find_local_decl(module: &Module, name: &str, offset: usize) -> Option<DeclInf
 
 fn find_local_definition_span(module: &Module, name: &str, offset: usize) -> Option<Span> {
     find_local_decl(module, name, offset).map(|decl| decl.span)
-}
-
-fn find_global_definition_span(module: &Module, name: &str) -> Option<Span> {
-    for item in &module.items {
-        match item {
-            Item::Function(func) if func.name == name => return Some(func.span),
-            Item::Struct(def) if def.name == name => return Some(def.span),
-            Item::Enum(def) => {
-                if def.name == name {
-                    return Some(def.span);
-                }
-                if let Some(variant) = def.variants.iter().find(|variant| variant.name == name) {
-                    return Some(variant.span);
-                }
-            }
-            Item::Const(def) if def.name == name => return Some(def.span),
-            _ => {}
-        }
-    }
-    None
 }
 
 fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
@@ -1504,6 +1824,68 @@ fn completion_trigger_characters() -> Vec<String> {
     TRIGGER_CHARS.chars().map(|ch| ch.to_string()).collect()
 }
 
+#[derive(Debug)]
+struct CallContext {
+    name: String,
+    arg_index: usize,
+}
+
+fn call_context(text: &str, offset: usize) -> Option<CallContext> {
+    if text.is_empty() {
+        return None;
+    }
+    let mut idx = offset.min(text.len());
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    while idx > 0 {
+        idx -= 1;
+        match bytes[idx] {
+            b')' | b']' | b'}' => depth += 1,
+            b'(' => {
+                if depth == 0 {
+                    let mut end = idx;
+                    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+                        end -= 1;
+                    }
+                    let mut start = end;
+                    while start > 0 && is_ident_char(bytes[start - 1]) {
+                        start -= 1;
+                    }
+                    if start == end {
+                        return None;
+                    }
+                    let name = text[start..end].to_string();
+                    let args_slice = &text[idx + 1..offset];
+                    let arg_index = argument_index(args_slice);
+                    return Some(CallContext { name, arg_index });
+                } else {
+                    depth -= 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn argument_index(segment: &str) -> usize {
+    let mut depth = 0i32;
+    let mut count = 0usize;
+    for ch in segment.chars() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            ',' if depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
 fn completion_prefix(
     text: &str,
     offset: usize,
@@ -1524,6 +1906,41 @@ fn completion_prefix(
         (Some(prefix), None) => Some(prefix),
         (None, Some(trigger)) => Some(trigger.to_string()),
         _ => None,
+    }
+}
+
+fn unused_variable_name(message: &str) -> Option<String> {
+    let prefix = "Variable `";
+    let suffix = "` is never used";
+    if message.starts_with(prefix) && message.ends_with(suffix) {
+        let inner = &message[prefix.len()..message.len() - suffix.len()];
+        if !inner.is_empty() {
+            return Some(inner.to_string());
+        }
+    }
+    None
+}
+
+fn range_to_offsets(text: &str, range: &Range) -> Option<(usize, usize)> {
+    let start = position_to_offset(text, range.start);
+    let end = position_to_offset(text, range.end);
+    if start <= end && end <= text.len() {
+        Some((start, end))
+    } else {
+        None
+    }
+}
+
+fn prefix_identifier(text: &str, range: &Range) -> String {
+    if let Some((start, end)) = range_to_offsets(text, range) {
+        let original = text[start..end].to_string();
+        if original.starts_with('_') {
+            original
+        } else {
+            format!("_{original}")
+        }
+    } else {
+        "_".into()
     }
 }
 
@@ -1736,6 +2153,24 @@ fn collect_struct_info(modules: &[Module]) -> HashMap<String, StructInfo> {
         info.insert(name.clone(), StructInfo { fields, methods });
     }
     info
+}
+
+fn module_symbol_definitions(module: &Module) -> Vec<(String, Span, SymbolKind)> {
+    let mut defs = Vec::new();
+    for item in &module.items {
+        match item {
+            Item::Function(func) => defs.push((func.name.clone(), func.span, SymbolKind::FUNCTION)),
+            Item::Struct(def) => defs.push((def.name.clone(), def.span, SymbolKind::STRUCT)),
+            Item::Enum(def) => {
+                defs.push((def.name.clone(), def.span, SymbolKind::ENUM));
+                for variant in &def.variants {
+                    defs.push((variant.name.clone(), variant.span, SymbolKind::ENUM_MEMBER));
+                }
+            }
+            Item::Const(def) => defs.push((def.name.clone(), def.span, SymbolKind::CONSTANT)),
+        }
+    }
+    defs
 }
 
 fn flatten_struct_fields(

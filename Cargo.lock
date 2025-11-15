@@ -608,6 +608,7 @@ dependencies = [
  "nom",
  "notify",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "tower-lsp-server",
