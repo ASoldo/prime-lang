@@ -1,0 +1,31 @@
+import "types";
+
+fn main() {
+  let Box[int32] counter = box_new(0);
+  bump_counter(&counter, 5);
+  out("box counter:");
+  out(box_get(counter));
+  let mut explorers: []string = slice_new();
+  slice_push(&mut explorers, "Prime Hero");
+  slice_push(&mut explorers, "Sparrow");
+  out("slice len:");
+  out(slice_len(explorers));
+  out("first explorer:");
+  match slice_get(explorers, 0) {
+    Some(name) => out(name),
+    None => out("n/a"),
+  };
+  let mut rewards: Map[string, int32] = map_new();
+  map_insert(&mut rewards, "Ridge scouting", 250);
+  map_insert(&mut rewards, "Harbor sweep", 175);
+  out("harbor reward:");
+  match map_get(rewards, "Harbor sweep") {
+    Some(value) => out(value),
+    None => out("none"),
+  };
+}
+
+fn bump_counter(counter: &Box[int32], amount: int32) {
+  let int32 current = box_get(counter);
+  box_set(counter, current + amount);
+}

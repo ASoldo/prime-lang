@@ -16,7 +16,7 @@ use llvm_sys::{
 };
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     ffi::{CStr, CString},
     path::Path,
     ptr,
@@ -41,12 +41,15 @@ pub struct Compiler {
 #[derive(Clone)]
 enum Value {
     Int(IntValue),
-    Str(LLVMValueRef),
+    Str(StringValue),
     Struct(HashMap<String, Value>),
     Enum(EnumValue),
     Tuple(Vec<Value>),
     Unit,
     Reference(ReferenceValue),
+    Boxed(BoxValue),
+    Slice(SliceValue),
+    Map(MapValue),
 }
 
 #[derive(Clone)]
@@ -69,9 +72,64 @@ struct ReferenceValue {
 }
 
 #[derive(Clone)]
+struct StringValue {
+    llvm: LLVMValueRef,
+    text: Rc<String>,
+}
+
+#[derive(Clone)]
+struct BoxValue {
+    cell: Rc<RefCell<Value>>,
+}
+
+#[derive(Clone)]
+struct SliceValue {
+    items: Rc<RefCell<Vec<Value>>>,
+}
+
+#[derive(Clone)]
+struct MapValue {
+    entries: Rc<RefCell<BTreeMap<String, Value>>>,
+}
+
+#[derive(Clone)]
 struct Binding {
     cell: Rc<RefCell<Value>>,
     mutable: bool,
+}
+
+impl StringValue {
+    fn new(llvm: LLVMValueRef, text: Rc<String>) -> Self {
+        Self { llvm, text }
+    }
+}
+
+impl BoxValue {
+    fn new(value: Value) -> Self {
+        Self {
+            cell: Rc::new(RefCell::new(value)),
+        }
+    }
+
+    fn replace(&self, value: Value) -> Value {
+        std::mem::replace(&mut *self.cell.borrow_mut(), value)
+    }
+}
+
+impl SliceValue {
+    fn new() -> Self {
+        Self {
+            items: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+}
+
+impl MapValue {
+    fn new() -> Self {
+        Self {
+            entries: Rc::new(RefCell::new(BTreeMap::new())),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -235,8 +293,8 @@ impl Compiler {
                 self.emit_printf_call("%d", &mut [int_value.llvm()]);
                 Ok(())
             }
-            Value::Str(ptr) => {
-                self.emit_printf_call("%s", &mut [ptr]);
+            Value::Str(string) => {
+                self.emit_printf_call("%s", &mut [string.llvm]);
                 Ok(())
             }
             Value::Tuple(values) => {
@@ -277,6 +335,9 @@ impl Compiler {
                 self.emit_printf_call("&", &mut []);
                 let inner = reference.cell.borrow().clone();
                 self.print_value(inner)
+            }
+            Value::Boxed(_) | Value::Slice(_) | Value::Map(_) => {
+                Err("Cannot print heap value in build mode".into())
             }
         }
     }
@@ -399,12 +460,10 @@ impl Compiler {
                 let c_value = CString::new(value.as_str())
                     .map_err(|_| "String literal contains null byte".to_string())?;
                 let name = CString::new("str_lit").unwrap();
+                let text = Rc::new(value.clone());
                 unsafe {
-                    Ok(Value::Str(LLVMBuildGlobalString(
-                        self.builder,
-                        c_value.as_ptr(),
-                        name.as_ptr(),
-                    )))
+                    let ptr = LLVMBuildGlobalString(self.builder, c_value.as_ptr(), name.as_ptr());
+                    Ok(Value::Str(StringValue::new(ptr, text)))
                 }
             }
             Expr::Literal(Literal::Rune(value, _)) => {
@@ -512,6 +571,9 @@ impl Compiler {
                         Value::Unit => {
                             return Err("Cannot access field on unit value".into());
                         }
+                        Value::Boxed(_) | Value::Slice(_) | Value::Map(_) => {
+                            return Err("Cannot access field on heap value in build mode".into());
+                        }
                     };
                 }
             }
@@ -534,7 +596,10 @@ impl Compiler {
                     );
                 }
                 if ident.name == "out" {
-                    return Err("out() cannot be used in expressions in build mode".into());
+                    return self.emit_out_call(args);
+                }
+                if let Some(result) = self.try_builtin_call(&ident.name, args) {
+                    return result;
                 }
                 let result = self.invoke_function(&ident.name, args)?;
                 result.ok_or_else(|| format!("Function `{}` does not return a value", ident.name))
@@ -555,6 +620,40 @@ impl Compiler {
             }
             _ => Err("Only direct function calls are supported in build mode expressions".into()),
         }
+    }
+
+    fn emit_out_call(&mut self, args: &[Expr]) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("out() expects exactly one argument".into());
+        }
+        let value = self.emit_expression(&args[0])?;
+        self.emit_out_value(value)?;
+        Ok(Value::Unit)
+    }
+
+    fn try_builtin_call(&mut self, name: &str, args: &[Expr]) -> Option<Result<Value, String>> {
+        let mut evaluated = Vec::with_capacity(args.len());
+        for expr in args {
+            match self.emit_expression(expr) {
+                Ok(value) => evaluated.push(value),
+                Err(err) => return Some(Err(err)),
+            }
+        }
+        let result = match name {
+            "box_new" => self.builtin_box_new(evaluated),
+            "box_get" => self.builtin_box_get(evaluated),
+            "box_set" => self.builtin_box_set(evaluated),
+            "box_take" => self.builtin_box_take(evaluated),
+            "slice_new" => self.builtin_slice_new(evaluated),
+            "slice_push" => self.builtin_slice_push(evaluated),
+            "slice_len" => self.builtin_slice_len(evaluated),
+            "slice_get" => self.builtin_slice_get(evaluated),
+            "map_new" => self.builtin_map_new(evaluated),
+            "map_insert" => self.builtin_map_insert(evaluated),
+            "map_get" => self.builtin_map_get(evaluated),
+            _ => return None,
+        };
+        Some(result)
     }
 
     fn emit_if_expression(&mut self, if_expr: &IfExpr) -> Result<Value, String> {
@@ -831,16 +930,34 @@ impl Compiler {
         }))
     }
 
+    fn instantiate_enum_variant(&self, variant: &str, values: Vec<Value>) -> Result<Value, String> {
+        let info = self
+            .enum_variants
+            .get(variant)
+            .ok_or_else(|| format!("Unknown enum variant {}", variant))?;
+        if info.fields != values.len() {
+            return Err(format!(
+                "Variant `{}` expects {} values, got {}",
+                variant,
+                info.fields,
+                values.len()
+            ));
+        }
+        Ok(Value::Enum(EnumValue {
+            enum_name: info.enum_name.clone(),
+            variant: variant.to_string(),
+            values,
+        }))
+    }
+
     fn eval_expression_statement(&mut self, expr: &Expr) -> Result<(), String> {
         match expr {
             Expr::Call { callee, args, .. } => match callee.as_ref() {
                 Expr::Identifier(ident) => {
                     if ident.name == "out" {
-                        if args.len() != 1 {
-                            return Err("out() expects exactly one argument".into());
-                        }
-                        let value = self.emit_expression(&args[0])?;
-                        self.emit_out_value(value)
+                        self.emit_out_call(args).map(|_| ())
+                    } else if let Some(result) = self.try_builtin_call(&ident.name, args) {
+                        result.map(|_| ())
                     } else {
                         let result = self.invoke_function(&ident.name, args)?;
                         if result.is_some() {
@@ -915,6 +1032,160 @@ impl Compiler {
             Ok(None)
         } else {
             Ok(result)
+        }
+    }
+
+    fn expect_box_value(&self, value: Value, ctx: &str) -> Result<BoxValue, String> {
+        match value {
+            Value::Boxed(b) => Ok(b),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.expect_box_value(inner, ctx)
+            }
+            _ => Err(format!("{ctx} expects Box value")),
+        }
+    }
+
+    fn expect_slice_value(&self, value: Value, ctx: &str) -> Result<SliceValue, String> {
+        match value {
+            Value::Slice(slice) => Ok(slice),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.expect_slice_value(inner, ctx)
+            }
+            _ => Err(format!("{ctx} expects slice value")),
+        }
+    }
+
+    fn expect_map_value(&self, value: Value, ctx: &str) -> Result<MapValue, String> {
+        match value {
+            Value::Map(map) => Ok(map),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.expect_map_value(inner, ctx)
+            }
+            _ => Err(format!("{ctx} expects map value")),
+        }
+    }
+
+    fn expect_string_value(&self, value: Value, ctx: &str) -> Result<String, String> {
+        match value {
+            Value::Str(s) => Ok((*s.text).clone()),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.expect_string_value(inner, ctx)
+            }
+            _ => Err(format!("{ctx} expects string value")),
+        }
+    }
+
+    fn builtin_box_new(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("box_new expects 1 argument".into());
+        }
+        let value = args.pop().unwrap();
+        Ok(Value::Boxed(BoxValue::new(value)))
+    }
+
+    fn builtin_box_get(&self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("box_get expects 1 argument".into());
+        }
+        let boxed = self.expect_box_value(args.pop().unwrap(), "box_get")?;
+        Ok(boxed.cell.borrow().clone())
+    }
+
+    fn builtin_box_set(&self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("box_set expects 2 arguments".into());
+        }
+        let value = args.pop().unwrap();
+        let boxed = self.expect_box_value(args.pop().unwrap(), "box_set")?;
+        boxed.replace(value);
+        Ok(Value::Unit)
+    }
+
+    fn builtin_box_take(&self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("box_take expects 1 argument".into());
+        }
+        let boxed = self.expect_box_value(args.pop().unwrap(), "box_take")?;
+        Ok(boxed.replace(Value::Unit))
+    }
+
+    fn builtin_slice_new(&self, args: Vec<Value>) -> Result<Value, String> {
+        if !args.is_empty() {
+            return Err("slice_new expects 0 arguments".into());
+        }
+        Ok(Value::Slice(SliceValue::new()))
+    }
+
+    fn builtin_slice_push(&self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("slice_push expects 2 arguments".into());
+        }
+        let value = args.pop().unwrap();
+        let slice = self.expect_slice_value(args.pop().unwrap(), "slice_push")?;
+        slice.items.borrow_mut().push(value);
+        Ok(Value::Unit)
+    }
+
+    fn builtin_slice_len(&self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("slice_len expects 1 argument".into());
+        }
+        let slice = self.expect_slice_value(args.pop().unwrap(), "slice_len")?;
+        let len = slice.items.borrow().len() as i128;
+        Ok(Value::Int(self.const_int_value(len)))
+    }
+
+    fn builtin_slice_get(&self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("slice_get expects 2 arguments".into());
+        }
+        let index_value = args.pop().unwrap();
+        let slice = self.expect_slice_value(args.pop().unwrap(), "slice_get")?;
+        let int_value = self.expect_int(index_value)?;
+        let idx = int_value
+            .constant()
+            .ok_or_else(|| "slice_get index must be constant in build mode".to_string())?;
+        let items = slice.items.borrow();
+        if idx < 0 || (idx as usize) >= items.len() {
+            return self.instantiate_enum_variant("None", Vec::new());
+        }
+        let value = items[idx as usize].clone();
+        self.instantiate_enum_variant("Some", vec![value])
+    }
+
+    fn builtin_map_new(&self, args: Vec<Value>) -> Result<Value, String> {
+        if !args.is_empty() {
+            return Err("map_new expects 0 arguments".into());
+        }
+        Ok(Value::Map(MapValue::new()))
+    }
+
+    fn builtin_map_insert(&self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 3 {
+            return Err("map_insert expects 3 arguments".into());
+        }
+        let value = args.pop().unwrap();
+        let key = self.expect_string_value(args.pop().unwrap(), "map_insert")?;
+        let map = self.expect_map_value(args.pop().unwrap(), "map_insert")?;
+        map.entries.borrow_mut().insert(key, value);
+        Ok(Value::Unit)
+    }
+
+    fn builtin_map_get(&self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("map_get expects 2 arguments".into());
+        }
+        let key = self.expect_string_value(args.pop().unwrap(), "map_get")?;
+        let map = self.expect_map_value(args.pop().unwrap(), "map_get")?;
+        let entries = map.entries.borrow();
+        if let Some(value) = entries.get(&key) {
+            self.instantiate_enum_variant("Some", vec![value.clone()])
+        } else {
+            self.instantiate_enum_variant("None", Vec::new())
         }
     }
 
@@ -1083,5 +1354,8 @@ fn describe_value(value: &Value) -> &'static str {
         Value::Tuple(_) => "tuple",
         Value::Unit => "unit",
         Value::Reference(_) => "reference",
+        Value::Boxed(_) => "box",
+        Value::Slice(_) => "slice",
+        Value::Map(_) => "map",
     }
 }

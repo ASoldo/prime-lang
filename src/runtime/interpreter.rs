@@ -6,7 +6,10 @@ use crate::project::Package;
 use crate::runtime::{
     environment::Environment,
     error::{RuntimeError, RuntimeResult},
-    value::{EnumValue, RangeValue, ReferenceValue, StructInstance, Value},
+    value::{
+        BoxValue, EnumValue, MapValue, RangeValue, ReferenceValue, SliceValue, StructInstance,
+        Value,
+    },
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -141,6 +144,9 @@ impl Interpreter {
         if name == "out" {
             return self.call_out(args);
         }
+        if let Some(result) = self.call_builtin(name, args.clone()) {
+            return result;
+        }
         let info =
             self.functions
                 .get(name)
@@ -209,6 +215,192 @@ impl Interpreter {
         }
         println!("{}", args[0]);
         Ok(Vec::new())
+    }
+
+    fn call_builtin(&mut self, name: &str, args: Vec<Value>) -> Option<RuntimeResult<Vec<Value>>> {
+        let result = match name {
+            "box_new" => self.builtin_box_new(args),
+            "box_get" => self.builtin_box_get(args),
+            "box_set" => self.builtin_box_set(args),
+            "box_take" => self.builtin_box_take(args),
+            "slice_new" => self.builtin_slice_new(args),
+            "slice_push" => self.builtin_slice_push(args),
+            "slice_len" => self.builtin_slice_len(args),
+            "slice_get" => self.builtin_slice_get(args),
+            "map_new" => self.builtin_map_new(args),
+            "map_insert" => self.builtin_map_insert(args),
+            "map_get" => self.builtin_map_get(args),
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    fn expect_arity(&self, name: &str, args: &[Value], expected: usize) -> RuntimeResult<()> {
+        if args.len() != expected {
+            Err(RuntimeError::ArityMismatch {
+                name: name.into(),
+                expected,
+                received: args.len(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn builtin_box_new(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("box_new", &args, 1)?;
+        let value = args.remove(0);
+        Ok(vec![Value::Boxed(BoxValue::new(value))])
+    }
+
+    fn expect_box(&self, name: &str, value: Value) -> RuntimeResult<BoxValue> {
+        match value {
+            Value::Boxed(b) => Ok(b),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.borrow().clone();
+                self.expect_box(name, cloned)
+            }
+            _ => Err(RuntimeError::TypeMismatch {
+                message: format!("{name} expects Box value"),
+            }),
+        }
+    }
+
+    fn builtin_box_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("box_get", &args, 1)?;
+        let boxed = self.expect_box("box_get", args.remove(0))?;
+        Ok(vec![boxed.cell.borrow().clone()])
+    }
+
+    fn builtin_box_set(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("box_set", &args, 2)?;
+        let boxed = self.expect_box("box_set", args.remove(0))?;
+        let value = args.remove(0);
+        boxed.replace(value);
+        Ok(Vec::new())
+    }
+
+    fn builtin_box_take(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("box_take", &args, 1)?;
+        let boxed = self.expect_box("box_take", args.remove(0))?;
+        Ok(vec![boxed.take()])
+    }
+
+    fn builtin_slice_new(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("slice_new", &args, 0)?;
+        Ok(vec![Value::Slice(SliceValue::new())])
+    }
+
+    fn expect_slice(&self, name: &str, value: Value) -> RuntimeResult<SliceValue> {
+        match value {
+            Value::Slice(slice) => Ok(slice),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.borrow().clone();
+                self.expect_slice(name, cloned)
+            }
+            _ => Err(RuntimeError::TypeMismatch {
+                message: format!("{name} expects slice value"),
+            }),
+        }
+    }
+
+    fn builtin_slice_push(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        if args.len() != 2 {
+            return Err(RuntimeError::ArityMismatch {
+                name: "slice_push".into(),
+                expected: 2,
+                received: args.len(),
+            });
+        }
+        let slice = self.expect_slice("slice_push", args.remove(0))?;
+        let value = args.remove(0);
+        slice.items.borrow_mut().push(value);
+        Ok(Vec::new())
+    }
+
+    fn builtin_slice_len(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("slice_len", &args, 1)?;
+        let slice = self.expect_slice("slice_len", args.remove(0))?;
+        let len = slice.items.borrow().len() as i128;
+        Ok(vec![Value::Int(len)])
+    }
+
+    fn builtin_slice_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("slice_get", &args, 2)?;
+        let slice = self.expect_slice("slice_get", args.remove(0))?;
+        let index = match args.remove(0) {
+            Value::Int(i) => i,
+            _ => {
+                return Err(RuntimeError::TypeMismatch {
+                    message: "slice_get expects integer index".into(),
+                });
+            }
+        };
+        let items = slice.items.borrow();
+        if index < 0 || (index as usize) >= items.len() {
+            let none = self.instantiate_enum("Option", "None", Vec::new())?;
+            return Ok(vec![none]);
+        }
+        let value = items[index as usize].clone();
+        let some = self.instantiate_enum("Option", "Some", vec![value])?;
+        Ok(vec![some])
+    }
+
+    fn builtin_map_new(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("map_new", &args, 0)?;
+        Ok(vec![Value::Map(MapValue::new())])
+    }
+
+    fn expect_map(&self, name: &str, value: Value) -> RuntimeResult<MapValue> {
+        match value {
+            Value::Map(map) => Ok(map),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.borrow().clone();
+                self.expect_map(name, cloned)
+            }
+            _ => Err(RuntimeError::TypeMismatch {
+                message: format!("{name} expects map value"),
+            }),
+        }
+    }
+
+    fn expect_string(&self, name: &str, value: Value) -> RuntimeResult<String> {
+        if let Value::String(s) = value {
+            Ok(s)
+        } else {
+            Err(RuntimeError::TypeMismatch {
+                message: format!("{name} expects string key"),
+            })
+        }
+    }
+
+    fn builtin_map_insert(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        if args.len() != 3 {
+            return Err(RuntimeError::ArityMismatch {
+                name: "map_insert".into(),
+                expected: 3,
+                received: args.len(),
+            });
+        }
+        let map = self.expect_map("map_insert", args.remove(0))?;
+        let key = self.expect_string("map_insert", args.remove(0))?;
+        let value = args.remove(0);
+        map.entries.borrow_mut().insert(key, value);
+        Ok(Vec::new())
+    }
+
+    fn builtin_map_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("map_get", &args, 2)?;
+        let map = self.expect_map("map_get", args.remove(0))?;
+        let key = self.expect_string("map_get", args.remove(0))?;
+        let entries = map.entries.borrow();
+        if let Some(value) = entries.get(&key) {
+            let some = self.instantiate_enum("Option", "Some", vec![value.clone()])?;
+            Ok(vec![some])
+        } else {
+            let none = self.instantiate_enum("Option", "None", Vec::new())?;
+            Ok(vec![none])
+        }
     }
 
     fn eval_statement(&mut self, statement: &Statement) -> RuntimeResult<Option<FlowSignal>> {

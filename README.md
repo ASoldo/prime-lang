@@ -170,53 +170,50 @@ import "math";
 
 const LIMIT: int32 = 4;
 
-struct Vec2 {
-  x: float32;
-  y: float32;
-}
-
-struct Transform {
-  Vec2;              // embedded, exposes Vec2.x and Vec2.y
-  scale: float32;
-}
-
-enum Result[T, E] {
-  Ok(T),
-  Err(E),
-}
-
-fn translate(mut t: Transform, delta: Vec2) -> Transform {
-  t.x = t.x + delta.x;
-  t.y = t.y + delta.y;
-  t
-}
-
 fn divmod(a: int32, b: int32) -> (int32, int32) {
   (a / b, a % b)
 }
 
 fn main() {
-  let Transform origin = Transform{ Vec2{0.0, 0.0}, 1.0 };
-  let Transform shifted = translate(origin, Vec2{1.0, 0.5});
   let (quot, rem) = divmod(22, LIMIT);
-  out(shifted.x);
   out((quot, rem));
 }
 ```
 
-Key rules:
+### Methods & Calls
 
-- Locals are immutable unless you opt into `let mut name = ...`.
-- Struct embedding promotes the embedded fields and methods without inheritance.
-- Enums support Rust‑style algebraic variants that you destructure with `match`.
-- Loops: `for i in 0..n { ... }`, `while cond { ... }`, plus `break`/`continue`.
-- Functions return a single type or a tuple (`-> (T, U)`), and multiple return
-  values can be destructured immediately.
-- References (`&T`) and pointers (`*T`) are explicit; there is no implicit
-  borrowing or GC.
+Functions whose first parameter is a struct act like methods. You can call them
+via `structInstance.method(args...)` and the compiler rewrites it to a regular
+function call behind the scenes:
 
-With these primitives (plus features in `types.prime`) you can compose larger
-programs using additional modules and share code in reusable packages.
+```prime
+fn heal(mut player: Player, boost: int32) -> Player {
+  player.hp = player.hp + boost;
+  player
+}
+
+let Player leveled = hero.heal(24);
+```
+
+- Methods can take ownership, `&Player`, or `&mut Player` depending on how you
+  declare the first parameter.
+- There is no trait/impl syntax yet; everything lives as free functions.
+
+### Types & Memory Model
+
+- Numbers: `int8`…`int64`, `uint8`…`uint64`, `isize`/`usize`, `float32`,
+  `float64`, plus `bool`, `rune`, and `string`.
+- Structs/enums are value types; assignment copies the fields.
+- References (`&T`) wrap the value in an `Rc<RefCell<_>>`, so borrowing a value
+  moves it to the heap until all references drop. Raw pointers (`*T`) exist for
+  unsafe interop, but there is no manual `alloc/free`.
+- Dynamic containers (growable slices, maps) are not implemented yet. Programs
+  stick to fixed-size structs and module-defined helpers—the next milestone is
+  a richer standard library plus explicit ownership rules.
+
+With these primitives you can already compose larger programs (see
+`main.prime`/`types.prime`) while keeping the roadmap—better containers and
+memory management—in mind.
 
 
 ## CLI Usage
