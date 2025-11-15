@@ -1,3 +1,4 @@
+use crate::project::load_package;
 use crate::{
     formatter::format_module,
     language::{
@@ -84,6 +85,10 @@ impl ModuleCache {
     async fn remove(&self, uri: &Uri) {
         self.inner.write().await.remove(uri);
     }
+
+    async fn snapshot(&self) -> Vec<Module> {
+        self.inner.read().await.values().cloned().collect()
+    }
 }
 
 struct Backend {
@@ -122,6 +127,15 @@ impl Backend {
         match parse_module_from_uri(uri, text) {
             Ok(module) => {
                 self.modules.insert(uri.clone(), module.clone()).await;
+                if let Some(path) = url_to_path(uri) {
+                    if let Ok(package) = load_package(&path) {
+                        for pkg_module in package.program.modules {
+                            if let Some(pkg_uri) = Uri::from_file_path(&pkg_module.path) {
+                                self.modules.insert(pkg_uri, pkg_module.clone()).await;
+                            }
+                        }
+                    }
+                }
                 Some(module)
             }
             Err(_) => self.modules.get(uri).await,
@@ -215,10 +229,16 @@ impl LanguageServer for Backend {
             Err(_) => return Ok(None),
         };
         let module = self.parse_cached_module(&uri, &text).await;
+        let struct_modules = self.modules.snapshot().await;
+        let struct_info_map = collect_struct_info(&struct_modules);
+        let struct_info = if struct_info_map.is_empty() {
+            None
+        } else {
+            Some(struct_info_map)
+        };
         let vars = collect_var_infos(&text, &tokens);
         let offset = position_to_offset(&text, position);
         if let Some(token) = token_at(&tokens, offset) {
-            let struct_info = module.as_ref().map(collect_struct_info);
             let var_types = module.as_ref().map(collect_variable_types);
             if let Some(hover) = hover_for_token(
                 &text,
@@ -371,8 +391,9 @@ impl LanguageServer for Backend {
         let offset = position_to_offset(&text, position);
         let prefix = completion_prefix(&text, offset, context.as_ref());
         let prefix_ref = prefix.as_deref();
+        let struct_modules = self.modules.snapshot().await;
+        let struct_info = collect_struct_info(&struct_modules);
         if let Some(module) = module_opt {
-            let struct_info = collect_struct_info(&module);
             let var_types = collect_variable_types(&module);
             if let Some(chain) = expression_chain_before_dot(&text, offset) {
                 if let Some(items) =
@@ -1656,45 +1677,49 @@ struct RawStructInfo {
     methods: Vec<MethodInfo>,
 }
 
-fn collect_struct_info(module: &Module) -> HashMap<String, StructInfo> {
+fn collect_struct_info(modules: &[Module]) -> HashMap<String, StructInfo> {
     let mut raw = HashMap::new();
-    for item in &module.items {
-        if let Item::Struct(def) = item {
-            let mut struct_fields = Vec::new();
-            let mut embedded = Vec::new();
-            for field in &def.fields {
-                if let Some(name) = &field.name {
-                    struct_fields.push(StructFieldInfo {
-                        name: name.clone(),
-                        ty: field.ty.ty.clone(),
-                        declared_in: def.name.clone(),
-                    });
-                } else if field.embedded {
-                    if let Some(target) = struct_name_from_type(&field.ty.ty) {
-                        embedded.push(target.to_string());
+    for module in modules {
+        for item in &module.items {
+            if let Item::Struct(def) = item {
+                let mut struct_fields = Vec::new();
+                let mut embedded = Vec::new();
+                for field in &def.fields {
+                    if let Some(name) = &field.name {
+                        struct_fields.push(StructFieldInfo {
+                            name: name.clone(),
+                            ty: field.ty.ty.clone(),
+                            declared_in: def.name.clone(),
+                        });
+                    } else if field.embedded {
+                        if let Some(target) = struct_name_from_type(&field.ty.ty) {
+                            embedded.push(target.to_string());
+                        }
                     }
                 }
+                raw.insert(
+                    def.name.clone(),
+                    RawStructInfo {
+                        fields: struct_fields,
+                        embedded,
+                        methods: Vec::new(),
+                    },
+                );
             }
-            raw.insert(
-                def.name.clone(),
-                RawStructInfo {
-                    fields: struct_fields,
-                    embedded,
-                    methods: Vec::new(),
-                },
-            );
         }
     }
-    for item in &module.items {
-        if let Item::Function(func) = item {
-            if let Some(first_param) = func.params.first() {
-                if let Some(receiver) = receiver_type_name(&first_param.ty.ty) {
-                    let entry = raw.entry(receiver.clone()).or_default();
-                    entry.methods.push(MethodInfo {
-                        name: func.name.clone(),
-                        signature: format_function_signature(func),
-                        declared_in: receiver,
-                    });
+    for module in modules {
+        for item in &module.items {
+            if let Item::Function(func) = item {
+                if let Some(first_param) = func.params.first() {
+                    if let Some(receiver) = receiver_type_name(&first_param.ty.ty) {
+                        let entry = raw.entry(receiver.clone()).or_default();
+                        entry.methods.push(MethodInfo {
+                            name: func.name.clone(),
+                            signature: format_function_signature(func),
+                            declared_in: receiver,
+                        });
+                    }
                 }
             }
         }
