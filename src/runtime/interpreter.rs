@@ -1,6 +1,6 @@
 use crate::language::{
     ast::*,
-    types::{Mutability, TypeAnnotation},
+    types::{Mutability, TypeAnnotation, TypeExpr},
 };
 use crate::project::Package;
 use crate::runtime::{
@@ -20,7 +20,7 @@ pub struct Interpreter {
     env: Environment,
     structs: HashMap<String, StructDef>,
     enum_variants: HashMap<String, EnumVariantInfo>,
-    functions: HashMap<String, FunctionInfo>,
+    functions: HashMap<FunctionKey, FunctionInfo>,
     consts: Vec<ConstDef>,
     deprecated_warnings: HashSet<String>,
 }
@@ -29,6 +29,13 @@ pub struct Interpreter {
 struct FunctionInfo {
     module: String,
     def: FunctionDef,
+    receiver: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FunctionKey {
+    name: String,
+    receiver: Option<String>,
 }
 
 #[derive(Clone)]
@@ -63,7 +70,7 @@ impl Interpreter {
 
     pub fn run(&mut self) -> RuntimeResult<()> {
         self.bootstrap()?;
-        let _ = self.call_function("main", Vec::new())?;
+        let _ = self.call_function("main", None, Vec::new())?;
         Ok(())
     }
 
@@ -119,43 +126,93 @@ impl Interpreter {
     }
 
     fn register_function(&mut self, module: &str, def: FunctionDef) -> RuntimeResult<()> {
-        if self.functions.contains_key(&def.name) {
+        let receiver = receiver_type_name(&def, &self.structs);
+        let base_key = FunctionKey {
+            name: def.name.clone(),
+            receiver: receiver.clone(),
+        };
+        if self.functions.contains_key(&base_key) {
             return Err(RuntimeError::Panic {
-                message: format!("Duplicate function `{}`", def.name),
+                message: format!(
+                    "Duplicate function `{}` for receiver `{:?}`",
+                    def.name, receiver
+                ),
             });
         }
-        self.functions.insert(
-            def.name.clone(),
-            FunctionInfo {
-                module: module.to_string(),
-                def: def.clone(),
-            },
-        );
+        let info = FunctionInfo {
+            module: module.to_string(),
+            receiver: receiver.clone(),
+            def: def.clone(),
+        };
+        self.functions.insert(base_key, info);
+
         let qualified = format!("{}::{}", module, def.name);
+        let qualified_key = FunctionKey {
+            name: qualified,
+            receiver: receiver_type_name(&def, &self.structs),
+        };
         self.functions.insert(
-            qualified,
+            qualified_key,
             FunctionInfo {
                 module: module.to_string(),
+                receiver,
                 def,
             },
         );
         Ok(())
     }
 
-    fn call_function(&mut self, name: &str, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+    fn call_function(
+        &mut self,
+        name: &str,
+        receiver: Option<String>,
+        args: Vec<Value>,
+    ) -> RuntimeResult<Vec<Value>> {
         if name == "out" {
             return self.call_out(args);
         }
         if let Some(result) = self.call_builtin(name, args.clone()) {
             return result;
         }
-        let info =
+        let key = FunctionKey {
+            name: name.to_string(),
+            receiver: receiver.clone(),
+        };
+        let info = if let Some(info) = self.functions.get(&key).cloned() {
+            info
+        } else if receiver.is_some() {
             self.functions
-                .get(name)
+                .get(&FunctionKey {
+                    name: name.to_string(),
+                    receiver: None,
+                })
                 .cloned()
                 .ok_or_else(|| RuntimeError::UnknownSymbol {
+                    name: format!(
+                        "{} for receiver `{}`",
+                        name,
+                        receiver.unwrap_or_else(|| "<unknown>".into())
+                    ),
+                })?
+        } else {
+            self.functions
+                .get(&FunctionKey {
                     name: name.to_string(),
-                })?;
+                    receiver: self.receiver_from_args(&args),
+                })
+                .cloned()
+                .or_else(|| {
+                    self.functions
+                        .get(&FunctionKey {
+                            name: name.to_string(),
+                            receiver: None,
+                        })
+                        .cloned()
+                })
+                .ok_or_else(|| RuntimeError::UnknownSymbol {
+                    name: name.to_string(),
+                })?
+        };
         if info.def.params.len() != args.len() {
             return Err(RuntimeError::ArityMismatch {
                 name: name.to_string(),
@@ -205,6 +262,10 @@ impl Interpreter {
         self.execute_deferred()?;
         self.env.pop_scope();
         Ok(values)
+    }
+
+    fn receiver_from_args(&self, args: &[Value]) -> Option<String> {
+        args.first().and_then(|value| self.value_struct_name(value))
     }
 
     fn call_out(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
@@ -583,6 +644,15 @@ impl Interpreter {
         args.iter().map(|expr| self.eval_expression(expr)).collect()
     }
 
+    fn value_struct_name(&self, value: &Value) -> Option<String> {
+        match value {
+            Value::Struct(instance) => Some(instance.name.clone()),
+            Value::Reference(reference) => self.value_struct_name(&reference.cell.borrow()),
+            Value::Boxed(inner) => self.value_struct_name(&inner.cell.borrow()),
+            _ => None,
+        }
+    }
+
     fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {
         match expr {
             Expr::Identifier(ident) => {
@@ -636,7 +706,7 @@ impl Interpreter {
                         let variant_name = ident.name.clone();
                         return self.instantiate_enum(&enum_name, &variant_name, arg_values);
                     }
-                    let results = self.call_function(&ident.name, arg_values)?;
+                    let results = self.call_function(&ident.name, None, arg_values)?;
                     Ok(match results.len() {
                         0 => Value::Unit,
                         1 => results.into_iter().next().unwrap(),
@@ -646,9 +716,12 @@ impl Interpreter {
                 Expr::FieldAccess { base, field, .. } => {
                     if let Expr::Identifier(module_ident) = base.as_ref() {
                         let qualified = format!("{}::{}", module_ident.name, field);
-                        if self.functions.contains_key(&qualified) {
+                        if self.functions.contains_key(&FunctionKey {
+                            name: qualified.clone(),
+                            receiver: None,
+                        }) {
                             let arg_values = self.eval_arguments(args)?;
-                            let results = self.call_function(&qualified, arg_values)?;
+                            let results = self.call_function(&qualified, None, arg_values)?;
                             return Ok(match results.len() {
                                 0 => Value::Unit,
                                 1 => results.into_iter().next().unwrap(),
@@ -657,12 +730,13 @@ impl Interpreter {
                         }
                     }
                     let receiver = self.eval_expression(base)?;
+                    let receiver_type = self.value_struct_name(&receiver);
                     let mut method_args = Vec::with_capacity(args.len() + 1);
                     method_args.push(receiver);
                     for expr in args {
                         method_args.push(self.eval_expression(expr)?);
                     }
-                    let results = self.call_function(field, method_args)?;
+                    let results = self.call_function(field, receiver_type, method_args)?;
                     Ok(match results.len() {
                         0 => Value::Unit,
                         1 => results.into_iter().next().unwrap(),
@@ -1145,5 +1219,28 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
         FlowSignal::Break => "break",
         FlowSignal::Continue => "continue",
         FlowSignal::Return(_) => "return",
+    }
+}
+fn receiver_type_name(
+    def: &FunctionDef,
+    structs: &HashMap<String, StructDef>,
+) -> Option<String> {
+    def.params
+        .first()
+        .and_then(|param| type_name_from_annotation(&param.ty))
+        .filter(|name| structs.contains_key(name))
+}
+
+fn type_name_from_annotation(annotation: &TypeAnnotation) -> Option<String> {
+    type_name_from_type_expr(&annotation.ty)
+}
+
+fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
+    match expr {
+        TypeExpr::Named(name, _) => Some(name.clone()),
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
+            type_name_from_type_expr(ty)
+        }
+        _ => None,
     }
 }

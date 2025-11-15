@@ -23,6 +23,12 @@ use std::{
     rc::Rc,
 };
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FunctionKey {
+    name: String,
+    receiver: Option<String>,
+}
+
 pub struct Compiler {
     context: LLVMContextRef,
     module: LLVMModuleRef,
@@ -33,7 +39,7 @@ pub struct Compiler {
     main_fn: LLVMValueRef,
     scopes: Vec<HashMap<String, Binding>>,
     structs: HashMap<String, StructDef>,
-    functions: HashMap<String, FunctionDef>,
+    functions: HashMap<FunctionKey, FunctionDef>,
     enum_variants: HashMap<String, EnumVariantInfo>,
     consts: Vec<ConstDef>,
     active_mut_borrows: HashSet<String>,
@@ -45,7 +51,7 @@ pub struct Compiler {
 enum Value {
     Int(IntValue),
     Str(StringValue),
-    Struct(HashMap<String, Value>),
+    Struct(StructValue),
     Enum(EnumValue),
     Tuple(Vec<Value>),
     Unit,
@@ -98,6 +104,12 @@ struct MapValue {
     entries: Rc<RefCell<BTreeMap<String, Value>>>,
     key_type: Option<TypeExpr>,
     value_type: Option<TypeExpr>,
+}
+
+#[derive(Clone)]
+struct StructValue {
+    name: String,
+    fields: HashMap<String, Value>,
 }
 
 #[derive(Clone)]
@@ -167,6 +179,20 @@ impl MapValue {
 
     fn get(&self, key: &str) -> Option<Value> {
         self.entries.borrow().get(key).cloned()
+    }
+}
+
+impl StructValue {
+    fn new(name: String, fields: HashMap<String, Value>) -> Self {
+        Self { name, fields }
+    }
+
+    fn get(&self, field: &str) -> Option<Value> {
+        self.fields.get(field).cloned()
+    }
+
+    fn into_fields(self) -> HashMap<String, Value> {
+        self.fields
     }
 }
 
@@ -255,9 +281,26 @@ impl Compiler {
                         }
                     }
                     Item::Function(func) => {
-                        self.functions.insert(func.name.clone(), func.clone());
+                        let receiver = receiver_type_name(func, &self.structs);
+                        let key = FunctionKey {
+                            name: func.name.clone(),
+                            receiver: receiver.clone(),
+                        };
+                        if self.functions.contains_key(&key) {
+                            return Err(format!(
+                                "Duplicate function `{}` for receiver `{:?}`",
+                                func.name, receiver
+                            ));
+                        }
+                        self.functions.insert(key, func.clone());
                         let qualified = format!("{}::{}", module.name, func.name);
-                        self.functions.insert(qualified, func.clone());
+                        self.functions.insert(
+                            FunctionKey {
+                                name: qualified,
+                                receiver,
+                            },
+                            func.clone(),
+                        );
                     }
                     Item::Const(const_def) => {
                         self.consts.push(const_def.clone());
@@ -602,10 +645,9 @@ impl Compiler {
                 let mut current = base_value;
                 loop {
                     current = match current {
-                        Value::Struct(map) => {
-                            return map
+                        Value::Struct(instance) => {
+                            return instance
                                 .get(field)
-                                .cloned()
                                 .ok_or_else(|| format!("Field {} not found", field));
                         }
                         Value::Reference(reference) => reference.cell.borrow().clone(),
@@ -663,10 +705,16 @@ impl Compiler {
             Expr::FieldAccess { base, field, .. } => {
                 if let Expr::Identifier(module_ident) = base.as_ref() {
                     let qualified = format!("{}::{}", module_ident.name, field);
-                    let result = self.invoke_function(&qualified, args)?;
-                    return result.ok_or_else(|| {
-                        format!("Function `{}` does not return a value", qualified)
-                    });
+                    let key = FunctionKey {
+                        name: qualified.clone(),
+                        receiver: None,
+                    };
+                    if self.functions.contains_key(&key) {
+                        let result = self.invoke_function(&qualified, args)?;
+                        return result.ok_or_else(|| {
+                            format!("Function `{}` does not return a value", qualified)
+                        });
+                    }
                 }
                 let mut method_args = Vec::with_capacity(args.len() + 1);
                 method_args.push((**base).clone());
@@ -952,7 +1000,7 @@ impl Compiler {
                     let value = self.emit_expression(&field.value)?;
                     map.insert(field.name.clone(), value);
                 }
-                Ok(Value::Struct(map))
+                Ok(Value::Struct(StructValue::new(name.to_string(), map)))
             }
             StructLiteralKind::Positional(values) => {
                 let def = self
@@ -980,7 +1028,7 @@ impl Compiler {
                                 );
                             }
                         };
-                        for (key, val) in embedded_struct {
+                        for (key, val) in embedded_struct.into_fields() {
                             map.insert(key, val);
                         }
                     } else if let Some(key) = &field_def.name {
@@ -993,7 +1041,7 @@ impl Compiler {
                         map.insert(fallback, value);
                     }
                 }
-                Ok(Value::Struct(map))
+                Ok(Value::Struct(StructValue::new(name.to_string(), map)))
             }
         }
     }
@@ -1076,14 +1124,20 @@ impl Compiler {
                 Expr::FieldAccess { base, field, .. } => {
                     if let Expr::Identifier(module_ident) = base.as_ref() {
                         let qualified = format!("{}::{}", module_ident.name, field);
-                        let result = self.invoke_function(&qualified, args)?;
-                        if result.is_some() {
-                            return Err(
+                        let key = FunctionKey {
+                            name: qualified.clone(),
+                            receiver: None,
+                        };
+                        if self.functions.contains_key(&key) {
+                            let result = self.invoke_function(&qualified, args)?;
+                            if result.is_some() {
+                                return Err(
                                     "Functions returning values are not supported in expression statements during build mode"
                                         .into(),
                                 );
+                            }
+                            return Ok(());
                         }
-                        return Ok(());
                     }
                     let mut method_args = Vec::with_capacity(args.len() + 1);
                     method_args.push((**base).clone());
@@ -1105,23 +1159,22 @@ impl Compiler {
     }
 
     fn invoke_function(&mut self, name: &str, args: &[Expr]) -> Result<Option<Value>, String> {
+        let mut evaluated_args = Vec::new();
+        for expr in args {
+            evaluated_args.push(self.emit_expression(expr)?);
+        }
+        let receiver_candidate = self.receiver_name_from_values(&evaluated_args);
         let func = self
-            .functions
-            .get(name)
-            .cloned()
+            .lookup_function(name, receiver_candidate.as_deref())
+            .or_else(|| self.lookup_function(name, None))
             .ok_or_else(|| format!("Unknown function {}", name))?;
-        if func.params.len() != args.len() {
+        if func.params.len() != evaluated_args.len() {
             return Err(format!(
                 "Function `{}` expects {} arguments, got {}",
                 name,
                 func.params.len(),
-                args.len()
+                evaluated_args.len()
             ));
-        }
-
-        let mut evaluated_args = Vec::new();
-        for expr in args {
-            evaluated_args.push(self.emit_expression(expr)?);
         }
 
         self.push_scope();
@@ -1141,6 +1194,32 @@ impl Compiler {
         }
     }
 
+    fn lookup_function(&self, name: &str, receiver: Option<&str>) -> Option<FunctionDef> {
+        let key = FunctionKey {
+            name: name.to_string(),
+            receiver: receiver.map(|s| s.to_string()),
+        };
+        self.functions.get(&key).cloned()
+    }
+
+    fn receiver_name_from_values(&self, args: &[Value]) -> Option<String> {
+        args.first().and_then(|value| self.value_struct_name(value))
+    }
+
+    fn value_struct_name(&self, value: &Value) -> Option<String> {
+        match value {
+            Value::Struct(instance) => Some(instance.name.clone()),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow();
+                self.value_struct_name(&inner)
+            }
+            Value::Boxed(inner) => {
+                let value = inner.cell.borrow();
+                self.value_struct_name(&value)
+            }
+            _ => None,
+        }
+    }
     fn begin_mut_borrow_in_scope(
         &mut self,
         name: &str,
@@ -1524,6 +1603,22 @@ fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
         TypeExpr::Named(name, _) => Some(name.clone()),
         _ => None,
     }
+}
+
+fn receiver_type_name(
+    def: &FunctionDef,
+    structs: &HashMap<String, StructDef>,
+) -> Option<String> {
+    def.params.first().and_then(|param| {
+        match &param.ty.ty {
+            TypeExpr::Named(name, _) => Some(name.clone()),
+            TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
+                type_name_from_type_expr(ty)
+            }
+            _ => None,
+        }
+        .filter(|name| structs.contains_key(name))
+    })
 }
 
 fn describe_expr(expr: &Expr) -> &'static str {

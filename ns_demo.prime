@@ -1,0 +1,30 @@
+struct Foo {
+  value: int32;
+}
+
+struct Bar {
+  value: int32;
+}
+
+fn label(foo: Foo) -> string {
+  "foo"
+}
+
+fn label(bar: Bar) -> string {
+  "bar"
+}
+
+fn main() {
+  let Foo a = Foo{
+    1,
+  };
+
+  let Bar b = Bar{
+    2,
+  };
+
+  out(label(a));
+  out(label(b));
+  out(a.label());
+  out(b.label());
+}
