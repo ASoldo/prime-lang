@@ -501,33 +501,41 @@ impl Parser {
             Mutability::Immutable
         };
 
-        let first = self.expect_identifier("Expected binding name or type")?;
         let mut ty = None;
         let name;
 
-        if let Some(TokenKind::Identifier(_)) = self.peek_kind() {
-            let inferred_type = TypeAnnotation {
-                ty: TypeExpr::named(first.name.clone()),
-                span: first.span,
-            };
-            ty = Some(inferred_type);
-            let second = self.expect_identifier("Expected binding name")?;
-            name = second;
-        } else if self.check(TokenKind::LBracket) {
-            self.expect(TokenKind::LBracket)?;
-            let (args, end) = self.parse_type_arguments()?;
-            ty = Some(TypeAnnotation {
-                ty: TypeExpr::Named(first.name.clone(), args),
-                span: Span::new(first.span.start, end),
-            });
-            let second = self.expect_identifier("Expected binding name")?;
-            name = second;
-        } else if self.matches(TokenKind::Colon) {
+        if self.type_expr_without_identifier_start() {
             let annotation = self.parse_type_annotation()?;
+            let ident = self.expect_identifier("Expected binding name")?;
             ty = Some(annotation);
-            name = first;
+            name = ident;
         } else {
-            name = first;
+            let first = self.expect_identifier("Expected binding name or type")?;
+
+            if let Some(TokenKind::Identifier(_)) = self.peek_kind() {
+                let inferred_type = TypeAnnotation {
+                    ty: TypeExpr::named(first.name.clone()),
+                    span: first.span,
+                };
+                ty = Some(inferred_type);
+                let second = self.expect_identifier("Expected binding name")?;
+                name = second;
+            } else if self.check(TokenKind::LBracket) {
+                self.expect(TokenKind::LBracket)?;
+                let (args, end) = self.parse_type_arguments()?;
+                ty = Some(TypeAnnotation {
+                    ty: TypeExpr::Named(first.name.clone(), args),
+                    span: Span::new(first.span.start, end),
+                });
+                let second = self.expect_identifier("Expected binding name")?;
+                name = second;
+            } else if self.matches(TokenKind::Colon) {
+                let annotation = self.parse_type_annotation()?;
+                ty = Some(annotation);
+                name = first;
+            } else {
+                name = first;
+            }
         }
 
         let value = if self.matches(TokenKind::Eq) {
@@ -625,6 +633,13 @@ impl Parser {
             body,
             span: Span::new(start, body_end),
         })
+    }
+
+    fn type_expr_without_identifier_start(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            Some(TokenKind::LBracket | TokenKind::LParen | TokenKind::Star | TokenKind::Ampersand)
+        )
     }
 
     fn parse_for_range(&mut self) -> Result<ForRangeStmt, SyntaxError> {

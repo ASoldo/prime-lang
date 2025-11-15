@@ -5,7 +5,7 @@ fn main() {
   bump_counter(&counter, 5);
   out("box counter:");
   out(box_get(counter));
-  let mut explorers: []string = slice_new();
+  let mut []string explorers = slice_new();
   slice_push(&mut explorers, "Prime Hero");
   slice_push(&mut explorers, "Sparrow");
   out("slice len:");
@@ -15,7 +15,7 @@ fn main() {
     Some(name) => out(name),
     None => out("n/a"),
   };
-  let mut rewards: Map[string, int32] = map_new();
+  let mut Map[string, int32] rewards = map_new();
   map_insert(&mut rewards, "Ridge scouting", 250);
   map_insert(&mut rewards, "Harbor sweep", 175);
   out("harbor reward:");
