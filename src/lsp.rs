@@ -329,46 +329,51 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let offset = position_to_offset(&text, position);
-        let Some(chain) = expression_chain_before_dot(&text, offset) else {
-            return Ok(None);
-        };
-
         let struct_info = collect_struct_info(&module);
         let var_types = collect_variable_types(&module);
+        if let Some(chain) = expression_chain_before_dot(&text, offset) {
+            let Some((target_type, _)) =
+                resolve_chain_type(&chain, &var_types, &struct_info)
+            else {
+                return Ok(None);
+            };
 
-        let Some((target_type, _)) =
-            resolve_chain_type(&chain, &var_types, &struct_info)
-        else {
-            return Ok(None);
-        };
+            let Some(struct_name) = struct_name_from_type(&target_type).map(|s| s.to_string())
+            else {
+                return Ok(None);
+            };
 
-        let Some(struct_name) = struct_name_from_type(&target_type).map(|s| s.to_string()) else {
-            return Ok(None);
-        };
+            let Some(info) = struct_info.get(&struct_name) else {
+                return Ok(None);
+            };
 
-        let Some(info) = struct_info.get(&struct_name) else {
-            return Ok(None);
-        };
+            let mut items: Vec<CompletionItem> = info
+                .fields
+                .iter()
+                .map(|field| CompletionItem {
+                    label: field.name.clone(),
+                    kind: Some(CompletionItemKind::FIELD),
+                    detail: Some(format_type_expr(&field.ty)),
+                    ..Default::default()
+                })
+                .collect();
 
-        let mut items: Vec<CompletionItem> = info
-            .fields
-            .iter()
-            .map(|field| CompletionItem {
-                label: field.name.clone(),
-                kind: Some(CompletionItemKind::FIELD),
-                detail: Some(format_type_expr(&field.ty)),
+            items.extend(info.methods.iter().map(|method| CompletionItem {
+                label: method.name.clone(),
+                kind: Some(CompletionItemKind::METHOD),
+                detail: Some(method.signature.clone()),
                 ..Default::default()
-            })
-            .collect();
+            }));
 
-        items.extend(info.methods.iter().map(|method| CompletionItem {
-            label: method.name.clone(),
-            kind: Some(CompletionItemKind::METHOD),
-            detail: Some(method.signature.clone()),
-            ..Default::default()
-        }));
+            return Ok(Some(CompletionResponse::Array(items)));
+        }
 
-        Ok(Some(CompletionResponse::Array(items)))
+        let general_items = general_completion_items(&module, &var_types, Some(offset));
+        if general_items.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(CompletionResponse::Array(general_items)))
+        }
     }
 }
 
@@ -1590,6 +1595,89 @@ fn collect_struct_info(module: &Module) -> HashMap<String, StructInfo> {
         }
     }
     info
+}
+
+fn general_completion_items(
+    module: &Module,
+    vars: &HashMap<String, TypeExpr>,
+    offset: Option<usize>,
+) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    if let Some(offset) = offset {
+        for decl in visible_locals(module, offset) {
+            items.push(CompletionItem {
+                label: decl.name.clone(),
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: decl.ty.clone(),
+                ..Default::default()
+            });
+        }
+    } else {
+        for (name, ty) in vars {
+            items.push(CompletionItem {
+                label: name.clone(),
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some(format_type_expr(ty)),
+                ..Default::default()
+            });
+        }
+    }
+
+    for item in &module.items {
+        match item {
+            Item::Function(func) => {
+                if func.name == "main" {
+                    continue;
+                }
+                items.push(CompletionItem {
+                    label: func.name.clone(),
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: Some(format_function_signature(func)),
+                    ..Default::default()
+                })
+            }
+            Item::Struct(def) => items.push(CompletionItem {
+                label: def.name.clone(),
+                kind: Some(CompletionItemKind::STRUCT),
+                detail: Some(format!(
+                    "struct {}{}",
+                    def.name,
+                    format_type_params(&def.type_params)
+                )),
+                ..Default::default()
+            }),
+            Item::Enum(def) => items.push(CompletionItem {
+                label: def.name.clone(),
+                kind: Some(CompletionItemKind::ENUM),
+                detail: Some(format!(
+                    "enum {}{}",
+                    def.name,
+                    format_type_params(&def.type_params)
+                )),
+                ..Default::default()
+            }),
+            Item::Const(def) => items.push(CompletionItem {
+                label: def.name.clone(),
+                kind: Some(CompletionItemKind::CONSTANT),
+                detail: def
+                    .ty
+                    .as_ref()
+                    .map(|ty| format_type_expr(&ty.ty))
+                    .or(Some("const".into())),
+                ..Default::default()
+            }),
+        }
+    }
+
+    items
+}
+
+fn visible_locals(module: &Module, offset: usize) -> Vec<DeclInfo> {
+    collect_decl_spans(module)
+        .into_iter()
+        .filter(|decl| scope_contains(decl.scope, offset))
+        .filter(|decl| offset >= decl.available_from)
+        .collect()
 }
 
 fn collect_variable_types(module: &Module) -> HashMap<String, TypeExpr> {
