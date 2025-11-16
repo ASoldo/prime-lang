@@ -50,11 +50,6 @@ name = "demos::ns"
 path = "ns_demo.prime"
 visibility = "pub"
 
-[[modules]]
-name = "pkg::my_module"
-path = "pkg/my_module.prime"
-visibility = "pub"
-
 [package]
 entry = "app::main"
 kind = "binary"

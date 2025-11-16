@@ -79,6 +79,17 @@ impl Documents {
     }
 }
 
+fn select_interface_info<'a>(
+    interfaces: &'a HashMap<String, Vec<InterfaceInfo>>,
+    name: &str,
+    module_name: &str,
+) -> Option<&'a InterfaceInfo> {
+    let list = interfaces.get(name)?;
+    list.iter()
+        .find(|info| info.module_name == module_name)
+        .or_else(|| list.first())
+}
+
 #[derive(Default)]
 struct ModuleCache {
     inner: RwLock<HashMap<Uri, Module>>,
@@ -178,8 +189,8 @@ struct Backend {
     docs: Arc<Documents>,
     modules: Arc<ModuleCache>,
     symbols: Arc<SymbolIndex>,
-    manifest_preloaded: Arc<RwLock<HashSet<PathBuf>>>,
     package_preloaded: Arc<RwLock<HashSet<PathBuf>>>,
+    workspace_manifests: Arc<RwLock<HashSet<PathBuf>>>,
 }
 
 impl Backend {
@@ -189,8 +200,8 @@ impl Backend {
             docs: Arc::new(Documents::default()),
             modules: Arc::new(ModuleCache::default()),
             symbols: Arc::new(SymbolIndex::default()),
-            manifest_preloaded: Arc::new(RwLock::new(HashSet::new())),
             package_preloaded: Arc::new(RwLock::new(HashSet::new())),
+            workspace_manifests: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -284,28 +295,19 @@ impl Backend {
         if let Some((manifest, _)) = manifest_context.as_ref() {
             self.ensure_manifest_modules(manifest).await;
         }
+        let file_path = manifest_context
+            .as_ref()
+            .map(|(_, path)| path.clone())
+            .or_else(|| url_to_path(uri));
+        if let Some(path) = file_path.as_ref() {
+            self.ensure_package_modules(path).await;
+        }
         match parse_module_from_uri(uri, text) {
             Ok(module) => {
                 self.modules.insert(uri.clone(), module.clone()).await;
                 self.symbols.update_module(uri, &module).await;
                 if let Some((manifest, _)) = manifest_context.as_ref() {
                     self.ensure_import_modules(manifest, &module).await;
-                }
-                let file_path = manifest_context
-                    .as_ref()
-                    .map(|(_, path)| path.clone())
-                    .or_else(|| url_to_path(uri));
-                if let Some(path) = file_path.as_ref() {
-                    if let Ok(package) = load_package(path) {
-                        for pkg_module in package.program.modules {
-                            if let Some(pkg_uri) = Uri::from_file_path(&pkg_module.path) {
-                                self.modules
-                                    .insert(pkg_uri.clone(), pkg_module.clone())
-                                    .await;
-                                self.symbols.update_module(&pkg_uri, &pkg_module).await;
-                            }
-                        }
-                    }
                 }
                 Some(module)
             }
@@ -322,19 +324,6 @@ impl Backend {
     }
 
     async fn ensure_manifest_modules(&self, manifest: &PackageManifest) {
-        let manifest_path = manifest.path.clone();
-        {
-            let guard = self.manifest_preloaded.read().await;
-            if guard.contains(&manifest_path) {
-                return;
-            }
-        }
-        {
-            let mut guard = self.manifest_preloaded.write().await;
-            if !guard.insert(manifest_path.clone()) {
-                return;
-            }
-        }
         for entry in manifest.module_entries() {
             let Some(uri) = Uri::from_file_path(&entry.path) else {
                 continue;
@@ -410,10 +399,42 @@ impl Backend {
             }
         }
     }
+
+    async fn preload_workspace_manifest(&self, root: &Path) {
+        let manifest_path = if root.join("prime.toml").exists() {
+            root.join("prime.toml")
+        } else {
+            match find_manifest(root) {
+                Some(path) => path,
+                None => return,
+            }
+        };
+        {
+            let guard = self.workspace_manifests.read().await;
+            if guard.contains(&manifest_path) {
+                return;
+            }
+        }
+        {
+            let mut guard = self.workspace_manifests.write().await;
+            if !guard.insert(manifest_path.clone()) {
+                return;
+            }
+        }
+        let Ok(manifest) = PackageManifest::load(&manifest_path) else {
+            return;
+        };
+        self.ensure_manifest_modules(&manifest).await;
+    }
 }
 
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> RpcResult<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> RpcResult<InitializeResult> {
+        if let Some(root_uri) = params.root_uri {
+            if let Some(root_path) = url_to_path(&root_uri) {
+                self.preload_workspace_manifest(&root_path).await;
+            }
+        }
         let completion_trigger_characters = completion_trigger_characters();
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -504,8 +525,6 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         self.docs.remove(&params.text_document.uri).await;
-        self.modules.remove(&params.text_document.uri).await;
-        self.symbols.remove_module(&params.text_document.uri).await;
         self.client
             .publish_diagnostics(params.text_document.uri, vec![], None)
             .await;
@@ -688,7 +707,9 @@ impl LanguageServer for Backend {
         let Some(text) = self.docs.get(&uri).await else {
             return Ok(None);
         };
-        if let Some(path) = url_to_path(&uri) {
+        if let Some((manifest, _)) = manifest_context_for_uri(&uri) {
+            self.ensure_manifest_modules(&manifest).await;
+        } else if let Some(path) = url_to_path(&uri) {
             self.ensure_package_modules(&path).await;
         }
         let module_opt = self.parse_cached_module(&uri, &text).await;
@@ -2811,7 +2832,9 @@ struct StructInfo {
     methods: Vec<MethodInfo>,
 }
 
+#[derive(Clone)]
 struct InterfaceInfo {
+    module_name: String,
     type_params: Vec<String>,
     methods: Vec<InterfaceMethod>,
 }
@@ -2885,18 +2908,18 @@ fn collect_struct_info(modules: &[Module]) -> HashMap<String, StructInfo> {
     info
 }
 
-fn collect_interface_info(modules: &[Module]) -> HashMap<String, InterfaceInfo> {
+fn collect_interface_info(modules: &[Module]) -> HashMap<String, Vec<InterfaceInfo>> {
     let mut map = HashMap::new();
     for module in modules {
         for item in &module.items {
             if let Item::Interface(def) = item {
-                map.insert(
-                    def.name.clone(),
-                    InterfaceInfo {
+                map.entry(def.name.clone())
+                    .or_insert_with(Vec::new)
+                    .push(InterfaceInfo {
+                        module_name: module.name.clone(),
                         type_params: def.type_params.clone(),
                         methods: def.methods.clone(),
-                    },
-                );
+                    });
             }
         }
     }
@@ -3259,7 +3282,7 @@ fn member_completion_items(
     text: &str,
     chain: &[String],
     struct_info: &HashMap<String, StructInfo>,
-    interfaces: &HashMap<String, InterfaceInfo>,
+    interfaces: &HashMap<String, Vec<InterfaceInfo>>,
     prefix: Option<&str>,
     module: &Module,
     offset: usize,
@@ -3326,7 +3349,7 @@ fn member_completion_items(
                 }
             }
             if items.is_empty() { None } else { Some(items) }
-        } else if let Some(info) = interfaces.get(&name) {
+        } else if let Some(info) = select_interface_info(interfaces, &name, &module.name) {
             let subst = build_type_subst(&info.type_params, &args);
             let subst_ref = subst.as_ref();
             let mut items = Vec::new();
