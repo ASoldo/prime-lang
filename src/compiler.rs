@@ -18,6 +18,7 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
     ffi::{CStr, CString},
+    mem,
     path::Path,
     ptr,
     rc::Rc,
@@ -54,6 +55,7 @@ pub struct Compiler {
     consts: Vec<ConstDef>,
     active_mut_borrows: HashSet<String>,
     borrow_frames: Vec<Vec<String>>,
+    defer_stack: Vec<Vec<Expr>>,
     deprecated_warnings: HashSet<String>,
 }
 
@@ -250,6 +252,7 @@ impl Compiler {
                 consts: Vec::new(),
                 active_mut_borrows: HashSet::new(),
                 borrow_frames: Vec::new(),
+                defer_stack: Vec::new(),
                 deprecated_warnings: HashSet::new(),
             };
             compiler.reset_module();
@@ -269,7 +272,7 @@ impl Compiler {
         self.scopes.clear();
         self.active_mut_borrows.clear();
         self.borrow_frames.clear();
-        self.borrow_frames.push(Vec::new());
+        self.defer_stack.clear();
         self.push_scope();
         self.structs.clear();
         self.functions.clear();
@@ -339,7 +342,7 @@ impl Compiler {
         }
 
         let _ = self.execute_block_contents(body)?;
-        self.pop_scope();
+        self.exit_scope()?;
 
         unsafe {
             LLVMBuildRetVoid(self.builder);
@@ -457,9 +460,15 @@ impl Compiler {
             Statement::Block(block) => {
                 self.push_scope();
                 let _ = self.execute_block_contents(block)?;
-                self.pop_scope();
+                self.exit_scope()?;
             }
-            Statement::Defer(stmt) => self.eval_expression_statement(&stmt.expr)?,
+            Statement::Defer(stmt) => {
+                if let Some(stack) = self.defer_stack.last_mut() {
+                    stack.push(stmt.expr.clone());
+                } else {
+                    return Err("No scope available for defer".into());
+                }
+            }
             Statement::Assign(stmt) => match &stmt.target {
                 Expr::Identifier(ident) => {
                     let value = self.emit_expression(&stmt.value)?;
@@ -494,11 +503,11 @@ impl Compiler {
                 if self.value_to_bool(condition)? {
                     self.push_scope();
                     let _ = self.execute_block_contents(&stmt.then_branch)?;
-                    self.pop_scope();
+                    self.exit_scope()?;
                 } else if let Some(else_branch) = &stmt.else_branch {
                     self.push_scope();
                     let _ = self.execute_block_contents(else_branch)?;
-                    self.pop_scope();
+                    self.exit_scope()?;
                 }
             }
             Statement::While(stmt) => loop {
@@ -508,7 +517,7 @@ impl Compiler {
                 }
                 self.push_scope();
                 let _ = self.execute_block_contents(&stmt.body)?;
-                self.pop_scope();
+                self.exit_scope()?;
             },
             Statement::ForRange(stmt) => {
                 let (start, end, inclusive) = self.evaluate_range(&stmt.range)?;
@@ -522,7 +531,7 @@ impl Compiler {
                         false,
                     )?;
                     let _ = self.execute_block_contents(&stmt.body)?;
-                    self.pop_scope();
+                    self.exit_scope()?;
                     current += 1;
                 }
             }
@@ -631,7 +640,7 @@ impl Compiler {
             Expr::Block(block) => {
                 self.push_scope();
                 let result = self.execute_block_contents(block)?;
-                self.pop_scope();
+                self.exit_scope()?;
                 Ok(result.unwrap_or(Value::Unit))
             }
             Expr::If(if_expr) => self.emit_if_expression(if_expr),
@@ -777,12 +786,12 @@ impl Compiler {
         if self.value_to_bool(condition)? {
             self.push_scope();
             let value = self.execute_block_contents(&if_expr.then_branch)?;
-            self.pop_scope();
+            self.exit_scope()?;
             Ok(value.unwrap_or(Value::Unit))
         } else if let Some(else_block) = &if_expr.else_branch {
             self.push_scope();
             let value = self.execute_block_contents(else_block)?;
-            self.pop_scope();
+            self.exit_scope()?;
             Ok(value.unwrap_or(Value::Unit))
         } else {
             Ok(Value::Unit)
@@ -876,10 +885,10 @@ impl Compiler {
             self.push_scope();
             if self.match_pattern(&target, &arm.pattern)? {
                 let value = self.emit_expression(&arm.value)?;
-                self.pop_scope();
+                self.exit_scope()?;
                 return Ok(value);
             }
-            self.pop_scope();
+            self.exit_scope()?;
         }
         Err("No match arm matched in build mode".into())
     }
@@ -1212,7 +1221,7 @@ impl Compiler {
             FunctionBody::Block(block) => self.execute_block_contents(block)?,
             FunctionBody::Expr(expr) => Some(self.emit_expression(&expr.node)?),
         };
-        self.pop_scope();
+        self.exit_scope()?;
 
         if func.returns.is_empty() {
             Ok(None)
@@ -1783,6 +1792,7 @@ impl Compiler {
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
         self.borrow_frames.push(Vec::new());
+        self.defer_stack.push(Vec::new());
     }
 
     fn pop_scope(&mut self) {
@@ -1792,9 +1802,30 @@ impl Compiler {
                 self.active_mut_borrows.remove(&name);
             }
         }
+        self.defer_stack.pop();
         if self.borrow_frames.is_empty() {
             self.borrow_frames.push(Vec::new());
         }
+        if self.defer_stack.is_empty() {
+            self.defer_stack.push(Vec::new());
+        }
+    }
+
+    fn run_deferred(&mut self) -> Result<(), String> {
+        if let Some(stack) = self.defer_stack.last_mut() {
+            let mut pending = Vec::new();
+            mem::swap(stack, &mut pending);
+            while let Some(expr) = pending.pop() {
+                self.emit_expression(&expr)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn exit_scope(&mut self) -> Result<(), String> {
+        self.run_deferred()?;
+        self.pop_scope();
+        Ok(())
     }
 
     fn insert_var(&mut self, name: &str, value: Value, mutable: bool) -> Result<(), String> {
