@@ -179,6 +179,7 @@ struct Backend {
     modules: Arc<ModuleCache>,
     symbols: Arc<SymbolIndex>,
     manifest_preloaded: Arc<RwLock<HashSet<PathBuf>>>,
+    package_preloaded: Arc<RwLock<HashSet<PathBuf>>>,
 }
 
 impl Backend {
@@ -189,6 +190,7 @@ impl Backend {
             modules: Arc::new(ModuleCache::default()),
             symbols: Arc::new(SymbolIndex::default()),
             manifest_preloaded: Arc::new(RwLock::new(HashSet::new())),
+            package_preloaded: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -376,6 +378,36 @@ impl Backend {
                 };
             self.modules.insert(uri.clone(), parsed.clone()).await;
             self.symbols.update_module(&uri, &parsed).await;
+        }
+    }
+
+    async fn ensure_package_modules(&self, path: &Path) {
+        let Ok(canonical) = path.canonicalize() else {
+            return;
+        };
+        {
+            let guard = self.package_preloaded.read().await;
+            if guard.contains(&canonical) {
+                return;
+            }
+        }
+        {
+            let mut guard = self.package_preloaded.write().await;
+            if !guard.insert(canonical.clone()) {
+                return;
+            }
+        }
+        let package = match load_package(&canonical) {
+            Ok(pkg) => pkg,
+            Err(_) => return,
+        };
+        for unit in package.modules {
+            if let Some(uri) = Uri::from_file_path(&unit.module.path) {
+                self.modules
+                    .insert(uri.clone(), unit.module.clone())
+                    .await;
+                self.symbols.update_module(&uri, &unit.module).await;
+            }
         }
     }
 }
@@ -656,6 +688,9 @@ impl LanguageServer for Backend {
         let Some(text) = self.docs.get(&uri).await else {
             return Ok(None);
         };
+        if let Some(path) = url_to_path(&uri) {
+            self.ensure_package_modules(&path).await;
+        }
         let module_opt = self.parse_cached_module(&uri, &text).await;
         let offset = position_to_offset(&text, position);
         if let Some(ctx) = module_path_completion_context(&text, offset) {
