@@ -49,20 +49,22 @@ fn main() {
     "Prime Hero",
     18,
   };
+
   let Hero hero_partner = Hero{
     "Sparrow",
     12,
   };
+
   let Drone scout = Drone{
     "Scout-7",
   };
+
   let Drone scout_partner = Drone{
     "Relay-5",
   };
 
   announce[Hero](hero, hero_partner);
   announce[Drone](scout, scout_partner);
-
   let pair = duplicate[string]("Prime Hero");
   out("duplicated label:");
   out(pair);
