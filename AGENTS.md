@@ -12,6 +12,8 @@
 - Tree-sitter + Neovim updates: grammar covers `module`, `pub import`, interfaces/impls, and scoped identifiers; highlights/Aerial queries follow the new nodes in lock-step with the parser.
 - Manifest-aware lint/formatter: `prime lint` surfaces missing headers/duplicate imports/manifest mismatches; `prime fmt` auto-inserts module declarations based on `prime.toml`.
 - LSP improvements: scope-aware type tracking feeds completions/hover, so `self`/parameters resolve to the correct struct, chained completions like `self.position.x` work, and interface-typed values still expose their methods with manifest-aware visibility checks.
+- Workspace preload + manifest warnings: the LSP now scans `prime.toml` on startup, keeps parsed modules cached after buffers close, and logs warnings when manifest entries point at missing files so completions keep working even after `prime-lang add` / manual file removal.
+- Interface completion parity: when multiple modules declare the same interface name (e.g., `Nameable` demos vs. app), the LSP picks the definition visible in the current module so method lists like `label` + `pair` stay intact.
 - Added array/map literals plus runtime support for `Value::Slice`/`Value::Map`, move expressions, and borrow tracking; `heap_features.prime` showcases the new behavior.
 - Brought `interface`/`impl` syntax online (formatter + parser + runtime) so structs expose methods via static interfaces; completions/go-to-def now cover interface methods.
 - Finished generic functions (Phase A): both interpreter and compiler cache specializations by `(name, receiver, type args)` and substitute concrete types, with `generic_demo.prime` serving as the regression case.
@@ -29,5 +31,6 @@
 ## Next Steps
 - Add regression demos/tests that mix generics with interfaces (e.g., interface constraints inside generic functions) to keep coverage high.
 - Extend `prime.toml` tooling: lint/formatter should resolve modules via the manifest, validate entry modules, and warn on private-item leaks. Hook package metadata into LSP diagnostics/hover.
+- Surface manifest drift diagnostics in CLI (`prime lint`/`prime build`) so users get the same missing-file warnings outside the editor.
 - Build the manifest-aware go-to-def/reference cache and land identical diagnostics/fixes in `prime fmt`/`prime lint` so CLI + editor experiences stay aligned.
 - Once packaging lands, finish the error-handling sugar and remove deprecated slice/map helpers.
