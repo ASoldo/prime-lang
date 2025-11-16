@@ -333,11 +333,29 @@ impl Backend {
             }
             let source = match fs::read_to_string(&entry.path) {
                 Ok(src) => src,
-                Err(_) => continue,
+                Err(err) => {
+                    let message = format!(
+                        "prime-lang: failed to read module `{}` at `{}`: {}",
+                        entry.name,
+                        entry.path.display(),
+                        err,
+                    );
+                    let _ = self.client.log_message(MessageType::WARNING, message).await;
+                    continue;
+                }
             };
             let module = match parse_module(&entry.name, entry.path.clone(), &source) {
                 Ok(module) => module,
-                Err(_) => continue,
+                Err(errs) => {
+                    let message = format!(
+                        "prime-lang: failed to parse module `{}` at `{}`: {} error(s)",
+                        entry.name,
+                        entry.path.display(),
+                        errs.errors.len()
+                    );
+                    let _ = self.client.log_message(MessageType::WARNING, message).await;
+                    continue;
+                }
             };
             self.modules.insert(uri.clone(), module.clone()).await;
             self.symbols.update_module(&uri, &module).await;
@@ -388,7 +406,15 @@ impl Backend {
         }
         let package = match load_package(&canonical) {
             Ok(pkg) => pkg,
-            Err(_) => return,
+            Err(err) => {
+                let message = format!(
+                    "prime-lang: failed to load package at `{}`: {:?}",
+                    canonical.display(),
+                    err
+                );
+                let _ = self.client.log_message(MessageType::WARNING, message).await;
+                return;
+            }
         };
         for unit in package.modules {
             if let Some(uri) = Uri::from_file_path(&unit.module.path) {
