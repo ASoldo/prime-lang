@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use compiler::Compiler;
 use diagnostics::{emit_syntax_errors, report_io_error, report_runtime_error};
 use formatter::format_module;
-use language::parser::parse_module;
+use language::{ast::Module, parser::parse_module};
 use lint::run_lint;
 use project::{FileErrors, PackageError, find_manifest, load_package, manifest::PackageManifest};
 use runtime::Interpreter;
@@ -214,7 +214,7 @@ fn format_file(path: &Path, write: bool) -> Result<(), Box<dyn std::error::Error
         .and_then(|s| s.to_str())
         .unwrap_or("main")
         .to_string();
-    let module = match parse_module(&module_name, path.to_path_buf(), &source) {
+    let mut module = match parse_module(&module_name, path.to_path_buf(), &source) {
         Ok(module) => module,
         Err(errs) => {
             emit_syntax_errors(&[FileErrors {
@@ -225,6 +225,7 @@ fn format_file(path: &Path, write: bool) -> Result<(), Box<dyn std::error::Error
             return Err("failed to parse module".into());
         }
     };
+    apply_manifest_header(path, &mut module);
     let formatted = format_module(&module);
     if write {
         fs::write(path, formatted)?;
@@ -533,4 +534,17 @@ fn ensure_module_header(path: &Path, module_name: &str) -> Result<(), Box<dyn st
     updated.push_str(&contents);
     fs::write(path, updated)?;
     Ok(())
+}
+fn apply_manifest_header(path: &Path, module: &mut Module) {
+    let Some(manifest_path) = find_manifest(path) else {
+        return;
+    };
+    let Ok(manifest) = PackageManifest::load(&manifest_path) else {
+        return;
+    };
+    if module.declared_name.is_none() {
+        if let Some(name) = manifest.module_name_for_path(path) {
+            module.declared_name = Some(name);
+        }
+    }
 }

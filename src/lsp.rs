@@ -8,7 +8,7 @@ use crate::{
         ast::{
             Block, ConstDef, EnumDef, EnumVariant, Expr, FunctionBody, FunctionDef, FunctionParam,
             ImportPath, InterfaceDef, InterfaceMethod, Item, LetStmt, Literal, Module, Pattern,
-            RangeExpr, Statement, StructDef, StructLiteralKind,
+            RangeExpr, Statement, StructDef, StructLiteralKind, Visibility,
         },
         errors::{SyntaxError, SyntaxErrors},
         lexer::{LexError, lex},
@@ -113,6 +113,7 @@ struct SymbolLocation {
     span: Span,
     kind: SymbolKind,
     module_name: String,
+    visibility: Visibility,
 }
 
 #[derive(Default)]
@@ -132,12 +133,13 @@ impl SymbolIndex {
             locations.retain(|loc| &loc.uri != uri);
         }
         map.retain(|_, locations| !locations.is_empty());
-        for (name, span, kind) in module_symbol_definitions(module) {
+        for (name, span, kind, visibility) in module_symbol_definitions(module) {
             map.entry(name).or_default().push(SymbolLocation {
                 uri: uri.clone(),
                 span,
                 kind,
                 module_name: module.name.clone(),
+                visibility,
             });
         }
     }
@@ -176,6 +178,7 @@ struct Backend {
     docs: Arc<Documents>,
     modules: Arc<ModuleCache>,
     symbols: Arc<SymbolIndex>,
+    manifest_preloaded: Arc<RwLock<HashSet<PathBuf>>>,
 }
 
 impl Backend {
@@ -185,6 +188,7 @@ impl Backend {
             docs: Arc::new(Documents::default()),
             modules: Arc::new(ModuleCache::default()),
             symbols: Arc::new(SymbolIndex::default()),
+            manifest_preloaded: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -289,6 +293,9 @@ impl Backend {
                             }
                         }
                     }
+                    if let Some((manifest, _)) = manifest_context_for_uri(uri) {
+                        self.ensure_manifest_modules(&manifest).await;
+                    }
                 }
                 Some(module)
             }
@@ -302,6 +309,40 @@ impl Backend {
         }
         let path = url_to_path(uri)?;
         fs::read_to_string(path).ok()
+    }
+
+    async fn ensure_manifest_modules(&self, manifest: &PackageManifest) {
+        let manifest_path = manifest.path.clone();
+        {
+            let guard = self.manifest_preloaded.read().await;
+            if guard.contains(&manifest_path) {
+                return;
+            }
+        }
+        {
+            let mut guard = self.manifest_preloaded.write().await;
+            if !guard.insert(manifest_path.clone()) {
+                return;
+            }
+        }
+        for entry in manifest.module_entries() {
+            let Some(uri) = Uri::from_file_path(&entry.path) else {
+                continue;
+            };
+            if self.modules.get(&uri).await.is_some() {
+                continue;
+            }
+            let source = match fs::read_to_string(&entry.path) {
+                Ok(src) => src,
+                Err(_) => continue,
+            };
+            let module = match parse_module(&entry.name, entry.path.clone(), &source) {
+                Ok(module) => module,
+                Err(_) => continue,
+            };
+            self.modules.insert(uri.clone(), module.clone()).await;
+            self.symbols.update_module(&uri, &module).await;
+        }
     }
 }
 
@@ -1137,15 +1178,16 @@ fn select_symbol_location<'a>(
     if let Some(loc) = candidates.iter().find(|loc| &loc.uri == current_uri) {
         return Some(loc);
     }
-    let mut module_priority = Vec::new();
     if let Some(module) = module {
-        module_priority.push(module.name.clone());
-        module_priority.extend(module.imports.iter().map(|import| import.path.to_string()));
-    }
-    for module_name in module_priority {
-        if let Some(loc) = candidates.iter().find(|loc| loc.module_name == module_name) {
+        if let Some(loc) = candidates.iter().find(|loc| loc.module_name == module.name) {
             return Some(loc);
         }
+    }
+    if let Some(loc) = candidates
+        .iter()
+        .find(|loc| matches!(loc.visibility, Visibility::Public))
+    {
+        return Some(loc);
     }
     candidates.first()
 }
@@ -2774,22 +2816,47 @@ fn collect_interface_info(modules: &[Module]) -> HashMap<String, InterfaceInfo> 
     map
 }
 
-fn module_symbol_definitions(module: &Module) -> Vec<(String, Span, SymbolKind)> {
+fn module_symbol_definitions(module: &Module) -> Vec<(String, Span, SymbolKind, Visibility)> {
     let mut defs = Vec::new();
     for item in &module.items {
         match item {
-            Item::Function(func) => defs.push((func.name.clone(), func.span, SymbolKind::FUNCTION)),
-            Item::Struct(def) => defs.push((def.name.clone(), def.span, SymbolKind::STRUCT)),
+            Item::Function(func) => defs.push((
+                func.name.clone(),
+                func.span,
+                SymbolKind::FUNCTION,
+                func.visibility,
+            )),
+            Item::Struct(def) => defs.push((
+                def.name.clone(),
+                def.span,
+                SymbolKind::STRUCT,
+                def.visibility,
+            )),
             Item::Enum(def) => {
-                defs.push((def.name.clone(), def.span, SymbolKind::ENUM));
+                defs.push((def.name.clone(), def.span, SymbolKind::ENUM, def.visibility));
                 for variant in &def.variants {
-                    defs.push((variant.name.clone(), variant.span, SymbolKind::ENUM_MEMBER));
+                    defs.push((
+                        variant.name.clone(),
+                        variant.span,
+                        SymbolKind::ENUM_MEMBER,
+                        def.visibility,
+                    ));
                 }
             }
             Item::Interface(def) => {
-                defs.push((def.name.clone(), def.span, SymbolKind::INTERFACE));
+                defs.push((
+                    def.name.clone(),
+                    def.span,
+                    SymbolKind::INTERFACE,
+                    def.visibility,
+                ));
             }
-            Item::Const(def) => defs.push((def.name.clone(), def.span, SymbolKind::CONSTANT)),
+            Item::Const(def) => defs.push((
+                def.name.clone(),
+                def.span,
+                SymbolKind::CONSTANT,
+                def.visibility,
+            )),
             Item::Impl(_) => {}
         }
     }
@@ -3549,8 +3616,12 @@ fn announce[T](unit: Nameable[T], partner: T) {
 }
 "#;
 
-        let module =
-            parse_module("demos::interface_generics", PathBuf::from("demo.prime"), source).unwrap();
+        let module = parse_module(
+            "demos::interface_generics",
+            PathBuf::from("demo.prime"),
+            source,
+        )
+        .unwrap();
         let structs = vec![module.clone()];
         let var_types = collect_variable_types(&module);
         let struct_info = collect_struct_info(&structs);
