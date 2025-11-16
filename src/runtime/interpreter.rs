@@ -22,7 +22,7 @@ pub struct Interpreter {
     enum_variants: HashMap<String, EnumVariantInfo>,
     functions: HashMap<FunctionKey, FunctionInfo>,
     interfaces: HashMap<String, InterfaceDef>,
-    impls: HashSet<(String, String)>,
+    impls: HashSet<ImplKey>,
     consts: Vec<ConstDef>,
     deprecated_warnings: HashSet<String>,
 }
@@ -39,6 +39,13 @@ struct FunctionKey {
     name: String,
     receiver: Option<String>,
     type_args: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ImplKey {
+    interface: String,
+    type_args: Vec<String>,
+    target: String,
 }
 
 #[derive(Clone)]
@@ -196,7 +203,27 @@ impl Interpreter {
                 message: format!("Unknown target type `{}`", block.target),
             });
         }
-        let key = (block.interface.clone(), block.target.clone());
+        let iface = self.interfaces.get(&block.interface).cloned().unwrap();
+        if iface.type_params.len() != block.type_args.len() {
+            return Err(RuntimeError::Panic {
+                message: format!(
+                    "`{}` expects {} type arguments, got {}",
+                    block.interface,
+                    iface.type_params.len(),
+                    block.type_args.len()
+                ),
+            });
+        }
+        let type_arg_names: Vec<String> = block
+            .type_args
+            .iter()
+            .map(|ty| ty.canonical_name())
+            .collect();
+        let key = ImplKey {
+            interface: block.interface.clone(),
+            type_args: type_arg_names.clone(),
+            target: block.target.clone(),
+        };
         if self.impls.contains(&key) {
             return Err(RuntimeError::Panic {
                 message: format!(
@@ -205,7 +232,6 @@ impl Interpreter {
                 ),
             });
         }
-        let iface = self.interfaces.get(&block.interface).cloned().unwrap();
         let mut provided: HashSet<String> = HashSet::new();
         for method in &block.methods {
             let mut method_def = method.clone();
@@ -446,22 +472,21 @@ impl Interpreter {
         args: &[Value],
     ) -> RuntimeResult<()> {
         for (param, value) in params.iter().zip(args.iter()) {
-            if let Some(interface) = self.interface_name_from_type(&param.ty.ty) {
-                self.ensure_interface_compat(&interface, value)?;
+            if let Some((interface, type_args)) =
+                self.interface_name_from_type(&param.ty.ty)
+            {
+                self.ensure_interface_compat(&interface, &type_args, value)?;
             }
         }
         Ok(())
     }
 
-    fn interface_name_from_type(&self, ty: &TypeExpr) -> Option<String> {
+    fn interface_name_from_type(&self, ty: &TypeExpr) -> Option<(String, Vec<TypeExpr>)> {
         match ty {
-            TypeExpr::Named(name, _) => {
-                if self.interfaces.contains_key(name) {
-                    Some(name.clone())
-                } else {
-                    None
-                }
-            }
+            TypeExpr::Named(name, args) => self
+                .interfaces
+                .contains_key(name)
+                .then(|| (name.clone(), args.clone())),
             TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
                 self.interface_name_from_type(ty)
             }
@@ -469,19 +494,32 @@ impl Interpreter {
         }
     }
 
-    fn ensure_interface_compat(&self, interface: &str, value: &Value) -> RuntimeResult<()> {
+    fn ensure_interface_compat(
+        &self,
+        interface: &str,
+        type_args: &[TypeExpr],
+        value: &Value,
+    ) -> RuntimeResult<()> {
         let struct_name = self.value_struct_name(value).ok_or_else(|| RuntimeError::TypeMismatch {
             message: format!(
                 "Interface `{}` expects struct implementing it, found incompatible value",
                 interface
             ),
         })?;
-        if self.impls.contains(&(interface.to_string(), struct_name.clone())) {
+        let key = ImplKey {
+            interface: interface.to_string(),
+            type_args: type_args
+                .iter()
+                .map(|ty| ty.canonical_name())
+                .collect(),
+            target: struct_name.clone(),
+        };
+        if self.impls.contains(&key) {
             Ok(())
         } else {
             Err(RuntimeError::TypeMismatch {
                 message: format!(
-                    "`{}` does not implement interface `{}`",
+                    "`{}` does not implement interface `{}` with these type arguments",
                     struct_name, interface
                 ),
             })

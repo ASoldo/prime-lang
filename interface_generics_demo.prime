@@ -9,35 +9,35 @@ struct Drone {
   tag: string;
 }
 
-interface Nameable {
+interface Nameable[T] {
   fn label(self) -> string;
-  fn shout(&self) -> string;
+  fn pair(self, other: T) -> string;
 }
 
-impl Nameable for Hero {
+impl Nameable[Hero] for Hero {
   fn label(self) -> string {
     self.name
   }
 
-  fn shout(&self) -> string {
-    "For Prime!"
+  fn pair(self, other: Hero) -> string {
+    other.name
   }
 }
 
-impl Nameable for Drone {
+impl Nameable[Drone] for Drone {
   fn label(self) -> string {
     self.tag
   }
 
-  fn shout(&self) -> string {
-    "Scanning"
+  fn pair(self, other: Drone) -> string {
+    other.tag
   }
 }
 
-fn announce(target: Nameable) {
+fn announce[T](unit: Nameable[T], partner: T) {
   out("-- announcement --");
-  out(target.label());
-  out(target.shout());
+  out(unit.label());
+  out(unit.pair(partner));
 }
 
 fn duplicate[T](value: T) -> (T, T) {
@@ -49,14 +49,21 @@ fn main() {
     "Prime Hero",
     18,
   };
+  let Hero hero_partner = Hero{
+    "Sparrow",
+    12,
+  };
   let Drone scout = Drone{
     "Scout-7",
   };
+  let Drone scout_partner = Drone{
+    "Relay-5",
+  };
 
-  announce(hero);
-  announce(scout);
+  announce[Hero](hero, hero_partner);
+  announce[Drone](scout, scout_partner);
 
-  let pair = duplicate[string](hero.label());
+  let pair = duplicate[string]("Prime Hero");
   out("duplicated label:");
   out(pair);
 }

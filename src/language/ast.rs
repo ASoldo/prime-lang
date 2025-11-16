@@ -69,6 +69,7 @@ pub struct EnumVariant {
 #[derive(Clone, Debug)]
 pub struct InterfaceDef {
     pub name: String,
+    pub type_params: Vec<String>,
     pub methods: Vec<InterfaceMethod>,
     pub span: Span,
 }
@@ -84,6 +85,7 @@ pub struct InterfaceMethod {
 #[derive(Clone, Debug)]
 pub struct ImplBlock {
     pub interface: String,
+    pub type_args: Vec<TypeExpr>,
     pub target: String,
     pub methods: Vec<FunctionDef>,
     pub span: Span,

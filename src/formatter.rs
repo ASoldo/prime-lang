@@ -66,7 +66,8 @@ fn format_enum(out: &mut String, def: &EnumDef) {
 }
 
 fn format_interface(out: &mut String, def: &InterfaceDef) {
-    out.push_str(&format!("interface {} {{\n", def.name));
+    let params = format_type_params(&def.type_params);
+    out.push_str(&format!("interface {}{} {{\n", def.name, params));
     for method in &def.methods {
         out.push_str("  fn ");
         out.push_str(&method.name);
@@ -98,9 +99,10 @@ fn format_interface(out: &mut String, def: &InterfaceDef) {
 }
 
 fn format_impl(out: &mut String, block: &ImplBlock) {
+    let args = format_type_arguments(&block.type_args);
     out.push_str(&format!(
-        "impl {} for {} {{\n",
-        block.interface, block.target
+        "impl {}{} for {} {{\n",
+        block.interface, args, block.target
     ));
     for (idx, method) in block.methods.iter().enumerate() {
         format_function_with_indent(out, method, 2);
@@ -882,6 +884,17 @@ fn format_type_params(params: &[String]) -> String {
         String::new()
     } else {
         format!("[{}]", params.join(", "))
+    }
+}
+
+fn format_type_arguments(args: &[TypeExpr]) -> String {
+    if args.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "[{}]",
+            args.iter().map(format_type).collect::<Vec<_>>().join(", ")
+        )
     }
 }
 

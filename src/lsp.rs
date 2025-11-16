@@ -1691,14 +1691,23 @@ fn format_function_param(param: &FunctionParam) -> String {
     text
 }
 
-fn format_interface_method_signature(method: &InterfaceMethod) -> String {
+fn format_interface_method_signature(
+    method: &InterfaceMethod,
+    subst: Option<&HashMap<String, TypeExpr>>,
+) -> String {
     let mut signature = String::from("fn ");
     signature.push_str(&method.name);
     signature.push('(');
     let params = method
         .params
         .iter()
-        .map(format_function_param)
+        .map(|param| {
+            let mut cloned = param.clone();
+            if let Some(map) = subst {
+                cloned.ty = cloned.ty.substitute(map);
+            }
+            format_function_param(&cloned)
+        })
         .collect::<Vec<_>>()
         .join(", ");
     signature.push_str(&params);
@@ -1706,12 +1715,22 @@ fn format_interface_method_signature(method: &InterfaceMethod) -> String {
     if !method.returns.is_empty() {
         signature.push_str(" -> ");
         if method.returns.len() == 1 {
-            signature.push_str(&format_type_expr(&method.returns[0].ty));
+            let mut ret = method.returns[0].clone();
+            if let Some(map) = subst {
+                ret = ret.substitute(map);
+            }
+            signature.push_str(&format_type_expr(&ret.ty));
         } else {
             let returns = method
                 .returns
                 .iter()
-                .map(|ret| format_type_expr(&ret.ty))
+                .map(|ret| {
+                    let mut clone = ret.clone();
+                    if let Some(map) = subst {
+                        clone = clone.substitute(map);
+                    }
+                    format_type_expr(&clone.ty)
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             signature.push('(');
@@ -2194,7 +2213,8 @@ struct StructInfo {
 }
 
 struct InterfaceInfo {
-    methods: Vec<MethodInfo>,
+    type_params: Vec<String>,
+    methods: Vec<InterfaceMethod>,
 }
 
 #[derive(Default, Clone)]
@@ -2270,16 +2290,13 @@ fn collect_interface_info(modules: &[Module]) -> HashMap<String, InterfaceInfo> 
     for module in modules {
         for item in &module.items {
             if let Item::Interface(def) = item {
-                let methods = def
-                    .methods
-                    .iter()
-                    .map(|method| MethodInfo {
-                        name: method.name.clone(),
-                        signature: format_interface_method_signature(method),
-                        declared_in: def.name.clone(),
-                    })
-                    .collect();
-                map.insert(def.name.clone(), InterfaceInfo { methods });
+                map.insert(
+                    def.name.clone(),
+                    InterfaceInfo {
+                        type_params: def.type_params.clone(),
+                        methods: def.methods.clone(),
+                    },
+                );
             }
         }
     }
@@ -2439,7 +2456,11 @@ fn general_completion_items(
             Item::Interface(def) => items.push(CompletionItem {
                 label: def.name.clone(),
                 kind: Some(CompletionItemKind::INTERFACE),
-                detail: Some(format!("interface {}", def.name)),
+                detail: Some(format!(
+                    "interface {}{}",
+                    def.name,
+                    format_type_params(&def.type_params)
+                )),
                 ..Default::default()
             }),
             Item::Const(def) => items.push(CompletionItem {
@@ -2504,66 +2525,95 @@ fn member_completion_items(
     prefix: Option<&str>,
 ) -> Option<Vec<CompletionItem>> {
     let (target_type, _) = resolve_chain_type(chain, var_types, struct_info)?;
-    let struct_name = struct_name_from_type(&target_type)?;
-    if let Some(info) = struct_info.get(struct_name) {
-        let mut items = Vec::new();
-        for field in &info.fields {
-            if prefix_matches(&field.name, prefix) {
-                items.push(CompletionItem {
-                    label: field.name.clone(),
-                    kind: Some(CompletionItemKind::FIELD),
-                    detail: Some(format!(
-                        "{} (from {})",
-                        format_type_expr(&field.ty),
-                        field.declared_in
-                    )),
-                    ..Default::default()
-                });
+    if let Some((name, args)) = named_type_with_args(&target_type) {
+        if let Some(info) = struct_info.get(&name) {
+            let mut items = Vec::new();
+            for field in &info.fields {
+                if prefix_matches(&field.name, prefix) {
+                    items.push(CompletionItem {
+                        label: field.name.clone(),
+                        kind: Some(CompletionItemKind::FIELD),
+                        detail: Some(format!(
+                            "{} (from {})",
+                            format_type_expr(&field.ty),
+                            field.declared_in
+                        )),
+                        ..Default::default()
+                    });
+                }
             }
-        }
-        for method in &info.methods {
-            if prefix_matches(&method.name, prefix) {
-                items.push(CompletionItem {
-                    label: method.name.clone(),
-                    kind: Some(CompletionItemKind::METHOD),
-                    detail: Some(format!(
-                        "{} (from {})",
-                        method.signature, method.declared_in
-                    )),
-                    ..Default::default()
-                });
+            for method in &info.methods {
+                if prefix_matches(&method.name, prefix) {
+                    items.push(CompletionItem {
+                        label: method.name.clone(),
+                        kind: Some(CompletionItemKind::METHOD),
+                        detail: Some(format!(
+                            "{} (from {})",
+                            method.signature, method.declared_in
+                        )),
+                        ..Default::default()
+                    });
+                }
             }
-        }
-        if items.is_empty() {
-            None
+            if items.is_empty() {
+                None
+            } else {
+                Some(items)
+            }
+        } else if let Some(info) = interfaces.get(&name) {
+            let subst = build_type_subst(&info.type_params, &args);
+            let subst_ref = subst.as_ref();
+            let mut items = Vec::new();
+            for method in &info.methods {
+                if prefix_matches(&method.name, prefix) {
+                    items.push(CompletionItem {
+                        label: method.name.clone(),
+                        kind: Some(CompletionItemKind::METHOD),
+                        detail: Some(format!(
+                            "{} (from {})",
+                            format_interface_method_signature(method, subst_ref),
+                            name
+                        )),
+                        ..Default::default()
+                    });
+                }
+            }
+            if items.is_empty() {
+                None
+            } else {
+                Some(items)
+            }
         } else {
-            Some(items)
-        }
-    } else if let Some(info) = interfaces.get(struct_name) {
-        let mut items = Vec::new();
-        for method in &info.methods {
-            if prefix_matches(&method.name, prefix) {
-                items.push(CompletionItem {
-                    label: method.name.clone(),
-                    kind: Some(CompletionItemKind::METHOD),
-                    detail: Some(format!(
-                        "{} (from {})",
-                        method.signature, method.declared_in
-                    )),
-                    ..Default::default()
-                });
-            }
-        }
-        if items.is_empty() {
             None
-        } else {
-            Some(items)
         }
     } else {
         None
     }
 }
 
+fn named_type_with_args(ty: &TypeExpr) -> Option<(String, Vec<TypeExpr>)> {
+    match ty {
+        TypeExpr::Named(name, args) => Some((name.clone(), args.clone())),
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
+            named_type_with_args(ty)
+        }
+        _ => None,
+    }
+}
+
+fn build_type_subst(
+    params: &[String],
+    args: &[TypeExpr],
+) -> Option<HashMap<String, TypeExpr>> {
+    if params.is_empty() || params.len() != args.len() {
+        return None;
+    }
+    let mut map = HashMap::new();
+    for (param, arg) in params.iter().zip(args.iter()) {
+        map.insert(param.clone(), arg.clone());
+    }
+    Some(map)
+}
 fn visible_locals(module: &Module, offset: usize) -> Vec<DeclInfo> {
     collect_decl_spans(module)
         .into_iter()

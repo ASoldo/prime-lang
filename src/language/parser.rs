@@ -225,6 +225,7 @@ impl Parser {
 
     fn parse_interface(&mut self) -> Result<InterfaceDef, SyntaxError> {
         let name = self.expect_identifier("Expected interface name")?;
+        let type_params = self.parse_type_params()?;
         let start = name.span.start;
         self.expect(TokenKind::LBrace)?;
         let mut methods = Vec::new();
@@ -277,6 +278,7 @@ impl Parser {
         let end = self.expect(TokenKind::RBrace)?.span.end;
         Ok(InterfaceDef {
             name: name.name,
+            type_params,
             methods,
             span: Span::new(start, end),
         })
@@ -288,6 +290,7 @@ impl Parser {
             .map(|s| s.start)
             .unwrap_or_else(|| self.current_span_start());
         let interface = self.expect_identifier("Expected interface name")?;
+        let type_args = self.parse_type_args()?;
         self.expect(TokenKind::For)?;
         let target = self.expect_identifier("Expected target type")?;
         self.expect(TokenKind::LBrace)?;
@@ -302,6 +305,7 @@ impl Parser {
         let end = self.expect(TokenKind::RBrace)?.span.end;
         Ok(ImplBlock {
             interface: interface.name,
+            type_args,
             target: target.name,
             methods,
             span: Span::new(start, end),
@@ -459,6 +463,25 @@ impl Parser {
             mutability,
             span,
         })
+    }
+
+    fn parse_type_args(&mut self) -> Result<Vec<TypeExpr>, SyntaxError> {
+        if !self.matches(TokenKind::LBracket) {
+            return Ok(Vec::new());
+        }
+        let mut args = Vec::new();
+        if !self.check(TokenKind::RBracket) {
+            loop {
+                let ty = self.parse_type_annotation()?;
+                args.push(ty.ty);
+                if self.matches(TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RBracket)?;
+        Ok(args)
     }
 
     fn parse_block(&mut self) -> Result<Block, SyntaxError> {
