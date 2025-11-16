@@ -17,8 +17,14 @@ pub struct PackageManifest {
 
 #[derive(Debug)]
 pub enum ManifestError {
-    Io { path: PathBuf, error: std::io::Error },
-    Parse { path: PathBuf, message: String },
+    Io {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    Parse {
+        path: PathBuf,
+        message: String,
+    },
     ModulePath {
         module: String,
         path: PathBuf,
@@ -58,13 +64,14 @@ impl PackageManifest {
         if let Some(raw_modules) = raw.modules {
             for (name, rel_path) in raw_modules {
                 let resolved = root.join(&rel_path);
-                let canonical = resolved
-                    .canonicalize()
-                    .map_err(|error| ManifestError::ModulePath {
-                        module: name.clone(),
-                        path: resolved.clone(),
-                        error,
-                    })?;
+                let canonical =
+                    resolved
+                        .canonicalize()
+                        .map_err(|error| ManifestError::ModulePath {
+                            module: name.clone(),
+                            path: resolved.clone(),
+                            error,
+                        })?;
                 reverse.insert(canonical.clone(), name.clone());
                 modules.insert(name, canonical);
             }

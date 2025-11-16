@@ -386,12 +386,13 @@ impl Interpreter {
             })
             .cloned()
             .or_else(|| {
-                self.functions.get(&FunctionKey {
-                    name: name.to_string(),
-                    receiver: None,
-                    type_args: None,
-                })
-                .cloned()
+                self.functions
+                    .get(&FunctionKey {
+                        name: name.to_string(),
+                        receiver: None,
+                        type_args: None,
+                    })
+                    .cloned()
             })
             .ok_or_else(|| RuntimeError::UnknownSymbol {
                 name: name.to_string(),
@@ -472,9 +473,7 @@ impl Interpreter {
         args: &[Value],
     ) -> RuntimeResult<()> {
         for (param, value) in params.iter().zip(args.iter()) {
-            if let Some((interface, type_args)) =
-                self.interface_name_from_type(&param.ty.ty)
-            {
+            if let Some((interface, type_args)) = self.interface_name_from_type(&param.ty.ty) {
                 self.ensure_interface_compat(&interface, &type_args, value)?;
             }
         }
@@ -500,18 +499,17 @@ impl Interpreter {
         type_args: &[TypeExpr],
         value: &Value,
     ) -> RuntimeResult<()> {
-        let struct_name = self.value_struct_name(value).ok_or_else(|| RuntimeError::TypeMismatch {
-            message: format!(
-                "Interface `{}` expects struct implementing it, found incompatible value",
-                interface
-            ),
-        })?;
+        let struct_name =
+            self.value_struct_name(value)
+                .ok_or_else(|| RuntimeError::TypeMismatch {
+                    message: format!(
+                        "Interface `{}` expects struct implementing it, found incompatible value",
+                        interface
+                    ),
+                })?;
         let key = ImplKey {
             interface: interface.to_string(),
-            type_args: type_args
-                .iter()
-                .map(|ty| ty.canonical_name())
-                .collect(),
+            type_args: type_args.iter().map(|ty| ty.canonical_name()).collect(),
             target: struct_name.clone(),
         };
         if self.impls.contains(&key) {
@@ -990,8 +988,7 @@ impl Interpreter {
                         let variant_name = ident.name.clone();
                         return self.instantiate_enum(&enum_name, &variant_name, arg_values);
                     }
-                    let results =
-                        self.call_function(&ident.name, None, type_args, arg_values)?;
+                    let results = self.call_function(&ident.name, None, type_args, arg_values)?;
                     Ok(match results.len() {
                         0 => Value::Unit,
                         1 => results.into_iter().next().unwrap(),
@@ -1007,12 +1004,8 @@ impl Interpreter {
                             type_args: None,
                         }) {
                             let arg_values = self.eval_arguments(args)?;
-                            let results = self.call_function(
-                                &qualified,
-                                None,
-                                type_args,
-                                arg_values,
-                            )?;
+                            let results =
+                                self.call_function(&qualified, None, type_args, arg_values)?;
                             return Ok(match results.len() {
                                 0 => Value::Unit,
                                 1 => results.into_iter().next().unwrap(),
@@ -1027,7 +1020,8 @@ impl Interpreter {
                     for expr in args {
                         method_args.push(self.eval_expression(expr)?);
                     }
-                    let results = self.call_function(field, receiver_type, type_args, method_args)?;
+                    let results =
+                        self.call_function(field, receiver_type, type_args, method_args)?;
                     Ok(match results.len() {
                         0 => Value::Unit,
                         1 => results.into_iter().next().unwrap(),

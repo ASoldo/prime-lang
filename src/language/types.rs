@@ -86,8 +86,7 @@ impl TypeExpr {
                 if args.is_empty() {
                     name.clone()
                 } else {
-                    let rendered: Vec<String> =
-                        args.iter().map(|ty| ty.canonical_name()).collect();
+                    let rendered: Vec<String> = args.iter().map(|ty| ty.canonical_name()).collect();
                     format!("{}[{}]", name, rendered.join(","))
                 }
             }
@@ -108,8 +107,7 @@ impl TypeExpr {
                 }
             }
             TypeExpr::Tuple(types) => {
-                let rendered: Vec<String> =
-                    types.iter().map(|ty| ty.canonical_name()).collect();
+                let rendered: Vec<String> = types.iter().map(|ty| ty.canonical_name()).collect();
                 format!("({})", rendered.join(","))
             }
             TypeExpr::Unit => "()".into(),

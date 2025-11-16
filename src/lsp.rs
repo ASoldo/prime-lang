@@ -4,8 +4,8 @@ use crate::{
     language::{
         ast::{
             Block, ConstDef, EnumDef, EnumVariant, Expr, FunctionBody, FunctionDef, FunctionParam,
-            InterfaceMethod, Item, LetStmt, Literal, Module, Pattern, RangeExpr, Statement,
-            StructDef, StructLiteralKind,
+            InterfaceDef, InterfaceMethod, Item, LetStmt, Literal, Module, Pattern, RangeExpr,
+            Statement, StructDef, StructLiteralKind,
         },
         errors::{SyntaxError, SyntaxErrors},
         lexer::{LexError, lex},
@@ -979,12 +979,16 @@ fn scope_contains(scope: Span, offset: usize) -> bool {
     offset >= scope.start && offset < scope.end
 }
 
+fn span_contains(span: Span, offset: usize) -> bool {
+    offset >= span.start && offset <= span.end
+}
+
 fn find_local_decl(module: &Module, name: &str, offset: usize) -> Option<DeclInfo> {
     collect_decl_spans(module)
         .into_iter()
         .filter(|decl| decl.name == name)
         .filter(|decl| scope_contains(decl.scope, offset))
-        .filter(|decl| offset >= decl.available_from)
+        .filter(|decl| offset >= decl.available_from || span_contains(decl.span, offset))
         .max_by_key(|decl| decl.span.start)
 }
 
@@ -1411,6 +1415,16 @@ fn hover_for_token(
                         .to_string(),
                 )
             } else if let Some(module) = module {
+                if let Some(field_hover) =
+                    hover_for_struct_field_definition(text, span, name, module)
+                {
+                    return Some(field_hover);
+                }
+                if let Some(method_hover) =
+                    hover_for_interface_method_definition(text, span, name, module)
+                {
+                    return Some(method_hover);
+                }
                 if let Some(struct_info) = struct_info {
                     if let Some(var_types) = var_types {
                         if let Some(hover) =
@@ -1473,6 +1487,13 @@ fn hover_for_token(
         TokenKind::Fn => Some("Keyword **fn**\n\nDefines a function.".to_string()),
         TokenKind::Struct => Some("Keyword **struct**\n\nDeclares a structure.".to_string()),
         TokenKind::Enum => Some("Keyword **enum**\n\nDeclares an enum.".to_string()),
+        TokenKind::Interface => {
+            Some("Keyword **interface**\n\nDeclares an interface of required methods.".to_string())
+        }
+        TokenKind::Impl => {
+            Some("Keyword **impl**\n\nImplements an interface for a concrete struct.".to_string())
+        }
+        TokenKind::Pub => Some("Keyword **pub**\n\nMarks an item as publicly visible.".to_string()),
         TokenKind::Const => Some("Keyword **const**\n\nDeclares a constant value.".to_string()),
         TokenKind::Return => Some("Keyword **return**\n\nExits the current function.".to_string()),
         TokenKind::If => Some("Keyword **if**\n\nConditional execution.".to_string()),
@@ -1485,6 +1506,9 @@ fn hover_for_token(
         TokenKind::Defer => Some("Keyword **defer**\n\nRun code when leaving scope.".to_string()),
         TokenKind::Import => {
             Some("Keyword **import**\n\nBring another module into scope.".to_string())
+        }
+        TokenKind::Using => {
+            Some("Keyword **using**\n\nRe-export or alias imported symbols.".to_string())
         }
         TokenKind::True | TokenKind::False => Some("Boolean literal.".to_string()),
         TokenKind::Integer(value) => {
@@ -1538,6 +1562,11 @@ fn hover_for_module_symbol(
                 let value = format!("```prime\n{}\n```", snippet);
                 return Some(markdown_hover(text, usage_span, value));
             }
+            Item::Interface(def) if def.name == name => {
+                let snippet = format_interface_hover(def);
+                let value = format!("```prime\n{}\n```", snippet);
+                return Some(markdown_hover(text, usage_span, value));
+            }
             Item::Enum(def) => {
                 if def.name == name {
                     let snippet = format_enum_hover(def);
@@ -1560,6 +1589,21 @@ fn hover_for_module_symbol(
                 let snippet = format_const_snippet(text, def);
                 let value = format!("```prime\n{}\n```", snippet);
                 return Some(markdown_hover(text, usage_span, value));
+            }
+            Item::Impl(block) => {
+                for method in &block.methods {
+                    if method.name == name {
+                        let signature = format_function_signature(method);
+                        let header = format!(
+                            "impl {}{} for {}",
+                            block.interface,
+                            format_type_arguments(&block.type_args),
+                            block.target
+                        );
+                        let value = format!("```prime\n{}\n{}\n```", header, signature);
+                        return Some(markdown_hover(text, usage_span, value));
+                    }
+                }
             }
             _ => {}
         }
@@ -1627,6 +1671,60 @@ fn hover_for_field_usage(
         value.push_str(&format!("\nParent: `{}`", parent_name));
     }
     Some(markdown_hover(text, span, value))
+}
+
+fn hover_for_struct_field_definition(
+    text: &str,
+    usage_span: Span,
+    name: &str,
+    module: &Module,
+) -> Option<Hover> {
+    for item in &module.items {
+        if let Item::Struct(def) = item {
+            for field in &def.fields {
+                if let Some(field_name) = &field.name {
+                    if field_name == name && span_contains(field.span, usage_span.start) {
+                        let mut value = String::new();
+                        value.push_str(&format!("Field `{}`\n\n", name));
+                        value.push_str(&format!("Type: `{}`", format_type_expr(&field.ty.ty)));
+                        value.push_str(&format!("\nStruct: `{}`", def.name));
+                        if field.embedded {
+                            value.push_str("\nEmbedded field");
+                        }
+                        return Some(markdown_hover(text, usage_span, value));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn hover_for_interface_method_definition(
+    text: &str,
+    usage_span: Span,
+    name: &str,
+    module: &Module,
+) -> Option<Hover> {
+    for item in &module.items {
+        if let Item::Interface(def) = item {
+            for method in &def.methods {
+                if method.name == name && span_contains(method.span, usage_span.start) {
+                    let mut value = String::new();
+                    value.push_str("```prime\n");
+                    value.push_str(&format_interface_method_signature(method, None));
+                    value.push_str("\n```\n");
+                    value.push_str(&format!(
+                        "Interface: `{}`{}",
+                        def.name,
+                        format_type_params(&def.type_params)
+                    ));
+                    return Some(markdown_hover(text, usage_span, value));
+                }
+            }
+        }
+    }
+    None
 }
 
 fn format_decl_kind(kind: DeclKind) -> &'static str {
@@ -1804,6 +1902,25 @@ fn format_enum_hover(def: &EnumDef) -> String {
     lines.push(header);
     for variant in &def.variants {
         lines.push(format!("  {},", format_enum_variant_signature(variant)));
+    }
+    lines.push("}".into());
+    lines.join("\n")
+}
+
+fn format_interface_hover(def: &InterfaceDef) -> String {
+    let mut lines = Vec::new();
+    let mut header = format!(
+        "interface {}{}",
+        def.name,
+        format_type_params(&def.type_params)
+    );
+    header.push_str(" {");
+    lines.push(header);
+    for method in &def.methods {
+        lines.push(format!(
+            "  {};",
+            format_interface_method_signature(method, None)
+        ));
     }
     lines.push("}".into());
     lines.join("\n")
@@ -2555,11 +2672,7 @@ fn member_completion_items(
                     });
                 }
             }
-            if items.is_empty() {
-                None
-            } else {
-                Some(items)
-            }
+            if items.is_empty() { None } else { Some(items) }
         } else if let Some(info) = interfaces.get(&name) {
             let subst = build_type_subst(&info.type_params, &args);
             let subst_ref = subst.as_ref();
@@ -2578,11 +2691,7 @@ fn member_completion_items(
                     });
                 }
             }
-            if items.is_empty() {
-                None
-            } else {
-                Some(items)
-            }
+            if items.is_empty() { None } else { Some(items) }
         } else {
             None
         }
@@ -2594,17 +2703,12 @@ fn member_completion_items(
 fn named_type_with_args(ty: &TypeExpr) -> Option<(String, Vec<TypeExpr>)> {
     match ty {
         TypeExpr::Named(name, args) => Some((name.clone(), args.clone())),
-        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
-            named_type_with_args(ty)
-        }
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => named_type_with_args(ty),
         _ => None,
     }
 }
 
-fn build_type_subst(
-    params: &[String],
-    args: &[TypeExpr],
-) -> Option<HashMap<String, TypeExpr>> {
+fn build_type_subst(params: &[String], args: &[TypeExpr]) -> Option<HashMap<String, TypeExpr>> {
     if params.is_empty() || params.len() != args.len() {
         return None;
     }
@@ -2758,6 +2862,19 @@ fn format_type_params(params: &[String]) -> String {
         String::new()
     } else {
         format!("[{}]", params.join(", "))
+    }
+}
+
+fn format_type_arguments(args: &[TypeExpr]) -> String {
+    if args.is_empty() {
+        String::new()
+    } else {
+        let rendered = args
+            .iter()
+            .map(format_type_expr)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("[{}]", rendered)
     }
 }
 

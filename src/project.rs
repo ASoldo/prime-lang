@@ -141,11 +141,7 @@ impl ModuleLoader {
         Ok(())
     }
 
-    fn resolve_import_path(
-        &self,
-        base: &Path,
-        import_path: &str,
-    ) -> Result<PathBuf, PackageError> {
+    fn resolve_import_path(&self, base: &Path, import_path: &str) -> Result<PathBuf, PackageError> {
         if let Some(manifest) = &self.manifest {
             if let Some(path) = manifest.module_path(import_path) {
                 return Ok(path);

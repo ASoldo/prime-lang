@@ -591,9 +591,7 @@ impl Compiler {
             Expr::Literal(Literal::Int(value, _)) => {
                 Ok(Value::Int(self.const_int_value(*value as i128)))
             }
-            Expr::Literal(Literal::Bool(value, _)) => {
-                Ok(Value::Bool(*value))
-            }
+            Expr::Literal(Literal::Bool(value, _)) => Ok(Value::Bool(*value)),
             Expr::Literal(Literal::Float(value, _)) => {
                 Ok(Value::Float(self.const_float_value(*value)))
             }
@@ -1025,12 +1023,7 @@ impl Compiler {
         }
     }
 
-    fn eval_bool_binary(
-        &self,
-        op: BinaryOp,
-        lhs: bool,
-        rhs: bool,
-    ) -> Result<Value, String> {
+    fn eval_bool_binary(&self, op: BinaryOp, lhs: bool, rhs: bool) -> Result<Value, String> {
         let value = match op {
             BinaryOp::And => Value::Bool(lhs && rhs),
             BinaryOp::Or => Value::Bool(lhs || rhs),
@@ -1048,39 +1041,50 @@ impl Compiler {
         rhs: IntValue,
     ) -> Result<Value, String> {
         let result = match op {
-            BinaryOp::Add => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Int(self.const_int_value(a + b))
-            }),
-            BinaryOp::Sub => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Int(self.const_int_value(a - b))
-            }),
-            BinaryOp::Mul => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Int(self.const_int_value(a * b))
-            }),
-            BinaryOp::Div => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Int(self.const_int_value(a / b))
-            }),
-            BinaryOp::Rem => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Int(self.const_int_value(a % b))
-            }),
-            BinaryOp::Lt => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Bool(a < b)
-            }),
-            BinaryOp::LtEq => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Bool(a <= b)
-            }),
-            BinaryOp::Gt => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Bool(a > b)
-            }),
-            BinaryOp::GtEq => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Bool(a >= b)
-            }),
-            BinaryOp::Eq => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Bool(a == b)
-            }),
-            BinaryOp::NotEq => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
-                Value::Bool(a != b)
-            }),
+            BinaryOp::Add => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Int(self.const_int_value(a + b))),
+            BinaryOp::Sub => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Int(self.const_int_value(a - b))),
+            BinaryOp::Mul => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Int(self.const_int_value(a * b))),
+            BinaryOp::Div => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Int(self.const_int_value(a / b))),
+            BinaryOp::Rem => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Int(self.const_int_value(a % b))),
+            BinaryOp::Lt => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Bool(a < b)),
+            BinaryOp::LtEq => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Bool(a <= b)),
+            BinaryOp::Gt => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Bool(a > b)),
+            BinaryOp::GtEq => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Bool(a >= b)),
+            BinaryOp::Eq => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Bool(a == b)),
+            BinaryOp::NotEq => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| Value::Bool(a != b)),
             _ => None,
         };
         result.ok_or_else(|| "Operation not supported in build mode".into())
@@ -1094,39 +1098,17 @@ impl Compiler {
     ) -> Result<Value, String> {
         let values = lhs.constant().zip(rhs.constant());
         let result = match op {
-            BinaryOp::Add => values.map(|(a, b)| {
-                Value::Float(self.const_float_value(a + b))
-            }),
-            BinaryOp::Sub => values.map(|(a, b)| {
-                Value::Float(self.const_float_value(a - b))
-            }),
-            BinaryOp::Mul => values.map(|(a, b)| {
-                Value::Float(self.const_float_value(a * b))
-            }),
-            BinaryOp::Div => values.map(|(a, b)| {
-                Value::Float(self.const_float_value(a / b))
-            }),
-            BinaryOp::Rem => values.map(|(a, b)| {
-                Value::Float(self.const_float_value(a % b))
-            }),
-            BinaryOp::Lt => values.map(|(a, b)| {
-                Value::Bool(a < b)
-            }),
-            BinaryOp::LtEq => values.map(|(a, b)| {
-                Value::Bool(a <= b)
-            }),
-            BinaryOp::Gt => values.map(|(a, b)| {
-                Value::Bool(a > b)
-            }),
-            BinaryOp::GtEq => values.map(|(a, b)| {
-                Value::Bool(a >= b)
-            }),
-            BinaryOp::Eq => values.map(|(a, b)| {
-                Value::Bool(a == b)
-            }),
-            BinaryOp::NotEq => values.map(|(a, b)| {
-                Value::Bool(a != b)
-            }),
+            BinaryOp::Add => values.map(|(a, b)| Value::Float(self.const_float_value(a + b))),
+            BinaryOp::Sub => values.map(|(a, b)| Value::Float(self.const_float_value(a - b))),
+            BinaryOp::Mul => values.map(|(a, b)| Value::Float(self.const_float_value(a * b))),
+            BinaryOp::Div => values.map(|(a, b)| Value::Float(self.const_float_value(a / b))),
+            BinaryOp::Rem => values.map(|(a, b)| Value::Float(self.const_float_value(a % b))),
+            BinaryOp::Lt => values.map(|(a, b)| Value::Bool(a < b)),
+            BinaryOp::LtEq => values.map(|(a, b)| Value::Bool(a <= b)),
+            BinaryOp::Gt => values.map(|(a, b)| Value::Bool(a > b)),
+            BinaryOp::GtEq => values.map(|(a, b)| Value::Bool(a >= b)),
+            BinaryOp::Eq => values.map(|(a, b)| Value::Bool(a == b)),
+            BinaryOp::NotEq => values.map(|(a, b)| Value::Bool(a != b)),
             _ => None,
         };
         result.ok_or_else(|| "Operation not supported in build mode".into())
@@ -1307,8 +1289,7 @@ impl Compiler {
                             type_args: None,
                         };
                         if self.functions.contains_key(&key) {
-                            let result =
-                                self.invoke_function(&qualified, type_args, args)?;
+                            let result = self.invoke_function(&qualified, type_args, args)?;
                             if result.is_some() {
                                 return Err(
                                     "Functions returning values are not supported in expression statements during build mode"
@@ -1588,9 +1569,7 @@ impl Compiler {
         args: &[Value],
     ) -> Result<(), String> {
         for (param, value) in params.iter().zip(args.iter()) {
-            if let Some((interface, type_args)) =
-                self.interface_name_from_type(&param.ty.ty)
-            {
+            if let Some((interface, type_args)) = self.interface_name_from_type(&param.ty.ty) {
                 self.ensure_interface_compat(&interface, &type_args, value)?;
             }
         }
@@ -1616,20 +1595,15 @@ impl Compiler {
         type_args: &[TypeExpr],
         value: &Value,
     ) -> Result<(), String> {
-        let struct_name =
-            self.value_struct_name(value)
-                .ok_or_else(|| {
-                    format!(
-                        "Interface `{}` expects struct implementing it, found incompatible value",
-                        interface
-                    )
-                })?;
+        let struct_name = self.value_struct_name(value).ok_or_else(|| {
+            format!(
+                "Interface `{}` expects struct implementing it, found incompatible value",
+                interface
+            )
+        })?;
         let key = ImplKey {
             interface: interface.to_string(),
-            type_args: type_args
-                .iter()
-                .map(|ty| ty.canonical_name())
-                .collect(),
+            type_args: type_args.iter().map(|ty| ty.canonical_name()).collect(),
             target: struct_name.clone(),
         };
         if self.impls.contains(&key) {
@@ -1923,9 +1897,9 @@ impl Compiler {
             Value::Bool(flag) => Ok(flag),
             other => {
                 let int_value = self.expect_int(other)?;
-                let constant = int_value
-                    .constant()
-                    .ok_or_else(|| "Non-constant condition not supported in build mode".to_string())?;
+                let constant = int_value.constant().ok_or_else(|| {
+                    "Non-constant condition not supported in build mode".to_string()
+                })?;
                 Ok(constant != 0)
             }
         }
