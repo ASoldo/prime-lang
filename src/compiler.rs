@@ -42,6 +42,8 @@ pub struct Compiler {
     structs: HashMap<String, StructDef>,
     functions: HashMap<FunctionKey, FunctionDef>,
     enum_variants: HashMap<String, EnumVariantInfo>,
+    interfaces: HashMap<String, InterfaceDef>,
+    impls: HashSet<(String, String)>,
     consts: Vec<ConstDef>,
     active_mut_borrows: HashSet<String>,
     borrow_frames: Vec<Vec<String>>,
@@ -236,6 +238,8 @@ impl Compiler {
                 structs: HashMap::new(),
                 functions: HashMap::new(),
                 enum_variants: HashMap::new(),
+                interfaces: HashMap::new(),
+                impls: HashSet::new(),
                 consts: Vec::new(),
                 active_mut_borrows: HashSet::new(),
                 borrow_frames: Vec::new(),
@@ -263,6 +267,8 @@ impl Compiler {
         self.structs.clear();
         self.functions.clear();
         self.enum_variants.clear();
+        self.interfaces.clear();
+        self.impls.clear();
         self.consts.clear();
         for module in &program.modules {
             for item in &module.items {
@@ -281,11 +287,11 @@ impl Compiler {
                             );
                         }
                     }
-                    Item::Interface(_) => {}
+                    Item::Interface(def) => {
+                        self.interfaces.insert(def.name.clone(), def.clone());
+                    }
                     Item::Impl(block) => {
-                        for method in &block.methods {
-                            self.register_function(method, &module.name)?;
-                        }
+                        self.register_impl_block(&module.name, block)?;
                     }
                     Item::Function(func) => {
                         self.register_function(func, &module.name)?;
@@ -1190,6 +1196,7 @@ impl Compiler {
             ));
         }
 
+        self.ensure_interface_arguments(&func.params, &evaluated_args)?;
         self.push_scope();
         for (param, value) in func.params.iter().zip(evaluated_args.into_iter()) {
             self.insert_var(&param.name, value, param.mutability == Mutability::Mutable)?;
@@ -1230,6 +1237,50 @@ impl Compiler {
             },
             func.clone(),
         );
+        Ok(())
+    }
+
+    fn register_impl_block(&mut self, module: &str, block: &ImplBlock) -> Result<(), String> {
+        if !self.interfaces.contains_key(&block.interface) {
+            return Err(format!("Unknown interface `{}`", block.interface));
+        }
+        if !self.structs.contains_key(&block.target) {
+            return Err(format!("Unknown target type `{}`", block.target));
+        }
+        let key = (block.interface.clone(), block.target.clone());
+        if self.impls.contains(&key) {
+            return Err(format!(
+                "`{}` already implemented for `{}`",
+                block.interface, block.target
+            ));
+        }
+        let iface = self.interfaces.get(&block.interface).cloned().unwrap();
+        let mut provided = HashSet::new();
+        for method in &block.methods {
+            let mut method_def = method.clone();
+            substitute_self_in_function(&mut method_def, &block.target);
+            provided.insert(method_def.name.clone());
+            if let Some(first) = method_def.params.first() {
+                if let Some(name) = type_name_from_type_expr(&first.ty.ty) {
+                    if name != block.target {
+                        return Err(format!(
+                            "First parameter of `{}` must be `{}`",
+                            method_def.name, block.target
+                        ));
+                    }
+                }
+            }
+            self.register_function(&method_def, module)?;
+        }
+        for sig in iface.methods {
+            if !provided.contains(&sig.name) {
+                return Err(format!(
+                    "`{}` missing method `{}` required by interface `{}`",
+                    block.target, sig.name, block.interface
+                ));
+            }
+        }
+        self.impls.insert(key);
         Ok(())
     }
 
@@ -1345,6 +1396,57 @@ impl Compiler {
             *ret = ret.substitute(&map);
         }
         Ok(new_def)
+    }
+
+    fn ensure_interface_arguments(
+        &self,
+        params: &[FunctionParam],
+        args: &[Value],
+    ) -> Result<(), String> {
+        for (param, value) in params.iter().zip(args.iter()) {
+            if let Some(interface) = self.interface_name_from_type(&param.ty.ty) {
+                self.ensure_interface_compat(&interface, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn interface_name_from_type(&self, ty: &TypeExpr) -> Option<String> {
+        match ty {
+            TypeExpr::Named(name, _) => {
+                if self.interfaces.contains_key(name) {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            }
+            TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
+                self.interface_name_from_type(ty)
+            }
+            _ => None,
+        }
+    }
+
+    fn ensure_interface_compat(&self, interface: &str, value: &Value) -> Result<(), String> {
+        let struct_name =
+            self.value_struct_name(value)
+                .ok_or_else(|| {
+                    format!(
+                        "Interface `{}` expects struct implementing it, found incompatible value",
+                        interface
+                    )
+                })?;
+        if self
+            .impls
+            .contains(&(interface.to_string(), struct_name.clone()))
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "`{}` does not implement interface `{}`",
+                struct_name, interface
+            ))
+        }
     }
 
     fn receiver_name_from_values(&self, args: &[Value]) -> Option<String> {
@@ -1736,21 +1838,28 @@ impl Drop for Compiler {
 fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
     match expr {
         TypeExpr::Named(name, _) => Some(name.clone()),
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
+            type_name_from_type_expr(ty)
+        }
         _ => None,
     }
 }
 
 fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructDef>) -> Option<String> {
-    def.params.first().and_then(|param| {
-        match &param.ty.ty {
-            TypeExpr::Named(name, _) => Some(name.clone()),
-            TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
-                type_name_from_type_expr(ty)
-            }
-            _ => None,
-        }
+    def.params
+        .first()
+        .and_then(|param| type_name_from_type_expr(&param.ty.ty))
         .filter(|name| structs.contains_key(name))
-    })
+}
+
+fn substitute_self_in_function(def: &mut FunctionDef, target: &str) {
+    let concrete = TypeExpr::Named(target.to_string(), Vec::new());
+    for param in &mut def.params {
+        param.ty = param.ty.replace_self(&concrete);
+    }
+    for ret in &mut def.returns {
+        *ret = ret.replace_self(&concrete);
+    }
 }
 
 fn describe_expr(expr: &Expr) -> &'static str {

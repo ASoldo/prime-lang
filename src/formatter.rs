@@ -74,13 +74,7 @@ fn format_interface(out: &mut String, def: &InterfaceDef) {
         let params = method
             .params
             .iter()
-            .map(|param| {
-                let mut prefix = String::new();
-                if param.mutability.is_mutable() {
-                    prefix.push_str("mut ");
-                }
-                format!("{}{}: {}", prefix, param.name, format_type(&param.ty.ty))
-            })
+            .map(format_param_signature)
             .collect::<Vec<_>>()
             .join(", ");
         out.push_str(&params);
@@ -124,10 +118,7 @@ fn format_function(out: &mut String, def: &FunctionDef) {
         if idx > 0 {
             out.push_str(", ");
         }
-        if param.mutability.is_mutable() {
-            out.push_str("mut ");
-        }
-        out.push_str(&format!("{}: {}", param.name, format_type(&param.ty.ty)));
+        out.push_str(&format_param_signature(param));
     }
     out.push(')');
     if !def.returns.is_empty() {
@@ -164,10 +155,7 @@ fn format_function_with_indent(out: &mut String, def: &FunctionDef, indent: usiz
         if idx > 0 {
             out.push_str(", ");
         }
-        if param.mutability.is_mutable() {
-            out.push_str("mut ");
-        }
-        out.push_str(&format!("{}: {}", param.name, format_type(&param.ty.ty)));
+        out.push_str(&format_param_signature(param));
     }
     out.push(')');
     if !def.returns.is_empty() {
@@ -195,6 +183,56 @@ fn format_function_with_indent(out: &mut String, def: &FunctionDef, indent: usiz
     }
     write_indent(out, indent);
     out.push_str("}\n");
+}
+
+fn format_param_signature(param: &FunctionParam) -> String {
+    if param.name == "self" {
+        if let Some(shorthand) = format_self_shorthand(&param.ty.ty) {
+            let mut text = String::new();
+            if param.mutability.is_mutable() {
+                text.push_str("mut ");
+            }
+            text.push_str(&shorthand);
+            return text;
+        }
+    }
+    let mut text = String::new();
+    if param.mutability.is_mutable() {
+        text.push_str("mut ");
+    }
+    text.push_str(&param.name);
+    text.push_str(": ");
+    text.push_str(&format_type(&param.ty.ty));
+    text
+}
+
+fn format_self_shorthand(ty: &TypeExpr) -> Option<String> {
+    match ty {
+        TypeExpr::SelfType => Some("self".into()),
+        TypeExpr::Reference { mutable, ty } => {
+            if matches!(ty.as_ref(), TypeExpr::SelfType) {
+                if *mutable {
+                    Some("&mut self".into())
+                } else {
+                    Some("&self".into())
+                }
+            } else {
+                None
+            }
+        }
+        TypeExpr::Pointer { mutable, ty } => {
+            if matches!(ty.as_ref(), TypeExpr::SelfType) {
+                if *mutable {
+                    Some("*mut self".into())
+                } else {
+                    Some("*self".into())
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 fn format_call_type_args(args: &[TypeExpr]) -> String {
@@ -835,6 +873,7 @@ fn format_type(ty: &TypeExpr) -> String {
             format!("({})", inner)
         }
         TypeExpr::Unit => "()".into(),
+        TypeExpr::SelfType => "Self".into(),
     }
 }
 

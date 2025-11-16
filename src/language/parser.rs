@@ -410,12 +410,46 @@ impl Parser {
 
     fn parse_param(&mut self) -> Result<FunctionParam, SyntaxError> {
         let span_start = self.current_span_start();
+        let mut reference = None;
+        if self.matches(TokenKind::Ampersand) {
+            let ref_span_start = self
+                .previous_span()
+                .map(|s| s.start)
+                .unwrap_or_else(|| self.current_span_start());
+            let is_mut = self.matches(TokenKind::Mut);
+            reference = Some((is_mut, ref_span_start));
+        }
         let mutability = if self.matches(TokenKind::Mut) {
             Mutability::Mutable
         } else {
             Mutability::Immutable
         };
         let name = self.expect_identifier("Expected parameter name")?;
+        if name.name == "self" && !self.check(TokenKind::Colon) {
+            let mut ty = TypeExpr::SelfType;
+            let ty_span_start = reference
+                .as_ref()
+                .map(|(_, start)| *start)
+                .unwrap_or(span_start);
+            if let Some((is_mut, _)) = reference {
+                ty = TypeExpr::Reference {
+                    mutable: is_mut,
+                    ty: Box::new(ty),
+                };
+            }
+            let span = Span::new(ty_span_start, name.span.end);
+            return Ok(FunctionParam {
+                name: name.name,
+                ty: TypeAnnotation { ty, span },
+                mutability,
+                span,
+            });
+        }
+        if reference.is_some() {
+            return Err(self.error_here(
+                "Reference shorthand (`&self`) is only supported with `self` parameters",
+            ));
+        }
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type_annotation()?;
         let span = Span::new(span_start, ty.span.end);

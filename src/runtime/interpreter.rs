@@ -208,20 +208,22 @@ impl Interpreter {
         let iface = self.interfaces.get(&block.interface).cloned().unwrap();
         let mut provided: HashSet<String> = HashSet::new();
         for method in &block.methods {
-            provided.insert(method.name.clone());
-            if let Some(first) = method.params.first() {
+            let mut method_def = method.clone();
+            substitute_self_in_function(&mut method_def, &block.target);
+            provided.insert(method_def.name.clone());
+            if let Some(first) = method_def.params.first() {
                 if let Some(name) = type_name_from_annotation(&first.ty) {
                     if name != block.target {
                         return Err(RuntimeError::Panic {
                             message: format!(
                                 "First parameter of `{}` must be `{}`",
-                                method.name, block.target
+                                method_def.name, block.target
                             ),
                         });
                     }
                 }
             }
-            self.register_function(module, method.clone())?;
+            self.register_function(module, method_def)?;
         }
         for sig in iface.methods {
             if !provided.contains(&sig.name) {
@@ -269,6 +271,7 @@ impl Interpreter {
             });
         }
 
+        self.ensure_interface_arguments(&info.def.params, &args)?;
         self.env.push_scope();
         for (param, value) in info.def.params.iter().zip(args.into_iter()) {
             self.env
@@ -435,6 +438,54 @@ impl Interpreter {
             receiver: info.receiver.clone(),
             def: new_def,
         })
+    }
+
+    fn ensure_interface_arguments(
+        &self,
+        params: &[FunctionParam],
+        args: &[Value],
+    ) -> RuntimeResult<()> {
+        for (param, value) in params.iter().zip(args.iter()) {
+            if let Some(interface) = self.interface_name_from_type(&param.ty.ty) {
+                self.ensure_interface_compat(&interface, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn interface_name_from_type(&self, ty: &TypeExpr) -> Option<String> {
+        match ty {
+            TypeExpr::Named(name, _) => {
+                if self.interfaces.contains_key(name) {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            }
+            TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
+                self.interface_name_from_type(ty)
+            }
+            _ => None,
+        }
+    }
+
+    fn ensure_interface_compat(&self, interface: &str, value: &Value) -> RuntimeResult<()> {
+        let struct_name = self.value_struct_name(value).ok_or_else(|| RuntimeError::TypeMismatch {
+            message: format!(
+                "Interface `{}` expects struct implementing it, found incompatible value",
+                interface
+            ),
+        })?;
+        if self.impls.contains(&(interface.to_string(), struct_name.clone())) {
+            Ok(())
+        } else {
+            Err(RuntimeError::TypeMismatch {
+                message: format!(
+                    "`{}` does not implement interface `{}`",
+                    struct_name, interface
+                ),
+            })
+        }
     }
 
     fn receiver_from_args(&self, args: &[Value]) -> Option<String> {
@@ -1441,5 +1492,15 @@ fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
             type_name_from_type_expr(ty)
         }
         _ => None,
+    }
+}
+
+fn substitute_self_in_function(def: &mut FunctionDef, target: &str) {
+    let concrete = TypeExpr::Named(target.to_string(), Vec::new());
+    for param in &mut def.params {
+        param.ty = param.ty.replace_self(&concrete);
+    }
+    for ret in &mut def.returns {
+        *ret = ret.replace_self(&concrete);
     }
 }

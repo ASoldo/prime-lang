@@ -1,0 +1,62 @@
+import "types";
+
+struct Hero {
+  name: string;
+  level: int32;
+}
+
+struct Drone {
+  tag: string;
+}
+
+interface Nameable {
+  fn label(self) -> string;
+  fn shout(&self) -> string;
+}
+
+impl Nameable for Hero {
+  fn label(self) -> string {
+    self.name
+  }
+
+  fn shout(&self) -> string {
+    "For Prime!"
+  }
+}
+
+impl Nameable for Drone {
+  fn label(self) -> string {
+    self.tag
+  }
+
+  fn shout(&self) -> string {
+    "Scanning"
+  }
+}
+
+fn announce(target: Nameable) {
+  out("-- announcement --");
+  out(target.label());
+  out(target.shout());
+}
+
+fn duplicate[T](value: T) -> (T, T) {
+  (value, value)
+}
+
+fn main() {
+  let Hero hero = Hero{
+    "Prime Hero",
+    18,
+  };
+  let Drone scout = Drone{
+    "Scout-7",
+  };
+
+  announce(hero);
+  announce(scout);
+
+  let pair = duplicate[string](hero.label());
+  out("duplicated label:");
+  out(pair);
+}

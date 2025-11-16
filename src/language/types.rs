@@ -10,11 +10,74 @@ pub enum TypeExpr {
     Pointer { mutable: bool, ty: Box<TypeExpr> },
     Tuple(Vec<TypeExpr>),
     Unit,
+    SelfType,
 }
 
 impl TypeExpr {
     pub fn named(name: impl Into<String>) -> Self {
         TypeExpr::Named(name.into(), Vec::new())
+    }
+
+    pub fn substitute(&self, map: &HashMap<String, TypeExpr>) -> TypeExpr {
+        match self {
+            TypeExpr::Named(name, args) => {
+                if args.is_empty() {
+                    map.get(name)
+                        .cloned()
+                        .unwrap_or_else(|| TypeExpr::Named(name.clone(), Vec::new()))
+                } else {
+                    TypeExpr::Named(
+                        name.clone(),
+                        args.iter().map(|ty| ty.substitute(map)).collect(),
+                    )
+                }
+            }
+            TypeExpr::Slice(inner) => TypeExpr::Slice(Box::new(inner.substitute(map))),
+            TypeExpr::Array { size, ty } => TypeExpr::Array {
+                size: *size,
+                ty: Box::new(ty.substitute(map)),
+            },
+            TypeExpr::Reference { mutable, ty } => TypeExpr::Reference {
+                mutable: *mutable,
+                ty: Box::new(ty.substitute(map)),
+            },
+            TypeExpr::Pointer { mutable, ty } => TypeExpr::Pointer {
+                mutable: *mutable,
+                ty: Box::new(ty.substitute(map)),
+            },
+            TypeExpr::Tuple(types) => {
+                TypeExpr::Tuple(types.iter().map(|ty| ty.substitute(map)).collect())
+            }
+            TypeExpr::Unit => TypeExpr::Unit,
+            TypeExpr::SelfType => TypeExpr::SelfType,
+        }
+    }
+
+    pub fn replace_self(&self, concrete: &TypeExpr) -> TypeExpr {
+        match self {
+            TypeExpr::SelfType => concrete.clone(),
+            TypeExpr::Slice(inner) => TypeExpr::Slice(Box::new(inner.replace_self(concrete))),
+            TypeExpr::Array { size, ty } => TypeExpr::Array {
+                size: *size,
+                ty: Box::new(ty.replace_self(concrete)),
+            },
+            TypeExpr::Reference { mutable, ty } => TypeExpr::Reference {
+                mutable: *mutable,
+                ty: Box::new(ty.replace_self(concrete)),
+            },
+            TypeExpr::Pointer { mutable, ty } => TypeExpr::Pointer {
+                mutable: *mutable,
+                ty: Box::new(ty.replace_self(concrete)),
+            },
+            TypeExpr::Tuple(types) => {
+                TypeExpr::Tuple(types.iter().map(|ty| ty.replace_self(concrete)).collect())
+            }
+            TypeExpr::Named(name, args) => TypeExpr::Named(
+                name.clone(),
+                args.iter().map(|ty| ty.replace_self(concrete)).collect(),
+            ),
+            TypeExpr::Unit => TypeExpr::Unit,
+        }
     }
 
     pub fn canonical_name(&self) -> String {
@@ -50,40 +113,7 @@ impl TypeExpr {
                 format!("({})", rendered.join(","))
             }
             TypeExpr::Unit => "()".into(),
-        }
-    }
-
-    pub fn substitute(&self, map: &HashMap<String, TypeExpr>) -> TypeExpr {
-        match self {
-            TypeExpr::Named(name, args) => {
-                if args.is_empty() {
-                    map.get(name)
-                        .cloned()
-                        .unwrap_or_else(|| TypeExpr::Named(name.clone(), Vec::new()))
-                } else {
-                    TypeExpr::Named(
-                        name.clone(),
-                        args.iter().map(|ty| ty.substitute(map)).collect(),
-                    )
-                }
-            }
-            TypeExpr::Slice(inner) => TypeExpr::Slice(Box::new(inner.substitute(map))),
-            TypeExpr::Array { size, ty } => TypeExpr::Array {
-                size: *size,
-                ty: Box::new(ty.substitute(map)),
-            },
-            TypeExpr::Reference { mutable, ty } => TypeExpr::Reference {
-                mutable: *mutable,
-                ty: Box::new(ty.substitute(map)),
-            },
-            TypeExpr::Pointer { mutable, ty } => TypeExpr::Pointer {
-                mutable: *mutable,
-                ty: Box::new(ty.substitute(map)),
-            },
-            TypeExpr::Tuple(types) => {
-                TypeExpr::Tuple(types.iter().map(|ty| ty.substitute(map)).collect())
-            }
-            TypeExpr::Unit => TypeExpr::Unit,
+            TypeExpr::SelfType => "Self".into(),
         }
     }
 }
@@ -98,6 +128,13 @@ impl TypeAnnotation {
     pub fn substitute(&self, map: &HashMap<String, TypeExpr>) -> TypeAnnotation {
         TypeAnnotation {
             ty: self.ty.substitute(map),
+            span: self.span,
+        }
+    }
+
+    pub fn replace_self(&self, concrete: &TypeExpr) -> TypeAnnotation {
+        TypeAnnotation {
+            ty: self.ty.replace_self(concrete),
             span: self.span,
         }
     }
