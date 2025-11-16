@@ -1184,12 +1184,21 @@ fn collect_used_identifiers(module: &Module) -> HashSet<String> {
 
 fn collect_used_in_item(item: &Item, used: &mut HashSet<String>) {
     match item {
-        Item::Function(func) => match &func.body {
-            FunctionBody::Block(block) => collect_used_in_block(block, used),
-            FunctionBody::Expr(expr) => collect_expr_idents(&expr.node, used),
-        },
+        Item::Function(func) => collect_used_in_function(func, used),
+        Item::Impl(block) => {
+            for method in &block.methods {
+                collect_used_in_function(method, used);
+            }
+        }
         Item::Const(def) => collect_expr_idents(&def.value, used),
         _ => {}
+    }
+}
+
+fn collect_used_in_function(func: &FunctionDef, used: &mut HashSet<String>) {
+    match &func.body {
+        FunctionBody::Block(block) => collect_used_in_block(block, used),
+        FunctionBody::Expr(expr) => collect_expr_idents(&expr.node, used),
     }
 }
 
