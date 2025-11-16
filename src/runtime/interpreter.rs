@@ -770,8 +770,18 @@ impl Interpreter {
                     UnaryOp::Deref => Ok(value),
                 }
             }
-            Expr::Call { callee, args, .. } => match callee.as_ref() {
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } => match callee.as_ref() {
                 Expr::Identifier(ident) => {
+                    if !type_args.is_empty() {
+                        return Err(RuntimeError::Unsupported {
+                            message: "Generic functions are not supported yet".into(),
+                        });
+                    }
                     let arg_values = self.eval_arguments(args)?;
                     if let Some(variant) = self.enum_variants.get(&ident.name) {
                         let enum_name = variant.enum_name.clone();
@@ -786,6 +796,11 @@ impl Interpreter {
                     })
                 }
                 Expr::FieldAccess { base, field, .. } => {
+                    if !type_args.is_empty() {
+                        return Err(RuntimeError::Unsupported {
+                            message: "Generic functions are not supported yet".into(),
+                        });
+                    }
                     if let Expr::Identifier(module_ident) = base.as_ref() {
                         let qualified = format!("{}::{}", module_ident.name, field);
                         if self.functions.contains_key(&FunctionKey {

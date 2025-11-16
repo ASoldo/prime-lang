@@ -326,6 +326,7 @@ impl Parser {
 
     fn parse_function(&mut self) -> Result<FunctionDef, SyntaxError> {
         let name = self.expect_identifier("Expected function name")?;
+        let type_params = self.parse_type_params()?;
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
         if !self.check(TokenKind::RParen) {
@@ -373,6 +374,7 @@ impl Parser {
 
         Ok(FunctionDef {
             name: name.name,
+            type_params,
             params,
             returns,
             body,
@@ -865,6 +867,47 @@ impl Parser {
     fn parse_postfix(&mut self) -> Result<Expr, SyntaxError> {
         let mut expr = self.parse_primary()?;
         loop {
+            if self.matches(TokenKind::LBracket) {
+                let mut type_args = Vec::new();
+                if !self.check(TokenKind::RBracket) {
+                    loop {
+                        type_args.push(self.parse_type_expr()?);
+                        if self.matches(TokenKind::Comma) {
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RBracket)?;
+                self.expect(TokenKind::LParen)?;
+                self.enter_paren();
+                let span_start = expr_span(&expr).start;
+                let mut args = Vec::new();
+                if !self.check(TokenKind::RParen) {
+                    loop {
+                        args.push(self.parse_expression()?);
+                        if self.matches(TokenKind::Comma) {
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                let end = match self.expect(TokenKind::RParen) {
+                    Ok(token) => token.span.end,
+                    Err(err) => {
+                        self.exit_paren();
+                        return Err(err);
+                    }
+                };
+                self.exit_paren();
+                expr = Expr::Call {
+                    callee: Box::new(expr),
+                    type_args,
+                    args,
+                    span: Span::new(span_start, end),
+                };
+                continue;
+            }
             if self.matches(TokenKind::LParen) {
                 self.enter_paren();
                 let span_start = expr_span(&expr).start;
@@ -888,6 +931,7 @@ impl Parser {
                 self.exit_paren();
                 expr = Expr::Call {
                     callee: Box::new(expr),
+                    type_args: Vec::new(),
                     args,
                     span: Span::new(span_start, end),
                 };

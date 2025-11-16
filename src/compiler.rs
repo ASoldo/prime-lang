@@ -662,7 +662,9 @@ impl Compiler {
                     };
                 }
             }
-            Expr::Call { callee, args, .. } => self.emit_call_expression(callee, args),
+            Expr::Call { callee, type_args, args, .. } => {
+                self.emit_call_expression(callee, type_args, args)
+            }
             other => Err(format!(
                 "Expression `{}` not supported in build mode",
                 describe_expr(other)
@@ -670,7 +672,15 @@ impl Compiler {
         }
     }
 
-    fn emit_call_expression(&mut self, callee: &Expr, args: &[Expr]) -> Result<Value, String> {
+    fn emit_call_expression(
+        &mut self,
+        callee: &Expr,
+        type_args: &[TypeExpr],
+        args: &[Expr],
+    ) -> Result<Value, String> {
+        if !type_args.is_empty() {
+            return Err("Generic functions are not supported in build mode yet".into());
+        }
         match callee {
             Expr::Identifier(ident) => {
                 if let Some(info) = self.enum_variants.get(&ident.name).cloned() {
@@ -1093,13 +1103,21 @@ impl Compiler {
 
     fn eval_expression_statement(&mut self, expr: &Expr) -> Result<(), String> {
         match expr {
-            Expr::Call { callee, args, .. } => match callee.as_ref() {
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } => match callee.as_ref() {
                 Expr::Identifier(ident) => {
                     if ident.name == "out" {
                         self.emit_out_call(args).map(|_| ())
                     } else if let Some(result) = self.try_builtin_call(&ident.name, args) {
                         result.map(|_| ())
                     } else {
+                        if !type_args.is_empty() {
+                            return Err("Generic functions are not supported in build mode yet".into());
+                        }
                         let result = self.invoke_function(&ident.name, args)?;
                         if result.is_some() {
                             Err("Functions returning values are not supported in expression statements during build mode".into())
@@ -1116,6 +1134,9 @@ impl Compiler {
                             receiver: None,
                         };
                         if self.functions.contains_key(&key) {
+                            if !type_args.is_empty() {
+                                return Err("Generic functions are not supported in build mode yet".into());
+                            }
                             let result = self.invoke_function(&qualified, args)?;
                             if result.is_some() {
                                 return Err(
@@ -1129,6 +1150,9 @@ impl Compiler {
                     let mut method_args = Vec::with_capacity(args.len() + 1);
                     method_args.push((**base).clone());
                     method_args.extend(args.iter().cloned());
+                    if !type_args.is_empty() {
+                        return Err("Generic functions are not supported in build mode yet".into());
+                    }
                     let result = self.invoke_function(field, &method_args)?;
                     if result.is_some() {
                         Err("Functions returning values are not supported in expression statements during build mode".into())

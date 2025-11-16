@@ -115,7 +115,8 @@ fn format_impl(out: &mut String, block: &ImplBlock) {
 }
 
 fn format_function(out: &mut String, def: &FunctionDef) {
-    out.push_str(&format!("fn {}(", def.name));
+    let params = format_type_params(&def.type_params);
+    out.push_str(&format!("fn {}{}(", def.name, params));
     for (idx, param) in def.params.iter().enumerate() {
         if idx > 0 {
             out.push_str(", ");
@@ -154,7 +155,8 @@ fn format_function(out: &mut String, def: &FunctionDef) {
 
 fn format_function_with_indent(out: &mut String, def: &FunctionDef, indent: usize) {
     write_indent(out, indent);
-    out.push_str(&format!("fn {}(", def.name));
+    let params = format_type_params(&def.type_params);
+    out.push_str(&format!("fn {}{}(", def.name, params));
     for (idx, param) in def.params.iter().enumerate() {
         if idx > 0 {
             out.push_str(", ");
@@ -190,6 +192,13 @@ fn format_function_with_indent(out: &mut String, def: &FunctionDef, indent: usiz
     }
     write_indent(out, indent);
     out.push_str("}\n");
+}
+
+fn format_call_type_args(args: &[TypeExpr]) -> String {
+    args.iter()
+        .map(|ty| format_type(ty))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn format_const(out: &mut String, def: &ConstDef) {
@@ -496,13 +505,23 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
                 UnaryOp::Deref => format!("*{inner}"),
             }
         }
-        Expr::Call { callee, args, .. } => {
+        Expr::Call { callee, type_args, args, .. } => {
             let args = args
                 .iter()
                 .map(|expr| format_expr(expr))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{}({})", format_expr_prec(callee, 100), args)
+            let type_args_str = if type_args.is_empty() {
+                String::new()
+            } else {
+                format!("[{}]", format_call_type_args(type_args))
+            };
+            format!(
+                "{}{}({})",
+                format_expr_prec(callee, 100),
+                type_args_str,
+                args
+            )
         }
         Expr::StructLiteral { name, fields, .. } => match fields {
             StructLiteralKind::Named(named) => {

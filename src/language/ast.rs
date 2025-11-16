@@ -1,6 +1,6 @@
 use crate::language::{
     span::{Span, Spanned},
-    types::{Mutability, TypeAnnotation},
+    types::{Mutability, TypeAnnotation, TypeExpr},
 };
 use std::path::PathBuf;
 
@@ -92,6 +92,7 @@ pub struct ImplBlock {
 #[derive(Clone, Debug)]
 pub struct FunctionDef {
     pub name: String,
+    pub type_params: Vec<String>,
     pub params: Vec<FunctionParam>,
     pub returns: Vec<TypeAnnotation>,
     pub body: FunctionBody,
@@ -245,6 +246,7 @@ pub enum Expr {
     },
     Call {
         callee: Box<Expr>,
+        type_args: Vec<TypeExpr>,
         args: Vec<Expr>,
         span: Span,
     },

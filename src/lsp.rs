@@ -1074,7 +1074,7 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
             collect_decl_from_expr(right, decls);
         }
         Expr::Unary { expr: inner, .. } => collect_decl_from_expr(inner, decls),
-        Expr::Call { callee, args, .. } => {
+        Expr::Call { callee, type_args: _, args, .. } => {
             collect_decl_from_expr(callee, decls);
             for arg in args {
                 collect_decl_from_expr(arg, decls);
@@ -1246,7 +1246,7 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
             collect_expr_idents(right, used);
         }
         Expr::Unary { expr, .. } => collect_expr_idents(expr, used),
-        Expr::Call { callee, args, .. } => {
+        Expr::Call { callee, type_args: _, args, .. } => {
             collect_expr_idents(callee, used);
             for arg in args {
                 collect_expr_idents(arg, used);
@@ -1626,6 +1626,7 @@ fn format_decl_kind(kind: DeclKind) -> &'static str {
 fn format_function_signature(func: &FunctionDef) -> String {
     let mut signature = String::from("fn ");
     signature.push_str(&func.name);
+    signature.push_str(&format_type_params(&func.type_params));
     signature.push('(');
     let params = func
         .params
