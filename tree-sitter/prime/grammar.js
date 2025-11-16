@@ -33,31 +33,51 @@ module.exports = grammar({
     [$.statement, $.expression],
     [$.expression, $.struct_literal],
     [$.return_type, $.tuple_type],
+    [$.type_expression, $.module_path],
   ],
 
   rules: {
     program: $ => seq(
+      optional($.module_declaration),
       repeat($.import_declaration),
       repeat($.item)
     ),
 
+    module_declaration: $ => seq(
+      'module',
+      field('name', $.module_path),
+      ';'
+    ),
+
     import_declaration: $ => seq(
+      optional('pub'),
       'import',
-      field('path', $.string_literal),
+      field('path', choice($.module_path, $.string_literal)),
       optional(seq('as', field('alias', $.identifier))),
       ';'
     ),
 
-    item: $ => choice(
-      $.function_definition,
-      $.struct_definition,
-      $.enum_definition,
-      $.const_definition
+    module_path: $ => seq(
+      field('head', $.identifier),
+      repeat(seq('::', field('tail', $.identifier)))
+    ),
+
+    item: $ => seq(
+      optional('pub'),
+      choice(
+        $.function_definition,
+        $.struct_definition,
+        $.enum_definition,
+        $.interface_definition,
+        $.impl_definition,
+        $.const_definition
+      )
     ),
 
     struct_definition: $ => seq(
       'struct',
       field('name', $.identifier),
+      optional(field('type_parameters', $.type_parameters)),
       '{',
       repeat($.struct_field),
       '}'
@@ -79,6 +99,7 @@ module.exports = grammar({
     enum_definition: $ => seq(
       'enum',
       field('name', $.identifier),
+      optional(field('type_parameters', $.type_parameters)),
       '{',
       commaSep($.enum_variant),
       '}'
@@ -93,6 +114,33 @@ module.exports = grammar({
       ))
     ),
 
+    interface_definition: $ => seq(
+      'interface',
+      field('name', $.identifier),
+      optional(field('type_parameters', $.type_parameters)),
+      '{',
+      repeat($.interface_method),
+      '}'
+    ),
+
+    interface_method: $ => seq(
+      'fn',
+      field('name', $.identifier),
+      field('parameters', $.parameter_list),
+      optional(field('returns', $.return_type)),
+      ';'
+    ),
+
+    impl_definition: $ => seq(
+      'impl',
+      field('interface', $.type_expression),
+      'for',
+      field('target', $.type_expression),
+      '{',
+      repeat($.function_definition),
+      '}'
+    ),
+
     const_definition: $ => seq(
       'const',
       field('name', $.identifier),
@@ -105,9 +153,16 @@ module.exports = grammar({
     function_definition: $ => seq(
       'fn',
       field('name', $.identifier),
+      optional(field('type_parameters', $.type_parameters)),
       field('parameters', $.parameter_list),
       optional(field('returns', $.return_type)),
       field('body', choice($.block, $.expression_body))
+    ),
+
+    type_parameters: $ => seq(
+      '[',
+      commaSep1($.identifier),
+      ']'
     ),
 
     parameter_list: $ => seq(
@@ -358,6 +413,7 @@ module.exports = grammar({
       $.array_type,
       $.tuple_type,
       $.generic_type,
+      $.module_path,
       $.identifier
     ),
 
