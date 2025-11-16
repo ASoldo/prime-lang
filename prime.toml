@@ -1,11 +1,5 @@
 manifest_version = "2"
 
-[package]
-name = "prime-lang-playground"
-version = "0.1.0"
-kind = "binary"
-entry = "app::main"
-
 [[modules]]
 name = "app::main"
 path = "main.prime"
@@ -55,3 +49,14 @@ visibility = "pub"
 name = "demos::ns"
 path = "ns_demo.prime"
 visibility = "pub"
+
+[[modules]]
+name = "pkg::my_module"
+path = "pkg/my_module.prime"
+visibility = "pub"
+
+[package]
+entry = "app::main"
+kind = "binary"
+name = "prime-lang-playground"
+version = "0.1.0"

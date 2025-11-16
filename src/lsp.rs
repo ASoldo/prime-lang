@@ -1,4 +1,7 @@
-use crate::project::load_package;
+use crate::project::{
+    find_manifest, load_package,
+    manifest::{ModuleVisibility, PackageManifest},
+};
 use crate::{
     formatter::format_module,
     language::{
@@ -516,6 +519,21 @@ impl LanguageServer for Backend {
         };
         let module_opt = self.parse_cached_module(&uri, &text).await;
         let offset = position_to_offset(&text, position);
+        if let Some(ctx) = module_path_completion_context(&text, offset) {
+            if let Some((manifest, file_path)) = manifest_context_for_uri(&uri) {
+                let expected = matches!(ctx.kind, ModulePathCompletionKind::Declaration)
+                    .then(|| manifest.module_name_for_path(&file_path))
+                    .flatten();
+                let items = module_completion_items_from_manifest(
+                    &manifest,
+                    ctx.prefix.as_deref(),
+                    expected.as_deref(),
+                );
+                if !items.is_empty() {
+                    return Ok(Some(CompletionResponse::Array(items)));
+                }
+            }
+        }
         let prefix = completion_prefix(&text, offset, context.as_ref());
         let prefix_ref = prefix.as_deref();
         let struct_modules = self
@@ -784,6 +802,7 @@ fn collect_diagnostics(uri: &Uri, text: &str) -> Vec<Diagnostic> {
         }
     };
     if let Some(module) = module {
+        diags.extend(manifest_declaration_diagnostics(uri, text, &module));
         diags.extend(unused_variable_diagnostics(&module, text));
     }
     // Avoid keeping the entire token vec if not needed elsewhere.
@@ -820,6 +839,55 @@ fn syntax_error_to_lsp(text: &str, err: SyntaxError) -> Diagnostic {
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some("prime-lang".into()),
         message,
+        ..Default::default()
+    }
+}
+
+fn manifest_declaration_diagnostics(uri: &Uri, text: &str, module: &Module) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let Some((manifest, file_path)) = manifest_context_for_uri(uri) else {
+        return diags;
+    };
+    let expected = manifest.module_name_for_path(&file_path);
+    let declared = module.declared_name.as_deref();
+    match (expected.as_deref(), declared) {
+        (Some(expected_name), Some(actual)) if expected_name != actual => {
+            diags.push(module_mismatch_diagnostic(
+                text,
+                module.declared_span,
+                &format!(
+                    "Module declared as `{actual}` but manifest maps this file to `{expected_name}`"
+                ),
+            ));
+        }
+        (Some(expected_name), None) => {
+            diags.push(module_mismatch_diagnostic(
+                text,
+                None,
+                &format!(
+                    "Manifest maps this file to `{expected_name}` but the file is missing `module {expected_name};`"
+                ),
+            ));
+        }
+        (None, Some(actual)) => {
+            diags.push(module_mismatch_diagnostic(
+                text,
+                module.declared_span,
+                &format!("Module `{actual}` is declared in this file but not listed in prime.toml"),
+            ));
+        }
+        _ => {}
+    }
+    diags
+}
+
+fn module_mismatch_diagnostic(text: &str, span: Option<Span>, message: &str) -> Diagnostic {
+    let highlight = span.unwrap_or_else(|| first_non_whitespace_span(text));
+    Diagnostic {
+        range: span_to_range(text, highlight),
+        severity: Some(DiagnosticSeverity::WARNING),
+        source: Some("prime-lang".into()),
+        message: message.to_string(),
         ..Default::default()
     }
 }
@@ -2240,11 +2308,29 @@ fn extract_text(text: &str, start: usize, end: usize) -> String {
     text[start..end].trim().to_string()
 }
 
+fn first_non_whitespace_span(text: &str) -> Span {
+    for (idx, ch) in text.char_indices() {
+        if !ch.is_whitespace() {
+            let end = idx + ch.len_utf8();
+            return Span::new(idx, end);
+        }
+    }
+    let end = text.chars().next().map(|ch| ch.len_utf8()).unwrap_or(0);
+    Span::new(0, end)
+}
+
 fn url_to_path(url: &Uri) -> Option<PathBuf> {
     url.to_file_path().map(|cow: Cow<'_, Path>| match cow {
         Cow::Owned(path) => path,
         Cow::Borrowed(path) => path.to_path_buf(),
     })
+}
+
+fn manifest_context_for_uri(uri: &Uri) -> Option<(PackageManifest, PathBuf)> {
+    let path = url_to_path(uri)?;
+    let manifest_path = find_manifest(&path)?;
+    let manifest = PackageManifest::load(&manifest_path).ok()?;
+    Some((manifest, path))
 }
 
 fn adjust_zero_length_offset(text: &str, offset: usize) -> usize {
@@ -2451,6 +2537,129 @@ fn module_symbol_definitions(module: &Module) -> Vec<(String, Span, SymbolKind)>
     defs
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModulePathCompletionKind {
+    Declaration,
+    Import,
+}
+
+struct ModulePathCompletionContext {
+    kind: ModulePathCompletionKind,
+    prefix: Option<String>,
+}
+
+fn module_path_completion_context(
+    text: &str,
+    offset: usize,
+) -> Option<ModulePathCompletionContext> {
+    if text.is_empty() || offset == 0 {
+        return None;
+    }
+    let line_start = text[..offset].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+    let line = &text[line_start..offset];
+    let mut trimmed = line.trim_start();
+    if trimmed.starts_with("module ") {
+        let after = trimmed["module ".len()..].trim_start();
+        return Some(ModulePathCompletionContext {
+            kind: ModulePathCompletionKind::Declaration,
+            prefix: sanitize_module_prefix(after),
+        });
+    }
+    if trimmed.starts_with("pub ") {
+        trimmed = trimmed["pub ".len()..].trim_start();
+    }
+    if trimmed.starts_with("import ") {
+        let after = trimmed["import ".len()..].trim_start();
+        return Some(ModulePathCompletionContext {
+            kind: ModulePathCompletionKind::Import,
+            prefix: sanitize_module_prefix(after),
+        });
+    }
+    None
+}
+
+fn sanitize_module_prefix(input: &str) -> Option<String> {
+    let mut end = input.len();
+    for (idx, ch) in input.char_indices() {
+        if ch == ';' {
+            end = idx;
+            break;
+        }
+        if ch.is_whitespace() {
+            end = idx;
+            break;
+        }
+    }
+    let prefix = input[..end].trim().to_string();
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix)
+    }
+}
+
+fn module_completion_items_from_manifest(
+    manifest: &PackageManifest,
+    prefix: Option<&str>,
+    expected: Option<&str>,
+) -> Vec<CompletionItem> {
+    let entries = manifest.module_entries();
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(exp) = expected {
+        if module_prefix_matches(exp, prefix) && seen.insert(exp.to_string()) {
+            let detail = entries.iter().find(|entry| entry.name == exp).map(|entry| {
+                format!(
+                    "{} [{}]",
+                    entry.path.display(),
+                    module_visibility_label(entry.visibility)
+                )
+            });
+            items.push(CompletionItem {
+                label: exp.to_string(),
+                kind: Some(CompletionItemKind::MODULE),
+                sort_text: Some("0".into()),
+                detail,
+                ..CompletionItem::default()
+            });
+        }
+    }
+    for entry in &entries {
+        if !module_prefix_matches(&entry.name, prefix) {
+            continue;
+        }
+        if !seen.insert(entry.name.clone()) {
+            continue;
+        }
+        let detail = format!(
+            "{} [{}]",
+            entry.path.display(),
+            module_visibility_label(entry.visibility)
+        );
+        items.push(CompletionItem {
+            label: entry.name.clone(),
+            kind: Some(CompletionItemKind::MODULE),
+            detail: Some(detail),
+            ..CompletionItem::default()
+        });
+    }
+    items
+}
+
+fn module_prefix_matches(name: &str, prefix: Option<&str>) -> bool {
+    match prefix {
+        Some(prefix) => name.starts_with(prefix),
+        None => true,
+    }
+}
+
+fn module_visibility_label(vis: ModuleVisibility) -> &'static str {
+    match vis {
+        ModuleVisibility::Public => "pub",
+        ModuleVisibility::Package => "package",
+        ModuleVisibility::Private => "private",
+    }
+}
 fn flatten_struct_fields(
     name: &str,
     raw: &HashMap<String, RawStructInfo>,

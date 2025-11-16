@@ -116,6 +116,10 @@ impl PackageManifest {
         let canonical = path.canonicalize().ok()?;
         self.reverse.get(&canonical).cloned()
     }
+
+    pub fn module_entries(&self) -> Vec<ModuleInfo> {
+        self.modules.values().cloned().collect()
+    }
 }
 
 fn parse_modules(

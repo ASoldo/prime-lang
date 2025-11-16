@@ -59,11 +59,13 @@ impl Parser {
         let mut imports = Vec::new();
         let mut items = Vec::new();
         let mut declared_name = None;
+        let mut declared_span = None;
 
         if self.check(TokenKind::ModuleKw) {
             match self.parse_module_declaration() {
-                Ok((name, _span)) => {
+                Ok((name, span)) => {
                     declared_name = Some(name.clone());
+                    declared_span = Some(span);
                     self.module_name = name;
                 }
                 Err(err) => self.report(err),
@@ -107,6 +109,7 @@ impl Parser {
                 name: self.module_name,
                 path: self.path,
                 declared_name,
+                declared_span,
                 imports,
                 items,
             })

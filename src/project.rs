@@ -1,4 +1,4 @@
-mod manifest;
+pub mod manifest;
 
 use crate::language::{
     ast::{ImportPath, Module, Program},
@@ -197,7 +197,7 @@ fn canonicalize(path: &Path) -> Result<PathBuf, std::io::Error> {
     }
 }
 
-fn find_manifest(start: &Path) -> Option<PathBuf> {
+pub fn find_manifest(start: &Path) -> Option<PathBuf> {
     let mut current = if start.is_dir() {
         start.to_path_buf()
     } else {
