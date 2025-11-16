@@ -728,12 +728,12 @@ impl Interpreter {
     fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {
         match expr {
             Expr::Identifier(ident) => {
-                let value = self
-                    .env
-                    .get(&ident.name)
-                    .ok_or_else(|| RuntimeError::UnknownSymbol {
-                        name: ident.name.clone(),
-                    })?;
+                let value =
+                    self.env
+                        .get(&ident.name)
+                        .ok_or_else(|| RuntimeError::UnknownSymbol {
+                            name: ident.name.clone(),
+                        })?;
                 if matches!(value, Value::Moved) {
                     return Err(RuntimeError::MovedValue {
                         name: ident.name.clone(),
@@ -978,12 +978,12 @@ impl Interpreter {
     fn eval_move_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {
         match expr {
             Expr::Identifier(ident) => {
-                let (cell, _) = self
-                    .env
-                    .get_cell(&ident.name)
-                    .ok_or_else(|| RuntimeError::UnknownSymbol {
-                        name: ident.name.clone(),
-                    })?;
+                let (cell, _) =
+                    self.env
+                        .get_cell(&ident.name)
+                        .ok_or_else(|| RuntimeError::UnknownSymbol {
+                            name: ident.name.clone(),
+                        })?;
                 if self.env.is_mut_borrowed(&ident.name) {
                     return Err(RuntimeError::Panic {
                         message: format!("Cannot move `{}` while it is borrowed", ident.name),
@@ -1308,10 +1308,7 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
         FlowSignal::Return(_) => "return",
     }
 }
-fn receiver_type_name(
-    def: &FunctionDef,
-    structs: &HashMap<String, StructDef>,
-) -> Option<String> {
+fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructDef>) -> Option<String> {
     def.params
         .first()
         .and_then(|param| type_name_from_annotation(&param.ty))

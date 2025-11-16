@@ -1,4 +1,5 @@
 use crate::language::span::Span;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypeExpr {
@@ -15,12 +16,55 @@ impl TypeExpr {
     pub fn named(name: impl Into<String>) -> Self {
         TypeExpr::Named(name.into(), Vec::new())
     }
+
+    pub fn substitute(&self, map: &HashMap<String, TypeExpr>) -> TypeExpr {
+        match self {
+            TypeExpr::Named(name, args) => {
+                if args.is_empty() {
+                    map.get(name)
+                        .cloned()
+                        .unwrap_or_else(|| TypeExpr::Named(name.clone(), Vec::new()))
+                } else {
+                    TypeExpr::Named(
+                        name.clone(),
+                        args.iter().map(|ty| ty.substitute(map)).collect(),
+                    )
+                }
+            }
+            TypeExpr::Slice(inner) => TypeExpr::Slice(Box::new(inner.substitute(map))),
+            TypeExpr::Array { size, ty } => TypeExpr::Array {
+                size: *size,
+                ty: Box::new(ty.substitute(map)),
+            },
+            TypeExpr::Reference { mutable, ty } => TypeExpr::Reference {
+                mutable: *mutable,
+                ty: Box::new(ty.substitute(map)),
+            },
+            TypeExpr::Pointer { mutable, ty } => TypeExpr::Pointer {
+                mutable: *mutable,
+                ty: Box::new(ty.substitute(map)),
+            },
+            TypeExpr::Tuple(types) => {
+                TypeExpr::Tuple(types.iter().map(|ty| ty.substitute(map)).collect())
+            }
+            TypeExpr::Unit => TypeExpr::Unit,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeAnnotation {
     pub ty: TypeExpr,
     pub span: Span,
+}
+
+impl TypeAnnotation {
+    pub fn substitute(&self, map: &HashMap<String, TypeExpr>) -> TypeAnnotation {
+        TypeAnnotation {
+            ty: self.ty.substitute(map),
+            span: self.span,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

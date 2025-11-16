@@ -662,9 +662,12 @@ impl Compiler {
                     };
                 }
             }
-            Expr::Call { callee, type_args, args, .. } => {
-                self.emit_call_expression(callee, type_args, args)
-            }
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } => self.emit_call_expression(callee, type_args, args),
             other => Err(format!(
                 "Expression `{}` not supported in build mode",
                 describe_expr(other)
@@ -1116,7 +1119,9 @@ impl Compiler {
                         result.map(|_| ())
                     } else {
                         if !type_args.is_empty() {
-                            return Err("Generic functions are not supported in build mode yet".into());
+                            return Err(
+                                "Generic functions are not supported in build mode yet".into()
+                            );
                         }
                         let result = self.invoke_function(&ident.name, args)?;
                         if result.is_some() {
@@ -1135,7 +1140,9 @@ impl Compiler {
                         };
                         if self.functions.contains_key(&key) {
                             if !type_args.is_empty() {
-                                return Err("Generic functions are not supported in build mode yet".into());
+                                return Err(
+                                    "Generic functions are not supported in build mode yet".into(),
+                                );
                             }
                             let result = self.invoke_function(&qualified, args)?;
                             if result.is_some() {
@@ -1255,11 +1262,7 @@ impl Compiler {
             _ => None,
         }
     }
-    fn begin_mut_borrow_in_scope(
-        &mut self,
-        name: &str,
-        scope_index: usize,
-    ) -> Result<(), String> {
+    fn begin_mut_borrow_in_scope(&mut self, name: &str, scope_index: usize) -> Result<(), String> {
         if self.active_mut_borrows.contains(name) {
             return Err(format!("`{}` is already mutably borrowed", name));
         }
@@ -1564,13 +1567,7 @@ impl Compiler {
             self.track_reference_borrow_in_scope(&stored, scope_index)?;
         }
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(
-                name.to_string(),
-                Binding {
-                    cell,
-                    mutable,
-                },
-            );
+            scope.insert(name.to_string(), Binding { cell, mutable });
         }
         Ok(())
     }
@@ -1640,10 +1637,7 @@ fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
     }
 }
 
-fn receiver_type_name(
-    def: &FunctionDef,
-    structs: &HashMap<String, StructDef>,
-) -> Option<String> {
+fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructDef>) -> Option<String> {
     def.params.first().and_then(|param| {
         match &param.ty.ty {
             TypeExpr::Named(name, _) => Some(name.clone()),

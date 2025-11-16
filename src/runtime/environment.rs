@@ -68,13 +68,9 @@ impl Environment {
             self.track_reference_borrow_in_scope(&stored, scope_index)?;
         }
         if let Some(scope) = self.scopes.last_mut() {
-            scope.bindings.insert(
-                name.to_string(),
-                Binding {
-                    cell,
-                    mutable,
-                },
-            );
+            scope
+                .bindings
+                .insert(name.to_string(), Binding { cell, mutable });
             Ok(())
         } else {
             Err(RuntimeError::Panic {
@@ -142,11 +138,7 @@ impl Environment {
     }
 
     pub fn begin_mut_borrow(&mut self, name: &str) -> Result<(), RuntimeError> {
-        let idx = self
-            .borrow_frames
-            .len()
-            .checked_sub(1)
-            .unwrap_or(0);
+        let idx = self.borrow_frames.len().checked_sub(1).unwrap_or(0);
         self.begin_mut_borrow_in_scope(name, idx)
     }
 

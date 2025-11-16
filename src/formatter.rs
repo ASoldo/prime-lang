@@ -104,7 +104,10 @@ fn format_interface(out: &mut String, def: &InterfaceDef) {
 }
 
 fn format_impl(out: &mut String, block: &ImplBlock) {
-    out.push_str(&format!("impl {} for {} {{\n", block.interface, block.target));
+    out.push_str(&format!(
+        "impl {} for {} {{\n",
+        block.interface, block.target
+    ));
     for (idx, method) in block.methods.iter().enumerate() {
         format_function_with_indent(out, method, 2);
         if idx + 1 < block.methods.len() {
@@ -505,7 +508,12 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
                 UnaryOp::Deref => format!("*{inner}"),
             }
         }
-        Expr::Call { callee, type_args, args, .. } => {
+        Expr::Call {
+            callee,
+            type_args,
+            args,
+            ..
+        } => {
             let args = args
                 .iter()
                 .map(|expr| format_expr(expr))

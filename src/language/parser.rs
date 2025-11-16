@@ -268,7 +268,10 @@ impl Parser {
                 name: method_name.name,
                 params,
                 returns,
-                span: Span::new(method_name.span.start, self.last_span_end(method_name.span.start)),
+                span: Span::new(
+                    method_name.span.start,
+                    self.last_span_end(method_name.span.start),
+                ),
             });
         }
         let end = self.expect(TokenKind::RBrace)?.span.end;
