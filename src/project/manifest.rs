@@ -120,6 +120,10 @@ impl PackageManifest {
     pub fn module_entries(&self) -> Vec<ModuleInfo> {
         self.modules.values().cloned().collect()
     }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
 }
 
 fn parse_modules(

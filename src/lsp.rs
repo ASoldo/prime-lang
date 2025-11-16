@@ -7,8 +7,8 @@ use crate::{
     language::{
         ast::{
             Block, ConstDef, EnumDef, EnumVariant, Expr, FunctionBody, FunctionDef, FunctionParam,
-            InterfaceDef, InterfaceMethod, Item, LetStmt, Literal, Module, Pattern, RangeExpr,
-            Statement, StructDef, StructLiteralKind,
+            ImportPath, InterfaceDef, InterfaceMethod, Item, LetStmt, Literal, Module, Pattern,
+            RangeExpr, Statement, StructDef, StructLiteralKind,
         },
         errors::{SyntaxError, SyntaxErrors},
         lexer::{LexError, lex},
@@ -41,9 +41,9 @@ use tower_lsp_server::lsp_types::{
     DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    MessageType, OneOf, ParameterInformation, ParameterLabel, Position, PrepareRenameResponse,
-    Range, ReferenceParams, RenameParams, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
-    SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
+    MessageType, NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position,
+    PrepareRenameResponse, Range, ReferenceParams, RenameParams, ServerCapabilities, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
     WorkspaceEdit, WorkspaceSymbol, WorkspaceSymbolParams,
 };
@@ -112,12 +112,18 @@ struct SymbolLocation {
     uri: Uri,
     span: Span,
     kind: SymbolKind,
+    module_name: String,
 }
 
 #[derive(Default)]
 struct SymbolIndex {
     inner: RwLock<HashMap<String, Vec<SymbolLocation>>>,
 }
+
+const CODE_MISSING_MODULE_HEADER: &str = "prime.missingModuleHeader";
+const CODE_MANIFEST_MISSING_MODULE: &str = "prime.manifestMissingModule";
+const CODE_DUPLICATE_IMPORT: &str = "prime.duplicateImport";
+const CODE_UNKNOWN_IMPORT: &str = "prime.unknownImport";
 
 impl SymbolIndex {
     async fn update_module(&self, uri: &Uri, module: &Module) {
@@ -131,6 +137,7 @@ impl SymbolIndex {
                 uri: uri.clone(),
                 span,
                 kind,
+                module_name: module.name.clone(),
             });
         }
     }
@@ -179,6 +186,74 @@ impl Backend {
             modules: Arc::new(ModuleCache::default()),
             symbols: Arc::new(SymbolIndex::default()),
         }
+    }
+
+    async fn actions_for_diagnostic(
+        &self,
+        uri: &Uri,
+        text: &str,
+        diagnostic: &Diagnostic,
+    ) -> RpcResult<Vec<CodeActionOrCommand>> {
+        let mut actions = Vec::new();
+        if let Some(name) = unused_variable_name(&diagnostic.message) {
+            let mut edit_map = HashMap::new();
+            edit_map.insert(
+                uri.clone(),
+                vec![TextEdit {
+                    range: diagnostic.range,
+                    new_text: prefix_identifier(text, &diagnostic.range),
+                }],
+            );
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!("Prefix `{name}` with `_`"),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![diagnostic.clone()]),
+                is_preferred: Some(true),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(edit_map),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }));
+        }
+
+        if let Some(code) = diagnostic_code(diagnostic) {
+            match code {
+                CODE_MISSING_MODULE_HEADER => {
+                    if let Some(module_name) = diagnostic
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("module_name"))
+                        .and_then(|val| val.as_str())
+                    {
+                        let edit = TextEdit {
+                            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                            new_text: format!("module {module_name};\n\n"),
+                        };
+                        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                            title: format!("Insert `module {module_name};` header"),
+                            kind: Some(CodeActionKind::QUICKFIX),
+                            diagnostics: Some(vec![diagnostic.clone()]),
+                            edit: Some(WorkspaceEdit {
+                                changes: Some([(uri.clone(), vec![edit])].into_iter().collect()),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        }));
+                    }
+                }
+                CODE_MANIFEST_MISSING_MODULE => {
+                    if let Some(action) =
+                        manifest_entry_action(diagnostic).and_then(|entry| entry.to_code_action())
+                    {
+                        actions.push(action);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(actions)
     }
 
     async fn publish_diagnostics(&self, uri: &Uri) {
@@ -396,12 +471,7 @@ impl LanguageServer for Backend {
             }
         }
         let candidates = self.symbols.lookup(&name).await;
-        if let Some(symbol) = candidates
-            .iter()
-            .find(|loc| loc.uri == uri)
-            .or_else(|| candidates.first())
-            .cloned()
-        {
+        if let Some(symbol) = select_symbol_location(&uri, module.as_ref(), &candidates) {
             let range = if symbol.uri == uri {
                 span_to_range(&text, symbol.span)
             } else if let Some(def_text) = self.text_for_uri(&symbol.uri).await {
@@ -409,7 +479,7 @@ impl LanguageServer for Backend {
             } else {
                 return Ok(None);
             };
-            let location = Location::new(symbol.uri, range);
+            let location = Location::new(symbol.uri.clone(), range);
             return Ok(Some(GotoDefinitionResponse::Scalar(location)));
         }
         Ok(None)
@@ -629,27 +699,7 @@ impl LanguageServer for Backend {
         };
         let mut actions = Vec::new();
         for diagnostic in &params.context.diagnostics {
-            if let Some(name) = unused_variable_name(&diagnostic.message) {
-                let mut edit_map = HashMap::new();
-                edit_map.insert(
-                    uri.clone(),
-                    vec![TextEdit {
-                        range: diagnostic.range,
-                        new_text: prefix_identifier(&text, &diagnostic.range),
-                    }],
-                );
-                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                    title: format!("Prefix `{name}` with `_`"),
-                    kind: Some(CodeActionKind::QUICKFIX),
-                    diagnostics: Some(vec![diagnostic.clone()]),
-                    is_preferred: Some(true),
-                    edit: Some(WorkspaceEdit {
-                        changes: Some(edit_map),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }));
-            }
+            actions.extend(self.actions_for_diagnostic(&uri, &text, diagnostic).await?);
         }
         if actions.is_empty() {
             Ok(None)
@@ -803,6 +853,7 @@ fn collect_diagnostics(uri: &Uri, text: &str) -> Vec<Diagnostic> {
     };
     if let Some(module) = module {
         diags.extend(manifest_declaration_diagnostics(uri, text, &module));
+        diags.extend(import_manifest_diagnostics(uri, text, &module));
         diags.extend(unused_variable_diagnostics(&module, text));
     }
     // Avoid keeping the entire token vec if not needed elsewhere.
@@ -858,6 +909,8 @@ fn manifest_declaration_diagnostics(uri: &Uri, text: &str, module: &Module) -> V
                 &format!(
                     "Module declared as `{actual}` but manifest maps this file to `{expected_name}`"
                 ),
+                None,
+                None,
             ));
         }
         (Some(expected_name), None) => {
@@ -867,29 +920,234 @@ fn manifest_declaration_diagnostics(uri: &Uri, text: &str, module: &Module) -> V
                 &format!(
                     "Manifest maps this file to `{expected_name}` but the file is missing `module {expected_name};`"
                 ),
+                Some(CODE_MISSING_MODULE_HEADER),
+                Some(json!({
+                    "module_name": expected_name,
+                })),
             ));
         }
         (None, Some(actual)) => {
+            let module_path = manifest_relative_string(&file_path, &manifest);
             diags.push(module_mismatch_diagnostic(
                 text,
                 module.declared_span,
                 &format!("Module `{actual}` is declared in this file but not listed in prime.toml"),
+                Some(CODE_MANIFEST_MISSING_MODULE),
+                Some(json!({
+                    "module_name": actual,
+                    "module_path": module_path,
+                    "manifest_path": manifest.path.to_string_lossy().to_string(),
+                    "visibility": "pub",
+                })),
             ));
         }
         _ => {}
     }
+    for span in &module.redundant_module_spans {
+        diags.push(Diagnostic {
+            range: span_to_range(text, *span),
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("prime-lang".into()),
+            message: "Duplicate `module` declaration; only the first declaration is used".into(),
+            ..Default::default()
+        });
+    }
     diags
 }
 
-fn module_mismatch_diagnostic(text: &str, span: Option<Span>, message: &str) -> Diagnostic {
+fn import_manifest_diagnostics(uri: &Uri, text: &str, module: &Module) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let Some((manifest, file_path)) = manifest_context_for_uri(uri) else {
+        return diags;
+    };
+    let mut seen = HashSet::new();
+    for import in &module.imports {
+        let import_name = import.path.to_string();
+        if !seen.insert(import_name.clone()) {
+            diags.push(Diagnostic {
+                range: span_to_range(text, import.span),
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("prime-lang".into()),
+                message: format!("Duplicate import `{import_name}`"),
+                code: Some(NumberOrString::String(CODE_DUPLICATE_IMPORT.into())),
+                ..Default::default()
+            });
+            continue;
+        }
+        if manifest.module_path(&import_name).is_some() {
+            continue;
+        }
+        let resolved = resolve_import_relative_path(&file_path, &import.path);
+        if resolved.exists() {
+            let module_path = manifest_relative_string(&resolved, &manifest);
+            diags.push(Diagnostic {
+                range: span_to_range(text, import.span),
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("prime-lang".into()),
+                message: format!(
+                    "Module `{import_name}` exists on disk but is not listed in prime.toml"
+                ),
+                code: Some(NumberOrString::String(
+                    CODE_MANIFEST_MISSING_MODULE.to_string(),
+                )),
+                data: Some(json!({
+                    "module_name": import_name,
+                    "module_path": module_path,
+                    "manifest_path": manifest.path.to_string_lossy().to_string(),
+                    "visibility": "pub",
+                })),
+                ..Default::default()
+            });
+        } else {
+            diags.push(Diagnostic {
+                range: span_to_range(text, import.span),
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("prime-lang".into()),
+                message: format!(
+                    "Cannot resolve import `{import_name}` — no manifest entry or file found"
+                ),
+                code: Some(NumberOrString::String(CODE_UNKNOWN_IMPORT.into())),
+                ..Default::default()
+            });
+        }
+    }
+    diags
+}
+
+fn module_mismatch_diagnostic(
+    text: &str,
+    span: Option<Span>,
+    message: &str,
+    code: Option<&str>,
+    data: Option<Value>,
+) -> Diagnostic {
     let highlight = span.unwrap_or_else(|| first_non_whitespace_span(text));
     Diagnostic {
         range: span_to_range(text, highlight),
         severity: Some(DiagnosticSeverity::WARNING),
         source: Some("prime-lang".into()),
         message: message.to_string(),
+        code: code.map(|c| NumberOrString::String(c.to_string())),
+        data,
         ..Default::default()
     }
+}
+
+fn manifest_relative_string(path: &Path, manifest: &PackageManifest) -> String {
+    let relative = path.strip_prefix(manifest.root()).unwrap_or(path);
+    relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn resolve_import_relative_path(base: &Path, import_path: &ImportPath) -> PathBuf {
+    let mut path = import_path.to_relative_path();
+    if path.extension().and_then(|ext| ext.to_str()) != Some("prime") {
+        path.set_extension("prime");
+    }
+    if path.is_absolute() {
+        return path;
+    }
+    let base_dir = base
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    base_dir.join(path)
+}
+
+fn diagnostic_code(diagnostic: &Diagnostic) -> Option<&str> {
+    match diagnostic.code.as_ref()? {
+        NumberOrString::String(code) => Some(code.as_str()),
+        _ => None,
+    }
+}
+
+struct ManifestEntryAction {
+    module_name: String,
+    module_path: String,
+    manifest_path: PathBuf,
+    visibility: String,
+    diagnostic: Diagnostic,
+}
+
+impl ManifestEntryAction {
+    fn to_code_action(self) -> Option<CodeActionOrCommand> {
+        let manifest_text = fs::read_to_string(&self.manifest_path).ok()?;
+        let manifest_uri = Uri::from_file_path(&self.manifest_path)?;
+        let end_pos = offset_to_position(&manifest_text, manifest_text.len());
+        let entry = format!(
+            "[[modules]]\nname = \"{}\"\npath = \"{}\"\nvisibility = \"{}\"\n",
+            self.module_name, self.module_path, self.visibility
+        );
+        let mut insert = String::new();
+        if !manifest_text.is_empty() && !manifest_text.ends_with('\n') {
+            insert.push('\n');
+        }
+        insert.push('\n');
+        insert.push_str(&entry);
+        if !insert.ends_with('\n') {
+            insert.push('\n');
+        }
+        let edit = TextEdit {
+            range: Range::new(end_pos, end_pos),
+            new_text: insert,
+        };
+        Some(CodeActionOrCommand::CodeAction(CodeAction {
+            title: format!("Add `{}` to manifest", self.module_name),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![self.diagnostic]),
+            edit: Some(WorkspaceEdit {
+                changes: Some([(manifest_uri, vec![edit])].into_iter().collect()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+    }
+}
+
+fn manifest_entry_action(diagnostic: &Diagnostic) -> Option<ManifestEntryAction> {
+    let data = diagnostic.data.as_ref()?;
+    let module_name = data.get("module_name")?.as_str()?.to_string();
+    let module_path = data.get("module_path")?.as_str()?.to_string();
+    let manifest_path = PathBuf::from(data.get("manifest_path")?.as_str()?);
+    let visibility = data
+        .get("visibility")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pub")
+        .to_string();
+    Some(ManifestEntryAction {
+        module_name,
+        module_path,
+        manifest_path,
+        visibility,
+        diagnostic: diagnostic.clone(),
+    })
+}
+
+fn select_symbol_location<'a>(
+    current_uri: &Uri,
+    module: Option<&Module>,
+    candidates: &'a [SymbolLocation],
+) -> Option<&'a SymbolLocation> {
+    if candidates.is_empty() {
+        return None;
+    }
+    if let Some(loc) = candidates.iter().find(|loc| &loc.uri == current_uri) {
+        return Some(loc);
+    }
+    let mut module_priority = Vec::new();
+    if let Some(module) = module {
+        module_priority.push(module.name.clone());
+        module_priority.extend(module.imports.iter().map(|import| import.path.to_string()));
+    }
+    for module_name in module_priority {
+        if let Some(loc) = candidates.iter().find(|loc| loc.module_name == module_name) {
+            return Some(loc);
+        }
+    }
+    candidates.first()
 }
 
 fn collect_symbols(uri: &Uri, text: &str, module: &Module) -> Vec<SymbolInformation> {
@@ -2472,12 +2730,13 @@ fn collect_struct_info(modules: &[Module]) -> HashMap<String, StructInfo> {
             if let Item::Function(func) = item {
                 if let Some(first_param) = func.params.first() {
                     if let Some(receiver) = receiver_type_name(&first_param.ty.ty) {
-                        let entry = raw.entry(receiver.clone()).or_default();
-                        entry.methods.push(MethodInfo {
-                            name: func.name.clone(),
-                            signature: format_function_signature(func),
-                            declared_in: receiver,
-                        });
+                        if let Some(entry) = raw.get_mut(&receiver) {
+                            entry.methods.push(MethodInfo {
+                                name: func.name.clone(),
+                                signature: format_function_signature(func),
+                                declared_in: receiver,
+                            });
+                        }
                     }
                 }
             }
@@ -2859,7 +3118,10 @@ fn member_completion_items(
     interfaces: &HashMap<String, InterfaceInfo>,
     prefix: Option<&str>,
 ) -> Option<Vec<CompletionItem>> {
-    let (target_type, _) = resolve_chain_type(chain, var_types, struct_info)?;
+    let (target_type, _) = resolve_chain_type(chain, var_types, struct_info).or_else(|| {
+        let ty = type_for_identifier(chain.first()?, var_types, struct_info)?;
+        Some((ty, None))
+    })?;
     if let Some((name, args)) = named_type_with_args(&target_type) {
         if let Some(info) = struct_info.get(&name) {
             let mut items = Vec::new();
@@ -3263,5 +3525,42 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Reference { span, .. } => *span,
         Expr::Deref { span, .. } => *span,
         Expr::Move { span, .. } => *span,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn interface_member_completion_infers_methods() {
+        let source = r#"
+module demos::interface_generics;
+
+interface Nameable[T] {
+  fn label(self) -> string;
+  fn pair(self, other: T) -> string;
+}
+
+fn announce[T](unit: Nameable[T], partner: T) {
+  unit.label();
+  unit.pair(partner);
+}
+"#;
+
+        let module =
+            parse_module("demos::interface_generics", PathBuf::from("demo.prime"), source).unwrap();
+        let structs = vec![module.clone()];
+        let var_types = collect_variable_types(&module);
+        let struct_info = collect_struct_info(&structs);
+        let interface_info = collect_interface_info(&structs);
+        let chain = vec!["unit".to_string()];
+        let items =
+            member_completion_items(&chain, &var_types, &struct_info, &interface_info, None)
+                .expect("completion items");
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"label"));
+        assert!(labels.contains(&"pair"));
     }
 }

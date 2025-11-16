@@ -16,6 +16,7 @@ pub struct Module {
     pub path: PathBuf,
     pub declared_name: Option<String>,
     pub declared_span: Option<Span>,
+    pub redundant_module_spans: Vec<Span>,
     pub imports: Vec<Import>,
     pub items: Vec<Item>,
 }

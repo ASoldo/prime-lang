@@ -6,7 +6,6 @@ fn main() {
   let Banner banner = banner("Prime modules loaded");
   out("Base banner:");
   out(banner.message);
-
   let Banner promoted = promote("Launch build", true);
   out("Promotion status:");
   out(describe(promoted));

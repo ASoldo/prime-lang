@@ -60,6 +60,7 @@ impl Parser {
         let mut items = Vec::new();
         let mut declared_name = None;
         let mut declared_span = None;
+        let mut redundant_module_spans = Vec::new();
 
         if self.check(TokenKind::ModuleKw) {
             match self.parse_module_declaration() {
@@ -74,6 +75,30 @@ impl Parser {
 
         while !self.is_eof() {
             if self.matches(TokenKind::Semi) {
+                continue;
+            }
+
+            if self.check(TokenKind::ModuleKw) {
+                match self.parse_redundant_module_decl() {
+                    Ok(span) => redundant_module_spans.push(span),
+                    Err(err) => self.report(err),
+                }
+                continue;
+            }
+
+            if self.check(TokenKind::ModuleKw) {
+                let start = self.current_span_start();
+                self.advance();
+                while !self.check(TokenKind::Semi) && !self.is_eof() {
+                    self.advance();
+                }
+                self.consume_optional(TokenKind::Semi);
+                let end = self.last_span_end(start);
+                let span = Span::new(start, end);
+                self.report(SyntaxError::new(
+                    "`module` declaration must appear before any other code",
+                    span,
+                ));
                 continue;
             }
 
@@ -110,6 +135,7 @@ impl Parser {
                 path: self.path,
                 declared_name,
                 declared_span,
+                redundant_module_spans,
                 imports,
                 items,
             })
@@ -169,6 +195,14 @@ impl Parser {
             segments.push(ident.name);
         }
         Ok(ImportPath { segments })
+    }
+
+    fn parse_redundant_module_decl(&mut self) -> Result<Span, SyntaxError> {
+        let start = self.expect(TokenKind::ModuleKw)?.span.start;
+        let _ = self.parse_module_path("Expected module path after `module`")?;
+        self.expect(TokenKind::Semi)?;
+        let end = self.last_span_end(start);
+        Ok(Span::new(start, end))
     }
 
     fn parse_item(&mut self) -> Result<Item, SyntaxError> {
