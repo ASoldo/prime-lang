@@ -160,6 +160,12 @@ fn main() {
   let int32 borrowed_hp = peek_hp(&hero);
   out("Borrowed hero hp:");
   out(borrowed_hp);
+  let bool hero_ready = hero.hp > 100 && hero.stamina >= 50;
+  let bool scout_ready = scout.hp > 70 && scout.stamina >= 40;
+  out("Hero battle ready?");
+  out(hero_ready);
+  out("Scout battle ready?");
+  out(scout_ready);
   let MissionEvent ridge = plan_mission("Ridge scouting", true, true);
   let MissionEvent harbor = plan_mission("Harbor sweep", false, true);
   describe_event(ridge);

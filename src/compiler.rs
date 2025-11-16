@@ -64,6 +64,7 @@ pub struct Compiler {
 enum Value {
     Int(IntValue),
     Float(FloatValue),
+    Bool(bool),
     Str(StringValue),
     Struct(StructValue),
     Enum(EnumValue),
@@ -419,6 +420,14 @@ impl Compiler {
                 self.emit_printf_call("%f", &mut [float_value.llvm()]);
                 Ok(())
             }
+            Value::Bool(flag) => {
+                if flag {
+                    self.emit_printf_call("true", &mut []);
+                } else {
+                    self.emit_printf_call("false", &mut []);
+                }
+                Ok(())
+            }
             Value::Str(string) => {
                 self.emit_printf_call("%s", &mut [string.llvm]);
                 Ok(())
@@ -583,8 +592,7 @@ impl Compiler {
                 Ok(Value::Int(self.const_int_value(*value as i128)))
             }
             Expr::Literal(Literal::Bool(value, _)) => {
-                let int_value = if *value { 1 } else { 0 };
-                Ok(Value::Int(self.const_int_value(int_value)))
+                Ok(Value::Bool(*value))
             }
             Expr::Literal(Literal::Float(value, _)) => {
                 Ok(Value::Float(self.const_float_value(*value)))
@@ -663,6 +671,9 @@ impl Compiler {
                         }
                         Value::Float(_) => {
                             return Err("Cannot access field on float value".into());
+                        }
+                        Value::Bool(_) => {
+                            return Err("Cannot access field on bool value".into());
                         }
                         Value::Str(_) => {
                             return Err("Cannot access field on string value".into());
@@ -999,6 +1010,7 @@ impl Compiler {
         let lhs = Self::deref_if_reference(left);
         let rhs = Self::deref_if_reference(right);
         match (lhs, rhs) {
+            (Value::Bool(a), Value::Bool(b)) => self.eval_bool_binary(op, a, b),
             (Value::Int(a), Value::Int(b)) => self.eval_int_binary(op, a, b),
             (Value::Float(a), Value::Float(b)) => self.eval_float_binary(op, a, b),
             (Value::Int(a), Value::Float(b)) => {
@@ -1013,6 +1025,22 @@ impl Compiler {
         }
     }
 
+    fn eval_bool_binary(
+        &self,
+        op: BinaryOp,
+        lhs: bool,
+        rhs: bool,
+    ) -> Result<Value, String> {
+        let value = match op {
+            BinaryOp::And => Value::Bool(lhs && rhs),
+            BinaryOp::Or => Value::Bool(lhs || rhs),
+            BinaryOp::Eq => Value::Bool(lhs == rhs),
+            BinaryOp::NotEq => Value::Bool(lhs != rhs),
+            _ => return Err("Operation not supported in build mode".into()),
+        };
+        Ok(value)
+    }
+
     fn eval_int_binary(
         &mut self,
         op: BinaryOp,
@@ -1020,40 +1048,42 @@ impl Compiler {
         rhs: IntValue,
     ) -> Result<Value, String> {
         let result = match op {
-            BinaryOp::Add => lhs.constant().zip(rhs.constant()).map(|(a, b)| a + b),
-            BinaryOp::Sub => lhs.constant().zip(rhs.constant()).map(|(a, b)| a - b),
-            BinaryOp::Mul => lhs.constant().zip(rhs.constant()).map(|(a, b)| a * b),
-            BinaryOp::Div => lhs.constant().zip(rhs.constant()).map(|(a, b)| a / b),
-            BinaryOp::Rem => lhs.constant().zip(rhs.constant()).map(|(a, b)| a % b),
-            BinaryOp::Lt => lhs
-                .constant()
-                .zip(rhs.constant())
-                .map(|(a, b)| if a < b { 1 } else { 0 }),
-            BinaryOp::LtEq => lhs
-                .constant()
-                .zip(rhs.constant())
-                .map(|(a, b)| if a <= b { 1 } else { 0 }),
-            BinaryOp::Gt => lhs
-                .constant()
-                .zip(rhs.constant())
-                .map(|(a, b)| if a > b { 1 } else { 0 }),
-            BinaryOp::GtEq => lhs
-                .constant()
-                .zip(rhs.constant())
-                .map(|(a, b)| if a >= b { 1 } else { 0 }),
-            BinaryOp::Eq => lhs
-                .constant()
-                .zip(rhs.constant())
-                .map(|(a, b)| if a == b { 1 } else { 0 }),
-            BinaryOp::NotEq => lhs
-                .constant()
-                .zip(rhs.constant())
-                .map(|(a, b)| if a != b { 1 } else { 0 }),
+            BinaryOp::Add => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Int(self.const_int_value(a + b))
+            }),
+            BinaryOp::Sub => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Int(self.const_int_value(a - b))
+            }),
+            BinaryOp::Mul => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Int(self.const_int_value(a * b))
+            }),
+            BinaryOp::Div => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Int(self.const_int_value(a / b))
+            }),
+            BinaryOp::Rem => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Int(self.const_int_value(a % b))
+            }),
+            BinaryOp::Lt => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Bool(a < b)
+            }),
+            BinaryOp::LtEq => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Bool(a <= b)
+            }),
+            BinaryOp::Gt => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Bool(a > b)
+            }),
+            BinaryOp::GtEq => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Bool(a >= b)
+            }),
+            BinaryOp::Eq => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Bool(a == b)
+            }),
+            BinaryOp::NotEq => lhs.constant().zip(rhs.constant()).map(|(a, b)| {
+                Value::Bool(a != b)
+            }),
             _ => None,
         };
-        result
-            .map(|value| Value::Int(self.const_int_value(value)))
-            .ok_or_else(|| "Operation not supported in build mode".into())
+        result.ok_or_else(|| "Operation not supported in build mode".into())
     }
 
     fn eval_float_binary(
@@ -1080,22 +1110,22 @@ impl Compiler {
                 Value::Float(self.const_float_value(a % b))
             }),
             BinaryOp::Lt => values.map(|(a, b)| {
-                Value::Int(self.const_int_value(if a < b { 1 } else { 0 }))
+                Value::Bool(a < b)
             }),
             BinaryOp::LtEq => values.map(|(a, b)| {
-                Value::Int(self.const_int_value(if a <= b { 1 } else { 0 }))
+                Value::Bool(a <= b)
             }),
             BinaryOp::Gt => values.map(|(a, b)| {
-                Value::Int(self.const_int_value(if a > b { 1 } else { 0 }))
+                Value::Bool(a > b)
             }),
             BinaryOp::GtEq => values.map(|(a, b)| {
-                Value::Int(self.const_int_value(if a >= b { 1 } else { 0 }))
+                Value::Bool(a >= b)
             }),
             BinaryOp::Eq => values.map(|(a, b)| {
-                Value::Int(self.const_int_value(if a == b { 1 } else { 0 }))
+                Value::Bool(a == b)
             }),
             BinaryOp::NotEq => values.map(|(a, b)| {
-                Value::Int(self.const_int_value(if a != b { 1 } else { 0 }))
+                Value::Bool(a != b)
             }),
             _ => None,
         };
@@ -1889,11 +1919,16 @@ impl Compiler {
             Value::Reference(reference) => reference.cell.borrow().clone(),
             other => other,
         };
-        let int_value = self.expect_int(concrete)?;
-        let constant = int_value
-            .constant()
-            .ok_or_else(|| "Non-constant condition not supported in build mode".to_string())?;
-        Ok(constant != 0)
+        match concrete {
+            Value::Bool(flag) => Ok(flag),
+            other => {
+                let int_value = self.expect_int(other)?;
+                let constant = int_value
+                    .constant()
+                    .ok_or_else(|| "Non-constant condition not supported in build mode".to_string())?;
+                Ok(constant != 0)
+            }
+        }
     }
 
     fn evaluate_range(&mut self, range: &RangeExpr) -> Result<(i128, i128, bool), String> {
@@ -2073,6 +2108,7 @@ fn describe_value(value: &Value) -> &'static str {
     match value {
         Value::Int(_) => "int",
         Value::Float(_) => "float",
+        Value::Bool(_) => "bool",
         Value::Str(_) => "string",
         Value::Struct(_) => "struct",
         Value::Enum(_) => "enum",
