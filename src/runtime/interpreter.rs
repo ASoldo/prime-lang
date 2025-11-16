@@ -18,13 +18,14 @@ use std::rc::Rc;
 pub struct Interpreter {
     package: Package,
     env: Environment,
-    structs: HashMap<String, StructDef>,
+    structs: HashMap<String, StructEntry>,
     enum_variants: HashMap<String, EnumVariantInfo>,
     functions: HashMap<FunctionKey, FunctionInfo>,
-    interfaces: HashMap<String, InterfaceDef>,
+    interfaces: HashMap<String, InterfaceEntry>,
     impls: HashSet<ImplKey>,
-    consts: Vec<ConstDef>,
+    consts: Vec<(String, ConstDef)>,
     deprecated_warnings: HashSet<String>,
+    module_stack: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -49,9 +50,23 @@ struct ImplKey {
 }
 
 #[derive(Clone)]
+struct StructEntry {
+    module: String,
+    def: StructDef,
+}
+
+#[derive(Clone)]
+struct InterfaceEntry {
+    module: String,
+    def: InterfaceDef,
+}
+
+#[derive(Clone)]
 struct EnumVariantInfo {
     enum_name: String,
     fields: Vec<TypeAnnotation>,
+    module: String,
+    visibility: Visibility,
 }
 
 enum FlowSignal {
@@ -77,6 +92,7 @@ impl Interpreter {
             impls: HashSet::new(),
             consts: Vec::new(),
             deprecated_warnings: HashSet::new(),
+            module_stack: Vec::new(),
         }
     }
 
@@ -96,7 +112,13 @@ impl Interpreter {
                                 message: format!("Duplicate struct `{}`", def.name),
                             });
                         }
-                        self.structs.insert(def.name.clone(), def.clone());
+                        self.structs.insert(
+                            def.name.clone(),
+                            StructEntry {
+                                module: module.name.clone(),
+                                def: def.clone(),
+                            },
+                        );
                     }
                     Item::Enum(def) => {
                         if self
@@ -114,12 +136,14 @@ impl Interpreter {
                                 EnumVariantInfo {
                                     enum_name: def.name.clone(),
                                     fields: variant.fields.clone(),
+                                    module: module.name.clone(),
+                                    visibility: def.visibility,
                                 },
                             );
                         }
                     }
                     Item::Interface(def) => {
-                        self.register_interface(def.clone())?;
+                        self.register_interface(&module.name, def.clone())?;
                     }
                     Item::Impl(block) => {
                         self.register_impl(&module.name, block.clone())?;
@@ -128,14 +152,19 @@ impl Interpreter {
                         self.register_function(&module.name, def.clone())?;
                     }
                     Item::Const(const_def) => {
-                        self.consts.push(const_def.clone());
+                        self.consts.push((module.name.clone(), const_def.clone()));
                     }
                 }
             }
         }
 
-        for const_def in self.consts.clone() {
-            let value = self.eval_expression(&const_def.value)?;
+        for (module_name, const_def) in self.consts.clone() {
+            self.module_stack.push(module_name.clone());
+            let value = {
+                let result = self.eval_expression(&const_def.value);
+                self.module_stack.pop();
+                result?
+            };
             self.env
                 .declare(&const_def.name, value, false)
                 .map_err(|err| err)?;
@@ -182,13 +211,19 @@ impl Interpreter {
         Ok(())
     }
 
-    fn register_interface(&mut self, def: InterfaceDef) -> RuntimeResult<()> {
+    fn register_interface(&mut self, module: &str, def: InterfaceDef) -> RuntimeResult<()> {
         if self.interfaces.contains_key(&def.name) {
             return Err(RuntimeError::Panic {
                 message: format!("Duplicate interface `{}`", def.name),
             });
         }
-        self.interfaces.insert(def.name.clone(), def);
+        self.interfaces.insert(
+            def.name.clone(),
+            InterfaceEntry {
+                module: module.to_string(),
+                def,
+            },
+        );
         Ok(())
     }
 
@@ -203,7 +238,8 @@ impl Interpreter {
                 message: format!("Unknown target type `{}`", block.target),
             });
         }
-        let iface = self.interfaces.get(&block.interface).cloned().unwrap();
+        let iface_entry = self.interfaces.get(&block.interface).cloned().unwrap();
+        let iface = iface_entry.def;
         if iface.type_params.len() != block.type_args.len() {
             return Err(RuntimeError::Panic {
                 message: format!(
@@ -297,48 +333,59 @@ impl Interpreter {
             });
         }
 
+        self.ensure_item_visible(
+            &info.module,
+            info.def.visibility,
+            &info.def.name,
+            "function",
+        )?;
         self.ensure_interface_arguments(&info.def.params, &args)?;
-        self.env.push_scope();
-        for (param, value) in info.def.params.iter().zip(args.into_iter()) {
-            self.env
-                .declare(&param.name, value, param.mutability == Mutability::Mutable)?;
-        }
+        self.module_stack.push(info.module.clone());
+        let result = (|| {
+            self.env.push_scope();
+            for (param, value) in info.def.params.iter().zip(args.into_iter()) {
+                self.env
+                    .declare(&param.name, value, param.mutability == Mutability::Mutable)?;
+            }
 
-        let result = match &info.def.body {
-            FunctionBody::Block(block) => self.eval_block(block)?,
-            FunctionBody::Expr(expr) => BlockEval::Value(self.eval_expression(&expr.node)?),
-        };
+            let result = match &info.def.body {
+                FunctionBody::Block(block) => self.eval_block(block)?,
+                FunctionBody::Expr(expr) => BlockEval::Value(self.eval_expression(&expr.node)?),
+            };
 
-        let values = match result {
-            BlockEval::Value(value) => {
-                if info.def.returns.len() <= 1 {
-                    if info.def.returns.is_empty() {
-                        Vec::new()
+            let values = match result {
+                BlockEval::Value(value) => {
+                    if info.def.returns.len() <= 1 {
+                        if info.def.returns.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![value]
+                        }
+                    } else if let Value::Tuple(values) = value {
+                        values
                     } else {
                         vec![value]
                     }
-                } else if let Value::Tuple(values) = value {
-                    values
-                } else {
-                    vec![value]
                 }
-            }
-            BlockEval::Flow(FlowSignal::Return(values)) => values,
-            BlockEval::Flow(FlowSignal::Break) => {
-                return Err(RuntimeError::Panic {
-                    message: "break outside loop".into(),
-                });
-            }
-            BlockEval::Flow(FlowSignal::Continue) => {
-                return Err(RuntimeError::Panic {
-                    message: "continue outside loop".into(),
-                });
-            }
-        };
+                BlockEval::Flow(FlowSignal::Return(values)) => values,
+                BlockEval::Flow(FlowSignal::Break) => {
+                    return Err(RuntimeError::Panic {
+                        message: "break outside loop".into(),
+                    });
+                }
+                BlockEval::Flow(FlowSignal::Continue) => {
+                    return Err(RuntimeError::Panic {
+                        message: "continue outside loop".into(),
+                    });
+                }
+            };
 
-        self.execute_deferred()?;
-        self.env.pop_scope();
-        Ok(values)
+            self.execute_deferred()?;
+            self.env.pop_scope();
+            Ok(values)
+        })();
+        self.module_stack.pop();
+        result
     }
 
     fn resolve_function(
@@ -499,6 +546,13 @@ impl Interpreter {
         type_args: &[TypeExpr],
         value: &Value,
     ) -> RuntimeResult<()> {
+        let entry = self
+            .interfaces
+            .get(interface)
+            .ok_or_else(|| RuntimeError::UnknownSymbol {
+                name: interface.to_string(),
+            })?;
+        self.ensure_item_visible(&entry.module, entry.def.visibility, interface, "interface")?;
         let struct_name =
             self.value_struct_name(value)
                 .ok_or_else(|| RuntimeError::TypeMismatch {
@@ -520,6 +574,33 @@ impl Interpreter {
                     "`{}` does not implement interface `{}` with these type arguments",
                     struct_name, interface
                 ),
+            })
+        }
+    }
+
+    fn current_module(&self) -> Option<&str> {
+        self.module_stack.last().map(|s| s.as_str())
+    }
+
+    fn can_access(&self, owner: &str, visibility: Visibility) -> bool {
+        matches!(visibility, Visibility::Public)
+            || self
+                .current_module()
+                .map_or(true, |current| current == owner)
+    }
+
+    fn ensure_item_visible(
+        &self,
+        owner: &str,
+        visibility: Visibility,
+        name: &str,
+        kind: &str,
+    ) -> RuntimeResult<()> {
+        if self.can_access(owner, visibility) {
+            Ok(())
+        } else {
+            Err(RuntimeError::Panic {
+                message: format!("{kind} `{}` is private to module `{}`", name, owner),
             })
         }
     }
@@ -1305,6 +1386,8 @@ impl Interpreter {
             .ok_or_else(|| RuntimeError::UnknownSymbol {
                 name: name.to_string(),
             })?;
+        self.ensure_item_visible(&def.module, def.def.visibility, name, "struct")?;
+        let def = def.def;
         let mut field_map = BTreeMap::new();
         let mut embedded = Vec::new();
 
@@ -1358,6 +1441,7 @@ impl Interpreter {
             .ok_or_else(|| RuntimeError::UnknownSymbol {
                 name: variant.to_string(),
             })?;
+        self.ensure_item_visible(&info.module, info.visibility, enum_name, "enum")?;
         if info.fields.len() != values.len() {
             return Err(RuntimeError::ArityMismatch {
                 name: variant.to_string(),
@@ -1506,7 +1590,7 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
         FlowSignal::Return(_) => "return",
     }
 }
-fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructDef>) -> Option<String> {
+fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {
     def.params
         .first()
         .and_then(|param| type_name_from_annotation(&param.ty))

@@ -48,16 +48,17 @@ pub struct Compiler {
     printf: LLVMValueRef,
     main_fn: LLVMValueRef,
     scopes: Vec<HashMap<String, Binding>>,
-    structs: HashMap<String, StructDef>,
-    functions: HashMap<FunctionKey, FunctionDef>,
+    structs: HashMap<String, StructEntry>,
+    functions: HashMap<FunctionKey, FunctionEntry>,
     enum_variants: HashMap<String, EnumVariantInfo>,
-    interfaces: HashMap<String, InterfaceDef>,
+    interfaces: HashMap<String, InterfaceEntry>,
     impls: HashSet<ImplKey>,
-    consts: Vec<ConstDef>,
+    consts: Vec<(String, ConstDef)>,
     active_mut_borrows: HashSet<String>,
     borrow_frames: Vec<Vec<String>>,
     defer_stack: Vec<Vec<Expr>>,
     deprecated_warnings: HashSet<String>,
+    module_stack: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -221,6 +222,26 @@ impl StructValue {
 struct EnumVariantInfo {
     enum_name: String,
     fields: usize,
+    module: String,
+    visibility: Visibility,
+}
+
+#[derive(Clone)]
+struct StructEntry {
+    module: String,
+    def: StructDef,
+}
+
+#[derive(Clone)]
+struct InterfaceEntry {
+    module: String,
+    def: InterfaceDef,
+}
+
+#[derive(Clone)]
+struct FunctionEntry {
+    module: String,
+    def: FunctionDef,
 }
 
 impl IntValue {
@@ -279,6 +300,7 @@ impl Compiler {
                 borrow_frames: Vec::new(),
                 defer_stack: Vec::new(),
                 deprecated_warnings: HashSet::new(),
+                module_stack: Vec::new(),
             };
             compiler.reset_module();
             compiler
@@ -316,7 +338,13 @@ impl Compiler {
             for item in &module.items {
                 match item {
                     Item::Struct(def) => {
-                        self.structs.insert(def.name.clone(), def.clone());
+                        self.structs.insert(
+                            def.name.clone(),
+                            StructEntry {
+                                module: module.name.clone(),
+                                def: def.clone(),
+                            },
+                        );
                     }
                     Item::Enum(def) => {
                         for variant in &def.variants {
@@ -325,12 +353,20 @@ impl Compiler {
                                 EnumVariantInfo {
                                     enum_name: def.name.clone(),
                                     fields: variant.fields.len(),
+                                    module: module.name.clone(),
+                                    visibility: def.visibility,
                                 },
                             );
                         }
                     }
                     Item::Interface(def) => {
-                        self.interfaces.insert(def.name.clone(), def.clone());
+                        self.interfaces.insert(
+                            def.name.clone(),
+                            InterfaceEntry {
+                                module: module.name.clone(),
+                                def: def.clone(),
+                            },
+                        );
                     }
                     Item::Impl(block) => {
                         self.register_impl_block(&module.name, block)?;
@@ -339,18 +375,23 @@ impl Compiler {
                         self.register_function(func, &module.name)?;
                     }
                     Item::Const(const_def) => {
-                        self.consts.push(const_def.clone());
+                        self.consts.push((module.name.clone(), const_def.clone()));
                     }
                 }
             }
         }
 
-        let main_fn = program
+        let (main_module, main_fn) = program
             .modules
             .iter()
-            .flat_map(|module| module.items.iter())
-            .find_map(|item| match item {
-                Item::Function(func) if func.name == "main" => Some(func),
+            .flat_map(|module| {
+                module
+                    .items
+                    .iter()
+                    .map(move |item| (module.name.clone(), item))
+            })
+            .find_map(|(module_name, item)| match item {
+                Item::Function(func) if func.name == "main" => Some((module_name, func)),
                 _ => None,
             })
             .ok_or_else(|| "main function not found".to_string())?;
@@ -368,12 +409,20 @@ impl Compiler {
             LLVMPositionBuilderAtEnd(self.builder, block);
         }
 
-        for const_def in self.consts.clone() {
-            let value = self.emit_expression(&const_def.value)?;
+        for (module_name, const_def) in self.consts.clone() {
+            self.module_stack.push(module_name.clone());
+            let value = {
+                let result = self.emit_expression(&const_def.value);
+                self.module_stack.pop();
+                result?
+            };
             self.insert_var(&const_def.name, value, false)?;
         }
 
-        let _ = self.execute_block_contents(body)?;
+        self.module_stack.push(main_module.clone());
+        let exec_result = self.execute_block_contents(body);
+        self.module_stack.pop();
+        let _ = exec_result?;
         self.exit_scope()?;
 
         unsafe {
@@ -1147,6 +1196,13 @@ impl Compiler {
         name: &str,
         fields: &StructLiteralKind,
     ) -> Result<Value, String> {
+        let entry = self
+            .structs
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("Unknown struct {}", name))?;
+        self.ensure_item_visible(&entry.module, entry.def.visibility, name, "struct")?;
+        let def = entry.def;
         match fields {
             StructLiteralKind::Named(named) => {
                 let mut map = HashMap::new();
@@ -1157,11 +1213,6 @@ impl Compiler {
                 Ok(Value::Struct(StructValue::new(name.to_string(), map)))
             }
             StructLiteralKind::Positional(values) => {
-                let def = self
-                    .structs
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| format!("Unknown struct {}", name))?;
                 if def.fields.len() != values.len() {
                     return Err(format!(
                         "Struct `{}` expects {} fields, got {}",
@@ -1211,6 +1262,7 @@ impl Compiler {
             .get(variant)
             .cloned()
             .ok_or_else(|| format!("Unknown enum variant {}", variant))?;
+        self.ensure_item_visible(&info.module, info.visibility, &info.enum_name, "enum")?;
         if let Some(name) = enum_name {
             if name != info.enum_name {
                 return Err(format!(
@@ -1243,6 +1295,7 @@ impl Compiler {
             .enum_variants
             .get(variant)
             .ok_or_else(|| format!("Unknown enum variant {}", variant))?;
+        self.ensure_item_visible(&info.module, info.visibility, &info.enum_name, "enum")?;
         if info.fields != values.len() {
             return Err(format!(
                 "Variant `{}` expects {} values, got {}",
@@ -1329,12 +1382,13 @@ impl Compiler {
             evaluated_args.push(self.emit_expression(expr)?);
         }
         let receiver_candidate = self.receiver_name_from_values(&evaluated_args);
-        let func = self.resolve_function(
+        let func_entry = self.resolve_function(
             name,
             receiver_candidate.as_deref(),
             type_args,
             &evaluated_args,
         )?;
+        let func = func_entry.def.clone();
         if func.params.len() != evaluated_args.len() {
             return Err(format!(
                 "Function `{}` expects {} arguments, got {}",
@@ -1344,22 +1398,27 @@ impl Compiler {
             ));
         }
 
+        self.ensure_item_visible(&func_entry.module, func.visibility, &func.name, "function")?;
         self.ensure_interface_arguments(&func.params, &evaluated_args)?;
-        self.push_scope();
-        for (param, value) in func.params.iter().zip(evaluated_args.into_iter()) {
-            self.insert_var(&param.name, value, param.mutability == Mutability::Mutable)?;
-        }
-        let result = match &func.body {
-            FunctionBody::Block(block) => self.execute_block_contents(block)?,
-            FunctionBody::Expr(expr) => Some(self.emit_expression(&expr.node)?),
-        };
-        self.exit_scope()?;
-
-        if func.returns.is_empty() {
-            Ok(None)
-        } else {
-            Ok(result)
-        }
+        self.module_stack.push(func_entry.module.clone());
+        let result = (|| {
+            self.push_scope();
+            for (param, value) in func.params.iter().zip(evaluated_args.into_iter()) {
+                self.insert_var(&param.name, value, param.mutability == Mutability::Mutable)?;
+            }
+            let result = match &func.body {
+                FunctionBody::Block(block) => self.execute_block_contents(block)?,
+                FunctionBody::Expr(expr) => Some(self.emit_expression(&expr.node)?),
+            };
+            self.exit_scope()?;
+            if func.returns.is_empty() {
+                Ok(None)
+            } else {
+                Ok(result)
+            }
+        })();
+        self.module_stack.pop();
+        result
     }
 
     fn register_function(&mut self, func: &FunctionDef, module: &str) -> Result<(), String> {
@@ -1375,7 +1434,13 @@ impl Compiler {
                 func.name, receiver
             ));
         }
-        self.functions.insert(key, func.clone());
+        self.functions.insert(
+            key,
+            FunctionEntry {
+                module: module.to_string(),
+                def: func.clone(),
+            },
+        );
         let qualified = format!("{}::{}", module, func.name);
         self.functions.insert(
             FunctionKey {
@@ -1383,7 +1448,10 @@ impl Compiler {
                 receiver,
                 type_args: None,
             },
-            func.clone(),
+            FunctionEntry {
+                module: module.to_string(),
+                def: func.clone(),
+            },
         );
         Ok(())
     }
@@ -1395,7 +1463,12 @@ impl Compiler {
         if !self.structs.contains_key(&block.target) {
             return Err(format!("Unknown target type `{}`", block.target));
         }
-        let iface = self.interfaces.get(&block.interface).cloned().unwrap();
+        let iface = self
+            .interfaces
+            .get(&block.interface)
+            .cloned()
+            .map(|entry| entry.def)
+            .unwrap();
         if iface.type_params.len() != block.type_args.len() {
             return Err(format!(
                 "`{}` expects {} type arguments, got {}",
@@ -1455,7 +1528,7 @@ impl Compiler {
         receiver_hint: Option<&str>,
         type_args: &[TypeExpr],
         args: &[Value],
-    ) -> Result<FunctionDef, String> {
+    ) -> Result<FunctionEntry, String> {
         let type_arg_names = if type_args.is_empty() {
             None
         } else {
@@ -1506,7 +1579,7 @@ impl Compiler {
             })
             .ok_or_else(|| format!("Unknown function {}", name))?;
 
-        if base.type_params.is_empty() {
+        if base.def.type_params.is_empty() {
             if type_arg_names.is_some() {
                 return Err(format!("`{}` is not generic", name));
             }
@@ -1516,23 +1589,27 @@ impl Compiler {
         if type_args.is_empty() {
             return Err(format!("`{}` requires type arguments", name));
         }
-        if type_args.len() != base.type_params.len() {
+        if type_args.len() != base.def.type_params.len() {
             return Err(format!(
                 "`{}` expects {} type arguments, got {}",
                 name,
-                base.type_params.len(),
+                base.def.type_params.len(),
                 type_args.len()
             ));
         }
 
-        let instantiated = self.instantiate_function(&base, type_args)?;
+        let instantiated = self.instantiate_function(&base.def, type_args)?;
         let key = FunctionKey {
             name: name.to_string(),
             receiver: resolved_receiver,
             type_args: type_arg_names,
         };
-        self.functions.insert(key.clone(), instantiated.clone());
-        Ok(instantiated)
+        let entry = FunctionEntry {
+            module: base.module.clone(),
+            def: instantiated,
+        };
+        self.functions.insert(key.clone(), entry.clone());
+        Ok(entry)
     }
 
     fn instantiate_function(
@@ -1595,6 +1672,11 @@ impl Compiler {
         type_args: &[TypeExpr],
         value: &Value,
     ) -> Result<(), String> {
+        let entry = self
+            .interfaces
+            .get(interface)
+            .ok_or_else(|| format!("Unknown interface {}", interface))?;
+        self.ensure_item_visible(&entry.module, entry.def.visibility, interface, "interface")?;
         let struct_name = self.value_struct_name(value).ok_or_else(|| {
             format!(
                 "Interface `{}` expects struct implementing it, found incompatible value",
@@ -1612,6 +1694,34 @@ impl Compiler {
             Err(format!(
                 "`{}` does not implement interface `{}` with these type arguments",
                 struct_name, interface
+            ))
+        }
+    }
+
+    fn current_module(&self) -> Option<&str> {
+        self.module_stack.last().map(|s| s.as_str())
+    }
+
+    fn can_access(&self, owner: &str, visibility: Visibility) -> bool {
+        matches!(visibility, Visibility::Public)
+            || self
+                .current_module()
+                .map_or(true, |current| current == owner)
+    }
+
+    fn ensure_item_visible(
+        &self,
+        owner: &str,
+        visibility: Visibility,
+        name: &str,
+        kind: &str,
+    ) -> Result<(), String> {
+        if self.can_access(owner, visibility) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{kind} `{}` is private to module `{}`",
+                name, owner
             ))
         }
     }
@@ -2039,7 +2149,7 @@ fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
     }
 }
 
-fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructDef>) -> Option<String> {
+fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {
     def.params
         .first()
         .and_then(|param| type_name_from_type_expr(&param.ty.ty))

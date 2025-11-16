@@ -1,53 +1,53 @@
-enum Option[T] {
+pub enum Option[T] {
   Some(T),
   None,
 }
 
-enum Result[T, E] {
+pub enum Result[T, E] {
   Ok(T),
   Err(E),
 }
 
-struct Vec2 {
+pub struct Vec2 {
   x: float32;
   y: float32;
 }
 
-struct Transform {
+pub struct Transform {
   position: Vec2;
   velocity: Vec2;
 }
 
-struct Stats {
+pub struct Stats {
   hp: int32;
   stamina: int32;
 }
 
-enum Damage {
+pub enum Damage {
   Flat(int32),
   Percent(int32),
 }
 
-enum MissionEvent {
+pub enum MissionEvent {
   Completed(string),
   Failed(string),
   Waiting,
 }
 
-struct Player {
+pub struct Player {
   Transform;
   Stats;
   name: string;
   level: int32;
 }
 
-struct Enemy {
+pub struct Enemy {
   Transform;
   kind: string;
   attack: Damage;
 }
 
-struct Quest {
+pub struct Quest {
   title: string;
   reward: int32;
   completed: bool;
