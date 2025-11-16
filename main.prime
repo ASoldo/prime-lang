@@ -2,50 +2,170 @@ import "types";
 
 const TRAINING_LIMIT: int32 = 3;
 
+interface Renderable[T] {
+  fn render(self);
+}
+
+interface Nameable[T] {
+  fn label(self) -> string;
+}
+
+struct PlayerPanel {
+  label: string;
+  position: Vec2;
+  velocity: Vec2;
+  hp: int32;
+  stamina: int32;
+  level: int32;
+}
+
+struct EnemyPanel {
+  label: string;
+  position: Vec2;
+  velocity: Vec2;
+  attack: Damage;
+}
+
+struct QuestPanel {
+  label: string;
+  reward: int32;
+  completed: bool;
+}
+
+impl Renderable[PlayerPanel] for PlayerPanel {
+  fn render(self) {
+    out("----- player -----");
+    out(self.label);
+    out(self.position.x);
+    out(self.position.y);
+    out(self.hp);
+    out(self.stamina);
+    if self.hp < 50 {
+      out("status: fragile");
+    } else {
+      out("status: ready");
+    }
+  }
+}
+
+impl Nameable[PlayerPanel] for PlayerPanel {
+  fn label(self) -> string {
+    self.label
+  }
+}
+
+impl Renderable[EnemyPanel] for EnemyPanel {
+  fn render(self) {
+    out("--- enemy ---");
+    out(self.label);
+    out(self.position.x);
+    out(self.position.y);
+    describe_damage(self.attack);
+  }
+}
+
+impl Nameable[EnemyPanel] for EnemyPanel {
+  fn label(self) -> string {
+    self.label
+  }
+}
+
+impl Renderable[QuestPanel] for QuestPanel {
+  fn render(self) {
+    out("--- quest ---");
+    out(self.label);
+    out(self.reward);
+    if self.completed {
+      out("state: completed");
+    } else {
+      out("state: in progress");
+    }
+  }
+}
+
+impl Nameable[QuestPanel] for QuestPanel {
+  fn label(self) -> string {
+    self.label
+  }
+}
+
+fn player_panel(p: Player) -> PlayerPanel {
+  PlayerPanel{
+    p.name,
+    p.position,
+    p.velocity,
+    p.hp,
+    p.stamina,
+    p.level,
+  }
+}
+
+fn enemy_panel(e: Enemy) -> EnemyPanel {
+  EnemyPanel{
+    e.kind,
+    e.position,
+    e.velocity,
+    e.attack,
+  }
+}
+
+fn quest_panel(q: Quest) -> QuestPanel {
+  QuestPanel{
+    q.title,
+    q.reward,
+    q.completed,
+  }
+}
+
 fn main() {
   out("=== prime-lang gameplay demo ===");
-  let mut hero: Player = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
+  let mut Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
   out("=== heal() ===");
-  let scout: Player = spawn_player("Sparrow", Vec2{ 5.0, 12.5 }, 90);
-  describe_player(hero);
-  describe_player(scout);
-  let relocated: Player = move_player(hero, Vec2{ 2.0, 3.0 });
+  let Player scout = spawn_player("Sparrow", Vec2{ 5.0, 12.5 }, 90);
+  player_panel(hero).render();
+  player_panel(scout).render();
+  out("Roster labels:");
+  out(player_panel(hero).label());
+  out(player_panel(scout).label());
+  let Player relocated = move_player(hero, Vec2{ 2.0, 3.0 });
   out("After repositioning:");
-  describe_player(relocated);
-  let wounded: Player = apply_damage(relocated, Flat(30));
+  player_panel(relocated).render();
+  let Player wounded = apply_damage(relocated, Flat(30));
   out("Hero after heavy hit:");
-  describe_player(wounded);
-  let healed: Player = drink_potion(wounded, 24);
+  player_panel(wounded).render();
+  let Player healed = drink_potion(wounded, 24);
   out("Hero after potion:");
-  describe_player(healed);
-  let leveled: Player = level_up(healed, 2);
+  player_panel(healed).render();
+  let Player leveled = level_up(healed, 2);
   out("Hero after leveling:");
-  describe_player(leveled);
-  let brute: Enemy = spawn_enemy("Emerald brute", Vec2{ 18.0, 24.0 }, Percent(15));
-  describe_enemy(brute);
-  let quest: Quest = Quest{
+  player_panel(leveled).render();
+  let Enemy brute = spawn_enemy("Emerald brute", Vec2{ 18.0, 24.0 }, Percent(15));
+  enemy_panel(brute).render();
+  let Quest quest = Quest{
     "Defend the valley",
     450,
     false,
   };
 
-  describe_quest(quest);
+  out("Quest focus:");
+  out(quest_panel(quest).label());
+  quest_panel(quest).render();
   out("Encounter simulation:");
   run_encounter(leveled, scout, brute);
   out("Training countdown:");
   countdown(TRAINING_LIMIT);
   simulate_patrol("River path", 4);
-  let borrowed_hp: int32 = peek_hp(&hero);
+  let int32 borrowed_hp = peek_hp(&hero);
   out("Borrowed hero hp:");
   out(borrowed_hp);
-  let ridge: MissionEvent = plan_mission("Ridge scouting", true, true);
-  let harbor: MissionEvent = plan_mission("Harbor sweep", false, true);
+  let MissionEvent ridge = plan_mission("Ridge scouting", true, true);
+  let MissionEvent harbor = plan_mission("Harbor sweep", false, true);
   describe_event(ridge);
   describe_event(harbor);
-  let pending: string = summarize_event(Waiting());
+  let string pending = summarize_event(Waiting());
   out("Mission summary hint:");
   out(pending);
-  let slot: Option[int32] = find_training_slot(TRAINING_LIMIT);
+  let Option[int32] slot = find_training_slot(TRAINING_LIMIT);
   match slot {
     Some(value) => {
       out("Training slot assigned:");
@@ -58,7 +178,7 @@ fn main() {
   match resolve_attack(leveled, brute.attack) {
     Ok(survivor) => {
       out("Hero resisted the heavy blow:");
-      describe_player(survivor);
+      player_panel(survivor).render();
     },
     Err(msg) => {
       out("Hero staggered:");
@@ -67,7 +187,7 @@ fn main() {
   };
   refill_hp(&mut hero, 12);
   out("Hero after field medic response:");
-  describe_player(hero);
+  player_panel(hero).render();
   calibrate_station("Signal tower");
   let divmod_result = divmod(22, TRAINING_LIMIT);
   out("divmod(22, TRAINING_LIMIT):");
@@ -107,28 +227,6 @@ fn spawn_enemy(kind: string, position: Vec2, attack: Damage) -> Enemy {
   }
 }
 
-fn describe_player(p: Player) {
-  out("----- player -----");
-  out(p.name);
-  out(p.position.x);
-  out(p.position.y);
-  out(p.hp);
-  out(p.stamina);
-  if p.hp < 50 {
-    out("status: fragile");
-  } else {
-    out("status: ready");
-  }
-}
-
-fn describe_enemy(enemy: Enemy) {
-  out("--- enemy ---");
-  out(enemy.kind);
-  out(enemy.position.x);
-  out(enemy.position.y);
-  describe_damage(enemy.attack);
-}
-
 fn describe_damage(damage: Damage) {
   match damage {
     Flat(amount) => {
@@ -142,19 +240,8 @@ fn describe_damage(damage: Damage) {
   }
 }
 
-fn describe_quest(quest: Quest) {
-  out("--- quest ---");
-  out(quest.title);
-  out(quest.reward);
-  if quest.completed {
-    out("state: completed");
-  } else {
-    out("state: in progress");
-  }
-}
-
 fn move_player(p: Player, offset: Vec2) -> Player {
-  let next: Vec2 = add_vec2(p.position, offset);
+  let Vec2 next = add_vec2(p.position, offset);
   Player{
     Transform{
       next,
@@ -191,7 +278,7 @@ fn apply_damage(p: Player, damage: Damage) -> Player {
       p.level,
     },
     Percent(percent) => {
-      let scaled: int32 = p.hp * percent / 100;
+      let int32 scaled = p.hp * percent / 100;
       Player{
         Transform{
           p.position,
@@ -209,7 +296,7 @@ fn apply_damage(p: Player, damage: Damage) -> Player {
 }
 
 fn drink_potion(p: Player, heal: int32) -> Player {
-  let boosted: int32 = p.hp + heal;
+  let int32 boosted = p.hp + heal;
   Player{
     Transform{
       p.position,
@@ -225,7 +312,7 @@ fn drink_potion(p: Player, heal: int32) -> Player {
 }
 
 fn level_up(p: Player, levels: int32) -> Player {
-  let bonus: int32 = levels * 5;
+  let int32 bonus = levels * 5;
   Player{
     Transform{
       p.position,
@@ -246,8 +333,8 @@ fn announce_session(message: string) {
 }
 
 fn run_encounter(hero: Player, ally: Player, enemy: Enemy) {
-  let mut round: int32 = 0;
-  let mut current: Player = hero;
+  let mut int32 round = 0;
+  let mut Player current = hero;
   while round < 3 {
     out("round");
     out(round);
@@ -255,13 +342,13 @@ fn run_encounter(hero: Player, ally: Player, enemy: Enemy) {
     round = round + 1;
   }
   out("Post-encounter hero:");
-  describe_player(current);
+  player_panel(current).render();
   out("Ally remained ready:");
-  describe_player(ally);
+  player_panel(ally).render();
 }
 
 fn countdown(limit: int32) {
-  let mut step: int32 = 0;
+  let mut int32 step = 0;
   while step < limit {
     out(step);
     step = step + 1;
@@ -300,13 +387,13 @@ fn resolve_attack(hero: Player, damage: Damage) -> Result[Player, string] {
 }
 
 fn peek_hp(target: &Player) -> int32 {
-  let snapshot: Player = *target;
+  let Player snapshot = *target;
   snapshot.hp
 }
 
 fn refill_hp(target: &mut Player, amount: int32) {
-  let snapshot: Player = *target;
-  let refreshed: Player = Player{
+  let Player snapshot = *target;
+  let Player refreshed = Player{
     Transform{ snapshot.position, snapshot.velocity },
     Stats{ snapshot.hp + amount, snapshot.stamina },
     snapshot.name,
@@ -356,7 +443,7 @@ fn calibrate_station(name: string) {
   out("Calibrating station:");
   out(name);
   defer out("Station teardown complete");
-  let mut probes: int32 = 0;
+  let mut int32 probes = 0;
   while probes < 2 {
     out("probe");
     out(probes);
@@ -365,8 +452,8 @@ fn calibrate_station(name: string) {
 }
 
 fn divmod(a: int32, b: int32) -> (int32, int32) {
-  let q: int32 = a / b;
-  let r: int32 = a % b;
+  let int32 q = a / b;
+  let int32 r = a % b;
   (q, r)
 }
 
