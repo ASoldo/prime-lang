@@ -35,7 +35,7 @@ use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams,
     Command, CompletionContext, CompletionItem, CompletionItemKind, CompletionOptions,
-    CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    CompletionParams, CompletionResponse, CompletionTextEdit, Diagnostic, DiagnosticSeverity,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
     DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
@@ -278,12 +278,23 @@ impl Backend {
     }
 
     async fn parse_cached_module(&self, uri: &Uri, text: &str) -> Option<Module> {
+        let manifest_context = manifest_context_for_uri(uri);
+        if let Some((manifest, _)) = manifest_context.as_ref() {
+            self.ensure_manifest_modules(manifest).await;
+        }
         match parse_module_from_uri(uri, text) {
             Ok(module) => {
                 self.modules.insert(uri.clone(), module.clone()).await;
                 self.symbols.update_module(uri, &module).await;
-                if let Some(path) = url_to_path(uri) {
-                    if let Ok(package) = load_package(&path) {
+                if let Some((manifest, _)) = manifest_context.as_ref() {
+                    self.ensure_import_modules(manifest, &module).await;
+                }
+                let file_path = manifest_context
+                    .as_ref()
+                    .map(|(_, path)| path.clone())
+                    .or_else(|| url_to_path(uri));
+                if let Some(path) = file_path.as_ref() {
+                    if let Ok(package) = load_package(path) {
                         for pkg_module in package.program.modules {
                             if let Some(pkg_uri) = Uri::from_file_path(&pkg_module.path) {
                                 self.modules
@@ -292,9 +303,6 @@ impl Backend {
                                 self.symbols.update_module(&pkg_uri, &pkg_module).await;
                             }
                         }
-                    }
-                    if let Some((manifest, _)) = manifest_context_for_uri(uri) {
-                        self.ensure_manifest_modules(&manifest).await;
                     }
                 }
                 Some(module)
@@ -342,6 +350,32 @@ impl Backend {
             };
             self.modules.insert(uri.clone(), module.clone()).await;
             self.symbols.update_module(&uri, &module).await;
+        }
+    }
+
+    async fn ensure_import_modules(&self, manifest: &PackageManifest, module: &Module) {
+        for import in &module.imports {
+            let module_name = import.path.to_string();
+            let Some(path) = manifest.module_path(&module_name) else {
+                continue;
+            };
+            let Some(uri) = Uri::from_file_path(&path) else {
+                continue;
+            };
+            if self.modules.get(&uri).await.is_some() {
+                continue;
+            }
+            let source = match fs::read_to_string(&path) {
+                Ok(src) => src,
+                Err(_) => continue,
+            };
+            let parsed =
+                match parse_module(&module_name, path.clone(), &source) {
+                    Ok(module) => module,
+                    Err(_) => continue,
+                };
+            self.modules.insert(uri.clone(), parsed.clone()).await;
+            self.symbols.update_module(&uri, &parsed).await;
         }
     }
 }
@@ -653,6 +687,7 @@ impl LanguageServer for Backend {
         if let Some(module) = module_opt {
             if let Some(chain) = expression_chain_before_dot(&text, offset) {
                 if let Some(items) = member_completion_items(
+                    &text,
                     &chain,
                     &struct_info,
                     &interface_info,
@@ -1358,12 +1393,17 @@ fn span_contains(span: Span, offset: usize) -> bool {
 }
 
 fn find_local_decl(module: &Module, name: &str, offset: usize) -> Option<DeclInfo> {
-    collect_decl_spans(module)
+    let decls: Vec<_> = collect_decl_spans(module)
         .into_iter()
         .filter(|decl| decl.name == name)
+        .collect();
+    let strict = decls
+        .iter()
         .filter(|decl| scope_contains(decl.scope, offset))
         .filter(|decl| offset >= decl.available_from || span_contains(decl.span, offset))
         .max_by_key(|decl| decl.span.start)
+        .cloned();
+    strict.or_else(|| decls.into_iter().max_by_key(|decl| decl.span.start))
 }
 
 fn find_local_definition_span(module: &Module, name: &str, offset: usize) -> Option<Span> {
@@ -3181,6 +3221,7 @@ fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
 }
 
 fn member_completion_items(
+    text: &str,
     chain: &[String],
     struct_info: &HashMap<String, StructInfo>,
     interfaces: &HashMap<String, InterfaceInfo>,
@@ -3189,11 +3230,24 @@ fn member_completion_items(
     offset: usize,
 ) -> Option<Vec<CompletionItem>> {
     let (target_type, _) = resolve_chain_from_scope(chain, module, struct_info, offset)?;
+    let qualifier = if chain.is_empty() {
+        None
+    } else {
+        Some(chain.join("."))
+    };
+    let edit_range = member_completion_edit_range(text, offset, prefix, qualifier.as_deref());
     if let Some((name, args)) = named_type_with_args(&target_type) {
         if let Some(info) = struct_info.get(&name) {
             let mut items = Vec::new();
             for field in &info.fields {
                 if prefix_matches(&field.name, prefix) {
+                    let filter_text = qualifier
+                        .as_ref()
+                        .map(|qual| format!("{qual}.{}", field.name));
+                    let new_text = qualifier
+                        .as_ref()
+                        .map(|qual| format!("{qual}.{}", field.name))
+                        .unwrap_or_else(|| field.name.clone());
                     items.push(CompletionItem {
                         label: field.name.clone(),
                         kind: Some(CompletionItemKind::FIELD),
@@ -3202,12 +3256,24 @@ fn member_completion_items(
                             format_type_expr(&field.ty),
                             field.declared_in
                         )),
+                        filter_text,
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range: edit_range.clone(),
+                            new_text,
+                        })),
                         ..Default::default()
                     });
                 }
             }
             for method in &info.methods {
                 if prefix_matches(&method.name, prefix) {
+                    let filter_text = qualifier
+                        .as_ref()
+                        .map(|qual| format!("{qual}.{}", method.name));
+                    let new_text = qualifier
+                        .as_ref()
+                        .map(|qual| format!("{qual}.{}", method.name))
+                        .unwrap_or_else(|| method.name.clone());
                     items.push(CompletionItem {
                         label: method.name.clone(),
                         kind: Some(CompletionItemKind::METHOD),
@@ -3215,6 +3281,11 @@ fn member_completion_items(
                             "{} (from {})",
                             method.signature, method.declared_in
                         )),
+                        filter_text,
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range: edit_range.clone(),
+                            new_text,
+                        })),
                         ..Default::default()
                     });
                 }
@@ -3226,6 +3297,13 @@ fn member_completion_items(
             let mut items = Vec::new();
             for method in &info.methods {
                 if prefix_matches(&method.name, prefix) {
+                    let filter_text = qualifier
+                        .as_ref()
+                        .map(|qual| format!("{qual}.{}", method.name));
+                    let new_text = qualifier
+                        .as_ref()
+                        .map(|qual| format!("{qual}.{}", method.name))
+                        .unwrap_or_else(|| method.name.clone());
                     items.push(CompletionItem {
                         label: method.name.clone(),
                         kind: Some(CompletionItemKind::METHOD),
@@ -3234,6 +3312,11 @@ fn member_completion_items(
                             format_interface_method_signature(method, subst_ref),
                             name
                         )),
+                        filter_text,
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range: edit_range.clone(),
+                            new_text,
+                        })),
                         ..Default::default()
                     });
                 }
@@ -3244,6 +3327,23 @@ fn member_completion_items(
         }
     } else {
         None
+    }
+}
+
+fn member_completion_edit_range(
+    text: &str,
+    offset: usize,
+    prefix: Option<&str>,
+    qualifier: Option<&str>,
+) -> Range {
+    let prefix_len = prefix.map(|p| p.len()).unwrap_or(0);
+    let qualifier_len = qualifier.map(|q| q.len()).unwrap_or(0);
+    let dot_len = if qualifier.is_some() { 1 } else { 0 };
+    let replace_len = prefix_len + qualifier_len + dot_len;
+    let start_offset = offset.saturating_sub(replace_len);
+    Range {
+        start: offset_to_position(text, start_offset),
+        end: offset_to_position(text, offset),
     }
 }
 
@@ -3561,6 +3661,7 @@ fn announce[T](unit: Nameable[T], partner: T) {
         let interface_info = collect_interface_info(&structs);
         let chain = vec!["unit".to_string()];
         let items = member_completion_items(
+            source,
             &chain,
             &struct_info,
             &interface_info,
@@ -3569,8 +3670,263 @@ fn announce[T](unit: Nameable[T], partner: T) {
             source.find("unit.label").unwrap_or(0),
         )
         .expect("completion items");
-        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        let mut labels = Vec::new();
+        let mut label_filter = None;
+        for item in &items {
+            labels.push(item.label.as_str());
+            if item.label == "label" {
+                label_filter = item.filter_text.clone();
+            }
+        }
         assert!(labels.contains(&"label"));
         assert!(labels.contains(&"pair"));
+        assert_eq!(label_filter.as_deref(), Some("unit.label"));
+    }
+
+    #[test]
+    fn struct_member_completion_exposes_embedded_fields() {
+        let types_source = r#"
+module core::types;
+
+struct Vec2 {
+  x: float32;
+  y: float32;
+}
+
+struct Transform {
+  position: Vec2;
+  velocity: Vec2;
+}
+
+struct Stats {
+  hp: int32;
+  stamina: int32;
+}
+
+struct Player {
+  Transform;
+  Stats;
+  name: string;
+  level: int32;
+}
+"#;
+
+        let main_source = r#"
+module app::main;
+
+import core::types;
+
+fn heal(player: Player, boost: int32) -> Player {
+  player.hp;
+  player.position;
+}
+"#;
+
+        let types_module =
+            parse_module("core::types", PathBuf::from("types.prime"), types_source).unwrap();
+        let main_module =
+            parse_module("app::main", PathBuf::from("main.prime"), main_source).unwrap();
+        let struct_modules = vec![types_module.clone(), main_module.clone()];
+        let struct_info = collect_struct_info(&struct_modules);
+        let interface_info = collect_interface_info(&struct_modules);
+        let offset = main_source.find("player.hp").unwrap() + "player.".len();
+        let chain = expression_chain_before_dot(main_source, offset).unwrap();
+        let items = member_completion_items(
+            main_source,
+            &chain,
+            &struct_info,
+            &interface_info,
+            None,
+            &main_module,
+            offset,
+        )
+        .expect("member completion items");
+        let mut labels = Vec::new();
+        let mut hp_filter = None;
+        for item in &items {
+            labels.push(item.label.as_str());
+            if item.label == "hp" {
+                hp_filter = item.filter_text.clone();
+            }
+        }
+        assert!(labels.contains(&"hp"));
+        assert!(labels.contains(&"stamina"));
+        assert!(labels.contains(&"position"));
+        assert!(labels.contains(&"velocity"));
+        assert_eq!(hp_filter.as_deref(), Some("player.hp"));
+    }
+
+    #[test]
+    fn member_completion_survives_incomplete_field_access() {
+        let types_source = r#"
+module core::types;
+
+struct Vec2 {
+  x: float32;
+  y: float32;
+}
+
+struct Transform {
+  position: Vec2;
+  velocity: Vec2;
+}
+
+struct Stats {
+  hp: int32;
+  stamina: int32;
+}
+
+struct Player {
+  Transform;
+  Stats;
+  name: string;
+  level: int32;
+}
+"#;
+
+        let ok_source = r#"
+module app::main;
+
+import core::types;
+
+fn heal(player: Player, boost: int32) -> Player {
+  player.hp + boost;
+}
+"#;
+
+        let incomplete_source = r#"
+module app::main;
+
+import core::types;
+
+fn heal(player: Player, boost: int32) -> Player {
+  player.;
+}
+"#;
+
+        let types_module =
+            parse_module("core::types", PathBuf::from("types.prime"), types_source).unwrap();
+        let ok_module =
+            parse_module("app::main", PathBuf::from("main.prime"), ok_source).unwrap();
+        let modules = vec![types_module.clone(), ok_module.clone()];
+        let struct_info = collect_struct_info(&modules);
+        let interface_info = collect_interface_info(&modules);
+        let offset = incomplete_source.find("player.").unwrap() + "player.".len();
+        let chain = expression_chain_before_dot(incomplete_source, offset).unwrap();
+        let items = member_completion_items(
+            incomplete_source,
+            &chain,
+            &struct_info,
+            &interface_info,
+            None,
+            &ok_module,
+            offset,
+        )
+        .expect("items");
+        let mut labels = Vec::new();
+        let mut hp_filter = None;
+        for item in &items {
+            labels.push(item.label.as_str());
+            if item.label == "hp" {
+                hp_filter = item.filter_text.clone();
+            }
+        }
+        assert!(labels.contains(&"hp"));
+        assert_eq!(hp_filter.as_deref(), Some("player.hp"));
+    }
+
+    #[test]
+    fn nested_member_completion_lists_child_fields() {
+        let types_source = r#"
+module core::types;
+
+struct Vec2 {
+  x: float32;
+  y: float32;
+}
+
+struct Transform {
+  position: Vec2;
+  velocity: Vec2;
+}
+
+struct Player {
+  Transform;
+}
+"#;
+
+        let ok_source = r#"
+module app::main;
+
+import core::types;
+
+fn heal(player: Player) {
+  player.position.x;
+}
+"#;
+
+        let incomplete_source = r#"
+module app::main;
+
+import core::types;
+
+fn heal(player: Player) {
+  player.position.;
+}
+"#;
+
+        let types_module =
+            parse_module("core::types", PathBuf::from("types.prime"), types_source).unwrap();
+        let ok_module =
+            parse_module("app::main", PathBuf::from("main.prime"), ok_source).unwrap();
+        let struct_modules = vec![types_module.clone(), ok_module.clone()];
+        let struct_info = collect_struct_info(&struct_modules);
+        let interface_info = collect_interface_info(&struct_modules);
+        let offset =
+            incomplete_source.find("player.position.").unwrap() + "player.position.".len();
+        let chain = expression_chain_before_dot(incomplete_source, offset).unwrap();
+        let items = member_completion_items(
+            incomplete_source,
+            &chain,
+            &struct_info,
+            &interface_info,
+            None,
+            &ok_module,
+            offset,
+        )
+        .expect("nested items");
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"x"));
+        assert!(labels.contains(&"y"));
+    }
+
+    #[test]
+    fn player_panel_render_completion_has_vec2_fields() {
+        use std::fs;
+        let types_source = fs::read_to_string("types.prime").expect("types.prime");
+        let main_source = fs::read_to_string("main.prime").expect("main.prime");
+        let types_module =
+            parse_module("core::types", PathBuf::from("types.prime"), &types_source).unwrap();
+        let main_module =
+            parse_module("app::main", PathBuf::from("main.prime"), &main_source).unwrap();
+        let modules = vec![types_module.clone(), main_module.clone()];
+        let struct_info = collect_struct_info(&modules);
+        let interface_info = collect_interface_info(&modules);
+        let offset =
+            main_source.find("self.position.").unwrap() + "self.position.".len();
+        let chain = expression_chain_before_dot(&main_source, offset).unwrap();
+        let items = member_completion_items(
+            &main_source,
+            &chain,
+            &struct_info,
+            &interface_info,
+            None,
+            &main_module,
+            offset,
+        )
+        .expect("player panel items");
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"x"));
+        assert!(labels.contains(&"y"));
     }
 }
