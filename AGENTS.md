@@ -1,6 +1,6 @@
 # prime-lang: Current State & Roadmap
 
-## Core Language (as of April 2025)
+## Core Language (as of November 2025)
 - **Type System**: Explicit scalar types (bool, rune, int8-64, uint8-64, isize/usize, float32/64, string), value structs/enums with embedding, slices/arrays, references (`&`, `&mut`) and raw pointers (`*`).
 - **Control flow**: `if/else`, `for range`, `while`, `match` expressions with exhaustive checking, `break/continue`, `return`, `defer` for deterministic cleanup.
 - **Functions**: Free functions with explicit parameters/returns, multiple return values (tuple style), method-call sugar (`player.heal()` desugars to `heal(player)`), immutable-by-default bindings with `let`/`let mut`.
