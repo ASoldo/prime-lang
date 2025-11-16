@@ -472,15 +472,9 @@ impl LanguageServer for Backend {
         let vars = collect_var_infos(&text, &tokens);
         let offset = position_to_offset(&text, position);
         if let Some(token) = token_at(&tokens, offset) {
-            let var_types = module.as_ref().map(collect_variable_types);
-            if let Some(hover) = hover_for_token(
-                &text,
-                token,
-                &vars,
-                module.as_ref(),
-                struct_info.as_ref(),
-                var_types.as_ref(),
-            ) {
+            if let Some(hover) =
+                hover_for_token(&text, token, &vars, module.as_ref(), struct_info.as_ref())
+            {
                 return Ok(Some(hover));
             }
         }
@@ -657,21 +651,20 @@ impl LanguageServer for Backend {
         let struct_info = collect_struct_info(&struct_modules);
         let interface_info = collect_interface_info(&struct_modules);
         if let Some(module) = module_opt {
-            let var_types = collect_variable_types(&module);
             if let Some(chain) = expression_chain_before_dot(&text, offset) {
                 if let Some(items) = member_completion_items(
                     &chain,
-                    &var_types,
                     &struct_info,
                     &interface_info,
                     prefix_ref,
+                    &module,
+                    offset,
                 ) {
                     return Ok(Some(CompletionResponse::Array(items)));
                 }
             }
 
-            let general_items =
-                general_completion_items(&module, &var_types, Some(offset), prefix_ref);
+            let general_items = general_completion_items(&module, Some(offset), prefix_ref);
             Ok(Some(CompletionResponse::Array(general_items)))
         } else {
             let keywords = keyword_completion_items(prefix_ref);
@@ -1290,7 +1283,7 @@ struct DeclInfo {
     span: Span,
     scope: Span,
     available_from: usize,
-    ty: Option<String>,
+    ty: Option<TypeExpr>,
     value_span: Option<Span>,
     mutability: Mutability,
     kind: DeclKind,
@@ -1308,10 +1301,11 @@ fn collect_decl_spans(module: &Module) -> Vec<DeclInfo> {
     let mut decls = Vec::new();
     for item in &module.items {
         match item {
-            Item::Function(func) => collect_decl_from_function(func, &mut decls),
+            Item::Function(func) => collect_decl_from_function(func, None, &mut decls),
             Item::Impl(block) => {
+                let target_ty = Some(TypeExpr::named(block.target.clone()));
                 for func in &block.methods {
-                    collect_decl_from_function(func, &mut decls);
+                    collect_decl_from_function(func, target_ty.clone(), &mut decls);
                 }
             }
             _ => {}
@@ -1320,19 +1314,31 @@ fn collect_decl_spans(module: &Module) -> Vec<DeclInfo> {
     decls
 }
 
-fn collect_decl_from_function(func: &FunctionDef, decls: &mut Vec<DeclInfo>) {
+fn collect_decl_from_function(
+    func: &FunctionDef,
+    receiver_override: Option<TypeExpr>,
+    decls: &mut Vec<DeclInfo>,
+) {
     let body_span = match &func.body {
         FunctionBody::Block(block) => block.span,
         FunctionBody::Expr(expr) => expr.span,
     };
     let available_from = body_span.start;
     for param in &func.params {
+        let mut param_ty = param.ty.ty.clone();
+        if param.name == "self" {
+            if let Some(override_ty) = receiver_override.clone() {
+                param_ty = override_ty;
+            } else if let Some(resolved) = receiver_type_name(&param.ty.ty).map(TypeExpr::named) {
+                param_ty = resolved;
+            }
+        }
         decls.push(DeclInfo {
             name: param.name.clone(),
             span: param.span,
             scope: body_span,
             available_from,
-            ty: Some(format_type_expr(&param.ty.ty)),
+            ty: Some(param_ty),
             value_span: None,
             mutability: param.mutability,
             kind: DeclKind::Param,
@@ -1372,15 +1378,16 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                 if let Some(value) = &stmt.value {
                     collect_decl_from_expr(value, decls);
                 }
+                let mut ty = stmt.ty.as_ref().map(|annotation| annotation.ty.clone());
+                if ty.is_none() {
+                    ty = infer_type_from_let_value(stmt);
+                }
                 decls.push(DeclInfo {
                     name: stmt.name.clone(),
                     span: stmt.span,
                     scope,
                     available_from: stmt.span.end,
-                    ty: stmt
-                        .ty
-                        .as_ref()
-                        .map(|annotation| format_type_expr(&annotation.ty)),
+                    ty,
                     value_span: stmt.value.as_ref().map(expr_span),
                     mutability: stmt.mutability,
                     kind: DeclKind::Let,
@@ -1509,6 +1516,14 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
         Expr::Deref { expr: inner, .. } => collect_decl_from_expr(inner, decls),
         Expr::Move { expr: inner, .. } => collect_decl_from_expr(inner, decls),
     }
+}
+
+fn infer_type_from_let_value(stmt: &LetStmt) -> Option<TypeExpr> {
+    let value = stmt.value.as_ref()?;
+    if let Expr::StructLiteral { name, .. } = value {
+        return Some(TypeExpr::Named(name.clone(), Vec::new()));
+    }
+    None
 }
 
 fn collect_decl_from_range(range: &RangeExpr, decls: &mut Vec<DeclInfo>) {
@@ -1781,7 +1796,6 @@ fn hover_for_token(
     vars: &[VarInfo],
     module: Option<&Module>,
     struct_info: Option<&HashMap<String, StructInfo>>,
-    var_types: Option<&HashMap<String, TypeExpr>>,
 ) -> Option<Hover> {
     let span = token.span;
     let hover = match &token.kind {
@@ -1803,12 +1817,10 @@ fn hover_for_token(
                     return Some(method_hover);
                 }
                 if let Some(struct_info) = struct_info {
-                    if let Some(var_types) = var_types {
-                        if let Some(hover) =
-                            hover_for_field_usage(text, span, name, struct_info, var_types)
-                        {
-                            return Some(hover);
-                        }
+                    if let Some(hover) =
+                        hover_for_field_usage(text, span, struct_info, module, span.start)
+                    {
+                        return Some(hover);
                     }
                 }
                 if let Some(decl) = find_local_decl(module, name, span.start) {
@@ -2003,7 +2015,7 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
     value.push_str("```\n");
     value.push_str(&format!("Name: `{}`", decl.name));
     if let Some(ty) = &decl.ty {
-        value.push_str(&format!("\nType: `{ty}`"));
+        value.push_str(&format!("\nType: `{}`", format_type_expr(ty)));
     } else {
         value.push_str("\nType: `inferred`");
     }
@@ -2029,12 +2041,12 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
 fn hover_for_field_usage(
     text: &str,
     span: Span,
-    _field_name: &str,
     struct_info: &HashMap<String, StructInfo>,
-    var_types: &HashMap<String, TypeExpr>,
+    module: &Module,
+    offset: usize,
 ) -> Option<Hover> {
     let chain = chain_for_field_token(text, span)?;
-    let (_, field_info) = resolve_chain_type(&chain, var_types, struct_info)?;
+    let (_, field_info) = resolve_chain_from_scope(&chain, module, struct_info, offset)?;
     let Some((parent_name, field)) = field_info else {
         return None;
     };
@@ -3056,7 +3068,6 @@ fn flatten_struct_methods(
 
 fn general_completion_items(
     module: &Module,
-    vars: &HashMap<String, TypeExpr>,
     offset: Option<usize>,
     prefix: Option<&str>,
 ) -> Vec<CompletionItem> {
@@ -3066,16 +3077,7 @@ fn general_completion_items(
             items.push(CompletionItem {
                 label: decl.name.clone(),
                 kind: Some(CompletionItemKind::VARIABLE),
-                detail: decl.ty.clone(),
-                ..Default::default()
-            });
-        }
-    } else {
-        for (name, ty) in vars {
-            items.push(CompletionItem {
-                label: name.clone(),
-                kind: Some(CompletionItemKind::VARIABLE),
-                detail: Some(format_type_expr(ty)),
+                detail: decl.ty.as_ref().map(|ty| format_type_expr(ty)),
                 ..Default::default()
             });
         }
@@ -3180,15 +3182,13 @@ fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
 
 fn member_completion_items(
     chain: &[String],
-    var_types: &HashMap<String, TypeExpr>,
     struct_info: &HashMap<String, StructInfo>,
     interfaces: &HashMap<String, InterfaceInfo>,
     prefix: Option<&str>,
+    module: &Module,
+    offset: usize,
 ) -> Option<Vec<CompletionItem>> {
-    let (target_type, _) = resolve_chain_type(chain, var_types, struct_info).or_else(|| {
-        let ty = type_for_identifier(chain.first()?, var_types, struct_info)?;
-        Some((ty, None))
-    })?;
+    let (target_type, _) = resolve_chain_from_scope(chain, module, struct_info, offset)?;
     if let Some((name, args)) = named_type_with_args(&target_type) {
         if let Some(info) = struct_info.get(&name) {
             let mut items = Vec::new();
@@ -3271,86 +3271,6 @@ fn visible_locals(module: &Module, offset: usize) -> Vec<DeclInfo> {
         .filter(|decl| scope_contains(decl.scope, offset))
         .filter(|decl| offset >= decl.available_from)
         .collect()
-}
-
-fn collect_variable_types(module: &Module) -> HashMap<String, TypeExpr> {
-    let mut vars = HashMap::new();
-    for item in &module.items {
-        if let Item::Function(func) = item {
-            for param in &func.params {
-                vars.insert(param.name.clone(), param.ty.ty.clone());
-            }
-            match &func.body {
-                FunctionBody::Block(block) => collect_variable_types_from_block(block, &mut vars),
-                FunctionBody::Expr(expr) => collect_variable_types_from_expr(&expr.node, &mut vars),
-            }
-        }
-    }
-    vars
-}
-
-fn collect_variable_types_from_block(block: &Block, vars: &mut HashMap<String, TypeExpr>) {
-    for statement in &block.statements {
-        match statement {
-            Statement::Let(stmt) => {
-                if let Some(ty) = infer_type_from_let(stmt) {
-                    vars.insert(stmt.name.clone(), ty);
-                }
-            }
-            Statement::Block(inner) => collect_variable_types_from_block(inner, vars),
-            Statement::If(if_stmt) => {
-                collect_variable_types_from_block(&if_stmt.then_branch, vars);
-                if let Some(else_branch) = &if_stmt.else_branch {
-                    collect_variable_types_from_block(else_branch, vars);
-                }
-            }
-            Statement::While(while_stmt) => {
-                collect_variable_types_from_block(&while_stmt.body, vars)
-            }
-            Statement::ForRange(for_stmt) => {
-                collect_variable_types_from_block(&for_stmt.body, vars)
-            }
-            Statement::Match(match_stmt) => {
-                for arm in &match_stmt.arms {
-                    collect_variable_types_from_block(&arm.body, vars);
-                }
-            }
-            _ => {}
-        }
-    }
-    if let Some(tail) = &block.tail {
-        collect_variable_types_from_expr(tail, vars);
-    }
-}
-
-fn collect_variable_types_from_expr(expr: &Expr, vars: &mut HashMap<String, TypeExpr>) {
-    match expr {
-        Expr::Block(block) => collect_variable_types_from_block(block, vars),
-        Expr::If(if_expr) => {
-            collect_variable_types_from_block(&if_expr.then_branch, vars);
-            if let Some(else_branch) = &if_expr.else_branch {
-                collect_variable_types_from_block(else_branch, vars);
-            }
-        }
-        Expr::Match(match_expr) => {
-            for arm in &match_expr.arms {
-                collect_variable_types_from_expr(&arm.value, vars);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn infer_type_from_let(stmt: &LetStmt) -> Option<TypeExpr> {
-    if let Some(annotation) = &stmt.ty {
-        return Some(annotation.ty.clone());
-    }
-    if let Some(value) = &stmt.value {
-        if let Expr::StructLiteral { name, .. } = value {
-            return Some(TypeExpr::Named(name.clone(), Vec::new()));
-        }
-    }
-    None
 }
 
 fn receiver_type_name(expr: &TypeExpr) -> Option<String> {
@@ -3527,15 +3447,15 @@ fn is_ident_char(ch: u8) -> bool {
     ch.is_ascii_alphanumeric() || ch == b'_'
 }
 
-fn resolve_chain_type<'a>(
+fn resolve_chain_from_root<'a>(
     chain: &[String],
-    var_types: &HashMap<String, TypeExpr>,
+    root: TypeExpr,
     structs: &'a HashMap<String, StructInfo>,
 ) -> Option<(TypeExpr, Option<(String, &'a StructFieldInfo)>)> {
     if chain.is_empty() {
         return None;
     }
-    let mut current = type_for_identifier(&chain[0], var_types, structs)?;
+    let mut current = root;
     let mut last_field = None;
     for segment in chain.iter().skip(1) {
         let struct_name = struct_name_from_type(&current)?.to_string();
@@ -3547,13 +3467,27 @@ fn resolve_chain_type<'a>(
     Some((current, last_field))
 }
 
-fn type_for_identifier(
-    name: &str,
-    var_types: &HashMap<String, TypeExpr>,
+fn resolve_chain_from_scope<'a>(
+    chain: &[String],
+    module: &Module,
+    structs: &'a HashMap<String, StructInfo>,
+    offset: usize,
+) -> Option<(TypeExpr, Option<(String, &'a StructFieldInfo)>)> {
+    let root = chain.first()?;
+    let ty = identifier_type_from_scope(module, structs, root, offset)?;
+    resolve_chain_from_root(chain, ty, structs)
+}
+
+fn identifier_type_from_scope(
+    module: &Module,
     structs: &HashMap<String, StructInfo>,
+    name: &str,
+    offset: usize,
 ) -> Option<TypeExpr> {
-    if let Some(ty) = var_types.get(name) {
-        return Some(ty.clone());
+    if let Some(decl) = find_local_decl(module, name, offset) {
+        if let Some(ty) = decl.ty {
+            return Some(ty);
+        }
     }
     if structs.contains_key(name) {
         return Some(TypeExpr::Named(name.to_string(), Vec::new()));
@@ -3623,13 +3557,18 @@ fn announce[T](unit: Nameable[T], partner: T) {
         )
         .unwrap();
         let structs = vec![module.clone()];
-        let var_types = collect_variable_types(&module);
         let struct_info = collect_struct_info(&structs);
         let interface_info = collect_interface_info(&structs);
         let chain = vec!["unit".to_string()];
-        let items =
-            member_completion_items(&chain, &var_types, &struct_info, &interface_info, None)
-                .expect("completion items");
+        let items = member_completion_items(
+            &chain,
+            &struct_info,
+            &interface_info,
+            None,
+            &module,
+            source.find("unit.label").unwrap_or(0),
+        )
+        .expect("completion items");
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
         assert!(labels.contains(&"label"));
         assert!(labels.contains(&"pair"));
