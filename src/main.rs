@@ -118,6 +118,10 @@ fn run_entry(path: &Path) {
             emit_syntax_errors(&errors);
             std::process::exit(1);
         }
+        Err(PackageError::Manifest { path, message }) => {
+            eprintln!("manifest error at {}: {}", path.display(), message);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -163,6 +167,10 @@ fn build_entry(path: &Path, name: &str) {
         }
         Err(PackageError::Syntax(errors)) => {
             emit_syntax_errors(&errors);
+            std::process::exit(1);
+        }
+        Err(PackageError::Manifest { path, message }) => {
+            eprintln!("manifest error at {}: {}", path.display(), message);
             std::process::exit(1);
         }
     }

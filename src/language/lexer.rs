@@ -146,6 +146,7 @@ impl<'a> Lexer<'a> {
             "continue" => TokenKind::Continue,
             "defer" => TokenKind::Defer,
             "move" => TokenKind::Move,
+            "pub" => TokenKind::Pub,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "as" => TokenKind::As,

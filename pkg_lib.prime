@@ -1,0 +1,30 @@
+pub struct Banner {
+  message: string;
+  highlighted: bool;
+}
+
+pub fn banner(message: string) -> Banner {
+  Banner{
+    message,
+    false,
+  }
+}
+
+pub fn promote(label: string, highlight: bool) -> Banner {
+  Banner{
+    label,
+    highlight,
+  }
+}
+
+pub fn describe(b: Banner) -> string {
+  status_label(b.highlighted)
+}
+
+fn status_label(flag: bool) -> string {
+  if flag {
+    "highlighted"
+  } else {
+    "queued"
+  }
+}

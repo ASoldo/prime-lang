@@ -18,6 +18,18 @@ pub struct Module {
     pub items: Vec<Item>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Visibility::Private
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Import {
     pub path: String,
@@ -41,6 +53,7 @@ pub struct StructDef {
     pub type_params: Vec<String>,
     pub fields: Vec<StructField>,
     pub span: Span,
+    pub visibility: Visibility,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +70,7 @@ pub struct EnumDef {
     pub type_params: Vec<String>,
     pub variants: Vec<EnumVariant>,
     pub span: Span,
+    pub visibility: Visibility,
 }
 
 #[derive(Clone, Debug)]
@@ -72,6 +86,7 @@ pub struct InterfaceDef {
     pub type_params: Vec<String>,
     pub methods: Vec<InterfaceMethod>,
     pub span: Span,
+    pub visibility: Visibility,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +114,7 @@ pub struct FunctionDef {
     pub returns: Vec<TypeAnnotation>,
     pub body: FunctionBody,
     pub span: Span,
+    pub visibility: Visibility,
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +137,7 @@ pub struct ConstDef {
     pub ty: Option<TypeAnnotation>,
     pub value: Expr,
     pub span: Span,
+    pub visibility: Visibility,
 }
 
 #[derive(Clone, Debug)]

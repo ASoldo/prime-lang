@@ -16,12 +16,12 @@
 - Enabled generic interfaces/impls (Phase B): `interface Foo[T]` and `impl Foo[Type] for Bar` clone via the existing monomorphization cache across interpreter/compiler; `interface_generics_demo.prime` exercises interface + generic combos.
 
 ## In-Progress / Deferred
-1. **Error-Handling Sugar** – Provide `try`/`?` syntax for `Result`, ensuring both runtime and build-mode codegen handle early returns cleanly.
-2. **Module/Packaging metadata** – Formalize imports via `prime.toml`, add visibility controls (`pub fn`, `pub struct`) and prep dependency resolution for larger projects.
+1. **Module/Packaging metadata** – Formalize imports via `prime.toml`, add visibility controls (`pub fn`, `pub struct`) and prep dependency resolution for larger projects.
+2. **Error-Handling Sugar** – Provide `try`/`?` syntax for `Result`, ensuring both runtime and build-mode codegen handle early returns cleanly.
 3. **Trait-style helpers** – Auto-alias interface methods across modules (workspace symbols, go-to-def) and keep formatter/LSP parity as new syntax lands.
 4. **Deprecated Helpers Sunset** – Remove the `slice_*`/`map_*` helper API after literals/methods cover all use cases; warnings already fire to nudge users.
 
 ## Next Steps
 - Add regression demos/tests that mix generics with interfaces (e.g., interface constraints inside generic functions) to keep coverage high.
-- Start designing `prime.toml` + visibility rules so packages/modules remain maintainable as we scale.
-- Once packaging and trait-style helper work land, circle back to error-handling sugar and finish removing deprecated slice/map helpers.
+- Ship the initial `prime.toml` spec, module loader, and `pub` visibility flags so multi-module projects can compile/run across both interpreter and build mode.
+- Once packaging lands, finish the error-handling sugar and remove deprecated slice/map helpers.

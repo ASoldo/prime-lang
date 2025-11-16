@@ -111,28 +111,38 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> Result<Item, SyntaxError> {
+        let mut visibility = Visibility::Private;
+        if self.matches(TokenKind::Pub) {
+            visibility = Visibility::Public;
+        }
         if self.matches(TokenKind::Struct) {
-            return self.parse_struct().map(Item::Struct);
+            return self.parse_struct(visibility).map(Item::Struct);
         }
         if self.matches(TokenKind::Enum) {
-            return self.parse_enum().map(Item::Enum);
+            return self.parse_enum(visibility).map(Item::Enum);
         }
         if self.matches(TokenKind::Interface) {
-            return self.parse_interface().map(Item::Interface);
+            return self.parse_interface(visibility).map(Item::Interface);
         }
         if self.matches(TokenKind::Impl) {
+            if visibility == Visibility::Public {
+                return Err(self.error_here("`pub` is not allowed before `impl`"));
+            }
             return self.parse_impl().map(Item::Impl);
         }
         if self.matches(TokenKind::Fn) {
-            return self.parse_function().map(Item::Function);
+            return self.parse_function(visibility).map(Item::Function);
         }
         if self.matches(TokenKind::Const) {
-            return self.parse_const().map(Item::Const);
+            return self.parse_const(visibility).map(Item::Const);
+        }
+        if visibility == Visibility::Public {
+            return Err(self.error_here("Expected declaration after `pub`"));
         }
         Err(self.error_here("Expected declaration"))
     }
 
-    fn parse_struct(&mut self) -> Result<StructDef, SyntaxError> {
+    fn parse_struct(&mut self, visibility: Visibility) -> Result<StructDef, SyntaxError> {
         let name = self.expect_identifier("Expected struct name")?;
         let type_params = self.parse_type_params()?;
         let start = name.span.start;
@@ -177,10 +187,11 @@ impl Parser {
             type_params,
             fields,
             span: Span::new(start, end),
+            visibility,
         })
     }
 
-    fn parse_enum(&mut self) -> Result<EnumDef, SyntaxError> {
+    fn parse_enum(&mut self, visibility: Visibility) -> Result<EnumDef, SyntaxError> {
         let name = self.expect_identifier("Expected enum name")?;
         let type_params = self.parse_type_params()?;
         let start = name.span.start;
@@ -220,10 +231,11 @@ impl Parser {
             type_params,
             variants,
             span: Span::new(start, end),
+            visibility,
         })
     }
 
-    fn parse_interface(&mut self) -> Result<InterfaceDef, SyntaxError> {
+    fn parse_interface(&mut self, visibility: Visibility) -> Result<InterfaceDef, SyntaxError> {
         let name = self.expect_identifier("Expected interface name")?;
         let type_params = self.parse_type_params()?;
         let start = name.span.start;
@@ -281,6 +293,7 @@ impl Parser {
             type_params,
             methods,
             span: Span::new(start, end),
+            visibility,
         })
     }
 
@@ -300,7 +313,7 @@ impl Parser {
                 continue;
             }
             self.expect(TokenKind::Fn)?;
-            methods.push(self.parse_function()?);
+            methods.push(self.parse_function(Visibility::Private)?);
         }
         let end = self.expect(TokenKind::RBrace)?.span.end;
         Ok(ImplBlock {
@@ -331,7 +344,7 @@ impl Parser {
         Ok(params)
     }
 
-    fn parse_function(&mut self) -> Result<FunctionDef, SyntaxError> {
+    fn parse_function(&mut self, visibility: Visibility) -> Result<FunctionDef, SyntaxError> {
         let name = self.expect_identifier("Expected function name")?;
         let type_params = self.parse_type_params()?;
         self.expect(TokenKind::LParen)?;
@@ -386,10 +399,11 @@ impl Parser {
             returns,
             body,
             span,
+            visibility,
         })
     }
 
-    fn parse_const(&mut self) -> Result<ConstDef, SyntaxError> {
+    fn parse_const(&mut self, visibility: Visibility) -> Result<ConstDef, SyntaxError> {
         let start = self
             .previous_span()
             .map(|s| s.start)
@@ -409,6 +423,7 @@ impl Parser {
             ty,
             value,
             span: Span::new(start, end),
+            visibility,
         })
     }
 

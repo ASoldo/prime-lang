@@ -30,8 +30,15 @@ pub fn format_module(module: &Module) -> String {
     out
 }
 
+fn write_visibility(out: &mut String, visibility: Visibility) {
+    if matches!(visibility, Visibility::Public) {
+        out.push_str("pub ");
+    }
+}
+
 fn format_struct(out: &mut String, def: &StructDef) {
     let params = format_type_params(&def.type_params);
+    write_visibility(out, def.visibility);
     out.push_str(&format!("struct {}{} {{\n", def.name, params));
     for field in &def.fields {
         if field.embedded {
@@ -49,6 +56,7 @@ fn format_struct(out: &mut String, def: &StructDef) {
 
 fn format_enum(out: &mut String, def: &EnumDef) {
     let params = format_type_params(&def.type_params);
+    write_visibility(out, def.visibility);
     out.push_str(&format!("enum {}{} {{\n", def.name, params));
     for variant in &def.variants {
         if variant.fields.is_empty() {
@@ -67,6 +75,7 @@ fn format_enum(out: &mut String, def: &EnumDef) {
 
 fn format_interface(out: &mut String, def: &InterfaceDef) {
     let params = format_type_params(&def.type_params);
+    write_visibility(out, def.visibility);
     out.push_str(&format!("interface {}{} {{\n", def.name, params));
     for method in &def.methods {
         out.push_str("  fn ");
@@ -115,6 +124,7 @@ fn format_impl(out: &mut String, block: &ImplBlock) {
 
 fn format_function(out: &mut String, def: &FunctionDef) {
     let params = format_type_params(&def.type_params);
+    write_visibility(out, def.visibility);
     out.push_str(&format!("fn {}{}(", def.name, params));
     for (idx, param) in def.params.iter().enumerate() {
         if idx > 0 {
@@ -152,6 +162,7 @@ fn format_function(out: &mut String, def: &FunctionDef) {
 fn format_function_with_indent(out: &mut String, def: &FunctionDef, indent: usize) {
     write_indent(out, indent);
     let params = format_type_params(&def.type_params);
+    write_visibility(out, def.visibility);
     out.push_str(&format!("fn {}{}(", def.name, params));
     for (idx, param) in def.params.iter().enumerate() {
         if idx > 0 {
@@ -245,6 +256,7 @@ fn format_call_type_args(args: &[TypeExpr]) -> String {
 }
 
 fn format_const(out: &mut String, def: &ConstDef) {
+    write_visibility(out, def.visibility);
     out.push_str("const ");
     out.push_str(&def.name);
     if let Some(ty) = &def.ty {

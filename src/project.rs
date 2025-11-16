@@ -1,8 +1,11 @@
+mod manifest;
+
 use crate::language::{
     ast::{Module, Program},
     errors::SyntaxError,
     parser::parse_module,
 };
+use manifest::{ManifestError, PackageManifest};
 use std::{
     collections::HashSet,
     fs,
@@ -35,6 +38,10 @@ pub enum PackageError {
         error: std::io::Error,
     },
     Syntax(Vec<FileErrors>),
+    Manifest {
+        path: PathBuf,
+        message: String,
+    },
 }
 
 pub fn load_package(entry_path: &Path) -> Result<Package, PackageError> {
@@ -42,7 +49,20 @@ pub fn load_package(entry_path: &Path) -> Result<Package, PackageError> {
         path: entry_path.to_path_buf(),
         error,
     })?;
-    let mut loader = ModuleLoader::new();
+    let manifest = match find_manifest(&canonical_entry) {
+        Some(path) => Some(
+            PackageManifest::load(&path).map_err(|err| PackageError::Manifest {
+                path: path.clone(),
+                message: manifest_error_message(err),
+            })?,
+        ),
+        None => None,
+    };
+    let entry_name = manifest
+        .as_ref()
+        .and_then(|m| m.module_name_for_path(&canonical_entry))
+        .unwrap_or_else(|| module_name_from_path(&canonical_entry));
+    let mut loader = ModuleLoader::new(manifest);
     loader.load(&canonical_entry)?;
 
     if !loader.file_errors.is_empty() {
@@ -51,7 +71,7 @@ pub fn load_package(entry_path: &Path) -> Result<Package, PackageError> {
 
     let modules = loader.modules;
     let program = Program {
-        entry: module_name(&canonical_entry),
+        entry: entry_name,
         modules: modules.iter().map(|unit| unit.module.clone()).collect(),
     };
 
@@ -62,14 +82,16 @@ struct ModuleLoader {
     visited: HashSet<PathBuf>,
     modules: Vec<ModuleUnit>,
     file_errors: Vec<FileErrors>,
+    manifest: Option<PackageManifest>,
 }
 
 impl ModuleLoader {
-    fn new() -> Self {
+    fn new(manifest: Option<PackageManifest>) -> Self {
         Self {
             visited: HashSet::new(),
             modules: Vec::new(),
             file_errors: Vec::new(),
+            manifest,
         }
     }
 
@@ -91,7 +113,11 @@ impl ModuleLoader {
             path: canonical.clone(),
             error,
         })?;
-        let module_name = module_name(&canonical);
+        let module_name = self
+            .manifest
+            .as_ref()
+            .and_then(|m| m.module_name_for_path(&canonical))
+            .unwrap_or_else(|| module_name_from_path(&canonical));
 
         match parse_module(&module_name, canonical.clone(), &source) {
             Ok(module) => {
@@ -99,7 +125,7 @@ impl ModuleLoader {
                 self.modules.push(ModuleUnit { module, source });
 
                 for import in imports {
-                    let resolved = resolve_import(&canonical, &import.path);
+                    let resolved = self.resolve_import_path(&canonical, &import.path)?;
                     self.load_module(&resolved)?;
                 }
             }
@@ -114,16 +140,29 @@ impl ModuleLoader {
 
         Ok(())
     }
+
+    fn resolve_import_path(
+        &self,
+        base: &Path,
+        import_path: &str,
+    ) -> Result<PathBuf, PackageError> {
+        if let Some(manifest) = &self.manifest {
+            if let Some(path) = manifest.module_path(import_path) {
+                return Ok(path);
+            }
+        }
+        Ok(resolve_import_relative(base, import_path))
+    }
 }
 
-fn module_name(path: &Path) -> String {
+fn module_name_from_path(path: &Path) -> String {
     path.file_stem()
         .and_then(|os| os.to_str())
         .unwrap_or("module")
         .to_string()
 }
 
-fn resolve_import(base: &Path, import_path: &str) -> PathBuf {
+fn resolve_import_relative(base: &Path, import_path: &str) -> PathBuf {
     let mut path = PathBuf::from(import_path);
     if path.extension().is_none() {
         path.set_extension("prime");
@@ -147,5 +186,36 @@ fn canonicalize(path: &Path) -> Result<PathBuf, std::io::Error> {
             buf.set_extension("prime");
         }
         buf.canonicalize()
+    }
+}
+
+fn find_manifest(start: &Path) -> Option<PathBuf> {
+    let mut current = if start.is_dir() {
+        start.to_path_buf()
+    } else {
+        start
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    loop {
+        let candidate = current.join("prime.toml");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    None
+}
+
+fn manifest_error_message(err: ManifestError) -> String {
+    match err {
+        ManifestError::Io { error, .. } => error.to_string(),
+        ManifestError::Parse { message, .. } => message,
+        ManifestError::ModulePath { module, error, .. } => {
+            format!("module `{}` path error: {}", module, error)
+        }
     }
 }

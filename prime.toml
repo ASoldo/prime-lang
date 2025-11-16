@@ -1,0 +1,9 @@
+[package]
+name = "prime-lang-playground"
+entry = "main"
+
+[modules]
+main = "main.prime"
+types = "types.prime"
+pkg_app = "pkg_app.prime"
+pkg_lib = "pkg_lib.prime"
