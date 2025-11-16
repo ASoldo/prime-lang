@@ -1,4 +1,6 @@
-import "pkg_lib";
+module pkg::app;
+
+import pkg::lib;
 
 fn main() {
   let Banner banner = banner("Prime modules loaded");

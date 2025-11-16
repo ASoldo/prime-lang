@@ -2,8 +2,13 @@ use crate::language::{ast::*, types::TypeExpr};
 
 pub fn format_module(module: &Module) -> String {
     let mut out = String::new();
+    if let Some(name) = module.declared_name.as_ref() {
+        out.push_str(&format!("module {};\n\n", name));
+    }
     for import in &module.imports {
-        out.push_str(&format!("import \"{}\"", import.path));
+        write_visibility(&mut out, import.visibility);
+        out.push_str("import ");
+        out.push_str(&format_import_path(&import.path));
         if let Some(alias) = &import.alias {
             out.push_str(&format!(" as {}", alias));
         }
@@ -28,6 +33,10 @@ pub fn format_module(module: &Module) -> String {
     }
 
     out
+}
+
+fn format_import_path(path: &ImportPath) -> String {
+    path.segments.join("::")
 }
 
 fn write_visibility(out: &mut String, visibility: Visibility) {

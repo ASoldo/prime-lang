@@ -1,4 +1,6 @@
-import "types";
+module demos::heap_features;
+
+import core::types;
 
 fn describe_slice(label: string, collection: []string) {
   out(label);

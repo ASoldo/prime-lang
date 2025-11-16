@@ -1,3 +1,5 @@
+module pkg::lib;
+
 pub struct Banner {
   message: string;
   highlighted: bool;

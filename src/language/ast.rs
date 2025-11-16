@@ -14,6 +14,7 @@ pub struct Program {
 pub struct Module {
     pub name: String,
     pub path: PathBuf,
+    pub declared_name: Option<String>,
     pub imports: Vec<Import>,
     pub items: Vec<Item>,
 }
@@ -32,9 +33,33 @@ impl Default for Visibility {
 
 #[derive(Clone, Debug)]
 pub struct Import {
-    pub path: String,
+    pub visibility: Visibility,
+    pub path: ImportPath,
     pub alias: Option<String>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportPath {
+    pub segments: Vec<String>,
+}
+
+impl ImportPath {
+    pub fn to_string(&self) -> String {
+        self.segments.join("::")
+    }
+
+    pub fn to_relative_path(&self) -> PathBuf {
+        let mut buf = PathBuf::new();
+        for segment in &self.segments {
+            buf.push(segment);
+        }
+        buf
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
 }
 
 #[derive(Clone, Debug)]

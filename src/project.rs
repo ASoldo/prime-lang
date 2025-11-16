@@ -1,7 +1,7 @@
 mod manifest;
 
 use crate::language::{
-    ast::{Module, Program},
+    ast::{ImportPath, Module, Program},
     errors::SyntaxError,
     parser::parse_module,
 };
@@ -70,8 +70,12 @@ pub fn load_package(entry_path: &Path) -> Result<Package, PackageError> {
     }
 
     let modules = loader.modules;
+    let resolved_entry_name = modules
+        .first()
+        .and_then(|unit| unit.module.declared_name.clone())
+        .unwrap_or(entry_name.clone());
     let program = Program {
-        entry: entry_name,
+        entry: resolved_entry_name,
         modules: modules.iter().map(|unit| unit.module.clone()).collect(),
     };
 
@@ -141,9 +145,13 @@ impl ModuleLoader {
         Ok(())
     }
 
-    fn resolve_import_path(&self, base: &Path, import_path: &str) -> Result<PathBuf, PackageError> {
+    fn resolve_import_path(
+        &self,
+        base: &Path,
+        import_path: &ImportPath,
+    ) -> Result<PathBuf, PackageError> {
         if let Some(manifest) = &self.manifest {
-            if let Some(path) = manifest.module_path(import_path) {
+            if let Some(path) = manifest.module_path(&import_path.to_string()) {
                 return Ok(path);
             }
         }
@@ -158,8 +166,12 @@ fn module_name_from_path(path: &Path) -> String {
         .to_string()
 }
 
-fn resolve_import_relative(base: &Path, import_path: &str) -> PathBuf {
-    let mut path = PathBuf::from(import_path);
+fn resolve_import_relative(base: &Path, import_path: &ImportPath) -> PathBuf {
+    let mut path = if import_path.segments.is_empty() {
+        PathBuf::new()
+    } else {
+        import_path.to_relative_path()
+    };
     if path.extension().is_none() {
         path.set_extension("prime");
     }
@@ -212,6 +224,13 @@ fn manifest_error_message(err: ManifestError) -> String {
         ManifestError::Parse { message, .. } => message,
         ManifestError::ModulePath { module, error, .. } => {
             format!("module `{}` path error: {}", module, error)
+        }
+        ManifestError::InvalidModule { module, message } => {
+            if let Some(name) = module {
+                format!("invalid module `{}`: {}", name, message)
+            } else {
+                message
+            }
         }
     }
 }

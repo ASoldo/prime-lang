@@ -1,4 +1,6 @@
-import "types";
+module demos::generic;
+
+import core::types;
 
 struct StatLine {
   hp: int32;

@@ -1,3 +1,5 @@
+module core::types;
+
 pub enum Option[T] {
   Some(T),
   None,

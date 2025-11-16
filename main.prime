@@ -1,4 +1,6 @@
-import "types";
+module app::main;
+
+import core::types;
 
 const TRAINING_LIMIT: int32 = 3;
 

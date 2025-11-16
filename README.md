@@ -31,12 +31,14 @@ in `main.prime` and `types.prime` demonstrate the core semantics:
 ### Modules & Imports
 
 ```prime
-import "types";               // load structs/enums from types.prime
-import "math/random";         // relative paths become math/random.prime
+module app::main;
+
+import core::types;           // load structs/enums from types.prime
+import math::random;          // relative paths become math/random.prime
 ```
 
-Modules compile to the same package; there is no module system magic. Each file
-exposes the structs, enums, consts, and functions it defines.
+Modules declare their canonical path up front. Imports use the same symbolic
+paths, so the formatter/LSP can offer completions and go-to-def for modules.
 
 ### Constants & Mutability
 
@@ -166,7 +168,7 @@ fn calibrate_station(name: string) {
   fallible flows.
 
 ```prime
-import "math";
+import math;
 
 const LIMIT: int32 = 4;
 

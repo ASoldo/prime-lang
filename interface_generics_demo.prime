@@ -1,4 +1,6 @@
-import "types";
+module demos::interface_generics;
+
+import core::types;
 
 struct Hero {
   name: string;

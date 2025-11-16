@@ -1,9 +1,57 @@
+manifest_version = "2"
+
 [package]
 name = "prime-lang-playground"
-entry = "main"
+version = "0.1.0"
+kind = "binary"
+entry = "app::main"
 
-[modules]
-main = "main.prime"
-types = "types.prime"
-pkg_app = "pkg_app.prime"
-pkg_lib = "pkg_lib.prime"
+[[modules]]
+name = "app::main"
+path = "main.prime"
+visibility = "pub"
+
+[[modules]]
+name = "core::types"
+path = "types.prime"
+visibility = "pub"
+
+[[modules]]
+name = "pkg::app"
+path = "pkg_app.prime"
+visibility = "pub"
+
+[[modules]]
+name = "pkg::lib"
+path = "pkg_lib.prime"
+visibility = "pub"
+
+[[modules]]
+name = "demos::generic"
+path = "generic_demo.prime"
+visibility = "pub"
+
+[[modules]]
+name = "demos::heap"
+path = "heap_demo.prime"
+visibility = "pub"
+
+[[modules]]
+name = "demos::heap_features"
+path = "heap_features.prime"
+visibility = "pub"
+
+[[modules]]
+name = "demos::interface"
+path = "interface_demo.prime"
+visibility = "pub"
+
+[[modules]]
+name = "demos::interface_generics"
+path = "interface_generics_demo.prime"
+visibility = "pub"
+
+[[modules]]
+name = "demos::ns"
+path = "ns_demo.prime"
+visibility = "pub"

@@ -1,3 +1,5 @@
+module demos::ns;
+
 struct Foo {
   value: int32;
 }

@@ -58,14 +58,35 @@ impl Parser {
     fn parse(mut self) -> Result<Module, SyntaxErrors> {
         let mut imports = Vec::new();
         let mut items = Vec::new();
+        let mut declared_name = None;
+
+        if self.check(TokenKind::ModuleKw) {
+            match self.parse_module_declaration() {
+                Ok((name, _span)) => {
+                    declared_name = Some(name.clone());
+                    self.module_name = name;
+                }
+                Err(err) => self.report(err),
+            }
+        }
 
         while !self.is_eof() {
             if self.matches(TokenKind::Semi) {
                 continue;
             }
 
+            if self.check(TokenKind::Pub) && matches!(self.peek_kind_n(1), Some(TokenKind::Import))
+            {
+                self.advance(); // consume pub
+                match self.parse_import_with_visibility(Visibility::Public) {
+                    Ok(import) => imports.push(import),
+                    Err(err) => self.report(err),
+                }
+                continue;
+            }
+
             if self.check(TokenKind::Import) {
-                match self.parse_import() {
+                match self.parse_import_with_visibility(Visibility::Private) {
                     Ok(import) => imports.push(import),
                     Err(err) => self.report(err),
                 }
@@ -85,6 +106,7 @@ impl Parser {
             Ok(Module {
                 name: self.module_name,
                 path: self.path,
+                declared_name,
                 imports,
                 items,
             })
@@ -93,9 +115,33 @@ impl Parser {
         }
     }
 
-    fn parse_import(&mut self) -> Result<Import, SyntaxError> {
+    fn parse_module_declaration(&mut self) -> Result<(String, Span), SyntaxError> {
+        let start = self.expect(TokenKind::ModuleKw)?.span.start;
+        let path = self.parse_module_path("Expected module path after `module`")?;
+        if path.is_empty() {
+            return Err(self.error_here("Module path cannot be empty"));
+        }
+        self.expect(TokenKind::Semi)?;
+        let end = self.last_span_end(start);
+        Ok((path.to_string(), Span::new(start, end)))
+    }
+
+    fn parse_import_with_visibility(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<Import, SyntaxError> {
         let start = self.expect(TokenKind::Import)?.span.start;
-        let path = self.expect_string_literal("Expected import path string")?;
+        let path = if matches!(self.peek_kind(), Some(TokenKind::String(_))) {
+            let literal = self.expect_string_literal("Expected import path string")?;
+            ImportPath {
+                segments: legacy_import_segments(&literal),
+            }
+        } else {
+            self.parse_module_path("Expected module path in import")?
+        };
+        if path.is_empty() {
+            return Err(self.error_here("Import path cannot be empty"));
+        }
         let alias = if self.matches(TokenKind::As) {
             Some(self.expect_identifier("Expected alias after 'as'")?.name)
         } else {
@@ -104,10 +150,22 @@ impl Parser {
         self.consume_optional(TokenKind::Semi);
         let end = self.last_span_end(start);
         Ok(Import {
+            visibility,
             path,
             alias,
             span: Span::new(start, end),
         })
+    }
+
+    fn parse_module_path(&mut self, msg: &str) -> Result<ImportPath, SyntaxError> {
+        let mut segments = Vec::new();
+        let first = self.expect_identifier(msg)?;
+        segments.push(first.name);
+        while self.matches(TokenKind::ColonColon) {
+            let ident = self.expect_identifier("Expected segment after `::`")?;
+            segments.push(ident.name);
+        }
+        Ok(ImportPath { segments })
     }
 
     fn parse_item(&mut self) -> Result<Item, SyntaxError> {
@@ -1600,6 +1658,16 @@ impl Parser {
     fn rewind(&mut self) {
         self.pos = self.pos.saturating_sub(1);
     }
+}
+
+fn legacy_import_segments(input: &str) -> Vec<String> {
+    let without_ext = input.strip_suffix(".prime").unwrap_or(input);
+    let normalized = without_ext.replace("::", "/");
+    normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect()
 }
 
 fn expr_span(expr: &Expr) -> Span {

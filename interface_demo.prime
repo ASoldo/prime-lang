@@ -1,3 +1,5 @@
+module demos::interface;
+
 struct Hero {
   name: string;
 }

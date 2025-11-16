@@ -150,6 +150,7 @@ impl<'a> Lexer<'a> {
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "as" => TokenKind::As,
+            "module" => TokenKind::ModuleKw,
             _ => TokenKind::Identifier(slice.to_string()),
         };
         self.push_token(kind, start, end);
@@ -309,7 +310,15 @@ impl<'a> Lexer<'a> {
                     self.push_token(TokenKind::Dot, start, self.offset);
                 }
             }
-            Some(':') => self.single(TokenKind::Colon),
+            Some(':') => {
+                self.bump();
+                if self.current == Some(':') {
+                    self.bump();
+                    self.push_token(TokenKind::ColonColon, start, self.offset);
+                } else {
+                    self.push_token(TokenKind::Colon, start, self.offset);
+                }
+            }
             Some(';') => self.single(TokenKind::Semi),
             Some('%') => self.single(TokenKind::Percent),
             Some('?') => self.single(TokenKind::Question),
