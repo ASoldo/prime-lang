@@ -120,7 +120,6 @@ fn quest_panel(q: Quest) -> QuestPanel {
 fn main() {
   out("=== prime-lang gameplay demo ===");
   let mut Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
-  out("=== heal() ===");
   let Player scout = spawn_player("Sparrow", Vec2{ 5.0, 12.5 }, 90);
   player_panel(hero).render();
   player_panel(scout).render();
