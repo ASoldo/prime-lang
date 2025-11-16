@@ -1,0 +1,39 @@
+import "types";
+
+struct StatLine {
+  hp: int32;
+  stamina: int32;
+}
+
+fn identity[T](value: T) -> T {
+  value
+}
+
+fn first_or[T](primary: T, fallback: T, choose_primary: bool) -> T {
+  if choose_primary {
+    primary
+  } else {
+    fallback
+  }
+}
+
+fn make_pair[T, U](left: T, right: U) -> (T, U) {
+  (left, right)
+}
+
+fn main() {
+  let int32 hp = identity[int32](120);
+  let string codename = first_or[string]("Prime Hero", "Fallback", false);
+  let StatLine stats = identity[StatLine](StatLine{
+    128,
+    72,
+  });
+  let pair = make_pair[int32, string](18, "bleed");
+
+  out("=== generics demo ===");
+  out(hp);
+  out(codename);
+  out(stats.hp);
+  out(stats.stamina);
+  out(pair);
+}

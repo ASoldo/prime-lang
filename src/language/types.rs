@@ -17,6 +17,42 @@ impl TypeExpr {
         TypeExpr::Named(name.into(), Vec::new())
     }
 
+    pub fn canonical_name(&self) -> String {
+        match self {
+            TypeExpr::Named(name, args) => {
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    let rendered: Vec<String> =
+                        args.iter().map(|ty| ty.canonical_name()).collect();
+                    format!("{}[{}]", name, rendered.join(","))
+                }
+            }
+            TypeExpr::Slice(inner) => format!("[]{}", inner.canonical_name()),
+            TypeExpr::Array { size, ty } => format!("[{};{}]", ty.canonical_name(), size),
+            TypeExpr::Reference { mutable, ty } => {
+                if *mutable {
+                    format!("&mut {}", ty.canonical_name())
+                } else {
+                    format!("&{}", ty.canonical_name())
+                }
+            }
+            TypeExpr::Pointer { mutable, ty } => {
+                if *mutable {
+                    format!("*mut {}", ty.canonical_name())
+                } else {
+                    format!("*{}", ty.canonical_name())
+                }
+            }
+            TypeExpr::Tuple(types) => {
+                let rendered: Vec<String> =
+                    types.iter().map(|ty| ty.canonical_name()).collect();
+                format!("({})", rendered.join(","))
+            }
+            TypeExpr::Unit => "()".into(),
+        }
+    }
+
     pub fn substitute(&self, map: &HashMap<String, TypeExpr>) -> TypeExpr {
         match self {
             TypeExpr::Named(name, args) => {

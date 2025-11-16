@@ -38,6 +38,7 @@ struct FunctionInfo {
 struct FunctionKey {
     name: String,
     receiver: Option<String>,
+    type_args: Option<Vec<String>>,
 }
 
 #[derive(Clone)]
@@ -74,7 +75,7 @@ impl Interpreter {
 
     pub fn run(&mut self) -> RuntimeResult<()> {
         self.bootstrap()?;
-        let _ = self.call_function("main", None, Vec::new())?;
+        let _ = self.call_function("main", None, &[], Vec::new())?;
         Ok(())
     }
 
@@ -140,6 +141,7 @@ impl Interpreter {
         let base_key = FunctionKey {
             name: def.name.clone(),
             receiver: receiver.clone(),
+            type_args: None,
         };
         if self.functions.contains_key(&base_key) {
             return Err(RuntimeError::Panic {
@@ -160,6 +162,7 @@ impl Interpreter {
         let qualified_key = FunctionKey {
             name: qualified,
             receiver: receiver_type_name(&def, &self.structs),
+            type_args: None,
         };
         self.functions.insert(
             qualified_key,
@@ -238,53 +241,26 @@ impl Interpreter {
         &mut self,
         name: &str,
         receiver: Option<String>,
+        type_args: &[TypeExpr],
         args: Vec<Value>,
     ) -> RuntimeResult<Vec<Value>> {
         if name == "out" {
+            if !type_args.is_empty() {
+                return Err(RuntimeError::Unsupported {
+                    message: "`out` does not accept type arguments".into(),
+                });
+            }
             return self.call_out(args);
+        }
+        if !type_args.is_empty() && self.is_builtin_name(name) {
+            return Err(RuntimeError::Unsupported {
+                message: format!("`{}` does not accept type arguments", name),
+            });
         }
         if let Some(result) = self.call_builtin(name, args.clone()) {
             return result;
         }
-        let key = FunctionKey {
-            name: name.to_string(),
-            receiver: receiver.clone(),
-        };
-        let info = if let Some(info) = self.functions.get(&key).cloned() {
-            info
-        } else if receiver.is_some() {
-            self.functions
-                .get(&FunctionKey {
-                    name: name.to_string(),
-                    receiver: None,
-                })
-                .cloned()
-                .ok_or_else(|| RuntimeError::UnknownSymbol {
-                    name: format!(
-                        "{} for receiver `{}`",
-                        name,
-                        receiver.unwrap_or_else(|| "<unknown>".into())
-                    ),
-                })?
-        } else {
-            self.functions
-                .get(&FunctionKey {
-                    name: name.to_string(),
-                    receiver: self.receiver_from_args(&args),
-                })
-                .cloned()
-                .or_else(|| {
-                    self.functions
-                        .get(&FunctionKey {
-                            name: name.to_string(),
-                            receiver: None,
-                        })
-                        .cloned()
-                })
-                .ok_or_else(|| RuntimeError::UnknownSymbol {
-                    name: name.to_string(),
-                })?
-        };
+        let info = self.resolve_function(name, receiver, type_args, &args)?;
         if info.def.params.len() != args.len() {
             return Err(RuntimeError::ArityMismatch {
                 name: name.to_string(),
@@ -336,6 +312,131 @@ impl Interpreter {
         Ok(values)
     }
 
+    fn resolve_function(
+        &mut self,
+        name: &str,
+        receiver: Option<String>,
+        type_args: &[TypeExpr],
+        args: &[Value],
+    ) -> RuntimeResult<FunctionInfo> {
+        let type_arg_names = if type_args.is_empty() {
+            None
+        } else {
+            Some(type_args.iter().map(|ty| ty.canonical_name()).collect())
+        };
+        let resolved_receiver = receiver.clone().or_else(|| self.receiver_from_args(args));
+        if let Some(info) = self
+            .functions
+            .get(&FunctionKey {
+                name: name.to_string(),
+                receiver: resolved_receiver.clone(),
+                type_args: type_arg_names.clone(),
+            })
+            .cloned()
+        {
+            return Ok(info);
+        }
+        if let Some(info) = self
+            .functions
+            .get(&FunctionKey {
+                name: name.to_string(),
+                receiver: None,
+                type_args: type_arg_names.clone(),
+            })
+            .cloned()
+        {
+            return Ok(info);
+        }
+
+        let base = self
+            .functions
+            .get(&FunctionKey {
+                name: name.to_string(),
+                receiver: resolved_receiver.clone(),
+                type_args: None,
+            })
+            .cloned()
+            .or_else(|| {
+                self.functions.get(&FunctionKey {
+                    name: name.to_string(),
+                    receiver: None,
+                    type_args: None,
+                })
+                .cloned()
+            })
+            .ok_or_else(|| RuntimeError::UnknownSymbol {
+                name: name.to_string(),
+            })?;
+
+        if base.def.type_params.is_empty() {
+            if type_arg_names.is_some() {
+                return Err(RuntimeError::Unsupported {
+                    message: format!("`{}` is not generic", name),
+                });
+            }
+            return Ok(base);
+        }
+
+        if type_args.is_empty() {
+            return Err(RuntimeError::Unsupported {
+                message: format!("`{}` requires type arguments", name),
+            });
+        }
+        if type_args.len() != base.def.type_params.len() {
+            return Err(RuntimeError::Unsupported {
+                message: format!(
+                    "`{}` expects {} type arguments, got {}",
+                    name,
+                    base.def.type_params.len(),
+                    type_args.len()
+                ),
+            });
+        }
+
+        let instantiated = self.instantiate_function(&base, type_args)?;
+        let key = FunctionKey {
+            name: name.to_string(),
+            receiver: resolved_receiver,
+            type_args: type_arg_names,
+        };
+        self.functions.insert(key.clone(), instantiated.clone());
+        Ok(instantiated)
+    }
+
+    fn instantiate_function(
+        &self,
+        info: &FunctionInfo,
+        type_args: &[TypeExpr],
+    ) -> RuntimeResult<FunctionInfo> {
+        if type_args.len() != info.def.type_params.len() {
+            return Err(RuntimeError::Unsupported {
+                message: format!(
+                    "`{}` expects {} type arguments, got {}",
+                    info.def.name,
+                    info.def.type_params.len(),
+                    type_args.len()
+                ),
+            });
+        }
+        let mut map = HashMap::new();
+        for (param, ty) in info.def.type_params.iter().zip(type_args.iter()) {
+            map.insert(param.clone(), ty.clone());
+        }
+        let mut new_def = info.def.clone();
+        new_def.type_params.clear();
+        for param in &mut new_def.params {
+            param.ty = param.ty.substitute(&map);
+        }
+        for ret in &mut new_def.returns {
+            *ret = ret.substitute(&map);
+        }
+        Ok(FunctionInfo {
+            module: info.module.clone(),
+            receiver: info.receiver.clone(),
+            def: new_def,
+        })
+    }
+
     fn receiver_from_args(&self, args: &[Value]) -> Option<String> {
         args.first().and_then(|value| self.value_struct_name(value))
     }
@@ -377,6 +478,23 @@ impl Interpreter {
             _ => return None,
         };
         Some(result)
+    }
+
+    fn is_builtin_name(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "box_new"
+                | "box_get"
+                | "box_set"
+                | "box_take"
+                | "slice_new"
+                | "slice_push"
+                | "slice_len"
+                | "slice_get"
+                | "map_new"
+                | "map_insert"
+                | "map_get"
+        )
     }
 
     fn expect_arity(&self, name: &str, args: &[Value], expected: usize) -> RuntimeResult<()> {
@@ -777,18 +895,14 @@ impl Interpreter {
                 ..
             } => match callee.as_ref() {
                 Expr::Identifier(ident) => {
-                    if !type_args.is_empty() {
-                        return Err(RuntimeError::Unsupported {
-                            message: "Generic functions are not supported yet".into(),
-                        });
-                    }
                     let arg_values = self.eval_arguments(args)?;
                     if let Some(variant) = self.enum_variants.get(&ident.name) {
                         let enum_name = variant.enum_name.clone();
                         let variant_name = ident.name.clone();
                         return self.instantiate_enum(&enum_name, &variant_name, arg_values);
                     }
-                    let results = self.call_function(&ident.name, None, arg_values)?;
+                    let results =
+                        self.call_function(&ident.name, None, type_args, arg_values)?;
                     Ok(match results.len() {
                         0 => Value::Unit,
                         1 => results.into_iter().next().unwrap(),
@@ -796,19 +910,20 @@ impl Interpreter {
                     })
                 }
                 Expr::FieldAccess { base, field, .. } => {
-                    if !type_args.is_empty() {
-                        return Err(RuntimeError::Unsupported {
-                            message: "Generic functions are not supported yet".into(),
-                        });
-                    }
                     if let Expr::Identifier(module_ident) = base.as_ref() {
                         let qualified = format!("{}::{}", module_ident.name, field);
                         if self.functions.contains_key(&FunctionKey {
                             name: qualified.clone(),
                             receiver: None,
+                            type_args: None,
                         }) {
                             let arg_values = self.eval_arguments(args)?;
-                            let results = self.call_function(&qualified, None, arg_values)?;
+                            let results = self.call_function(
+                                &qualified,
+                                None,
+                                type_args,
+                                arg_values,
+                            )?;
                             return Ok(match results.len() {
                                 0 => Value::Unit,
                                 1 => results.into_iter().next().unwrap(),
@@ -823,7 +938,7 @@ impl Interpreter {
                     for expr in args {
                         method_args.push(self.eval_expression(expr)?);
                     }
-                    let results = self.call_function(field, receiver_type, method_args)?;
+                    let results = self.call_function(field, receiver_type, type_args, method_args)?;
                     Ok(match results.len() {
                         0 => Value::Unit,
                         1 => results.into_iter().next().unwrap(),

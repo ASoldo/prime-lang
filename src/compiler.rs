@@ -27,6 +27,7 @@ use std::{
 struct FunctionKey {
     name: String,
     receiver: Option<String>,
+    type_args: Option<Vec<String>>,
 }
 
 pub struct Compiler {
@@ -681,9 +682,6 @@ impl Compiler {
         type_args: &[TypeExpr],
         args: &[Expr],
     ) -> Result<Value, String> {
-        if !type_args.is_empty() {
-            return Err("Generic functions are not supported in build mode yet".into());
-        }
         match callee {
             Expr::Identifier(ident) => {
                 if let Some(info) = self.enum_variants.get(&ident.name).cloned() {
@@ -699,7 +697,7 @@ impl Compiler {
                 if let Some(result) = self.try_builtin_call(&ident.name, args) {
                     return result;
                 }
-                let result = self.invoke_function(&ident.name, args)?;
+                let result = self.invoke_function(&ident.name, type_args, args)?;
                 result.ok_or_else(|| format!("Function `{}` does not return a value", ident.name))
             }
             Expr::FieldAccess { base, field, .. } => {
@@ -708,9 +706,10 @@ impl Compiler {
                     let key = FunctionKey {
                         name: qualified.clone(),
                         receiver: None,
+                        type_args: None,
                     };
                     if self.functions.contains_key(&key) {
-                        let result = self.invoke_function(&qualified, args)?;
+                        let result = self.invoke_function(&qualified, type_args, args)?;
                         return result.ok_or_else(|| {
                             format!("Function `{}` does not return a value", qualified)
                         });
@@ -719,7 +718,7 @@ impl Compiler {
                 let mut method_args = Vec::with_capacity(args.len() + 1);
                 method_args.push((**base).clone());
                 method_args.extend(args.iter().cloned());
-                let result = self.invoke_function(field, &method_args)?;
+                let result = self.invoke_function(field, type_args, &method_args)?;
                 result.ok_or_else(|| format!("Function `{}` does not return a value", field))
             }
             _ => Err("Only direct function calls are supported in build mode expressions".into()),
@@ -1118,12 +1117,7 @@ impl Compiler {
                     } else if let Some(result) = self.try_builtin_call(&ident.name, args) {
                         result.map(|_| ())
                     } else {
-                        if !type_args.is_empty() {
-                            return Err(
-                                "Generic functions are not supported in build mode yet".into()
-                            );
-                        }
-                        let result = self.invoke_function(&ident.name, args)?;
+                        let result = self.invoke_function(&ident.name, type_args, args)?;
                         if result.is_some() {
                             Err("Functions returning values are not supported in expression statements during build mode".into())
                         } else {
@@ -1137,14 +1131,11 @@ impl Compiler {
                         let key = FunctionKey {
                             name: qualified.clone(),
                             receiver: None,
+                            type_args: None,
                         };
                         if self.functions.contains_key(&key) {
-                            if !type_args.is_empty() {
-                                return Err(
-                                    "Generic functions are not supported in build mode yet".into(),
-                                );
-                            }
-                            let result = self.invoke_function(&qualified, args)?;
+                            let result =
+                                self.invoke_function(&qualified, type_args, args)?;
                             if result.is_some() {
                                 return Err(
                                     "Functions returning values are not supported in expression statements during build mode"
@@ -1157,10 +1148,7 @@ impl Compiler {
                     let mut method_args = Vec::with_capacity(args.len() + 1);
                     method_args.push((**base).clone());
                     method_args.extend(args.iter().cloned());
-                    if !type_args.is_empty() {
-                        return Err("Generic functions are not supported in build mode yet".into());
-                    }
-                    let result = self.invoke_function(field, &method_args)?;
+                    let result = self.invoke_function(field, type_args, &method_args)?;
                     if result.is_some() {
                         Err("Functions returning values are not supported in expression statements during build mode".into())
                     } else {
@@ -1176,16 +1164,23 @@ impl Compiler {
         }
     }
 
-    fn invoke_function(&mut self, name: &str, args: &[Expr]) -> Result<Option<Value>, String> {
+    fn invoke_function(
+        &mut self,
+        name: &str,
+        type_args: &[TypeExpr],
+        args: &[Expr],
+    ) -> Result<Option<Value>, String> {
         let mut evaluated_args = Vec::new();
         for expr in args {
             evaluated_args.push(self.emit_expression(expr)?);
         }
         let receiver_candidate = self.receiver_name_from_values(&evaluated_args);
-        let func = self
-            .lookup_function(name, receiver_candidate.as_deref())
-            .or_else(|| self.lookup_function(name, None))
-            .ok_or_else(|| format!("Unknown function {}", name))?;
+        let func = self.resolve_function(
+            name,
+            receiver_candidate.as_deref(),
+            type_args,
+            &evaluated_args,
+        )?;
         if func.params.len() != evaluated_args.len() {
             return Err(format!(
                 "Function `{}` expects {} arguments, got {}",
@@ -1217,6 +1212,7 @@ impl Compiler {
         let key = FunctionKey {
             name: func.name.clone(),
             receiver: receiver.clone(),
+            type_args: None,
         };
         if self.functions.contains_key(&key) {
             return Err(format!(
@@ -1230,18 +1226,125 @@ impl Compiler {
             FunctionKey {
                 name: qualified,
                 receiver,
+                type_args: None,
             },
             func.clone(),
         );
         Ok(())
     }
 
-    fn lookup_function(&self, name: &str, receiver: Option<&str>) -> Option<FunctionDef> {
+    fn resolve_function(
+        &mut self,
+        name: &str,
+        receiver_hint: Option<&str>,
+        type_args: &[TypeExpr],
+        args: &[Value],
+    ) -> Result<FunctionDef, String> {
+        let type_arg_names = if type_args.is_empty() {
+            None
+        } else {
+            Some(type_args.iter().map(|ty| ty.canonical_name()).collect())
+        };
+        let mut resolved_receiver = receiver_hint.map(|s| s.to_string());
+        if resolved_receiver.is_none() {
+            resolved_receiver = self.receiver_name_from_values(args);
+        }
+        if let Some(func) = self
+            .functions
+            .get(&FunctionKey {
+                name: name.to_string(),
+                receiver: resolved_receiver.clone(),
+                type_args: type_arg_names.clone(),
+            })
+            .cloned()
+        {
+            return Ok(func);
+        }
+        if let Some(func) = self
+            .functions
+            .get(&FunctionKey {
+                name: name.to_string(),
+                receiver: None,
+                type_args: type_arg_names.clone(),
+            })
+            .cloned()
+        {
+            return Ok(func);
+        }
+        let base = self
+            .functions
+            .get(&FunctionKey {
+                name: name.to_string(),
+                receiver: resolved_receiver.clone(),
+                type_args: None,
+            })
+            .cloned()
+            .or_else(|| {
+                self.functions
+                    .get(&FunctionKey {
+                        name: name.to_string(),
+                        receiver: None,
+                        type_args: None,
+                    })
+                    .cloned()
+            })
+            .ok_or_else(|| format!("Unknown function {}", name))?;
+
+        if base.type_params.is_empty() {
+            if type_arg_names.is_some() {
+                return Err(format!("`{}` is not generic", name));
+            }
+            return Ok(base);
+        }
+
+        if type_args.is_empty() {
+            return Err(format!("`{}` requires type arguments", name));
+        }
+        if type_args.len() != base.type_params.len() {
+            return Err(format!(
+                "`{}` expects {} type arguments, got {}",
+                name,
+                base.type_params.len(),
+                type_args.len()
+            ));
+        }
+
+        let instantiated = self.instantiate_function(&base, type_args)?;
         let key = FunctionKey {
             name: name.to_string(),
-            receiver: receiver.map(|s| s.to_string()),
+            receiver: resolved_receiver,
+            type_args: type_arg_names,
         };
-        self.functions.get(&key).cloned()
+        self.functions.insert(key.clone(), instantiated.clone());
+        Ok(instantiated)
+    }
+
+    fn instantiate_function(
+        &self,
+        base: &FunctionDef,
+        type_args: &[TypeExpr],
+    ) -> Result<FunctionDef, String> {
+        if type_args.len() != base.type_params.len() {
+            return Err(format!(
+                "`{}` expects {} type arguments, got {}",
+                base.name,
+                base.type_params.len(),
+                type_args.len()
+            ));
+        }
+        let mut map = HashMap::new();
+        for (param, ty) in base.type_params.iter().zip(type_args.iter()) {
+            map.insert(param.clone(), ty.clone());
+        }
+        let mut new_def = base.clone();
+        new_def.type_params.clear();
+        for param in &mut new_def.params {
+            param.ty = param.ty.substitute(&map);
+        }
+        for ret in &mut new_def.returns {
+            *ret = ret.substitute(&map);
+        }
+        Ok(new_def)
     }
 
     fn receiver_name_from_values(&self, args: &[Value]) -> Option<String> {
