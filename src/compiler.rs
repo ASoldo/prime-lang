@@ -6,9 +6,9 @@ use llvm_sys::{
     LLVMLinkage,
     core::{
         LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMBuildCall2, LLVMBuildGlobalString,
-        LLVMBuildRetVoid, LLVMConstInt, LLVMContextCreate, LLVMContextDispose,
+        LLVMBuildRetVoid, LLVMConstInt, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
         LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
-        LLVMFunctionType, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
+        LLVMDoubleTypeInContext, LLVMFunctionType, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
         LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilderAtEnd,
         LLVMPrintModuleToFile, LLVMPrintModuleToString, LLVMSetLinkage, LLVMVoidTypeInContext,
     },
@@ -43,6 +43,7 @@ pub struct Compiler {
     module: LLVMModuleRef,
     builder: LLVMBuilderRef,
     i32_type: LLVMTypeRef,
+    f64_type: LLVMTypeRef,
     printf_type: LLVMTypeRef,
     printf: LLVMValueRef,
     main_fn: LLVMValueRef,
@@ -62,6 +63,7 @@ pub struct Compiler {
 #[derive(Clone)]
 enum Value {
     Int(IntValue),
+    Float(FloatValue),
     Str(StringValue),
     Struct(StructValue),
     Enum(EnumValue),
@@ -85,6 +87,12 @@ struct EnumValue {
 struct IntValue {
     llvm: LLVMValueRef,
     constant: Option<i128>,
+}
+
+#[derive(Clone)]
+struct FloatValue {
+    llvm: LLVMValueRef,
+    constant: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -228,18 +236,34 @@ impl IntValue {
     }
 }
 
+impl FloatValue {
+    fn new(llvm: LLVMValueRef, constant: Option<f64>) -> Self {
+        Self { llvm, constant }
+    }
+
+    fn llvm(&self) -> LLVMValueRef {
+        self.llvm
+    }
+
+    fn constant(&self) -> Option<f64> {
+        self.constant
+    }
+}
+
 impl Compiler {
     pub fn new() -> Self {
         unsafe {
             let context = LLVMContextCreate();
             let builder = LLVMCreateBuilderInContext(context);
             let i32_type = LLVMInt32TypeInContext(context);
+            let f64_type = LLVMDoubleTypeInContext(context);
 
             let mut compiler = Self {
                 context,
                 module: ptr::null_mut(),
                 builder,
                 i32_type,
+                f64_type,
                 printf_type: ptr::null_mut(),
                 printf: ptr::null_mut(),
                 main_fn: ptr::null_mut(),
@@ -264,6 +288,13 @@ impl Compiler {
         unsafe {
             let llvm = LLVMConstInt(self.i32_type, value as u64, 0);
             IntValue::new(llvm, Some(value))
+        }
+    }
+
+    fn const_float_value(&self, value: f64) -> FloatValue {
+        unsafe {
+            let llvm = LLVMConstReal(self.f64_type, value);
+            FloatValue::new(llvm, Some(value))
         }
     }
 
@@ -382,6 +413,10 @@ impl Compiler {
         match value {
             Value::Int(int_value) => {
                 self.emit_printf_call("%d", &mut [int_value.llvm()]);
+                Ok(())
+            }
+            Value::Float(float_value) => {
+                self.emit_printf_call("%f", &mut [float_value.llvm()]);
                 Ok(())
             }
             Value::Str(string) => {
@@ -552,7 +587,7 @@ impl Compiler {
                 Ok(Value::Int(self.const_int_value(int_value)))
             }
             Expr::Literal(Literal::Float(value, _)) => {
-                Ok(Value::Int(self.const_int_value(*value as i128)))
+                Ok(Value::Float(self.const_float_value(*value)))
             }
             Expr::Literal(Literal::String(value, _)) => {
                 let c_value = CString::new(value.as_str())
@@ -581,45 +616,7 @@ impl Compiler {
             } => {
                 let lhs = self.emit_expression(left)?;
                 let rhs = self.emit_expression(right)?;
-                let lhs = self.expect_int(lhs)?;
-                let rhs = self.expect_int(rhs)?;
-                let result = match op {
-                    BinaryOp::Add => lhs.constant().zip(rhs.constant()).map(|(a, b)| a + b),
-                    BinaryOp::Sub => lhs.constant().zip(rhs.constant()).map(|(a, b)| a - b),
-                    BinaryOp::Mul => lhs.constant().zip(rhs.constant()).map(|(a, b)| a * b),
-                    BinaryOp::Div => lhs.constant().zip(rhs.constant()).map(|(a, b)| a / b),
-                    BinaryOp::Rem => lhs.constant().zip(rhs.constant()).map(|(a, b)| a % b),
-                    BinaryOp::Lt => lhs
-                        .constant()
-                        .zip(rhs.constant())
-                        .map(|(a, b)| if a < b { 1 } else { 0 }),
-                    BinaryOp::LtEq => lhs
-                        .constant()
-                        .zip(rhs.constant())
-                        .map(|(a, b)| if a <= b { 1 } else { 0 }),
-                    BinaryOp::Gt => lhs
-                        .constant()
-                        .zip(rhs.constant())
-                        .map(|(a, b)| if a > b { 1 } else { 0 }),
-                    BinaryOp::GtEq => lhs
-                        .constant()
-                        .zip(rhs.constant())
-                        .map(|(a, b)| if a >= b { 1 } else { 0 }),
-                    BinaryOp::Eq => lhs
-                        .constant()
-                        .zip(rhs.constant())
-                        .map(|(a, b)| if a == b { 1 } else { 0 }),
-                    BinaryOp::NotEq => lhs
-                        .constant()
-                        .zip(rhs.constant())
-                        .map(|(a, b)| if a != b { 1 } else { 0 }),
-                    _ => None,
-                };
-                if let Some(value) = result {
-                    Ok(Value::Int(self.const_int_value(value)))
-                } else {
-                    Err("Operation not supported in build mode".into())
-                }
+                self.eval_binary(*op, lhs, rhs)
             }
             Expr::StructLiteral { name, fields, .. } => self.build_struct_literal(name, fields),
             Expr::EnumLiteral {
@@ -663,6 +660,9 @@ impl Compiler {
                         Value::Reference(reference) => reference.cell.borrow().clone(),
                         Value::Int(_) => {
                             return Err("Cannot access field on integer value".into());
+                        }
+                        Value::Float(_) => {
+                            return Err("Cannot access field on float value".into());
                         }
                         Value::Str(_) => {
                             return Err("Cannot access field on string value".into());
@@ -992,6 +992,127 @@ impl Compiler {
                 call_args.len() as u32,
                 call_name.as_ptr(),
             );
+        }
+    }
+
+    fn eval_binary(&mut self, op: BinaryOp, left: Value, right: Value) -> Result<Value, String> {
+        let lhs = Self::deref_if_reference(left);
+        let rhs = Self::deref_if_reference(right);
+        match (lhs, rhs) {
+            (Value::Int(a), Value::Int(b)) => self.eval_int_binary(op, a, b),
+            (Value::Float(a), Value::Float(b)) => self.eval_float_binary(op, a, b),
+            (Value::Int(a), Value::Float(b)) => {
+                let converted = self.int_to_float(&a)?;
+                self.eval_float_binary(op, converted, b)
+            }
+            (Value::Float(a), Value::Int(b)) => {
+                let converted = self.int_to_float(&b)?;
+                self.eval_float_binary(op, a, converted)
+            }
+            _ => Err("Operation not supported in build mode".into()),
+        }
+    }
+
+    fn eval_int_binary(
+        &mut self,
+        op: BinaryOp,
+        lhs: IntValue,
+        rhs: IntValue,
+    ) -> Result<Value, String> {
+        let result = match op {
+            BinaryOp::Add => lhs.constant().zip(rhs.constant()).map(|(a, b)| a + b),
+            BinaryOp::Sub => lhs.constant().zip(rhs.constant()).map(|(a, b)| a - b),
+            BinaryOp::Mul => lhs.constant().zip(rhs.constant()).map(|(a, b)| a * b),
+            BinaryOp::Div => lhs.constant().zip(rhs.constant()).map(|(a, b)| a / b),
+            BinaryOp::Rem => lhs.constant().zip(rhs.constant()).map(|(a, b)| a % b),
+            BinaryOp::Lt => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| if a < b { 1 } else { 0 }),
+            BinaryOp::LtEq => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| if a <= b { 1 } else { 0 }),
+            BinaryOp::Gt => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| if a > b { 1 } else { 0 }),
+            BinaryOp::GtEq => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| if a >= b { 1 } else { 0 }),
+            BinaryOp::Eq => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| if a == b { 1 } else { 0 }),
+            BinaryOp::NotEq => lhs
+                .constant()
+                .zip(rhs.constant())
+                .map(|(a, b)| if a != b { 1 } else { 0 }),
+            _ => None,
+        };
+        result
+            .map(|value| Value::Int(self.const_int_value(value)))
+            .ok_or_else(|| "Operation not supported in build mode".into())
+    }
+
+    fn eval_float_binary(
+        &mut self,
+        op: BinaryOp,
+        lhs: FloatValue,
+        rhs: FloatValue,
+    ) -> Result<Value, String> {
+        let values = lhs.constant().zip(rhs.constant());
+        let result = match op {
+            BinaryOp::Add => values.map(|(a, b)| {
+                Value::Float(self.const_float_value(a + b))
+            }),
+            BinaryOp::Sub => values.map(|(a, b)| {
+                Value::Float(self.const_float_value(a - b))
+            }),
+            BinaryOp::Mul => values.map(|(a, b)| {
+                Value::Float(self.const_float_value(a * b))
+            }),
+            BinaryOp::Div => values.map(|(a, b)| {
+                Value::Float(self.const_float_value(a / b))
+            }),
+            BinaryOp::Rem => values.map(|(a, b)| {
+                Value::Float(self.const_float_value(a % b))
+            }),
+            BinaryOp::Lt => values.map(|(a, b)| {
+                Value::Int(self.const_int_value(if a < b { 1 } else { 0 }))
+            }),
+            BinaryOp::LtEq => values.map(|(a, b)| {
+                Value::Int(self.const_int_value(if a <= b { 1 } else { 0 }))
+            }),
+            BinaryOp::Gt => values.map(|(a, b)| {
+                Value::Int(self.const_int_value(if a > b { 1 } else { 0 }))
+            }),
+            BinaryOp::GtEq => values.map(|(a, b)| {
+                Value::Int(self.const_int_value(if a >= b { 1 } else { 0 }))
+            }),
+            BinaryOp::Eq => values.map(|(a, b)| {
+                Value::Int(self.const_int_value(if a == b { 1 } else { 0 }))
+            }),
+            BinaryOp::NotEq => values.map(|(a, b)| {
+                Value::Int(self.const_int_value(if a != b { 1 } else { 0 }))
+            }),
+            _ => None,
+        };
+        result.ok_or_else(|| "Operation not supported in build mode".into())
+    }
+
+    fn int_to_float(&self, value: &IntValue) -> Result<FloatValue, String> {
+        value
+            .constant()
+            .map(|constant| self.const_float_value(constant as f64))
+            .ok_or_else(|| "Operation not supported in build mode".into())
+    }
+
+    fn deref_if_reference(value: Value) -> Value {
+        match value {
+            Value::Reference(reference) => reference.cell.borrow().clone(),
+            other => other,
         }
     }
 
@@ -1951,6 +2072,7 @@ fn describe_expr(expr: &Expr) -> &'static str {
 fn describe_value(value: &Value) -> &'static str {
     match value {
         Value::Int(_) => "int",
+        Value::Float(_) => "float",
         Value::Str(_) => "string",
         Value::Struct(_) => "struct",
         Value::Enum(_) => "enum",

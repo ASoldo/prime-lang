@@ -138,6 +138,9 @@ fn main() {
   let Player leveled = level_up(healed, 2);
   out("Hero after leveling:");
   player_panel(leveled).render();
+  let Player mission_ready = heal(leveled, 8);
+  out("Hero after single-step heal:");
+  player_panel(mission_ready).render();
   let Enemy brute = spawn_enemy("Emerald brute", Vec2{ 18.0, 24.0 }, Percent(15));
   enemy_panel(brute).render();
   let Quest quest = Quest{
@@ -150,7 +153,7 @@ fn main() {
   out(quest_panel(quest).label());
   quest_panel(quest).render();
   out("Encounter simulation:");
-  run_encounter(leveled, scout, brute);
+  run_encounter(mission_ready, scout, brute);
   out("Training countdown:");
   countdown(TRAINING_LIMIT);
   simulate_patrol("River path", 4);
@@ -174,7 +177,17 @@ fn main() {
       out("Training slots unavailable");
     },
   };
-  match resolve_attack(leveled, brute.attack) {
+  let Option[int32] backup_slot = find_training_slot(TRAINING_LIMIT + 1);
+  match backup_slot {
+    Some(value) => {
+      out("Training slot now available:");
+      out(value);
+    },
+    None => {
+      out("Backup training slots unavailable");
+    },
+  };
+  match resolve_attack(mission_ready, brute.attack) {
     Ok(survivor) => {
       out("Hero resisted the heavy blow:");
       player_panel(survivor).render();
@@ -184,10 +197,22 @@ fn main() {
       out(msg);
     },
   };
+  match resolve_attack(mission_ready, Percent(25)) {
+    Ok(survivor) => {
+      out("Hero shrugged off the assault:");
+      player_panel(survivor).render();
+    },
+    Err(msg) => {
+      out("Hero staggered under the assault:");
+      out(msg);
+    },
+  };
   refill_hp(&mut hero, 12);
   out("Hero after field medic response:");
   player_panel(hero).render();
   calibrate_station("Signal tower");
+  out("Defer order check:");
+  test_defer_order();
   let divmod_result = divmod(22, TRAINING_LIMIT);
   out("divmod(22, TRAINING_LIMIT):");
   out(divmod_result);
@@ -469,4 +494,11 @@ fn heal(player: Player, boost: int32) -> Player {
     player.name,
     player.level,
   }
+}
+
+fn test_defer_order() {
+  out("arming defers");
+  defer out("first");
+  defer out("middle");
+  defer out("last");
 }
