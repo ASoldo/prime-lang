@@ -347,8 +347,14 @@ pub enum UnaryOp {
 pub struct IfExpr {
     pub condition: Expr,
     pub then_branch: Block,
-    pub else_branch: Option<Block>,
+    pub else_branch: Option<ElseBranch>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum ElseBranch {
+    Block(Block),
+    ElseIf(Box<IfExpr>),
 }
 
 #[derive(Clone, Debug)]

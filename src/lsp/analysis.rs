@@ -1,7 +1,7 @@
 use crate::language::{
     ast::{
-        Block, Expr, FunctionBody, FunctionDef, Item, LetStmt, Literal, Module, Pattern, RangeExpr,
-        Statement, StructLiteralKind,
+        Block, ElseBranch, Expr, FunctionBody, FunctionDef, IfExpr, Item, LetStmt, Literal, Module,
+        Pattern, RangeExpr, Statement, StructLiteralKind,
     },
     span::Span,
     types::{Mutability, TypeExpr},
@@ -195,13 +195,7 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
             }
         },
         Expr::Block(block) => collect_decl_from_block(block, decls),
-        Expr::If(if_expr) => {
-            collect_decl_from_expr(&if_expr.condition, decls);
-            collect_decl_from_block(&if_expr.then_branch, decls);
-            if let Some(else_branch) = &if_expr.else_branch {
-                collect_decl_from_block(else_branch, decls);
-            }
-        }
+        Expr::If(if_expr) => collect_decl_from_if_expr(if_expr, decls),
         Expr::Match(match_expr) => {
             collect_decl_from_expr(&match_expr.expr, decls);
             for arm in &match_expr.arms {
@@ -222,6 +216,21 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
         Expr::Reference { expr: inner, .. } => collect_decl_from_expr(inner, decls),
         Expr::Deref { expr: inner, .. } => collect_decl_from_expr(inner, decls),
         Expr::Move { expr: inner, .. } => collect_decl_from_expr(inner, decls),
+    }
+}
+
+fn collect_decl_from_if_expr(if_expr: &IfExpr, decls: &mut Vec<DeclInfo>) {
+    collect_decl_from_expr(&if_expr.condition, decls);
+    collect_decl_from_block(&if_expr.then_branch, decls);
+    if let Some(else_branch) = &if_expr.else_branch {
+        collect_decl_from_else_branch(else_branch, decls);
+    }
+}
+
+fn collect_decl_from_else_branch(branch: &ElseBranch, decls: &mut Vec<DeclInfo>) {
+    match branch {
+        ElseBranch::Block(block) => collect_decl_from_block(block, decls),
+        ElseBranch::ElseIf(if_expr) => collect_decl_from_if_expr(if_expr, decls),
     }
 }
 
@@ -366,13 +375,7 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
             }
         },
         Expr::Block(block) => collect_used_in_block(block, used),
-        Expr::If(if_expr) => {
-            collect_expr_idents(&if_expr.condition, used);
-            collect_used_in_block(&if_expr.then_branch, used);
-            if let Some(else_branch) = &if_expr.else_branch {
-                collect_used_in_block(else_branch, used);
-            }
-        }
+        Expr::If(if_expr) => collect_used_in_if_expr(if_expr, used),
         Expr::Match(match_expr) => {
             collect_expr_idents(&match_expr.expr, used);
             for arm in &match_expr.arms {
@@ -397,6 +400,21 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
 fn collect_range_expr(range: &RangeExpr, used: &mut HashSet<String>) {
     collect_expr_idents(&range.start, used);
     collect_expr_idents(&range.end, used);
+}
+
+fn collect_used_in_if_expr(if_expr: &IfExpr, used: &mut HashSet<String>) {
+    collect_expr_idents(&if_expr.condition, used);
+    collect_used_in_block(&if_expr.then_branch, used);
+    if let Some(else_branch) = &if_expr.else_branch {
+        collect_used_in_else_branch(else_branch, used);
+    }
+}
+
+fn collect_used_in_else_branch(else_branch: &ElseBranch, used: &mut HashSet<String>) {
+    match else_branch {
+        ElseBranch::Block(block) => collect_used_in_block(block, used),
+        ElseBranch::ElseIf(if_expr) => collect_used_in_if_expr(if_expr, used),
+    }
 }
 
 pub fn visible_locals(module: &Module, offset: usize) -> Vec<DeclInfo> {

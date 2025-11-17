@@ -141,7 +141,6 @@ enum FlowSignal {
     Break,
     Continue,
     Return(Vec<Value>),
-    #[allow(dead_code)]
     Propagate(Value),
 }
 
@@ -860,10 +859,9 @@ impl Compiler {
                 if let Some(result) = self.try_builtin_call(&ident.name, args) {
                     return result;
                 }
-                let result = self.invoke_function(&ident.name, type_args, args)?;
-                result
-                    .map(EvalOutcome::Value)
-                    .ok_or_else(|| format!("Function `{}` does not return a value", ident.name))
+                let results = self.invoke_function(&ident.name, type_args, args)?;
+                let value = self.collapse_results(results);
+                Ok(EvalOutcome::Value(value))
             }
             Expr::FieldAccess { base, field, .. } => {
                 if let Expr::Identifier(module_ident) = base.as_ref() {
@@ -874,21 +872,27 @@ impl Compiler {
                         type_args: None,
                     };
                     if self.functions.contains_key(&key) {
-                        let result = self.invoke_function(&qualified, type_args, args)?;
-                        return result.map(EvalOutcome::Value).ok_or_else(|| {
-                            format!("Function `{}` does not return a value", qualified)
-                        });
+                        let results = self.invoke_function(&qualified, type_args, args)?;
+                        let value = self.collapse_results(results);
+                        return Ok(EvalOutcome::Value(value));
                     }
                 }
                 let mut method_args = Vec::with_capacity(args.len() + 1);
                 method_args.push((**base).clone());
                 method_args.extend(args.iter().cloned());
-                let result = self.invoke_function(field, type_args, &method_args)?;
-                result
-                    .map(EvalOutcome::Value)
-                    .ok_or_else(|| format!("Function `{}` does not return a value", field))
+                let results = self.invoke_function(field, type_args, &method_args)?;
+                let value = self.collapse_results(results);
+                Ok(EvalOutcome::Value(value))
             }
             _ => Err("Only direct function calls are supported in build mode expressions".into()),
+        }
+    }
+
+    fn collapse_results(&self, mut values: Vec<Value>) -> Value {
+        match values.len() {
+            0 => Value::Unit,
+            1 => values.pop().unwrap(),
+            _ => Value::Tuple(values),
         }
     }
 
@@ -948,13 +952,18 @@ impl Compiler {
                 BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
                 BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             }
-        } else if let Some(else_block) = &if_expr.else_branch {
-            self.push_scope();
-            let value = self.execute_block_contents(else_block)?;
-            self.exit_scope()?;
-            match value {
-                BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+        } else if let Some(else_branch) = &if_expr.else_branch {
+            match else_branch {
+                ElseBranch::Block(block) => {
+                    self.push_scope();
+                    let value = self.execute_block_contents(block)?;
+                    self.exit_scope()?;
+                    match value {
+                        BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                        BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                    }
+                }
+                ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
             }
         } else {
             Ok(EvalOutcome::Value(Value::Unit))
@@ -1492,10 +1501,10 @@ impl Compiler {
                         }
                     } else {
                         let result = self.invoke_function(&ident.name, type_args, args)?;
-                        if result.is_some() {
-                            Err("Functions returning values are not supported in expression statements during build mode".into())
-                        } else {
+                        if result.is_empty() {
                             Ok(None)
+                        } else {
+                            Err("Functions returning values are not supported in expression statements during build mode".into())
                         }
                     }
                 }
@@ -1509,23 +1518,23 @@ impl Compiler {
                         };
                         if self.functions.contains_key(&key) {
                             let result = self.invoke_function(&qualified, type_args, args)?;
-                            if result.is_some() {
-                                return Err(
-                                    "Functions returning values are not supported in expression statements during build mode"
-                                        .into(),
-                                );
+                            if result.is_empty() {
+                                return Ok(None);
                             }
-                            return Ok(None);
+                            return Err(
+                                "Functions returning values are not supported in expression statements during build mode"
+                                    .into(),
+                            );
                         }
                     }
                     let mut method_args = Vec::with_capacity(args.len() + 1);
                     method_args.push((**base).clone());
                     method_args.extend(args.iter().cloned());
                     let result = self.invoke_function(field, type_args, &method_args)?;
-                    if result.is_some() {
-                        Err("Functions returning values are not supported in expression statements during build mode".into())
-                    } else {
+                    if result.is_empty() {
                         Ok(None)
+                    } else {
+                        Err("Functions returning values are not supported in expression statements during build mode".into())
                     }
                 }
                 _ => Err("Only direct function calls are supported in build mode".into()),
@@ -1544,7 +1553,7 @@ impl Compiler {
         name: &str,
         type_args: &[TypeExpr],
         args: &[Expr],
-    ) -> Result<Option<Value>, String> {
+    ) -> Result<Vec<Value>, String> {
         let mut evaluated_args = Vec::new();
         for expr in args {
             match self.emit_expression(expr)? {
@@ -1590,50 +1599,25 @@ impl Compiler {
             self.exit_scope()?;
             match result {
                 BlockEval::Value(value) => {
-                    if func.returns.is_empty() {
-                        Ok(None)
+                    if func.returns.len() <= 1 {
+                        if func.returns.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            Ok(vec![value])
+                        }
+                    } else if let Value::Tuple(values) = value {
+                        Ok(values)
                     } else {
-                        Ok(Some(value))
+                        Ok(vec![value])
                     }
                 }
-                BlockEval::Flow(FlowSignal::Return(mut values)) => {
-                    if values.is_empty() {
-                        if func.returns.is_empty() {
-                            Ok(None)
-                        } else {
-                            Err(format!(
-                                "Function `{}` must return a value",
-                                func.name
-                            ))
-                        }
-                    } else if values.len() == 1 {
-                        if func.returns.is_empty() {
-                            Err(format!(
-                                "Function `{}` does not return a value",
-                                func.name
-                            ))
-                        } else {
-                            Ok(values.pop())
-                        }
-                    } else {
-                        Err("Multiple return values are not supported in build mode".into())
-                    }
-                }
+                BlockEval::Flow(FlowSignal::Return(values)) => Ok(values),
                 BlockEval::Flow(flow @ FlowSignal::Break)
                 | BlockEval::Flow(flow @ FlowSignal::Continue) => Err(format!(
                     "Control flow {} cannot escape function body in build mode",
                     flow_name(&flow)
                 )),
-                BlockEval::Flow(FlowSignal::Propagate(value)) => {
-                    if func.returns.is_empty() {
-                        Err(format!(
-                            "Function `{}` does not return a value",
-                            func.name
-                        ))
-                    } else {
-                        Ok(Some(value))
-                    }
-                }
+                BlockEval::Flow(FlowSignal::Propagate(value)) => Ok(vec![value]),
             }
         })();
         self.module_stack.pop();

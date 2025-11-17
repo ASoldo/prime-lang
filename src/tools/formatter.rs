@@ -304,8 +304,12 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
                     out.push_str(";\n");
                 }
                 Expr::If(if_expr) => {
-                    emit_if_expression(out, indent, if_expr);
+                    emit_if_expression(out, indent, if_expr, true);
                     out.push('\n');
+                }
+                Expr::Try { block, .. } => {
+                    emit_try_expression(out, indent, block);
+                    out.push_str(";\n");
                 }
                 Expr::StructLiteral { name, fields, .. } => {
                     emit_struct_literal(out, indent, name, fields);
@@ -382,7 +386,11 @@ fn format_tail_expression(out: &mut String, expr: &Expr, indent: usize) {
             out.push('\n');
         }
         Expr::If(if_expr) => {
-            emit_if_expression(out, indent, if_expr);
+            emit_if_expression(out, indent, if_expr, true);
+            out.push('\n');
+        }
+        Expr::Try { block, .. } => {
+            emit_try_expression(out, indent, block);
             out.push('\n');
         }
         Expr::StructLiteral { name, fields, .. } => {
@@ -508,9 +516,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         Expr::Identifier(ident) => ident.name.clone(),
         Expr::Try { block, .. } => {
             let mut buf = String::new();
-            buf.push_str("try {\n");
-            format_block(&mut buf, block, 2);
-            buf.push('}');
+            emit_try_expression(&mut buf, 0, block);
             buf
         }
         Expr::TryPropagate { expr, .. } => {
@@ -720,22 +726,40 @@ fn format_range(range: &RangeExpr) -> String {
 
 fn format_if_expression(if_expr: &IfExpr) -> String {
     let mut buf = String::new();
-    emit_if_expression(&mut buf, 0, if_expr);
+    emit_if_expression(&mut buf, 0, if_expr, true);
     buf
 }
 
-fn emit_if_expression(out: &mut String, indent: usize, if_expr: &IfExpr) {
-    write_indent(out, indent);
+fn emit_if_expression(out: &mut String, indent: usize, if_expr: &IfExpr, include_indent: bool) {
+    if include_indent {
+        write_indent(out, indent);
+    }
     out.push_str(&format!("if {} {{\n", format_expr(&if_expr.condition)));
     format_block(out, &if_expr.then_branch, indent + 2);
     write_indent(out, indent);
     out.push('}');
     if let Some(else_branch) = &if_expr.else_branch {
-        out.push_str(" else {\n");
-        format_block(out, else_branch, indent + 2);
-        write_indent(out, indent);
-        out.push('}');
+        match else_branch {
+            ElseBranch::Block(block) => {
+                out.push_str(" else {\n");
+                format_block(out, block, indent + 2);
+                write_indent(out, indent);
+                out.push('}');
+            }
+            ElseBranch::ElseIf(nested) => {
+                out.push_str(" else ");
+                emit_if_expression(out, indent, nested, false);
+            }
+        }
     }
+}
+
+fn emit_try_expression(out: &mut String, indent: usize, block: &Block) {
+    write_indent(out, indent);
+    out.push_str("try {\n");
+    format_block(out, block, indent + 2);
+    write_indent(out, indent);
+    out.push('}');
 }
 
 fn format_pattern(pattern: &Pattern) -> String {

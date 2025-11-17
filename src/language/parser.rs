@@ -676,11 +676,25 @@ impl Parser {
     ) -> Result<StatementOrTail, SyntaxError> {
         let expr = self.parse_expression()?;
         if self.matches(TokenKind::Semi) {
-            Ok(StatementOrTail::Statement(Statement::Expr(ExprStmt {
+            return Ok(StatementOrTail::Statement(Statement::Expr(ExprStmt {
                 expr,
-            })))
-        } else if allow_tail {
-            Ok(StatementOrTail::Tail(expr))
+            })));
+        }
+
+        let next_is_rbrace = matches!(self.peek_kind(), Some(TokenKind::RBrace));
+
+        if allow_tail && next_is_rbrace {
+            return Ok(StatementOrTail::Tail(expr));
+        }
+
+        if matches!(expr, Expr::If(_)) {
+            return Ok(StatementOrTail::Statement(Statement::Expr(ExprStmt {
+                expr,
+            })));
+        }
+
+        if allow_tail {
+            Err(self.error_here("Expected ';' after expression"))
         } else {
             Err(self.error_here("Expected ';' after expression"))
         }
@@ -1323,18 +1337,25 @@ impl Parser {
         };
         self.exit_block_context();
         let then_branch = self.parse_block()?;
+        let mut span_end = then_branch.span.end;
         let else_branch = if self.matches(TokenKind::Else) {
-            Some(self.parse_block()?)
+            if self.matches(TokenKind::If) {
+                let nested = self.parse_if_expression()?;
+                if let Expr::If(if_expr) = nested {
+                    span_end = if_expr.span.end;
+                    Some(ElseBranch::ElseIf(if_expr))
+                } else {
+                    return Err(self.error_here("Expected if expression after else"));
+                }
+            } else {
+                let block = self.parse_block()?;
+                span_end = block.span.end;
+                Some(ElseBranch::Block(block))
+            }
         } else {
             None
         };
-        let span = Span::new(
-            start,
-            else_branch
-                .as_ref()
-                .map(|b| b.span.end)
-                .unwrap_or(then_branch.span.end),
-        );
+        let span = Span::new(start, span_end);
         Ok(Expr::If(Box::new(IfExpr {
             condition,
             then_branch,

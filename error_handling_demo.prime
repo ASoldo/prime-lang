@@ -21,9 +21,9 @@ fn apply_boost(value: int32) -> Result[int32, string] {
 
 fn calibrate_profile(value: int32) -> Result[int32, string] {
   try {
-  let int32 boosted = apply_boost(value)?;
-  boosted + 5
-}
+    let int32 boosted = apply_boost(value)?;
+    boosted + 5
+  }
 }
 
 fn log_result(label: string, outcome: Result[int32, string]) {
@@ -41,9 +41,24 @@ fn log_result(label: string, outcome: Result[int32, string]) {
   };
 }
 
+fn span_measurements(seed: int32) -> (int32, int32) {
+  if seed < 0 {
+    return 0, 0;
+  }
+  if seed > 100 {
+    return seed - 10, seed + 10;
+  }
+  let int32 midpoint = seed / 2;
+  return midpoint - 5, midpoint + 5;
+}
+
 fn main() {
   out("--- error handling demo ---");
   log_result("stable", calibrate_profile(40));
   log_result("odd energy", calibrate_profile(35));
   log_result("overflow", calibrate_profile(140));
+  out("span sample:");
+  out(span_measurements(48));
+  out("clamped span:");
+  out(span_measurements(140));
 }

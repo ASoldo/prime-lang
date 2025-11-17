@@ -1245,25 +1245,7 @@ impl Interpreter {
                 BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
                 BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
-            Expr::If(if_expr) => {
-                let condition = match self.eval_expression(&if_expr.condition)? {
-                    EvalOutcome::Value(value) => value,
-                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
-                };
-                if condition.as_bool() {
-                    match self.eval_block(&if_expr.then_branch)? {
-                        BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                        BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-                    }
-                } else if let Some(else_block) = &if_expr.else_branch {
-                    match self.eval_block(else_block)? {
-                        BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                        BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-                    }
-                } else {
-                    Ok(EvalOutcome::Value(Value::Unit))
-                }
-            }
+            Expr::If(if_expr) => self.eval_if_expression(if_expr),
             Expr::Tuple(values, _) => {
                 let mut evaluated = Vec::with_capacity(values.len());
                 for expr in values {
@@ -1726,6 +1708,29 @@ impl Interpreter {
             _ => Err(RuntimeError::TypeMismatch {
                 message: "? operator expects Result value".into(),
             }),
+        }
+    }
+
+    fn eval_if_expression(&mut self, if_expr: &IfExpr) -> RuntimeResult<EvalOutcome<Value>> {
+        let condition = match self.eval_expression(&if_expr.condition)? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
+        if condition.as_bool() {
+            match self.eval_block(&if_expr.then_branch)? {
+                BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            }
+        } else if let Some(else_branch) = &if_expr.else_branch {
+            match else_branch {
+                ElseBranch::Block(block) => match self.eval_block(block)? {
+                    BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                    BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                },
+                ElseBranch::ElseIf(nested) => self.eval_if_expression(nested),
+            }
+        } else {
+            Ok(EvalOutcome::Value(Value::Unit))
         }
     }
 }
