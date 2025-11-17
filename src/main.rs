@@ -2,6 +2,7 @@ mod language;
 mod project;
 mod runtime;
 mod tools;
+mod lsp;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use language::{ast::Module, compiler::Compiler, parser::parse_module};
@@ -106,7 +107,7 @@ fn main() {
             }
         }
         Commands::Lsp => {
-            if let Err(err) = tools::lsp::serve_stdio() {
+            if let Err(err) = lsp::serve_stdio() {
                 eprintln!("LSP server failed: {err}");
                 std::process::exit(1);
             }
