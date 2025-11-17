@@ -511,14 +511,3 @@ syntax highlighting via Treesitter, and a sample toolchain for learning how
 language infrastructure fits together.
 
 ### Recent Updates (November 2025)
-
-- **Workspace-aware completions** – the LSP now preloads every module declared
-  in `prime.toml`, so nested struct access like `self.position.x` works even if
-  you never open the file that defines `Vec2`.
-- **Multi-definition interfaces** – interface completions pick the definition
-  that lives in the current module, which means generic helpers (e.g.
-  `Nameable[T]` with both `label` and `pair`) always surface the full method
-  set.
-- **Manifest diagnostics** – when `prime toml` references a file that no longer
-  exists, the LSP logs a warning instead of failing silently, making it obvious
-  when `prime-lang add` state has drifted from the filesystem.
