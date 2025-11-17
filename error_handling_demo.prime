@@ -45,8 +45,10 @@ fn span_measurements(seed: int32) -> (int32, int32) {
   if seed < 0 {
     return 0, 0;
   }
-  if seed > 100 {
+  if seed > 100 && seed < 150 {
     return seed - 10, seed + 10;
+  } else if seed >= 150 {
+    return seed - 5, seed + 5;
   }
   let int32 midpoint = seed / 2;
   return midpoint - 5, midpoint + 5;
