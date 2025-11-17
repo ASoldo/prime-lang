@@ -119,6 +119,18 @@ fn quest_panel(q: Quest) -> QuestPanel {
   }
 }
 
+fn calibrate_station(name: string) {
+  out("Calibrating station:");
+  out(name);
+  defer out("Station teardown complete");
+  let mut int32 probes = 0;
+  while probes < 2 {
+    out("probe");
+    out(probes);
+    probes = probes + 1;
+  }
+}
+
 fn main() {
   out("=== prime-lang gameplay demo ===");
   let mut Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
@@ -468,18 +480,6 @@ fn summarize_event(event: MissionEvent) -> string {
     Completed(stage) => stage,
     Failed(reason) => reason,
     Waiting => "Awaiting assignment",
-  }
-}
-
-fn calibrate_station(name: string) {
-  out("Calibrating station:");
-  out(name);
-  defer out("Station teardown complete");
-  let mut int32 probes = 0;
-  while probes < 2 {
-    out("probe");
-    out(probes);
-    probes = probes + 1;
   }
 }
 

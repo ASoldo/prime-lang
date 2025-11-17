@@ -449,6 +449,27 @@ impl Backend {
         };
         self.ensure_manifest_modules(&manifest).await;
     }
+
+    async fn preload_for_navigation(&self, uri: &Uri) {
+        if let Some((manifest, path)) = manifest_context_for_uri(uri) {
+            self.ensure_manifest_modules(&manifest).await;
+            self.ensure_package_modules(&path).await;
+        } else if let Some(path) = url_to_path(uri) {
+            self.ensure_package_modules(&path).await;
+        }
+    }
+
+    async fn preload_workspace(&self) {
+        let manifest_paths: Vec<PathBuf> = {
+            let guard = self.workspace_manifests.read().await;
+            guard.iter().cloned().collect()
+        };
+        for manifest_path in manifest_paths {
+            if let Ok(manifest) = PackageManifest::load(&manifest_path) {
+                self.ensure_manifest_modules(&manifest).await;
+            }
+        }
+    }
 }
 
 impl LanguageServer for Backend {
@@ -563,6 +584,7 @@ impl LanguageServer for Backend {
             Ok(tokens) => tokens,
             Err(_) => return Ok(None),
         };
+        self.preload_for_navigation(&uri).await;
         let module = self.parse_cached_module(&uri, &text).await;
         let struct_modules = self
             .modules
@@ -612,7 +634,12 @@ impl LanguageServer for Backend {
                 let location = Location::new(uri.clone(), span_to_range(&text, span));
                 return Ok(Some(GotoDefinitionResponse::Scalar(location)));
             }
+            if let Some(span) = find_module_item_span(module, &name) {
+                let location = Location::new(uri.clone(), span_to_range(&text, span));
+                return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+            }
         }
+        self.preload_for_navigation(&uri).await;
         let candidates = self.symbols.lookup(&name).await;
         if let Some(symbol) = select_symbol_location(&uri, module.as_ref(), &candidates) {
             let range = if symbol.uri == uri {
@@ -870,21 +897,49 @@ impl LanguageServer for Backend {
         let Some((target_name, _)) = identifier_at(&tokens, offset) else {
             return Ok(None);
         };
-        let spans = collect_identifier_spans(&tokens, &target_name);
-        if spans.is_empty() {
-            return Ok(None);
+        self.preload_for_navigation(&uri).await;
+        let mut locations = Vec::new();
+        let mut seen = HashSet::new();
+        for span in collect_identifier_spans(&tokens, &target_name) {
+            let key = (uri.to_string(), span.start);
+            if seen.insert(key) {
+                locations.push(Location::new(uri.clone(), span_to_range(&text, span)));
+            }
         }
-        let locations = spans
-            .into_iter()
-            .map(|span| Location::new(uri.clone(), span_to_range(&text, span)))
-            .collect();
-        Ok(Some(locations))
+        let modules = self.modules.snapshot().await;
+        for (module_uri, _) in modules {
+            if module_uri == uri {
+                continue;
+            }
+            let Some(module_text) = self.text_for_uri(&module_uri).await else {
+                continue;
+            };
+            let tokens = match lex(&module_text) {
+                Ok(tokens) => tokens,
+                Err(_) => continue,
+            };
+            for span in collect_identifier_spans(&tokens, &target_name) {
+                let key = (module_uri.to_string(), span.start);
+                if seen.insert(key) {
+                    locations.push(Location::new(
+                        module_uri.clone(),
+                        span_to_range(&module_text, span),
+                    ));
+                }
+            }
+        }
+        if locations.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(locations))
+        }
     }
 
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
     ) -> RpcResult<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
+        self.preload_workspace().await;
         let entries = self.symbols.search(&params.query).await;
         if entries.is_empty() {
             return Ok(None);
@@ -1487,6 +1542,21 @@ fn find_local_decl(module: &Module, name: &str, offset: usize) -> Option<DeclInf
 
 fn find_local_definition_span(module: &Module, name: &str, offset: usize) -> Option<Span> {
     find_local_decl(module, name, offset).map(|decl| decl.span)
+}
+
+fn find_module_item_span(module: &Module, name: &str) -> Option<Span> {
+    for item in &module.items {
+        match item {
+            Item::Function(func) if func.name == name => return Some(func.span),
+            Item::Struct(def) if def.name == name => return Some(def.span),
+            Item::Enum(def) if def.name == name => return Some(def.span),
+            Item::Interface(def) if def.name == name => return Some(def.span),
+            Item::Const(def) if def.name == name => return Some(def.span),
+            Item::Impl(_) => {}
+            _ => {}
+        }
+    }
+    None
 }
 
 fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
