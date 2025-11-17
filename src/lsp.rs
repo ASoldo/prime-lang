@@ -378,11 +378,10 @@ impl Backend {
                 Ok(src) => src,
                 Err(_) => continue,
             };
-            let parsed =
-                match parse_module(&module_name, path.clone(), &source) {
-                    Ok(module) => module,
-                    Err(_) => continue,
-                };
+            let parsed = match parse_module(&module_name, path.clone(), &source) {
+                Ok(module) => module,
+                Err(_) => continue,
+            };
             self.modules.insert(uri.clone(), parsed.clone()).await;
             self.symbols.update_module(&uri, &parsed).await;
         }
@@ -418,9 +417,7 @@ impl Backend {
         };
         for unit in package.modules {
             if let Some(uri) = Uri::from_file_path(&unit.module.path) {
-                self.modules
-                    .insert(uri.clone(), unit.module.clone())
-                    .await;
+                self.modules.insert(uri.clone(), unit.module.clone()).await;
                 self.symbols.update_module(&uri, &unit.module).await;
             }
         }
@@ -3890,8 +3887,7 @@ fn heal(player: Player, boost: int32) -> Player {
 
         let types_module =
             parse_module("core::types", PathBuf::from("types.prime"), types_source).unwrap();
-        let ok_module =
-            parse_module("app::main", PathBuf::from("main.prime"), ok_source).unwrap();
+        let ok_module = parse_module("app::main", PathBuf::from("main.prime"), ok_source).unwrap();
         let modules = vec![types_module.clone(), ok_module.clone()];
         let struct_info = collect_struct_info(&modules);
         let interface_info = collect_interface_info(&modules);
@@ -3961,13 +3957,11 @@ fn heal(player: Player) {
 
         let types_module =
             parse_module("core::types", PathBuf::from("types.prime"), types_source).unwrap();
-        let ok_module =
-            parse_module("app::main", PathBuf::from("main.prime"), ok_source).unwrap();
+        let ok_module = parse_module("app::main", PathBuf::from("main.prime"), ok_source).unwrap();
         let struct_modules = vec![types_module.clone(), ok_module.clone()];
         let struct_info = collect_struct_info(&struct_modules);
         let interface_info = collect_interface_info(&struct_modules);
-        let offset =
-            incomplete_source.find("player.position.").unwrap() + "player.position.".len();
+        let offset = incomplete_source.find("player.position.").unwrap() + "player.position.".len();
         let chain = expression_chain_before_dot(incomplete_source, offset).unwrap();
         let items = member_completion_items(
             incomplete_source,
@@ -3996,8 +3990,7 @@ fn heal(player: Player) {
         let modules = vec![types_module.clone(), main_module.clone()];
         let struct_info = collect_struct_info(&modules);
         let interface_info = collect_interface_info(&modules);
-        let offset =
-            main_source.find("self.position.").unwrap() + "self.position.".len();
+        let offset = main_source.find("self.position.").unwrap() + "self.position.".len();
         let chain = expression_chain_before_dot(&main_source, offset).unwrap();
         let items = member_completion_items(
             &main_source,

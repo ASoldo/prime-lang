@@ -90,6 +90,7 @@ fn main() {
         Commands::Build { file, name } => build_entry(&file, &name),
         Commands::Lint { file, watch } => {
             ensure_prime_file(&file);
+            warn_manifest_drift(&file);
             if let Err(err) = run_lint(&file, watch) {
                 eprintln!("lint failed: {err}");
                 std::process::exit(1);
@@ -133,6 +134,7 @@ fn main() {
 }
 fn run_entry(path: &Path) {
     ensure_prime_file(path);
+    warn_manifest_drift(path);
     match load_package(path) {
         Ok(package) => {
             let mut interpreter = Interpreter::new(package.clone());
@@ -158,6 +160,7 @@ fn run_entry(path: &Path) {
 
 fn build_entry(path: &Path, name: &str) {
     ensure_prime_file(path);
+    warn_manifest_drift(path);
     match load_package(path) {
         Ok(package) => {
             let mut compiler = Compiler::new();
@@ -208,6 +211,7 @@ fn build_entry(path: &Path, name: &str) {
 }
 
 fn format_file(path: &Path, write: bool) -> Result<(), Box<dyn std::error::Error>> {
+    warn_manifest_drift(path);
     let source = fs::read_to_string(path)?;
     let module_name = path
         .file_stem()
@@ -545,6 +549,32 @@ fn apply_manifest_header(path: &Path, module: &mut Module) {
     if module.declared_name.is_none() {
         if let Some(name) = manifest.module_name_for_path(path) {
             module.declared_name = Some(name);
+        }
+    }
+}
+
+fn warn_manifest_drift(start: &Path) {
+    let Some(manifest_path) = find_manifest(start) else {
+        return;
+    };
+    let manifest = match PackageManifest::load(&manifest_path) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            eprintln!(
+                "prime-lang warning: failed to load manifest {}: {:?}",
+                manifest_path.display(),
+                err
+            );
+            return;
+        }
+    };
+    for entry in manifest.module_entries() {
+        if !entry.path.exists() {
+            eprintln!(
+                "prime-lang warning: manifest module `{}` points to missing file `{}`",
+                entry.name,
+                entry.path.display()
+            );
         }
     }
 }
