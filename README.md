@@ -13,7 +13,9 @@ the CLI utilities you use while editing `.prime` files.
 src/
  ├─ language/   # parser + AST + compiler lowering
  ├─ runtime/    # interpreter + value/runtime support
- └─ tools/      # editor tooling: formatter, lint, diagnostics, LSP
+ ├─ project/    # manifest + package loader shared by CLI/LSP
+ ├─ lsp/        # standalone LSP crate (backend, completion, hover, diagnostics)
+ └─ tools/      # CLI helpers: formatter, lint, diagnostics bridge
 ```
 
 The `tools` module now owns the previously huge `formatter.rs`, `lint.rs`,
@@ -34,7 +36,9 @@ prime-lang build main.prime       # emit LLVM, link to ./.build.prime/output
 ```
 
 The repository ships with `main.prime` so you can confirm the full toolchain
-works end‑to‑end immediately after building.
+works end‑to‑end immediately after building. As of the April 2026 compiler
+updates the emitted native binary now exits with status code `0`, so scripting
+and CI integrations no longer see spurious failures after a successful build.
 
 ## Language Basics
 

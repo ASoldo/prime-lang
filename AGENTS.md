@@ -9,8 +9,9 @@
 - **Tooling**: `prime run/build/fmt/lint` plus the LSP use the manifest graph (`prime.toml` v2) to resolve modules, imports, interfaces, and impl blocks. Treesitter/formatter keep indentation/mappings in sync with the new module/import syntax.
 
 ## Recent Milestones
-- Split the tooling into `src/tools/` so `lsp`, `lint`, `formatter`, and
-  diagnostics live in their own module instead of bloating `src/`.
+- Split the editor tooling into `src/tools/` and promoted the LSP to its own
+  crate under `src/lsp/` (backend, completion, hover, diagnostics). Hover now
+  shows struct definitions even when you hover imported types.
 - Added declaration support to the LSP, so Neovim’s `gD` works the same way as
   `gd`.
 - LSP member completion now includes methods defined in `impl Interface for
@@ -26,6 +27,10 @@
 - Finished generic functions (Phase A): both interpreter and compiler cache specializations by `(name, receiver, type args)` and substitute concrete types, with `generic_demo.prime` serving as the regression case.
 - Landed interface ergonomics: interface-typed parameters now validate against concrete impls, the parser/formatter support `self` shorthand (value/reference/pointer), and the LSP surfaces interface methods for completion/hover.
 - Enabled generic interfaces/impls (Phase B): `interface Foo[T]` and `impl Foo[Type] for Bar` clone via the existing monomorphization cache across interpreter/compiler; `interface_generics_demo.prime` exercises interface + generic combos.
+- Compiler backend now emits `i32 main()` instead of `void main()`, so `prime-lang build`
+  produces native binaries that exit with status code 0 (no more CI flakes).
+- Moved package-loading logic into `src/project/package.rs` so the CLI/LSP share
+  the same manifest traversal code without keeping everything in `mod.rs`.
 
 ## In-Progress / Deferred
 1. **Module/Packaging metadata** – Manifest parsing (`prime.toml`) and `pub` visibility are wired in, but tooling still needs to enforce accessibility in linters/formatters, validate manifests, and expose package metadata to IDEs. Dependency resolution across manifests remains open.
