@@ -341,10 +341,6 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
             }
             false
         }
-        Statement::If(if_stmt) => {
-            format_if_statement(out, if_stmt, indent);
-            false
-        }
         Statement::While(while_stmt) => {
             format_while_statement(out, while_stmt, indent);
             false
@@ -353,21 +349,17 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
             format_for_statement(out, for_stmt, indent);
             false
         }
-        Statement::Match(match_stmt) => {
-            format_match_statement(out, match_stmt, indent);
-            true
-        }
         Statement::Defer(stmt) => {
             write_indent(out, indent);
             out.push_str(&format!("defer {};\n", format_expr(&stmt.expr)));
             false
         }
-        Statement::Break(_) => {
+        Statement::Break => {
             write_indent(out, indent);
             out.push_str("break;\n");
             false
         }
-        Statement::Continue(_) => {
+        Statement::Continue => {
             write_indent(out, indent);
             out.push_str("continue;\n");
             false
@@ -460,21 +452,6 @@ fn format_assign_statement(out: &mut String, stmt: &AssignStmt, indent: usize) -
     false
 }
 
-fn format_if_statement(out: &mut String, stmt: &IfStmt, indent: usize) {
-    write_indent(out, indent);
-    out.push_str(&format!("if {} {{\n", format_expr(&stmt.condition)));
-    format_block(out, &stmt.then_branch, indent + 2);
-    write_indent(out, indent);
-    out.push('}');
-    if let Some(else_branch) = &stmt.else_branch {
-        out.push_str(" else {\n");
-        format_block(out, else_branch, indent + 2);
-        write_indent(out, indent);
-        out.push('}');
-    }
-    out.push('\n');
-}
-
 fn format_while_statement(out: &mut String, stmt: &WhileStmt, indent: usize) {
     write_indent(out, indent);
     out.push_str(&format!("while {} {{\n", format_expr(&stmt.condition)));
@@ -491,24 +468,6 @@ fn format_for_statement(out: &mut String, stmt: &ForRangeStmt, indent: usize) {
         format_range(&stmt.range)
     ));
     format_block(out, &stmt.body, indent + 2);
-    write_indent(out, indent);
-    out.push_str("}\n");
-}
-
-fn format_match_statement(out: &mut String, stmt: &MatchStmt, indent: usize) {
-    write_indent(out, indent);
-    out.push_str(&format!("match {} {{\n", format_expr(&stmt.expr)));
-    for arm in &stmt.arms {
-        write_indent(out, indent + 2);
-        out.push_str(&format!("{}", format_pattern(&arm.pattern)));
-        if let Some(guard) = &arm.guard {
-            out.push_str(&format!(" if {}", format_expr(guard)));
-        }
-        out.push_str(" => {\n");
-        format_block(out, &arm.body, indent + 4);
-        write_indent(out, indent + 2);
-        out.push_str("},\n");
-    }
     write_indent(out, indent);
     out.push_str("}\n");
 }
@@ -565,8 +524,6 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             match op {
                 UnaryOp::Neg => format!("-{inner}"),
                 UnaryOp::Not => format!("!{inner}"),
-                UnaryOp::Addr => format!("&{inner}"),
-                UnaryOp::Deref => format!("*{inner}"),
             }
         }
         Expr::Call {
@@ -610,27 +567,6 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
                 format!("{name}{{ {inner} }}")
             }
         },
-        Expr::EnumLiteral {
-            enum_name,
-            variant,
-            values,
-            ..
-        } => {
-            let prefix = enum_name
-                .as_ref()
-                .map(|name| format!("{name}::{variant}"))
-                .unwrap_or_else(|| variant.clone());
-            if values.is_empty() {
-                prefix
-            } else {
-                let args = values
-                    .iter()
-                    .map(|expr| format_expr(expr))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{prefix}({args})")
-            }
-        }
         Expr::FieldAccess { base, field, .. } => {
             let base_str = format_expr_prec(base, 100);
             format!("{base_str}.{field}")
@@ -793,7 +729,7 @@ fn emit_if_expression(out: &mut String, indent: usize, if_expr: &IfExpr) {
 
 fn format_pattern(pattern: &Pattern) -> String {
     match pattern {
-        Pattern::Wildcard(_) => "_".into(),
+        Pattern::Wildcard => "_".into(),
         Pattern::Identifier(name, _) => name.clone(),
         Pattern::Literal(lit) => format_literal(lit),
         Pattern::EnumVariant {

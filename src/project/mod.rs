@@ -15,7 +15,6 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct ModuleUnit {
     pub module: Module,
-    pub source: String,
 }
 
 #[derive(Debug, Clone)]
@@ -58,10 +57,6 @@ pub fn load_package(entry_path: &Path) -> Result<Package, PackageError> {
         ),
         None => None,
     };
-    let entry_name = manifest
-        .as_ref()
-        .and_then(|m| m.module_name_for_path(&canonical_entry))
-        .unwrap_or_else(|| module_name_from_path(&canonical_entry));
     let mut loader = ModuleLoader::new(manifest);
     loader.load(&canonical_entry)?;
 
@@ -70,12 +65,7 @@ pub fn load_package(entry_path: &Path) -> Result<Package, PackageError> {
     }
 
     let modules = loader.modules;
-    let resolved_entry_name = modules
-        .first()
-        .and_then(|unit| unit.module.declared_name.clone())
-        .unwrap_or(entry_name.clone());
     let program = Program {
-        entry: resolved_entry_name,
         modules: modules.iter().map(|unit| unit.module.clone()).collect(),
     };
 
@@ -126,7 +116,7 @@ impl ModuleLoader {
         match parse_module(&module_name, canonical.clone(), &source) {
             Ok(module) => {
                 let imports = module.imports.clone();
-                self.modules.push(ModuleUnit { module, source });
+                self.modules.push(ModuleUnit { module });
 
                 for import in imports {
                     let resolved = self.resolve_import_path(&canonical, &import.path)?;
@@ -220,10 +210,19 @@ pub fn find_manifest(start: &Path) -> Option<PathBuf> {
 
 fn manifest_error_message(err: ManifestError) -> String {
     match err {
-        ManifestError::Io { error, .. } => error.to_string(),
-        ManifestError::Parse { message, .. } => message,
-        ManifestError::ModulePath { module, error, .. } => {
-            format!("module `{}` path error: {}", module, error)
+        ManifestError::Io { path, error } => format!("{}: {}", path.display(), error),
+        ManifestError::Parse { path, message } => format!("{}: {}", path.display(), message),
+        ManifestError::ModulePath {
+            module,
+            path,
+            error,
+        } => {
+            format!(
+                "module `{}` path error at {}: {}",
+                module,
+                path.display(),
+                error
+            )
         }
         ManifestError::InvalidModule { module, message } => {
             if let Some(name) = module {

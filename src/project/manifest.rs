@@ -11,8 +11,6 @@ pub struct PackageManifest {
     root: PathBuf,
     modules: HashMap<String, ModuleInfo>,
     reverse: HashMap<PathBuf, String>,
-    pub package_name: Option<String>,
-    pub entry: Option<String>,
     pub path: PathBuf,
 }
 
@@ -54,14 +52,6 @@ pub enum ManifestError {
 }
 
 #[derive(Deserialize)]
-struct RawPackage {
-    name: Option<String>,
-    entry: Option<String>,
-    version: Option<String>,
-    kind: Option<String>,
-}
-
-#[derive(Deserialize)]
 struct RawModuleEntry {
     name: String,
     path: String,
@@ -87,23 +77,10 @@ impl PackageManifest {
 
         let (modules, reverse) = parse_modules(&value, &root)?;
 
-        let (package_name, entry) = value
-            .get("package")
-            .map(|pkg| pkg.clone().try_into::<RawPackage>())
-            .transpose()
-            .map_err(|error| ManifestError::Parse {
-                path: path.to_path_buf(),
-                message: error.to_string(),
-            })?
-            .map(|pkg| (pkg.name, pkg.entry))
-            .unwrap_or((None, None));
-
         Ok(Self {
             root,
             modules,
             reverse,
-            package_name,
-            entry,
             path: path.to_path_buf(),
         })
     }

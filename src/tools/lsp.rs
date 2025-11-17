@@ -1,9 +1,8 @@
 use crate::project::{
     find_manifest, load_package,
-    manifest::{ModuleVisibility, PackageManifest},
+    manifest::{ModuleInfo, ModuleVisibility, PackageManifest},
 };
 use crate::{
-    formatter::format_module,
     language::{
         ast::{
             Block, ConstDef, EnumDef, EnumVariant, Expr, FunctionBody, FunctionDef, FunctionParam,
@@ -17,6 +16,7 @@ use crate::{
         token::{Token, TokenKind},
         types::{Mutability, TypeExpr},
     },
+    tools::formatter::format_module,
 };
 use serde_json::{Value, json};
 use std::{
@@ -31,6 +31,7 @@ use std::{
 use tokio::runtime::Runtime;
 use tokio::sync::RwLock;
 use tower_lsp_server::jsonrpc::Result as RpcResult;
+use tower_lsp_server::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse};
 use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams,
@@ -45,10 +46,9 @@ use tower_lsp_server::lsp_types::{
     ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
     ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
     SignatureInformation, SymbolInformation, SymbolKind, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit, WorkspaceSymbol,
-    WorkspaceSymbolParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    WorkspaceSymbol, WorkspaceSymbolParams,
 };
-use tower_lsp_server::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse};
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
 pub fn serve_stdio() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -72,6 +72,8 @@ impl Documents {
         self.inner.write().await.insert(uri, text);
     }
 
+    #[allow(dead_code)]
+    #[allow(dead_code)]
     async fn remove(&self, uri: &Uri) {
         self.inner.write().await.remove(uri);
     }
@@ -104,10 +106,6 @@ impl ModuleCache {
 
     async fn get(&self, uri: &Uri) -> Option<Module> {
         self.inner.read().await.get(uri).cloned()
-    }
-
-    async fn remove(&self, uri: &Uri) {
-        self.inner.write().await.remove(uri);
     }
 
     async fn snapshot(&self) -> Vec<(Uri, Module)> {
@@ -157,14 +155,7 @@ impl SymbolIndex {
         }
     }
 
-    async fn remove_module(&self, uri: &Uri) {
-        let mut map = self.inner.write().await;
-        map.retain(|_, locations| {
-            locations.retain(|loc| &loc.uri != uri);
-            !locations.is_empty()
-        });
-    }
-
+    #[allow(dead_code)]
     async fn lookup(&self, name: &str) -> Vec<SymbolLocation> {
         self.inner
             .read()
@@ -473,11 +464,7 @@ impl Backend {
         }
     }
 
-    async fn resolve_symbol_location(
-        &self,
-        uri: &Uri,
-        position: Position,
-    ) -> Option<Location> {
+    async fn resolve_symbol_location(&self, uri: &Uri, position: Position) -> Option<Location> {
         let text = self.docs.get(uri).await?;
         let tokens = lex(&text).ok()?;
         let module = self.parse_cached_module(uri, &text).await;
@@ -507,6 +494,7 @@ impl Backend {
 
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> RpcResult<InitializeResult> {
+        #[allow(deprecated)]
         if let Some(root_uri) = params.root_uri {
             if let Some(root_path) = url_to_path(&root_uri) {
                 self.preload_workspace_manifest(&root_path).await;
@@ -1607,13 +1595,6 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                     collect_decl_from_expr(value, decls);
                 }
             }
-            Statement::If(if_stmt) => {
-                collect_decl_from_expr(&if_stmt.condition, decls);
-                collect_decl_from_block(&if_stmt.then_branch, decls);
-                if let Some(else_branch) = &if_stmt.else_branch {
-                    collect_decl_from_block(else_branch, decls);
-                }
-            }
             Statement::While(while_stmt) => {
                 collect_decl_from_expr(&while_stmt.condition, decls);
                 collect_decl_from_block(&while_stmt.body, decls);
@@ -1633,20 +1614,9 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                 });
                 collect_decl_from_block(&for_stmt.body, decls);
             }
-            Statement::Match(match_stmt) => {
-                collect_decl_from_expr(&match_stmt.expr, decls);
-                for arm in &match_stmt.arms {
-                    let arm_scope = arm.body.span;
-                    collect_pattern_decls(&arm.pattern, arm_scope, arm_scope.start, decls);
-                    if let Some(guard) = &arm.guard {
-                        collect_decl_from_expr(guard, decls);
-                    }
-                    collect_decl_from_block(&arm.body, decls);
-                }
-            }
             Statement::Defer(defer_stmt) => collect_decl_from_expr(&defer_stmt.expr, decls),
             Statement::Block(inner) => collect_decl_from_block(inner, decls),
-            Statement::Break(_) | Statement::Continue(_) => {}
+            Statement::Break | Statement::Continue => {}
         }
     }
     if let Some(tail) = &block.tail {
@@ -1686,11 +1656,6 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
                 }
             }
         },
-        Expr::EnumLiteral { values, .. } => {
-            for value in values {
-                collect_decl_from_expr(value, decls);
-            }
-        }
         Expr::Block(block) => collect_decl_from_block(block, decls),
         Expr::If(if_expr) => {
             collect_decl_from_expr(&if_expr.condition, decls);
@@ -1815,13 +1780,6 @@ fn collect_used_in_statement(statement: &Statement, used: &mut HashSet<String>) 
                 collect_expr_idents(value, used);
             }
         }
-        Statement::If(if_stmt) => {
-            collect_expr_idents(&if_stmt.condition, used);
-            collect_used_in_block(&if_stmt.then_branch, used);
-            if let Some(else_branch) = &if_stmt.else_branch {
-                collect_used_in_block(else_branch, used);
-            }
-        }
         Statement::While(while_stmt) => {
             collect_expr_idents(&while_stmt.condition, used);
             collect_used_in_block(&while_stmt.body, used);
@@ -1830,18 +1788,9 @@ fn collect_used_in_statement(statement: &Statement, used: &mut HashSet<String>) 
             collect_range_expr(&for_stmt.range, used);
             collect_used_in_block(&for_stmt.body, used);
         }
-        Statement::Match(match_stmt) => {
-            collect_expr_idents(&match_stmt.expr, used);
-            for arm in &match_stmt.arms {
-                if let Some(guard) = &arm.guard {
-                    collect_expr_idents(guard, used);
-                }
-                collect_used_in_block(&arm.body, used);
-            }
-        }
         Statement::Defer(defer_stmt) => collect_expr_idents(&defer_stmt.expr, used),
         Statement::Block(block) => collect_used_in_block(block, used),
-        Statement::Break(_) | Statement::Continue(_) => {}
+        Statement::Break | Statement::Continue => {}
     }
 }
 
@@ -1880,11 +1829,6 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
                 }
             }
         },
-        Expr::EnumLiteral { values, .. } => {
-            for value in values {
-                collect_expr_idents(value, used);
-            }
-        }
         Expr::Block(block) => collect_used_in_block(block, used),
         Expr::If(if_expr) => {
             collect_expr_idents(&if_expr.condition, used);
@@ -2999,6 +2943,23 @@ fn collect_struct_info(modules: &[Module]) -> HashMap<String, StructInfo> {
                         }
                     }
                 }
+            } else if let Item::Impl(block) = item {
+                let target = block.target.clone();
+                for method in &block.methods {
+                    if let Some(first_param) = method.params.first() {
+                        if let Some(receiver) = receiver_type_name(&first_param.ty.ty) {
+                            if receiver == target {
+                                if let Some(entry) = raw.get_mut(&receiver) {
+                                    entry.methods.push(MethodInfo {
+                                        name: method.name.clone(),
+                                        signature: format_function_signature(method),
+                                        declared_in: receiver.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -3152,13 +3113,10 @@ fn module_completion_items_from_manifest(
     let mut seen = HashSet::new();
     if let Some(exp) = expected {
         if module_prefix_matches(exp, prefix) && seen.insert(exp.to_string()) {
-            let detail = entries.iter().find(|entry| entry.name == exp).map(|entry| {
-                format!(
-                    "{} [{}]",
-                    entry.path.display(),
-                    module_visibility_label(entry.visibility)
-                )
-            });
+            let detail = entries
+                .iter()
+                .find(|entry| entry.name == exp)
+                .map(module_detail);
             items.push(CompletionItem {
                 label: exp.to_string(),
                 kind: Some(CompletionItemKind::MODULE),
@@ -3175,11 +3133,7 @@ fn module_completion_items_from_manifest(
         if !seen.insert(entry.name.clone()) {
             continue;
         }
-        let detail = format!(
-            "{} [{}]",
-            entry.path.display(),
-            module_visibility_label(entry.visibility)
-        );
+        let detail = module_detail(entry);
         items.push(CompletionItem {
             label: entry.name.clone(),
             kind: Some(CompletionItemKind::MODULE),
@@ -3203,6 +3157,22 @@ fn module_visibility_label(vis: ModuleVisibility) -> &'static str {
         ModuleVisibility::Package => "package",
         ModuleVisibility::Private => "private",
     }
+}
+
+fn module_detail(entry: &ModuleInfo) -> String {
+    let mut detail = format!(
+        "{} [{}]",
+        entry.path.display(),
+        module_visibility_label(entry.visibility)
+    );
+    if let Some(package) = &entry.package {
+        detail.push_str(&format!(" ({package})"));
+    }
+    if let Some(doc) = &entry.doc {
+        detail.push_str(" - ");
+        detail.push_str(doc);
+    }
+    detail
 }
 fn flatten_struct_fields(
     name: &str,
@@ -3782,7 +3752,6 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Call { span, .. } => *span,
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
-        Expr::EnumLiteral { span, .. } => *span,
         Expr::Block(block) => block.span,
         Expr::If(if_expr) => if_expr.span,
         Expr::Match(match_expr) => match_expr.span,

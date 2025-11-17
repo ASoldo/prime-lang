@@ -20,11 +20,6 @@ impl SyntaxError {
         }
     }
 
-    pub fn with_help(mut self, help: impl Into<String>) -> Self {
-        self.help = Some(help.into());
-        self
-    }
-
     pub fn to_source_span(&self) -> SourceSpan {
         (self.span.start, self.span.len()).into()
     }

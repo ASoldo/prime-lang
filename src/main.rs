@@ -1,18 +1,10 @@
-mod compiler;
-mod diagnostics;
-mod formatter;
 mod language;
-mod lint;
-mod lsp;
 mod project;
 mod runtime;
+mod tools;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use compiler::Compiler;
-use diagnostics::{emit_syntax_errors, report_io_error, report_runtime_error};
-use formatter::format_module;
-use language::{ast::Module, parser::parse_module};
-use lint::run_lint;
+use language::{ast::Module, compiler::Compiler, parser::parse_module};
 use project::{FileErrors, PackageError, find_manifest, load_package, manifest::PackageManifest};
 use runtime::Interpreter;
 use std::{
@@ -21,6 +13,11 @@ use std::{
     process::Command,
 };
 use toml::{Value, value::Table as TomlTable};
+use tools::{
+    diagnostics::{emit_syntax_errors, report_io_error, report_runtime_error},
+    formatter::format_module,
+    lint::run_lint,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -109,7 +106,7 @@ fn main() {
             }
         }
         Commands::Lsp => {
-            if let Err(err) = lsp::serve_stdio() {
+            if let Err(err) = tools::lsp::serve_stdio() {
                 eprintln!("LSP server failed: {err}");
                 std::process::exit(1);
             }

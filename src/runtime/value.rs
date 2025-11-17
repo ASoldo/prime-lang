@@ -1,4 +1,3 @@
-use crate::language::{span::Span, types::TypeExpr};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -36,25 +35,6 @@ impl Value {
             Value::Map(map) => !map.entries.borrow().is_empty(),
             Value::Unit => false,
             Value::Moved => panic!("attempted to read moved value"),
-        }
-    }
-
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            Value::Unit => "unit",
-            Value::Int(_) => "int",
-            Value::Float(_) => "float",
-            Value::Bool(_) => "bool",
-            Value::String(_) => "string",
-            Value::Struct(_) => "struct",
-            Value::Enum(_) => "enum",
-            Value::Tuple(_) => "tuple",
-            Value::Range(_) => "range",
-            Value::Reference(_) => "reference",
-            Value::Boxed(_) => "Box",
-            Value::Slice(_) => "Slice",
-            Value::Map(_) => "Map",
-            Value::Moved => "moved",
         }
     }
 }
@@ -189,7 +169,6 @@ pub struct RangeValue {
     pub start: i128,
     pub end: i128,
     pub inclusive: bool,
-    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -216,21 +195,18 @@ impl BoxValue {
 #[derive(Clone, Debug)]
 pub struct SliceValue {
     pub items: Rc<RefCell<Vec<Value>>>,
-    pub elem_type: Option<TypeExpr>,
 }
 
 impl SliceValue {
-    pub fn new(elem_type: Option<TypeExpr>) -> Self {
+    pub fn new() -> Self {
         Self {
             items: Rc::new(RefCell::new(Vec::new())),
-            elem_type,
         }
     }
 
-    pub fn from_vec(items: Vec<Value>, elem_type: Option<TypeExpr>) -> Self {
+    pub fn from_vec(items: Vec<Value>) -> Self {
         Self {
             items: Rc::new(RefCell::new(items)),
-            elem_type,
         }
     }
 
@@ -250,16 +226,12 @@ impl SliceValue {
 #[derive(Clone, Debug)]
 pub struct MapValue {
     pub entries: Rc<RefCell<BTreeMap<String, Value>>>,
-    pub key_type: Option<TypeExpr>,
-    pub value_type: Option<TypeExpr>,
 }
 
 impl MapValue {
-    pub fn new(key_type: Option<TypeExpr>, value_type: Option<TypeExpr>) -> Self {
+    pub fn new() -> Self {
         Self {
             entries: Rc::new(RefCell::new(BTreeMap::new())),
-            key_type,
-            value_type,
         }
     }
 

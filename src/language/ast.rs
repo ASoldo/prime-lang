@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub entry: String,
     pub modules: Vec<Module>,
 }
 
@@ -130,7 +129,6 @@ pub struct ImplBlock {
     pub type_args: Vec<TypeExpr>,
     pub target: String,
     pub methods: Vec<FunctionDef>,
-    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -180,13 +178,11 @@ pub enum Statement {
     Assign(AssignStmt),
     Expr(ExprStmt),
     Return(ReturnStmt),
-    If(IfStmt),
     While(WhileStmt),
     ForRange(ForRangeStmt),
-    Match(MatchStmt),
     Defer(DeferStmt),
-    Break(Span),
-    Continue(Span),
+    Break,
+    Continue,
     Block(Box<Block>),
 }
 
@@ -203,34 +199,22 @@ pub struct LetStmt {
 pub struct AssignStmt {
     pub target: Expr,
     pub value: Expr,
-    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExprStmt {
     pub expr: Expr,
-    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
 pub struct ReturnStmt {
     pub values: Vec<Expr>,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug)]
-pub struct IfStmt {
-    pub condition: Expr,
-    pub then_branch: Block,
-    pub else_branch: Option<Block>,
-    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
 pub struct WhileStmt {
     pub condition: Expr,
     pub body: Block,
-    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -242,36 +226,19 @@ pub struct ForRangeStmt {
 }
 
 #[derive(Clone, Debug)]
-pub struct MatchStmt {
-    pub expr: Expr,
-    pub arms: Vec<MatchArm>,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug)]
 pub struct DeferStmt {
     pub expr: Expr,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug)]
-pub struct MatchArm {
-    pub pattern: Pattern,
-    pub guard: Option<Expr>,
-    pub body: Block,
-    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
 pub enum Pattern {
-    Wildcard(Span),
+    Wildcard,
     Identifier(String, Span),
     Literal(Literal),
     EnumVariant {
         enum_name: Option<String>,
         variant: String,
         bindings: Vec<Pattern>,
-        span: Span,
     },
 }
 
@@ -304,12 +271,6 @@ pub enum Expr {
     StructLiteral {
         name: String,
         fields: StructLiteralKind,
-        span: Span,
-    },
-    EnumLiteral {
-        enum_name: Option<String>,
-        variant: String,
-        values: Vec<Expr>,
         span: Span,
     },
     Block(Box<Block>),
@@ -372,8 +333,6 @@ pub enum BinaryOp {
 pub enum UnaryOp {
     Neg,
     Not,
-    Addr,
-    Deref,
 }
 
 #[derive(Clone, Debug)]
@@ -396,7 +355,6 @@ pub struct MatchArmExpr {
     pub pattern: Pattern,
     pub guard: Option<Expr>,
     pub value: Expr,
-    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -417,5 +375,4 @@ pub enum StructLiteralKind {
 pub struct StructLiteralField {
     pub name: String,
     pub value: Expr,
-    pub span: Span,
 }

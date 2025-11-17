@@ -719,7 +719,7 @@ impl Interpreter {
     fn builtin_slice_new(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.warn_deprecated("slice_new");
         self.expect_arity("slice_new", &args, 0)?;
-        Ok(vec![Value::Slice(SliceValue::new(None))])
+        Ok(vec![Value::Slice(SliceValue::new())])
     }
 
     fn expect_slice(&self, name: &str, value: Value) -> RuntimeResult<SliceValue> {
@@ -787,7 +787,7 @@ impl Interpreter {
     fn builtin_map_new(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.warn_deprecated("map_new");
         self.expect_arity("map_new", &args, 0)?;
-        Ok(vec![Value::Map(MapValue::new(None, None))])
+        Ok(vec![Value::Map(MapValue::new())])
     }
 
     fn expect_map(&self, name: &str, value: Value) -> RuntimeResult<MapValue> {
@@ -937,8 +937,8 @@ impl Interpreter {
                 }
                 Ok(None)
             }
-            Statement::Break(_) => Ok(Some(FlowSignal::Break)),
-            Statement::Continue(_) => Ok(Some(FlowSignal::Continue)),
+            Statement::Break => Ok(Some(FlowSignal::Break)),
+            Statement::Continue => Ok(Some(FlowSignal::Continue)),
             Statement::Defer(stmt) => {
                 self.env.defer(stmt.expr.clone());
                 Ok(None)
@@ -947,27 +947,6 @@ impl Interpreter {
                 BlockEval::Value(_) => Ok(None),
                 BlockEval::Flow(flow) => Ok(Some(flow)),
             },
-            Statement::Match(_) => Err(RuntimeError::Unsupported {
-                message: "Match statements are not supported; use match expressions".into(),
-            }),
-            Statement::If(stmt) => {
-                let condition = self.eval_expression(&stmt.condition)?;
-                if condition.as_bool() {
-                    let result = self.eval_block(&stmt.then_branch)?;
-                    match result {
-                        BlockEval::Value(_) => Ok(None),
-                        BlockEval::Flow(flow) => Ok(Some(flow)),
-                    }
-                } else if let Some(else_block) = &stmt.else_branch {
-                    let result = self.eval_block(else_block)?;
-                    match result {
-                        BlockEval::Value(_) => Ok(None),
-                        BlockEval::Flow(flow) => Ok(Some(flow)),
-                    }
-                } else {
-                    Ok(None)
-                }
-            }
         }
     }
 
@@ -1052,8 +1031,6 @@ impl Interpreter {
                         }),
                     },
                     UnaryOp::Not => Ok(Value::Bool(!value.as_bool())),
-                    UnaryOp::Addr => Ok(value),
-                    UnaryOp::Deref => Ok(value),
                 }
             }
             Expr::Call {
@@ -1186,25 +1163,6 @@ impl Interpreter {
                     }),
                 }
             }
-            Expr::EnumLiteral {
-                enum_name,
-                variant,
-                values,
-                ..
-            } => {
-                let args = values
-                    .iter()
-                    .map(|expr| self.eval_expression(expr))
-                    .collect::<RuntimeResult<Vec<_>>>()?;
-                let enum_name = if let Some(name) = enum_name {
-                    name.clone()
-                } else if let Some(info) = self.enum_variants.get(variant) {
-                    info.enum_name.clone()
-                } else {
-                    variant.clone()
-                };
-                self.instantiate_enum(&enum_name, variant, args)
-            }
             Expr::ArrayLiteral(values, _) => self.eval_array_literal(values),
             Expr::Move { expr, .. } => self.eval_move_expression(expr),
         }
@@ -1251,7 +1209,7 @@ impl Interpreter {
         for expr in values {
             items.push(self.eval_expression(expr)?);
         }
-        Ok(Value::Slice(SliceValue::from_vec(items, None)))
+        Ok(Value::Slice(SliceValue::from_vec(items)))
     }
 
     fn eval_move_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {
@@ -1315,7 +1273,7 @@ impl Interpreter {
 
     fn match_pattern(&mut self, pattern: &Pattern, value: &Value) -> RuntimeResult<bool> {
         match pattern {
-            Pattern::Wildcard(_) => Ok(true),
+            Pattern::Wildcard => Ok(true),
             Pattern::Identifier(name, _) => {
                 let concrete = match value {
                     Value::Reference(reference) => reference.cell.borrow().clone(),
@@ -1578,7 +1536,6 @@ impl Interpreter {
             start: start_int,
             end: end_int,
             inclusive: range.inclusive,
-            span: range.span,
         })
     }
 }

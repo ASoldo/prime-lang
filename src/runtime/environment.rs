@@ -137,11 +137,6 @@ impl Environment {
         Ok(())
     }
 
-    pub fn begin_mut_borrow(&mut self, name: &str) -> Result<(), RuntimeError> {
-        let idx = self.borrow_frames.len().checked_sub(1).unwrap_or(0);
-        self.begin_mut_borrow_in_scope(name, idx)
-    }
-
     pub fn end_mut_borrow(&mut self, name: &str) {
         self.active_mut_borrows.remove(name);
     }

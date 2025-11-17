@@ -393,10 +393,6 @@ impl Parser {
     }
 
     fn parse_impl(&mut self) -> Result<ImplBlock, SyntaxError> {
-        let start = self
-            .previous_span()
-            .map(|s| s.start)
-            .unwrap_or_else(|| self.current_span_start());
         let interface = self.expect_identifier("Expected interface name")?;
         let type_args = self.parse_type_args()?;
         self.expect(TokenKind::For)?;
@@ -410,13 +406,12 @@ impl Parser {
             self.expect(TokenKind::Fn)?;
             methods.push(self.parse_function(Visibility::Private)?);
         }
-        let end = self.expect(TokenKind::RBrace)?.span.end;
+        self.expect(TokenKind::RBrace)?;
         Ok(ImplBlock {
             interface: interface.name,
             type_args,
             target: target.name,
             methods,
-            span: Span::new(start, end),
         })
     }
 
@@ -645,26 +640,18 @@ impl Parser {
             return Ok(StatementOrTail::Statement(Statement::ForRange(stmt)));
         }
         if self.matches(TokenKind::Break) {
-            let span = self
-                .previous_span()
-                .unwrap_or_else(|| Span::new(self.current_span_start(), self.current_span_start()));
             self.expect(TokenKind::Semi)?;
-            return Ok(StatementOrTail::Statement(Statement::Break(span)));
+            return Ok(StatementOrTail::Statement(Statement::Break));
         }
         if self.matches(TokenKind::Continue) {
-            let span = self
-                .previous_span()
-                .unwrap_or_else(|| Span::new(self.current_span_start(), self.current_span_start()));
             self.expect(TokenKind::Semi)?;
-            return Ok(StatementOrTail::Statement(Statement::Continue(span)));
+            return Ok(StatementOrTail::Statement(Statement::Continue));
         }
         if self.matches(TokenKind::Defer) {
             let expr = self.parse_expression()?;
-            let span = expr_span(&expr);
             self.expect(TokenKind::Semi)?;
             return Ok(StatementOrTail::Statement(Statement::Defer(DeferStmt {
                 expr,
-                span,
             })));
         }
         if self.matches(TokenKind::LBrace) {
@@ -689,10 +676,8 @@ impl Parser {
     ) -> Result<StatementOrTail, SyntaxError> {
         let expr = self.parse_expression()?;
         if self.matches(TokenKind::Semi) {
-            let span = expr_span(&expr);
             Ok(StatementOrTail::Statement(Statement::Expr(ExprStmt {
                 expr,
-                span,
             })))
         } else if allow_tail {
             Ok(StatementOrTail::Tail(expr))
@@ -843,25 +828,13 @@ impl Parser {
         self.expect(TokenKind::Eq)?;
         let value = self.parse_expression()?;
         self.expect(TokenKind::Semi)?;
-        let span = Span::new(start, expr_span(&value).end);
-        Ok(AssignStmt {
-            target,
-            value,
-            span,
-        })
+        Ok(AssignStmt { target, value })
     }
 
     fn parse_return(&mut self) -> Result<ReturnStmt, SyntaxError> {
-        let start = self
-            .previous_span()
-            .map(|s| s.start)
-            .unwrap_or_else(|| self.current_span_start());
         let mut values = Vec::new();
         if self.matches(TokenKind::Semi) {
-            return Ok(ReturnStmt {
-                values,
-                span: Span::new(start, self.last_span_end(start)),
-            });
+            return Ok(ReturnStmt { values });
         }
         loop {
             values.push(self.parse_expression()?);
@@ -870,29 +843,17 @@ impl Parser {
             }
             break;
         }
-        let end = self.expect(TokenKind::Semi)?.span.end;
-        Ok(ReturnStmt {
-            values,
-            span: Span::new(start, end),
-        })
+        self.expect(TokenKind::Semi)?;
+        Ok(ReturnStmt { values })
     }
 
     fn parse_while(&mut self) -> Result<WhileStmt, SyntaxError> {
-        let start = self
-            .previous_span()
-            .map(|s| s.start)
-            .unwrap_or_else(|| self.current_span_start());
         self.enter_block_context();
         let condition = self.parse_expression();
         self.exit_block_context();
         let condition = condition?;
         let body = self.parse_block()?;
-        let body_end = body.span.end;
-        Ok(WhileStmt {
-            condition,
-            body,
-            span: Span::new(start, body_end),
-        })
+        Ok(WhileStmt { condition, body })
     }
 
     fn type_expr_without_identifier_start(&self) -> bool {
@@ -1218,11 +1179,9 @@ impl Parser {
                         let field = self.expect_identifier("Expected field name")?;
                         self.expect(TokenKind::Colon)?;
                         let value = self.parse_expression()?;
-                        let span = expr_span(&value);
                         named_fields.push(StructLiteralField {
                             name: field.name,
                             value,
-                            span,
                         });
                     } else {
                         is_named.get_or_insert(false);
@@ -1302,12 +1261,10 @@ impl Parser {
             let pattern = self.parse_pattern()?;
             self.expect(TokenKind::FatArrow)?;
             let value = self.parse_expression()?;
-            let span = expr_span(&value);
             arms.push(MatchArmExpr {
                 pattern,
                 guard: None,
                 value,
-                span,
             });
             if self.matches(TokenKind::Comma) {
                 continue;
@@ -1361,8 +1318,7 @@ impl Parser {
 
     fn parse_pattern(&mut self) -> Result<Pattern, SyntaxError> {
         if self.matches(TokenKind::Identifier("_".into())) {
-            let span = self.previous_span().unwrap();
-            return Ok(Pattern::Wildcard(span));
+            return Ok(Pattern::Wildcard);
         }
         if let Some(TokenKind::Identifier(_)) = self.peek_kind() {
             let ident = self.expect_identifier("Expected pattern identifier")?;
@@ -1377,12 +1333,11 @@ impl Parser {
                         break;
                     }
                 }
-                let end = self.expect(TokenKind::RParen)?.span.end;
+                self.expect(TokenKind::RParen)?;
                 return Ok(Pattern::EnumVariant {
                     enum_name: None,
                     variant: ident.name,
                     bindings,
-                    span: Span::new(ident.span.start, end),
                 });
             }
             return Ok(Pattern::Identifier(ident.name, ident.span));
@@ -1493,6 +1448,9 @@ impl Parser {
                 }
             }
             self.expect(TokenKind::RParen)?;
+            if types.is_empty() {
+                return Ok(TypeExpr::Unit);
+            }
             return Ok(TypeExpr::Tuple(types));
         }
         if let Some(TokenKind::Identifier(_)) = self.peek_kind() {
@@ -1720,7 +1678,6 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Call { span, .. } => *span,
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
-        Expr::EnumLiteral { span, .. } => *span,
         Expr::Block(block) => block.span,
         Expr::If(expr) => expr.span,
         Expr::Match(expr) => expr.span,

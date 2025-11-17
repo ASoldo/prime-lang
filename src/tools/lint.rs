@@ -135,7 +135,8 @@ fn report_lex_errors(path: &Path, source: &str, errors: &[crate::language::lexer
 fn emit_syntax_errors_for_source(path: &Path, source: &str, errors: &[SyntaxError]) {
     let named = NamedSource::new(path.display().to_string(), source.to_string());
     for err in errors {
-        let diag = crate::diagnostics::SyntaxDiagnostic::from_error(named.clone(), err.clone());
+        let diag =
+            crate::tools::diagnostics::SyntaxDiagnostic::from_error(named.clone(), err.clone());
         eprintln!("{:?}", Report::new(diag));
     }
 }

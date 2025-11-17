@@ -42,7 +42,7 @@ path = "heap_features.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::interface"
+name = "demos::interface_demo"
 path = "interface_demo.prime"
 visibility = "pub"
 

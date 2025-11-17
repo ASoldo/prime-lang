@@ -1,7 +1,5 @@
 use thiserror::Error;
 
-use crate::language::span::Span;
-
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
 #[derive(Debug, Error)]
@@ -26,18 +24,4 @@ pub enum RuntimeError {
         expected: usize,
         received: usize,
     },
-    #[error("{message}")]
-    WithSpan { message: String, span: Span },
-}
-
-impl RuntimeError {
-    pub fn with_span(self, span: Span) -> Self {
-        match self {
-            RuntimeError::WithSpan { message, .. } => RuntimeError::WithSpan { message, span },
-            other => RuntimeError::WithSpan {
-                message: other.to_string(),
-                span,
-            },
-        }
-    }
 }

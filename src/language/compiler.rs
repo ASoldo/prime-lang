@@ -10,7 +10,7 @@ use llvm_sys::{
         LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
         LLVMDoubleTypeInContext, LLVMFunctionType, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
         LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilderAtEnd,
-        LLVMPrintModuleToFile, LLVMPrintModuleToString, LLVMSetLinkage, LLVMVoidTypeInContext,
+        LLVMPrintModuleToFile, LLVMSetLinkage, LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -118,14 +118,11 @@ struct BoxValue {
 #[derive(Clone)]
 struct SliceValue {
     items: Rc<RefCell<Vec<Value>>>,
-    elem_type: Option<TypeExpr>,
 }
 
 #[derive(Clone)]
 struct MapValue {
     entries: Rc<RefCell<BTreeMap<String, Value>>>,
-    key_type: Option<TypeExpr>,
-    value_type: Option<TypeExpr>,
 }
 
 #[derive(Clone)]
@@ -159,17 +156,15 @@ impl BoxValue {
 }
 
 impl SliceValue {
-    fn new(elem_type: Option<TypeExpr>) -> Self {
+    fn new() -> Self {
         Self {
             items: Rc::new(RefCell::new(Vec::new())),
-            elem_type,
         }
     }
 
-    fn from_vec(items: Vec<Value>, elem_type: Option<TypeExpr>) -> Self {
+    fn from_vec(items: Vec<Value>) -> Self {
         Self {
             items: Rc::new(RefCell::new(items)),
-            elem_type,
         }
     }
 
@@ -187,11 +182,9 @@ impl SliceValue {
 }
 
 impl MapValue {
-    fn new(key_type: Option<TypeExpr>, value_type: Option<TypeExpr>) -> Self {
+    fn new() -> Self {
         Self {
             entries: Rc::new(RefCell::new(BTreeMap::new())),
-            key_type,
-            value_type,
         }
     }
 
@@ -527,18 +520,6 @@ impl Compiler {
         }
     }
 
-    pub fn print_ir(&self) {
-        unsafe {
-            let ir_string = LLVMPrintModuleToString(self.module);
-            if ir_string.is_null() {
-                return;
-            }
-            let message = CStr::from_ptr(ir_string).to_string_lossy().into_owned();
-            LLVMDisposeMessage(ir_string);
-            println!("{}", message);
-        }
-    }
-
     fn emit_statement(&mut self, statement: &Statement) -> Result<(), String> {
         match statement {
             Statement::Let(stmt) => {
@@ -591,18 +572,6 @@ impl Compiler {
                     );
                 }
             },
-            Statement::If(stmt) => {
-                let condition = self.emit_expression(&stmt.condition)?;
-                if self.value_to_bool(condition)? {
-                    self.push_scope();
-                    let _ = self.execute_block_contents(&stmt.then_branch)?;
-                    self.exit_scope()?;
-                } else if let Some(else_branch) = &stmt.else_branch {
-                    self.push_scope();
-                    let _ = self.execute_block_contents(else_branch)?;
-                    self.exit_scope()?;
-                }
-            }
             Statement::While(stmt) => loop {
                 let condition = self.emit_expression(&stmt.condition)?;
                 if !self.value_to_bool(condition)? {
@@ -674,12 +643,6 @@ impl Compiler {
                 self.eval_binary(*op, lhs, rhs)
             }
             Expr::StructLiteral { name, fields, .. } => self.build_struct_literal(name, fields),
-            Expr::EnumLiteral {
-                enum_name,
-                variant,
-                values,
-                ..
-            } => self.build_enum_literal(enum_name.as_deref(), variant, values),
             Expr::Match(match_expr) => self.emit_match_expression(match_expr),
             Expr::Tuple(values, _) => {
                 let mut items = Vec::new();
@@ -893,7 +856,7 @@ impl Compiler {
         for expr in values {
             items.push(self.emit_expression(expr)?);
         }
-        Ok(Value::Slice(SliceValue::from_vec(items, None)))
+        Ok(Value::Slice(SliceValue::from_vec(items)))
     }
 
     fn emit_move_expression(&mut self, expr: &Expr) -> Result<Value, String> {
@@ -953,7 +916,7 @@ impl Compiler {
 
     fn match_pattern(&mut self, value: &Value, pattern: &Pattern) -> Result<bool, String> {
         match pattern {
-            Pattern::Wildcard(_) => Ok(true),
+            Pattern::Wildcard => Ok(true),
             Pattern::Identifier(name, _) => {
                 let concrete = match value {
                     Value::Reference(reference) => reference.cell.borrow().clone(),
@@ -1755,11 +1718,6 @@ impl Compiler {
         Ok(())
     }
 
-    fn begin_mut_borrow(&mut self, name: &str) -> Result<(), String> {
-        let idx = self.borrow_frames.len().saturating_sub(1);
-        self.begin_mut_borrow_in_scope(name, idx)
-    }
-
     fn end_mut_borrow(&mut self, name: &str) {
         self.active_mut_borrows.remove(name);
     }
@@ -1889,7 +1847,7 @@ impl Compiler {
         if !args.is_empty() {
             return Err("slice_new expects 0 arguments".into());
         }
-        Ok(Value::Slice(SliceValue::new(None)))
+        Ok(Value::Slice(SliceValue::new()))
     }
 
     fn builtin_slice_push(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
@@ -1940,7 +1898,7 @@ impl Compiler {
         if !args.is_empty() {
             return Err("map_new expects 0 arguments".into());
         }
-        Ok(Value::Map(MapValue::new(None, None)))
+        Ok(Value::Map(MapValue::new()))
     }
 
     fn builtin_map_insert(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
@@ -2175,7 +2133,6 @@ fn describe_expr(expr: &Expr) -> &'static str {
         Expr::Call { .. } => "call",
         Expr::FieldAccess { .. } => "field access",
         Expr::StructLiteral { .. } => "struct literal",
-        Expr::EnumLiteral { .. } => "enum literal",
         Expr::Block(_) => "block",
         Expr::If(_) => "if expression",
         Expr::Match(_) => "match expression",

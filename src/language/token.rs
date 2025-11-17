@@ -82,8 +82,4 @@ pub enum TokenKind {
     Eof,
 }
 
-impl TokenKind {
-    pub fn is_identifier(&self) -> bool {
-        matches!(self, TokenKind::Identifier(_))
-    }
-}
+impl TokenKind {}
