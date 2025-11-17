@@ -1078,6 +1078,17 @@ impl Parser {
                 };
                 continue;
             }
+            if self.matches(TokenKind::Question) {
+                let span = expr_span(&expr);
+                let question_span = self
+                    .previous_span()
+                    .unwrap_or_else(|| Span::new(span.end, span.end));
+                expr = Expr::TryPropagate {
+                    expr: Box::new(expr),
+                    span: Span::new(span.start, question_span.end),
+                };
+                continue;
+            }
             break;
         }
         Ok(expr)
@@ -1089,6 +1100,9 @@ impl Parser {
         }
         if self.matches(TokenKind::If) {
             return self.parse_if_expression();
+        }
+        if self.matches(TokenKind::Try) {
+            return self.parse_try_expression();
         }
         if !self.suppress_block_literal && self.matches(TokenKind::LBrace) {
             self.rewind();
@@ -1157,6 +1171,19 @@ impl Parser {
             }
             _ => Err(self.error_here("Unexpected token in expression")),
         }
+    }
+
+    fn parse_try_expression(&mut self) -> Result<Expr, SyntaxError> {
+        let start = self
+            .previous_span()
+            .map(|s| s.start)
+            .unwrap_or_else(|| self.current_span_start());
+        let block = self.parse_block()?;
+        let span = Span::new(start, block.span.end);
+        Ok(Expr::Try {
+            block: Box::new(block),
+            span,
+        })
     }
 
     fn parse_identifier_expression(&mut self) -> Result<Expr, SyntaxError> {
@@ -1673,6 +1700,8 @@ fn expr_span(expr: &Expr) -> Span {
         | Expr::Literal(Literal::Bool(_, span))
         | Expr::Literal(Literal::String(_, span))
         | Expr::Literal(Literal::Rune(_, span)) => *span,
+        Expr::Try { span, .. } => *span,
+        Expr::TryPropagate { span, .. } => *span,
         Expr::Binary { span, .. } => *span,
         Expr::Unary { span, .. } => *span,
         Expr::Call { span, .. } => *span,

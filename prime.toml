@@ -52,6 +52,11 @@ path = "interface_generics_demo.prime"
 visibility = "pub"
 
 [[modules]]
+name = "demos::error_handling"
+path = "error_handling_demo.prime"
+visibility = "pub"
+
+[[modules]]
 name = "demos::ns"
 path = "ns_demo.prime"
 visibility = "pub"

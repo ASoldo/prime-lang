@@ -262,6 +262,7 @@ module.exports = grammar({
     expression_statement: $ => seq(field('expression', $.expression), ';'),
 
     expression: $ => choice(
+      $.try_expression,
       $.match_expression,
       $.if_expression,
       $.range_expression,
@@ -269,12 +270,18 @@ module.exports = grammar({
       $.unary_expression,
       $.call_expression,
       $.field_expression,
+      $.question_expression,
       $.struct_literal,
       $.block,
       $.tuple_expression,
       $.parenthesized_expression,
       $.identifier,
       $.literal
+    ),
+
+    try_expression: $ => seq(
+      'try',
+      field('body', $.block)
     ),
 
     match_expression: $ => seq(
@@ -329,6 +336,13 @@ module.exports = grammar({
       seq(
         field('function', $.expression),
         field('arguments', $.argument_list)
+      )
+    ),
+
+    question_expression: $ => prec.left(PREC.call,
+      seq(
+        field('value', $.expression),
+        '?'
       )
     ),
 

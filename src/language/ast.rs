@@ -246,6 +246,14 @@ pub enum Pattern {
 pub enum Expr {
     Identifier(Identifier),
     Literal(Literal),
+    Try {
+        block: Box<Block>,
+        span: Span,
+    },
+    TryPropagate {
+        expr: Box<Expr>,
+        span: Span,
+    },
     Binary {
         op: BinaryOp,
         left: Box<Expr>,

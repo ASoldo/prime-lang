@@ -145,6 +145,7 @@ impl<'a> Lexer<'a> {
             "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
             "defer" => TokenKind::Defer,
+            "try" => TokenKind::Try,
             "move" => TokenKind::Move,
             "pub" => TokenKind::Pub,
             "true" => TokenKind::True,

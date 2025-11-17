@@ -137,6 +137,24 @@ struct Binding {
     mutable: bool,
 }
 
+enum FlowSignal {
+    Break,
+    Continue,
+    Return(Vec<Value>),
+    #[allow(dead_code)]
+    Propagate(Value),
+}
+
+enum BlockEval {
+    Value(Value),
+    Flow(FlowSignal),
+}
+
+enum EvalOutcome<T> {
+    Value(T),
+    Flow(FlowSignal),
+}
+
 impl StringValue {
     fn new(llvm: LLVMValueRef, text: Rc<String>) -> Self {
         Self { llvm, text }
@@ -407,7 +425,15 @@ impl Compiler {
             let value = {
                 let result = self.emit_expression(&const_def.value);
                 self.module_stack.pop();
-                result?
+                match result? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => {
+                        return Err(format!(
+                            "Control flow {} not allowed in const initializer",
+                            flow_name(&flow)
+                        ));
+                    }
+                }
             };
             self.insert_var(&const_def.name, value, false)?;
         }
@@ -415,7 +441,15 @@ impl Compiler {
         self.module_stack.push(main_module.clone());
         let exec_result = self.execute_block_contents(body);
         self.module_stack.pop();
-        let _ = exec_result?;
+        match exec_result? {
+            BlockEval::Value(_) => {}
+            BlockEval::Flow(flow) => {
+                return Err(format!(
+                    "Control flow {} not allowed at top level",
+                    flow_name(&flow)
+                ));
+            }
+        }
         self.exit_scope()?;
 
         unsafe {
@@ -521,21 +555,43 @@ impl Compiler {
         }
     }
 
-    fn emit_statement(&mut self, statement: &Statement) -> Result<(), String> {
+    fn emit_statement(&mut self, statement: &Statement) -> Result<Option<FlowSignal>, String> {
         match statement {
             Statement::Let(stmt) => {
                 let value = if let Some(expr) = &stmt.value {
-                    self.emit_expression(expr)?
+                    match self.emit_expression(expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    }
                 } else {
                     Value::Int(self.const_int_value(0))
                 };
                 self.insert_var(&stmt.name, value, stmt.mutability == Mutability::Mutable)?;
             }
-            Statement::Expr(expr_stmt) => self.eval_expression_statement(&expr_stmt.expr)?,
+            Statement::Expr(expr_stmt) => {
+                if let Some(flow) = self.eval_expression_statement(&expr_stmt.expr)? {
+                    return Ok(Some(flow));
+                }
+            }
+            Statement::Return(stmt) => {
+                let mut values = Vec::new();
+                for expr in &stmt.values {
+                    match self.emit_expression(expr)? {
+                        EvalOutcome::Value(value) => values.push(value),
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    }
+                }
+                return Ok(Some(FlowSignal::Return(values)));
+            }
+            Statement::Break => return Ok(Some(FlowSignal::Break)),
+            Statement::Continue => return Ok(Some(FlowSignal::Continue)),
             Statement::Block(block) => {
                 self.push_scope();
-                let _ = self.execute_block_contents(block)?;
+                let result = self.execute_block_contents(block)?;
                 self.exit_scope()?;
+                if let BlockEval::Flow(flow) = result {
+                    return Ok(Some(flow));
+                }
             }
             Statement::Defer(stmt) => {
                 if let Some(stack) = self.defer_stack.last_mut() {
@@ -545,18 +601,26 @@ impl Compiler {
                 }
             }
             Statement::Assign(stmt) => match &stmt.target {
-                Expr::Identifier(ident) => {
-                    let value = self.emit_expression(&stmt.value)?;
-                    self.assign_var(&ident.name, value)?;
-                }
+                Expr::Identifier(ident) => match self.emit_expression(&stmt.value)? {
+                    EvalOutcome::Value(value) => {
+                        self.assign_var(&ident.name, value)?;
+                    }
+                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                },
                 Expr::Deref { expr, .. } => {
-                    let target = self.emit_expression(expr)?;
+                    let target = match self.emit_expression(expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
                     match target {
                         Value::Reference(reference) => {
                             if !reference.mutable {
                                 return Err("Cannot assign through immutable reference".into());
                             }
-                            let value = self.emit_expression(&stmt.value)?;
+                            let value = match self.emit_expression(&stmt.value)? {
+                                EvalOutcome::Value(value) => value,
+                                EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                            };
                             *reference.cell.borrow_mut() = value;
                         }
                         _ => {
@@ -574,16 +638,29 @@ impl Compiler {
                 }
             },
             Statement::While(stmt) => loop {
-                let condition = self.emit_expression(&stmt.condition)?;
+                let condition = match self.emit_expression(&stmt.condition)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                };
                 if !self.value_to_bool(condition)? {
                     break;
                 }
                 self.push_scope();
-                let _ = self.execute_block_contents(&stmt.body)?;
+                let result = self.execute_block_contents(&stmt.body)?;
                 self.exit_scope()?;
+                match result {
+                    BlockEval::Value(_) => {}
+                    BlockEval::Flow(FlowSignal::Continue) => continue,
+                    BlockEval::Flow(FlowSignal::Break) => break,
+                    BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                    BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
+                }
             },
             Statement::ForRange(stmt) => {
-                let (start, end, inclusive) = self.evaluate_range(&stmt.range)?;
+                let (start, end, inclusive) = match self.evaluate_range(&stmt.range)? {
+                    EvalOutcome::Value(values) => values,
+                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                };
                 let mut current = start;
                 let limit = if inclusive { end + 1 } else { end };
                 while current < limit {
@@ -593,26 +670,30 @@ impl Compiler {
                         Value::Int(self.const_int_value(current)),
                         false,
                     )?;
-                    let _ = self.execute_block_contents(&stmt.body)?;
+                    let result = self.execute_block_contents(&stmt.body)?;
                     self.exit_scope()?;
+                    match result {
+                        BlockEval::Value(_) => {}
+                        BlockEval::Flow(FlowSignal::Continue) => {}
+                        BlockEval::Flow(FlowSignal::Break) => break,
+                        BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
+                    }
                     current += 1;
                 }
             }
-            _ => {
-                return Err("Statement not supported in build mode".into());
-            }
         }
-        Ok(())
+        Ok(None)
     }
 
-    fn emit_expression(&mut self, expr: &Expr) -> Result<Value, String> {
+    fn emit_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<Value>, String> {
         match expr {
-            Expr::Literal(Literal::Int(value, _)) => {
-                Ok(Value::Int(self.const_int_value(*value as i128)))
-            }
-            Expr::Literal(Literal::Bool(value, _)) => Ok(Value::Bool(*value)),
+            Expr::Literal(Literal::Int(value, _)) => Ok(EvalOutcome::Value(Value::Int(
+                self.const_int_value(*value as i128),
+            ))),
+            Expr::Literal(Literal::Bool(value, _)) => Ok(EvalOutcome::Value(Value::Bool(*value))),
             Expr::Literal(Literal::Float(value, _)) => {
-                Ok(Value::Float(self.const_float_value(*value)))
+                Ok(EvalOutcome::Value(Value::Float(self.const_float_value(*value))))
             }
             Expr::Literal(Literal::String(value, _)) => {
                 let c_value = CString::new(value.as_str())
@@ -621,12 +702,31 @@ impl Compiler {
                 let text = Rc::new(value.clone());
                 unsafe {
                     let ptr = LLVMBuildGlobalString(self.builder, c_value.as_ptr(), name.as_ptr());
-                    Ok(Value::Str(StringValue::new(ptr, text)))
+                    Ok(EvalOutcome::Value(Value::Str(StringValue::new(ptr, text))))
                 }
             }
-            Expr::Literal(Literal::Rune(value, _)) => {
-                Ok(Value::Int(self.const_int_value(*value as i128)))
+            Expr::Literal(Literal::Rune(value, _)) => Ok(EvalOutcome::Value(Value::Int(
+                self.const_int_value(*value as i128),
+            ))),
+            Expr::Try { block, .. } => {
+                self.push_scope();
+                let result = self.execute_block_contents(block)?;
+                self.exit_scope()?;
+                match result {
+                    BlockEval::Value(value) => {
+                        let wrapped = self.instantiate_enum_variant("Ok", vec![value])?;
+                        Ok(EvalOutcome::Value(wrapped))
+                    }
+                    BlockEval::Flow(FlowSignal::Propagate(value)) => {
+                        Ok(EvalOutcome::Value(value))
+                    }
+                    BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                }
             }
+            Expr::TryPropagate { expr, .. } => match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => self.eval_try_operator(value),
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
             Expr::Identifier(ident) => {
                 let value = self
                     .get_var(&ident.name)
@@ -634,47 +734,66 @@ impl Compiler {
                 if matches!(value, Value::Moved) {
                     return Err(format!("Value `{}` has been moved", ident.name));
                 }
-                Ok(value)
+                Ok(EvalOutcome::Value(value))
             }
             Expr::Binary {
                 op, left, right, ..
             } => {
-                let lhs = self.emit_expression(left)?;
-                let rhs = self.emit_expression(right)?;
+                let lhs = match self.emit_expression(left)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                let rhs = match self.emit_expression(right)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
                 self.eval_binary(*op, lhs, rhs)
+                    .map(EvalOutcome::Value)
             }
             Expr::StructLiteral { name, fields, .. } => self.build_struct_literal(name, fields),
             Expr::Match(match_expr) => self.emit_match_expression(match_expr),
             Expr::Tuple(values, _) => {
                 let mut items = Vec::new();
                 for value in values {
-                    items.push(self.emit_expression(value)?);
+                    match self.emit_expression(value)? {
+                        EvalOutcome::Value(value) => items.push(value),
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    }
                 }
-                Ok(Value::Tuple(items))
+                Ok(EvalOutcome::Value(Value::Tuple(items)))
             }
             Expr::ArrayLiteral(values, _) => self.emit_array_literal(values),
             Expr::Block(block) => {
                 self.push_scope();
                 let result = self.execute_block_contents(block)?;
                 self.exit_scope()?;
-                Ok(result.unwrap_or(Value::Unit))
+                match result {
+                    BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                    BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                }
             }
             Expr::If(if_expr) => self.emit_if_expression(if_expr),
             Expr::Reference { mutable, expr, .. } => self.build_reference(expr, *mutable),
             Expr::Deref { expr, .. } => {
-                let value = self.emit_expression(expr)?;
-                self.deref_value(value)
+                match self.emit_expression(expr)? {
+                    EvalOutcome::Value(value) => self.deref_value(value).map(EvalOutcome::Value),
+                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                }
             }
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
             Expr::FieldAccess { base, field, .. } => {
-                let base_value = self.emit_expression(base)?;
+                let base_value = match self.emit_expression(base)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
                 let mut current = base_value;
                 loop {
                     current = match current {
                         Value::Struct(instance) => {
-                            return instance
+                            let value = instance
                                 .get(field)
-                                .ok_or_else(|| format!("Field {} not found", field));
+                                .ok_or_else(|| format!("Field {} not found", field))?;
+                            return Ok(EvalOutcome::Value(value));
                         }
                         Value::Reference(reference) => reference.cell.borrow().clone(),
                         Value::Int(_) => {
@@ -725,7 +844,7 @@ impl Compiler {
         callee: &Expr,
         type_args: &[TypeExpr],
         args: &[Expr],
-    ) -> Result<Value, String> {
+    ) -> Result<EvalOutcome<Value>, String> {
         match callee {
             Expr::Identifier(ident) => {
                 if let Some(info) = self.enum_variants.get(&ident.name).cloned() {
@@ -742,7 +861,9 @@ impl Compiler {
                     return result;
                 }
                 let result = self.invoke_function(&ident.name, type_args, args)?;
-                result.ok_or_else(|| format!("Function `{}` does not return a value", ident.name))
+                result
+                    .map(EvalOutcome::Value)
+                    .ok_or_else(|| format!("Function `{}` does not return a value", ident.name))
             }
             Expr::FieldAccess { base, field, .. } => {
                 if let Expr::Identifier(module_ident) = base.as_ref() {
@@ -754,7 +875,7 @@ impl Compiler {
                     };
                     if self.functions.contains_key(&key) {
                         let result = self.invoke_function(&qualified, type_args, args)?;
-                        return result.ok_or_else(|| {
+                        return result.map(EvalOutcome::Value).ok_or_else(|| {
                             format!("Function `{}` does not return a value", qualified)
                         });
                     }
@@ -763,26 +884,37 @@ impl Compiler {
                 method_args.push((**base).clone());
                 method_args.extend(args.iter().cloned());
                 let result = self.invoke_function(field, type_args, &method_args)?;
-                result.ok_or_else(|| format!("Function `{}` does not return a value", field))
+                result
+                    .map(EvalOutcome::Value)
+                    .ok_or_else(|| format!("Function `{}` does not return a value", field))
             }
             _ => Err("Only direct function calls are supported in build mode expressions".into()),
         }
     }
 
-    fn emit_out_call(&mut self, args: &[Expr]) -> Result<Value, String> {
+    fn emit_out_call(&mut self, args: &[Expr]) -> Result<EvalOutcome<Value>, String> {
         if args.len() != 1 {
             return Err("out() expects exactly one argument".into());
         }
-        let value = self.emit_expression(&args[0])?;
-        self.emit_out_value(value)?;
-        Ok(Value::Unit)
+        match self.emit_expression(&args[0])? {
+            EvalOutcome::Value(value) => {
+                self.emit_out_value(value)?;
+                Ok(EvalOutcome::Value(Value::Unit))
+            }
+            EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+        }
     }
 
-    fn try_builtin_call(&mut self, name: &str, args: &[Expr]) -> Option<Result<Value, String>> {
+    fn try_builtin_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+    ) -> Option<Result<EvalOutcome<Value>, String>> {
         let mut evaluated = Vec::with_capacity(args.len());
         for expr in args {
             match self.emit_expression(expr) {
-                Ok(value) => evaluated.push(value),
+                Ok(EvalOutcome::Value(value)) => evaluated.push(value),
+                Ok(EvalOutcome::Flow(flow)) => return Some(Ok(EvalOutcome::Flow(flow))),
                 Err(err) => return Some(Err(err)),
             }
         }
@@ -800,27 +932,36 @@ impl Compiler {
             "map_get" => self.builtin_map_get(evaluated),
             _ => return None,
         };
-        Some(result)
+        Some(result.map(EvalOutcome::Value))
     }
 
-    fn emit_if_expression(&mut self, if_expr: &IfExpr) -> Result<Value, String> {
-        let condition = self.emit_expression(&if_expr.condition)?;
+    fn emit_if_expression(&mut self, if_expr: &IfExpr) -> Result<EvalOutcome<Value>, String> {
+        let condition = match self.emit_expression(&if_expr.condition)? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
         if self.value_to_bool(condition)? {
             self.push_scope();
             let value = self.execute_block_contents(&if_expr.then_branch)?;
             self.exit_scope()?;
-            Ok(value.unwrap_or(Value::Unit))
+            match value {
+                BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            }
         } else if let Some(else_block) = &if_expr.else_branch {
             self.push_scope();
             let value = self.execute_block_contents(else_block)?;
             self.exit_scope()?;
-            Ok(value.unwrap_or(Value::Unit))
+            match value {
+                BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            }
         } else {
-            Ok(Value::Unit)
+            Ok(EvalOutcome::Value(Value::Unit))
         }
     }
 
-    fn build_reference(&mut self, expr: &Expr, mutable: bool) -> Result<Value, String> {
+    fn build_reference(&mut self, expr: &Expr, mutable: bool) -> Result<EvalOutcome<Value>, String> {
         match expr {
             Expr::Identifier(ident) => {
                 let (cell, binding_mut) = self
@@ -835,32 +976,41 @@ impl Compiler {
                 if matches!(*cell.borrow(), Value::Moved) {
                     return Err(format!("Value `{}` has been moved", ident.name));
                 }
-                Ok(Value::Reference(ReferenceValue {
+                Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
                     cell,
                     mutable,
                     origin: Some(ident.name.clone()),
-                }))
+                })))
             }
             _ => {
-                let value = self.emit_expression(expr)?;
-                Ok(Value::Reference(ReferenceValue {
-                    cell: Rc::new(RefCell::new(value)),
-                    mutable,
-                    origin: None,
-                }))
+                match self.emit_expression(expr)? {
+                    EvalOutcome::Value(value) => Ok(EvalOutcome::Value(Value::Reference(
+                        ReferenceValue {
+                            cell: Rc::new(RefCell::new(value)),
+                            mutable,
+                            origin: None,
+                        },
+                    ))),
+                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                }
             }
         }
     }
 
-    fn emit_array_literal(&mut self, values: &[Expr]) -> Result<Value, String> {
+    fn emit_array_literal(&mut self, values: &[Expr]) -> Result<EvalOutcome<Value>, String> {
         let mut items = Vec::with_capacity(values.len());
         for expr in values {
-            items.push(self.emit_expression(expr)?);
+            match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => items.push(value),
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            }
         }
-        Ok(Value::Slice(SliceValue::from_vec(items)))
+        Ok(EvalOutcome::Value(Value::Slice(
+            SliceValue::from_vec(items),
+        )))
     }
 
-    fn emit_move_expression(&mut self, expr: &Expr) -> Result<Value, String> {
+    fn emit_move_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<Value>, String> {
         match expr {
             Expr::Identifier(ident) => {
                 let (cell, _) = self
@@ -884,7 +1034,7 @@ impl Compiler {
                 }
                 let moved = std::mem::replace(&mut *slot, Value::Moved);
                 self.register_move(&ident.name);
-                Ok(moved)
+                Ok(EvalOutcome::Value(moved))
             }
             _ => Err("move expressions require identifiers in build mode".into()),
         }
@@ -901,8 +1051,11 @@ impl Compiler {
         }
     }
 
-    fn emit_match_expression(&mut self, match_expr: &MatchExpr) -> Result<Value, String> {
-        let target = self.emit_expression(&match_expr.expr)?;
+    fn emit_match_expression(&mut self, match_expr: &MatchExpr) -> Result<EvalOutcome<Value>, String> {
+        let target = match self.emit_expression(&match_expr.expr)? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
         for arm in &match_expr.arms {
             self.push_scope();
             if self.match_pattern(&target, &arm.pattern)? {
@@ -913,6 +1066,33 @@ impl Compiler {
             self.exit_scope()?;
         }
         Err("No match arm matched in build mode".into())
+    }
+
+    fn eval_try_operator(&self, value: Value) -> Result<EvalOutcome<Value>, String> {
+        match value {
+            Value::Enum(enum_value) => {
+                if enum_value.enum_name != "Result" {
+                    return Err("? operator expects Result value in build mode".into());
+                }
+                match enum_value.variant.as_str() {
+                    "Ok" => {
+                        let mut values = enum_value.values;
+                        if values.is_empty() {
+                            Ok(EvalOutcome::Value(Value::Unit))
+                        } else if values.len() == 1 {
+                            Ok(EvalOutcome::Value(values.remove(0)))
+                        } else {
+                            Ok(EvalOutcome::Value(Value::Tuple(values)))
+                        }
+                    }
+                    "Err" => Ok(EvalOutcome::Flow(FlowSignal::Propagate(Value::Enum(
+                        enum_value,
+                    )))),
+                    _ => Err("? operator expects Result value in build mode".into()),
+                }
+            }
+            _ => Err("? operator expects Result value in build mode".into()),
+        }
     }
 
     fn match_pattern(&mut self, value: &Value, pattern: &Pattern) -> Result<bool, String> {
@@ -1159,7 +1339,7 @@ impl Compiler {
         &mut self,
         name: &str,
         fields: &StructLiteralKind,
-    ) -> Result<Value, String> {
+    ) -> Result<EvalOutcome<Value>, String> {
         let entry = self
             .structs
             .get(name)
@@ -1171,10 +1351,17 @@ impl Compiler {
             StructLiteralKind::Named(named) => {
                 let mut map = HashMap::new();
                 for field in named {
-                    let value = self.emit_expression(&field.value)?;
-                    map.insert(field.name.clone(), value);
+                    match self.emit_expression(&field.value)? {
+                        EvalOutcome::Value(value) => {
+                            map.insert(field.name.clone(), value);
+                        }
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    }
                 }
-                Ok(Value::Struct(StructValue::new(name.to_string(), map)))
+                Ok(EvalOutcome::Value(Value::Struct(StructValue::new(
+                    name.to_string(),
+                    map,
+                ))))
             }
             StructLiteralKind::Positional(values) => {
                 if def.fields.len() != values.len() {
@@ -1187,7 +1374,10 @@ impl Compiler {
                 }
                 let mut map = HashMap::new();
                 for (field_def, expr) in def.fields.iter().zip(values.iter()) {
-                    let value = self.emit_expression(expr)?;
+                    let value = match self.emit_expression(expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    };
                     if field_def.embedded {
                         let embedded_struct = match value {
                             Value::Struct(inner) => inner,
@@ -1210,7 +1400,10 @@ impl Compiler {
                         map.insert(fallback, value);
                     }
                 }
-                Ok(Value::Struct(StructValue::new(name.to_string(), map)))
+                Ok(EvalOutcome::Value(Value::Struct(StructValue::new(
+                    name.to_string(),
+                    map,
+                ))))
             }
         }
     }
@@ -1220,7 +1413,7 @@ impl Compiler {
         enum_name: Option<&str>,
         variant: &str,
         values: &[Expr],
-    ) -> Result<Value, String> {
+    ) -> Result<EvalOutcome<Value>, String> {
         let info = self
             .enum_variants
             .get(variant)
@@ -1245,13 +1438,16 @@ impl Compiler {
         }
         let mut evaluated = Vec::new();
         for expr in values {
-            evaluated.push(self.emit_expression(expr)?);
+            match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => evaluated.push(value),
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            }
         }
-        Ok(Value::Enum(EnumValue {
+        Ok(EvalOutcome::Value(Value::Enum(EnumValue {
             enum_name: info.enum_name.clone(),
             variant: variant.to_string(),
             values: evaluated,
-        }))
+        })))
     }
 
     fn instantiate_enum_variant(&self, variant: &str, values: Vec<Value>) -> Result<Value, String> {
@@ -1275,7 +1471,7 @@ impl Compiler {
         }))
     }
 
-    fn eval_expression_statement(&mut self, expr: &Expr) -> Result<(), String> {
+    fn eval_expression_statement(&mut self, expr: &Expr) -> Result<Option<FlowSignal>, String> {
         match expr {
             Expr::Call {
                 callee,
@@ -1285,15 +1481,21 @@ impl Compiler {
             } => match callee.as_ref() {
                 Expr::Identifier(ident) => {
                     if ident.name == "out" {
-                        self.emit_out_call(args).map(|_| ())
+                        match self.emit_out_call(args)? {
+                            EvalOutcome::Value(_) => Ok(None),
+                            EvalOutcome::Flow(flow) => Ok(Some(flow)),
+                        }
                     } else if let Some(result) = self.try_builtin_call(&ident.name, args) {
-                        result.map(|_| ())
+                        match result? {
+                            EvalOutcome::Value(_) => Ok(None),
+                            EvalOutcome::Flow(flow) => Ok(Some(flow)),
+                        }
                     } else {
                         let result = self.invoke_function(&ident.name, type_args, args)?;
                         if result.is_some() {
                             Err("Functions returning values are not supported in expression statements during build mode".into())
                         } else {
-                            Ok(())
+                            Ok(None)
                         }
                     }
                 }
@@ -1313,7 +1515,7 @@ impl Compiler {
                                         .into(),
                                 );
                             }
-                            return Ok(());
+                            return Ok(None);
                         }
                     }
                     let mut method_args = Vec::with_capacity(args.len() + 1);
@@ -1323,14 +1525,16 @@ impl Compiler {
                     if result.is_some() {
                         Err("Functions returning values are not supported in expression statements during build mode".into())
                     } else {
-                        Ok(())
+                        Ok(None)
                     }
                 }
                 _ => Err("Only direct function calls are supported in build mode".into()),
             },
             _ => {
-                self.emit_expression(expr)?;
-                Ok(())
+                match self.emit_expression(expr)? {
+                    EvalOutcome::Value(_) => Ok(None),
+                    EvalOutcome::Flow(flow) => Ok(Some(flow)),
+                }
             }
         }
     }
@@ -1343,7 +1547,13 @@ impl Compiler {
     ) -> Result<Option<Value>, String> {
         let mut evaluated_args = Vec::new();
         for expr in args {
-            evaluated_args.push(self.emit_expression(expr)?);
+            match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => evaluated_args.push(value),
+                EvalOutcome::Flow(flow) => return Err(format!(
+                    "Control flow {} cannot escape argument position in build mode",
+                    flow_name(&flow)
+                )),
+            }
         }
         let receiver_candidate = self.receiver_name_from_values(&evaluated_args);
         let func_entry = self.resolve_function(
@@ -1372,13 +1582,58 @@ impl Compiler {
             }
             let result = match &func.body {
                 FunctionBody::Block(block) => self.execute_block_contents(block)?,
-                FunctionBody::Expr(expr) => Some(self.emit_expression(&expr.node)?),
+                FunctionBody::Expr(expr) => match self.emit_expression(&expr.node)? {
+                    EvalOutcome::Value(value) => BlockEval::Value(value),
+                    EvalOutcome::Flow(flow) => BlockEval::Flow(flow),
+                },
             };
             self.exit_scope()?;
-            if func.returns.is_empty() {
-                Ok(None)
-            } else {
-                Ok(result)
+            match result {
+                BlockEval::Value(value) => {
+                    if func.returns.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(value))
+                    }
+                }
+                BlockEval::Flow(FlowSignal::Return(mut values)) => {
+                    if values.is_empty() {
+                        if func.returns.is_empty() {
+                            Ok(None)
+                        } else {
+                            Err(format!(
+                                "Function `{}` must return a value",
+                                func.name
+                            ))
+                        }
+                    } else if values.len() == 1 {
+                        if func.returns.is_empty() {
+                            Err(format!(
+                                "Function `{}` does not return a value",
+                                func.name
+                            ))
+                        } else {
+                            Ok(values.pop())
+                        }
+                    } else {
+                        Err("Multiple return values are not supported in build mode".into())
+                    }
+                }
+                BlockEval::Flow(flow @ FlowSignal::Break)
+                | BlockEval::Flow(flow @ FlowSignal::Continue) => Err(format!(
+                    "Control flow {} cannot escape function body in build mode",
+                    flow_name(&flow)
+                )),
+                BlockEval::Flow(FlowSignal::Propagate(value)) => {
+                    if func.returns.is_empty() {
+                        Err(format!(
+                            "Function `{}` does not return a value",
+                            func.name
+                        ))
+                    } else {
+                        Ok(Some(value))
+                    }
+                }
             }
         })();
         self.module_stack.pop();
@@ -1927,14 +2182,19 @@ impl Compiler {
         }
     }
 
-    fn execute_block_contents(&mut self, block: &Block) -> Result<Option<Value>, String> {
+    fn execute_block_contents(&mut self, block: &Block) -> Result<BlockEval, String> {
         for statement in &block.statements {
-            self.emit_statement(statement)?;
+            if let Some(flow) = self.emit_statement(statement)? {
+                return Ok(BlockEval::Flow(flow));
+            }
         }
         if let Some(tail) = &block.tail {
-            self.emit_expression(tail).map(Some)
+            match self.emit_expression(tail)? {
+                EvalOutcome::Value(value) => Ok(BlockEval::Value(value)),
+                EvalOutcome::Flow(flow) => Ok(BlockEval::Flow(flow)),
+            }
         } else {
-            Ok(None)
+            Ok(BlockEval::Value(Value::Unit))
         }
     }
 
@@ -1974,10 +2234,16 @@ impl Compiler {
         }
     }
 
-    fn evaluate_range(&mut self, range: &RangeExpr) -> Result<(i128, i128, bool), String> {
-        let start_expr = self.emit_expression(&range.start)?;
+    fn evaluate_range(&mut self, range: &RangeExpr) -> Result<EvalOutcome<(i128, i128, bool)>, String> {
+        let start_expr = match self.emit_expression(&range.start)? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
         let start_value = self.expect_int(start_expr)?;
-        let end_expr = self.emit_expression(&range.end)?;
+        let end_expr = match self.emit_expression(&range.end)? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
         let end_value = self.expect_int(end_expr)?;
         let start_const = start_value
             .constant()
@@ -1985,7 +2251,7 @@ impl Compiler {
         let end_const = end_value
             .constant()
             .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
-        Ok((start_const, end_const, range.inclusive))
+        Ok(EvalOutcome::Value((start_const, end_const, range.inclusive)))
     }
 
     fn push_scope(&mut self) {
@@ -2015,7 +2281,15 @@ impl Compiler {
             let mut pending = Vec::new();
             mem::swap(stack, &mut pending);
             while let Some(expr) = pending.pop() {
-                self.emit_expression(&expr)?;
+                match self.emit_expression(&expr)? {
+                    EvalOutcome::Value(_) => {}
+                    EvalOutcome::Flow(flow) => {
+                        return Err(format!(
+                            "Control flow {} not allowed in deferred expression",
+                            flow_name(&flow)
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -2097,6 +2371,15 @@ impl Drop for Compiler {
     }
 }
 
+fn flow_name(flow: &FlowSignal) -> &'static str {
+    match flow {
+        FlowSignal::Break => "break",
+        FlowSignal::Continue => "continue",
+        FlowSignal::Return(_) => "return",
+        FlowSignal::Propagate(_) => "error propagation",
+    }
+}
+
 fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
     match expr {
         TypeExpr::Named(name, _) => Some(name.clone()),
@@ -2128,6 +2411,8 @@ fn describe_expr(expr: &Expr) -> &'static str {
     match expr {
         Expr::Identifier(_) => "identifier",
         Expr::Literal(_) => "literal",
+        Expr::Try { .. } => "try expression",
+        Expr::TryPropagate { .. } => "error propagation",
         Expr::Binary { .. } => "binary",
         Expr::Unary { .. } => "unary",
         Expr::Call { .. } => "call",

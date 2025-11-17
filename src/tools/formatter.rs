@@ -506,6 +506,17 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
     match expr {
         Expr::Literal(lit) => format_literal(lit),
         Expr::Identifier(ident) => ident.name.clone(),
+        Expr::Try { block, .. } => {
+            let mut buf = String::new();
+            buf.push_str("try {\n");
+            format_block(&mut buf, block, 2);
+            buf.push('}');
+            buf
+        }
+        Expr::TryPropagate { expr, .. } => {
+            let inner = format_expr_prec(expr, 120);
+            format!("{inner}?")
+        }
         Expr::Binary {
             op, left, right, ..
         } => {

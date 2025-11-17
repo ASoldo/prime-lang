@@ -73,10 +73,16 @@ enum FlowSignal {
     Break,
     Continue,
     Return(Vec<Value>),
+    Propagate(Value),
 }
 
 enum BlockEval {
     Value(Value),
+    Flow(FlowSignal),
+}
+
+enum EvalOutcome<T> {
+    Value(T),
     Flow(FlowSignal),
 }
 
@@ -163,7 +169,17 @@ impl Interpreter {
             let value = {
                 let result = self.eval_expression(&const_def.value);
                 self.module_stack.pop();
-                result?
+                match result? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => {
+                        return Err(RuntimeError::Panic {
+                            message: format!(
+                                "Control flow {} not allowed in const initializer",
+                                flow_name(&flow)
+                            ),
+                        });
+                    }
+                }
             };
             self.env
                 .declare(&const_def.name, value, false)
@@ -350,7 +366,10 @@ impl Interpreter {
 
             let result = match &info.def.body {
                 FunctionBody::Block(block) => self.eval_block(block)?,
-                FunctionBody::Expr(expr) => BlockEval::Value(self.eval_expression(&expr.node)?),
+                FunctionBody::Expr(expr) => match self.eval_expression(&expr.node)? {
+                    EvalOutcome::Value(value) => BlockEval::Value(value),
+                    EvalOutcome::Flow(flow) => BlockEval::Flow(flow),
+                },
             };
 
             let values = match result {
@@ -368,6 +387,7 @@ impl Interpreter {
                     }
                 }
                 BlockEval::Flow(FlowSignal::Return(values)) => values,
+                BlockEval::Flow(FlowSignal::Propagate(value)) => vec![value],
                 BlockEval::Flow(FlowSignal::Break) => {
                     return Err(RuntimeError::Panic {
                         message: "break outside loop".into(),
@@ -380,7 +400,18 @@ impl Interpreter {
                 }
             };
 
-            self.execute_deferred()?;
+            if let Some(flow) = self.execute_deferred()? {
+                self.env.pop_scope();
+                return match flow {
+                    FlowSignal::Propagate(value) => Ok(vec![value]),
+                    other => Err(RuntimeError::Panic {
+                        message: format!(
+                            "Control flow {} not allowed when leaving function",
+                            flow_name(&other)
+                        ),
+                    }),
+                };
+            }
             self.env.pop_scope();
             Ok(values)
         })();
@@ -847,7 +878,10 @@ impl Interpreter {
         match statement {
             Statement::Let(stmt) => {
                 let value = match &stmt.value {
-                    Some(expr) => self.eval_expression(expr)?,
+                    Some(expr) => match self.eval_expression(expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    },
                     None => Value::Unit,
                 };
                 self.env
@@ -857,11 +891,17 @@ impl Interpreter {
             Statement::Assign(stmt) => {
                 match &stmt.target {
                     Expr::Identifier(ident) => {
-                        let value = self.eval_expression(&stmt.value)?;
+                        let value = match self.eval_expression(&stmt.value)? {
+                            EvalOutcome::Value(value) => value,
+                            EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                        };
                         self.env.assign(&ident.name, value)?;
                     }
                     Expr::Deref { expr, .. } => {
-                        let target = self.eval_expression(expr)?;
+                        let target = match self.eval_expression(expr)? {
+                            EvalOutcome::Value(value) => value,
+                            EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                        };
                         match target {
                             Value::Reference(reference) => {
                                 if !reference.mutable {
@@ -869,7 +909,10 @@ impl Interpreter {
                                         message: "Cannot assign through immutable reference".into(),
                                     });
                                 }
-                                let value = self.eval_expression(&stmt.value)?;
+                                let value = match self.eval_expression(&stmt.value)? {
+                                    EvalOutcome::Value(value) => value,
+                                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                                };
                                 *reference.cell.borrow_mut() = value;
                             }
                             _ => {
@@ -888,20 +931,26 @@ impl Interpreter {
                 }
                 Ok(None)
             }
-            Statement::Expr(stmt) => {
-                self.eval_expression(&stmt.expr)?;
-                Ok(None)
-            }
+            Statement::Expr(stmt) => match self.eval_expression(&stmt.expr)? {
+                EvalOutcome::Value(_) => Ok(None),
+                EvalOutcome::Flow(flow) => Ok(Some(flow)),
+            },
             Statement::Return(stmt) => {
                 let mut values = Vec::new();
                 for expr in &stmt.values {
-                    values.push(self.eval_expression(expr)?);
+                    match self.eval_expression(expr)? {
+                        EvalOutcome::Value(value) => values.push(value),
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    }
                 }
                 Ok(Some(FlowSignal::Return(values)))
             }
             Statement::While(stmt) => {
                 loop {
-                    let condition = self.eval_expression(&stmt.condition)?;
+                    let condition = match self.eval_expression(&stmt.condition)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
                     if !condition.as_bool() {
                         break;
                     }
@@ -911,12 +960,16 @@ impl Interpreter {
                         BlockEval::Flow(FlowSignal::Continue) => continue,
                         BlockEval::Flow(FlowSignal::Break) => break,
                         BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
                     }
                 }
                 Ok(None)
             }
             Statement::ForRange(stmt) => {
-                let range = self.eval_range_expr(&stmt.range)?;
+                let range = match self.eval_range_expr(&stmt.range)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                };
                 let end = if range.inclusive {
                     range.end + 1
                 } else {
@@ -926,13 +979,17 @@ impl Interpreter {
                     self.env.push_scope();
                     self.env.declare(&stmt.binding, Value::Int(i), false)?;
                     let result = self.eval_block(&stmt.body)?;
-                    self.execute_deferred()?;
+                    if let Some(flow) = self.execute_deferred()? {
+                        self.env.pop_scope();
+                        return Ok(Some(flow));
+                    }
                     self.env.pop_scope();
                     match result {
                         BlockEval::Value(_) => {}
                         BlockEval::Flow(FlowSignal::Continue) => continue,
                         BlockEval::Flow(FlowSignal::Break) => break,
                         BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
                     }
                 }
                 Ok(None)
@@ -954,31 +1011,63 @@ impl Interpreter {
         self.env.push_scope();
         for statement in &block.statements {
             if let Some(flow) = self.eval_statement(statement)? {
-                self.execute_deferred()?;
+                if let Some(defer_flow) = self.execute_deferred()? {
+                    self.env.pop_scope();
+                    return Ok(BlockEval::Flow(defer_flow));
+                }
                 self.env.pop_scope();
                 return Ok(BlockEval::Flow(flow));
             }
         }
-        let value = if let Some(tail) = &block.tail {
-            self.eval_expression(tail)?
+        let outcome = if let Some(tail) = &block.tail {
+            match self.eval_expression(tail)? {
+                EvalOutcome::Value(value) => BlockEval::Value(value),
+                EvalOutcome::Flow(flow) => BlockEval::Flow(flow),
+            }
         } else {
-            Value::Unit
+            BlockEval::Value(Value::Unit)
         };
-        self.execute_deferred()?;
-        self.env.pop_scope();
-        Ok(BlockEval::Value(value))
-    }
-
-    fn execute_deferred(&mut self) -> RuntimeResult<()> {
-        let mut deferred = self.env.drain_deferred();
-        while let Some(expr) = deferred.pop() {
-            self.eval_expression(&expr)?;
+        if let Some(flow) = self.execute_deferred()? {
+            self.env.pop_scope();
+            return Ok(BlockEval::Flow(flow));
         }
-        Ok(())
+        self.env.pop_scope();
+        Ok(outcome)
     }
 
-    fn eval_arguments(&mut self, args: &[Expr]) -> RuntimeResult<Vec<Value>> {
-        args.iter().map(|expr| self.eval_expression(expr)).collect()
+    fn execute_deferred(&mut self) -> RuntimeResult<Option<FlowSignal>> {
+        let mut deferred = self.env.drain_deferred();
+        let mut pending_flow: Option<FlowSignal> = None;
+        while let Some(expr) = deferred.pop() {
+            match self.eval_expression(&expr)? {
+                EvalOutcome::Value(_) => {}
+                EvalOutcome::Flow(FlowSignal::Propagate(value)) => {
+                    if pending_flow.is_none() {
+                        pending_flow = Some(FlowSignal::Propagate(value));
+                    }
+                }
+                EvalOutcome::Flow(flow) => {
+                    return Err(RuntimeError::Panic {
+                        message: format!(
+                            "Control flow {} not allowed in deferred expression",
+                            flow_name(&flow)
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(pending_flow)
+    }
+
+    fn eval_arguments(&mut self, args: &[Expr]) -> RuntimeResult<EvalOutcome<Vec<Value>>> {
+        let mut values = Vec::with_capacity(args.len());
+        for expr in args {
+            match self.eval_expression(expr)? {
+                EvalOutcome::Value(value) => values.push(value),
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            }
+        }
+        Ok(EvalOutcome::Value(values))
     }
 
     fn value_struct_name(&self, value: &Value) -> Option<String> {
@@ -990,7 +1079,7 @@ impl Interpreter {
         }
     }
 
-    fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {
+    fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<EvalOutcome<Value>> {
         match expr {
             Expr::Identifier(ident) => {
                 let value =
@@ -1004,34 +1093,59 @@ impl Interpreter {
                         name: ident.name.clone(),
                     });
                 }
-                Ok(value)
+                Ok(EvalOutcome::Value(value))
             }
-            Expr::Literal(lit) => Ok(match lit {
+            Expr::Literal(lit) => Ok(EvalOutcome::Value(match lit {
                 Literal::Int(value, _) => Value::Int(*value),
                 Literal::Float(value, _) => Value::Float(*value),
                 Literal::Bool(value, _) => Value::Bool(*value),
                 Literal::String(value, _) => Value::String(value.clone()),
                 Literal::Rune(value, _) => Value::Int(*value as i128),
-            }),
+            })),
+            Expr::Try { block, .. } => match self.eval_block(block)? {
+                BlockEval::Value(value) => {
+                    let wrapped = self.instantiate_enum("Result", "Ok", vec![value])?;
+                    Ok(EvalOutcome::Value(wrapped))
+                }
+                BlockEval::Flow(FlowSignal::Propagate(value)) => Ok(EvalOutcome::Value(value)),
+                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
+            Expr::TryPropagate { expr, .. } => match self.eval_expression(expr)? {
+                EvalOutcome::Value(value) => self.eval_try_operator(value),
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
             Expr::Binary {
                 op, left, right, ..
             } => {
-                let lhs = self.eval_expression(left)?;
-                let rhs = self.eval_expression(right)?;
+                let lhs = match self.eval_expression(left)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                let rhs = match self.eval_expression(right)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
                 self.eval_binary(*op, lhs, rhs)
+                    .map(EvalOutcome::Value)
             }
             Expr::Unary { op, expr, .. } => {
-                let value = self.eval_expression(expr)?;
-                match op {
+                let value = match self.eval_expression(expr)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                let evaluated = match op {
                     UnaryOp::Neg => match value {
-                        Value::Int(v) => Ok(Value::Int(-v)),
-                        Value::Float(v) => Ok(Value::Float(-v)),
-                        _ => Err(RuntimeError::TypeMismatch {
-                            message: "Unary - expects numeric value".into(),
-                        }),
+                        Value::Int(v) => Value::Int(-v),
+                        Value::Float(v) => Value::Float(-v),
+                        _ => {
+                            return Err(RuntimeError::TypeMismatch {
+                                message: "Unary - expects numeric value".into(),
+                            })
+                        }
                     },
-                    UnaryOp::Not => Ok(Value::Bool(!value.as_bool())),
-                }
+                    UnaryOp::Not => Value::Bool(!value.as_bool()),
+                };
+                Ok(EvalOutcome::Value(evaluated))
             }
             Expr::Call {
                 callee,
@@ -1040,18 +1154,24 @@ impl Interpreter {
                 ..
             } => match callee.as_ref() {
                 Expr::Identifier(ident) => {
-                    let arg_values = self.eval_arguments(args)?;
+                    let arg_values = match self.eval_arguments(args)? {
+                        EvalOutcome::Value(values) => values,
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    };
                     if let Some(variant) = self.enum_variants.get(&ident.name) {
                         let enum_name = variant.enum_name.clone();
                         let variant_name = ident.name.clone();
-                        return self.instantiate_enum(&enum_name, &variant_name, arg_values);
+                        let value =
+                            self.instantiate_enum(&enum_name, &variant_name, arg_values)?;
+                        return Ok(EvalOutcome::Value(value));
                     }
                     let results = self.call_function(&ident.name, None, type_args, arg_values)?;
-                    Ok(match results.len() {
+                    let value = match results.len() {
                         0 => Value::Unit,
                         1 => results.into_iter().next().unwrap(),
                         _ => Value::Tuple(results),
-                    })
+                    };
+                    Ok(EvalOutcome::Value(value))
                 }
                 Expr::FieldAccess { base, field, .. } => {
                     if let Expr::Identifier(module_ident) = base.as_ref() {
@@ -1061,44 +1181,58 @@ impl Interpreter {
                             receiver: None,
                             type_args: None,
                         }) {
-                            let arg_values = self.eval_arguments(args)?;
+                            let arg_values = match self.eval_arguments(args)? {
+                                EvalOutcome::Value(values) => values,
+                                EvalOutcome::Flow(flow) => {
+                                    return Ok(EvalOutcome::Flow(flow));
+                                }
+                            };
                             let results =
                                 self.call_function(&qualified, None, type_args, arg_values)?;
-                            return Ok(match results.len() {
+                            let value = match results.len() {
                                 0 => Value::Unit,
                                 1 => results.into_iter().next().unwrap(),
                                 _ => Value::Tuple(results),
-                            });
+                            };
+                            return Ok(EvalOutcome::Value(value));
                         }
                     }
-                    let receiver = self.eval_expression(base)?;
+                    let receiver = match self.eval_expression(base)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    };
                     let receiver_type = self.value_struct_name(&receiver);
-                    let mut method_args = Vec::with_capacity(args.len() + 1);
-                    method_args.push(receiver);
-                    for expr in args {
-                        method_args.push(self.eval_expression(expr)?);
-                    }
+                    let mut method_args = match self.eval_arguments(args)? {
+                        EvalOutcome::Value(values) => values,
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    };
+                    method_args.insert(0, receiver);
                     let results =
                         self.call_function(field, receiver_type, type_args, method_args)?;
-                    Ok(match results.len() {
+                    let value = match results.len() {
                         0 => Value::Unit,
                         1 => results.into_iter().next().unwrap(),
                         _ => Value::Tuple(results),
-                    })
+                    };
+                    Ok(EvalOutcome::Value(value))
                 }
                 _ => Err(RuntimeError::Unsupported {
                     message: "Unsupported call target".into(),
                 }),
             },
             Expr::FieldAccess { base, field, .. } => {
-                let value = self.eval_expression(base)?;
+                let value = match self.eval_expression(base)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
                 match value {
                     Value::Struct(instance) => {
-                        instance
-                            .get_field(field)
-                            .ok_or_else(|| RuntimeError::UnknownSymbol {
+                        let field_value = instance.get_field(field).ok_or_else(|| {
+                            RuntimeError::UnknownSymbol {
                                 name: field.clone(),
-                            })
+                            }
+                        })?;
+                        Ok(EvalOutcome::Value(field_value))
                     }
                     _ => Err(RuntimeError::TypeMismatch {
                         message: "Field access requires struct value".into(),
@@ -1108,67 +1242,64 @@ impl Interpreter {
             Expr::StructLiteral { name, fields, .. } => self.instantiate_struct(name, fields),
             Expr::Match(expr) => self.eval_match(expr),
             Expr::Block(block) => match self.eval_block(block)? {
-                BlockEval::Value(value) => Ok(value),
-                BlockEval::Flow(flow) => Err(RuntimeError::Panic {
-                    message: format!(
-                        "Control flow {} not allowed in expression",
-                        flow_name(&flow)
-                    ),
-                }),
+                BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::If(if_expr) => {
-                let condition = self.eval_expression(&if_expr.condition)?;
+                let condition = match self.eval_expression(&if_expr.condition)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
                 if condition.as_bool() {
                     match self.eval_block(&if_expr.then_branch)? {
-                        BlockEval::Value(value) => Ok(value),
-                        BlockEval::Flow(flow) => Err(RuntimeError::Panic {
-                            message: format!(
-                                "Control flow {} not allowed in expression",
-                                flow_name(&flow)
-                            ),
-                        }),
+                        BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                        BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                     }
                 } else if let Some(else_block) = &if_expr.else_branch {
                     match self.eval_block(else_block)? {
-                        BlockEval::Value(value) => Ok(value),
-                        BlockEval::Flow(flow) => Err(RuntimeError::Panic {
-                            message: format!(
-                                "Control flow {} not allowed in expression",
-                                flow_name(&flow)
-                            ),
-                        }),
+                        BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                        BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                     }
                 } else {
-                    Ok(Value::Unit)
+                    Ok(EvalOutcome::Value(Value::Unit))
                 }
             }
             Expr::Tuple(values, _) => {
-                let evaluated = values
-                    .iter()
-                    .map(|expr| self.eval_expression(expr))
-                    .collect::<RuntimeResult<Vec<_>>>()?;
-                Ok(Value::Tuple(evaluated))
+                let mut evaluated = Vec::with_capacity(values.len());
+                for expr in values {
+                    match self.eval_expression(expr)? {
+                        EvalOutcome::Value(value) => evaluated.push(value),
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    }
+                }
+                Ok(EvalOutcome::Value(Value::Tuple(evaluated)))
             }
             Expr::Range(range) => {
-                let range_value = self.eval_range_expr(range)?;
-                Ok(Value::Range(range_value))
+                match self.eval_range_expr(range)? {
+                    EvalOutcome::Value(range_value) => Ok(EvalOutcome::Value(Value::Range(range_value))),
+                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                }
             }
             Expr::Reference { mutable, expr, .. } => self.build_reference(expr, *mutable),
             Expr::Deref { expr, .. } => {
-                let value = self.eval_expression(expr)?;
-                match value {
-                    Value::Reference(reference) => Ok(reference.cell.borrow().clone()),
-                    _ => Err(RuntimeError::TypeMismatch {
+                match self.eval_expression(expr)? {
+                    EvalOutcome::Value(Value::Reference(reference)) => {
+                        Ok(EvalOutcome::Value(reference.cell.borrow().clone()))
+                    }
+                    EvalOutcome::Value(_) => Err(RuntimeError::TypeMismatch {
                         message: "Cannot dereference non-reference value".into(),
                     }),
+                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                 }
             }
             Expr::ArrayLiteral(values, _) => self.eval_array_literal(values),
-            Expr::Move { expr, .. } => self.eval_move_expression(expr),
+            Expr::Move { expr, .. } => self
+                .eval_move_expression(expr)
+                .map(EvalOutcome::Value),
         }
     }
 
-    fn build_reference(&mut self, expr: &Expr, mutable: bool) -> RuntimeResult<Value> {
+    fn build_reference(&mut self, expr: &Expr, mutable: bool) -> RuntimeResult<EvalOutcome<Value>> {
         match expr {
             Expr::Identifier(ident) => {
                 let (cell, binding_mut) =
@@ -1187,29 +1318,36 @@ impl Interpreter {
                         name: ident.name.clone(),
                     });
                 }
-                Ok(Value::Reference(ReferenceValue {
+                Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
                     cell,
                     mutable,
                     origin: Some(ident.name.clone()),
-                }))
+                })))
             }
             _ => {
-                let value = self.eval_expression(expr)?;
-                Ok(Value::Reference(ReferenceValue {
-                    cell: Rc::new(RefCell::new(value)),
-                    mutable,
-                    origin: None,
-                }))
+                match self.eval_expression(expr)? {
+                    EvalOutcome::Value(value) => Ok(EvalOutcome::Value(Value::Reference(
+                        ReferenceValue {
+                            cell: Rc::new(RefCell::new(value)),
+                            mutable,
+                            origin: None,
+                        },
+                    ))),
+                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                }
             }
         }
     }
 
-    fn eval_array_literal(&mut self, values: &[Expr]) -> RuntimeResult<Value> {
+    fn eval_array_literal(&mut self, values: &[Expr]) -> RuntimeResult<EvalOutcome<Value>> {
         let mut items = Vec::with_capacity(values.len());
         for expr in values {
-            items.push(self.eval_expression(expr)?);
+            match self.eval_expression(expr)? {
+                EvalOutcome::Value(value) => items.push(value),
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            }
         }
-        Ok(Value::Slice(SliceValue::from_vec(items)))
+        Ok(EvalOutcome::Value(Value::Slice(SliceValue::from_vec(items))))
     }
 
     fn eval_move_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {
@@ -1254,15 +1392,21 @@ impl Interpreter {
         matches!(value, Value::Boxed(_) | Value::Slice(_) | Value::Map(_))
     }
 
-    fn eval_match(&mut self, expr: &MatchExpr) -> RuntimeResult<Value> {
-        let target = self.eval_expression(&expr.expr)?;
+    fn eval_match(&mut self, expr: &MatchExpr) -> RuntimeResult<EvalOutcome<Value>> {
+        let target = match self.eval_expression(&expr.expr)? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
         for arm in &expr.arms {
             self.env.push_scope();
             if self.match_pattern(&arm.pattern, &target)? {
-                let value = self.eval_expression(&arm.value)?;
-                self.execute_deferred()?;
+                let outcome = self.eval_expression(&arm.value)?;
+                if let Some(flow) = self.execute_deferred()? {
+                    self.env.pop_scope();
+                    return Ok(EvalOutcome::Flow(flow));
+                }
                 self.env.pop_scope();
-                return Ok(value);
+                return Ok(outcome);
             }
             self.env.pop_scope();
         }
@@ -1336,7 +1480,7 @@ impl Interpreter {
         &mut self,
         name: &str,
         fields: &StructLiteralKind,
-    ) -> RuntimeResult<Value> {
+    ) -> RuntimeResult<EvalOutcome<Value>> {
         let def = self
             .structs
             .get(name)
@@ -1352,7 +1496,10 @@ impl Interpreter {
         match fields {
             StructLiteralKind::Named(named_fields) => {
                 for field in named_fields {
-                    let value = self.eval_expression(&field.value)?;
+                    let value = match self.eval_expression(&field.value)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    };
                     field_map.insert(field.name.clone(), value);
                 }
             }
@@ -1370,7 +1517,10 @@ impl Interpreter {
                 for (field_def, expr) in def.fields.iter().zip(values.iter()) {
                     let is_embedded = field_def.embedded;
                     let field_name = field_def.name.clone();
-                    let value = self.eval_expression(expr)?;
+                    let value = match self.eval_expression(expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    };
                     if is_embedded {
                         embedded.push(value);
                     } else if let Some(field_name) = field_name {
@@ -1380,11 +1530,11 @@ impl Interpreter {
             }
         }
 
-        Ok(Value::Struct(StructInstance {
+        Ok(EvalOutcome::Value(Value::Struct(StructInstance {
             name: name.to_string(),
             fields: field_map,
             embedded,
-        }))
+        })))
     }
 
     fn instantiate_enum(
@@ -1513,9 +1663,15 @@ impl Interpreter {
         }
     }
 
-    fn eval_range_expr(&mut self, range: &RangeExpr) -> RuntimeResult<RangeValue> {
-        let start = self.eval_expression(&range.start)?;
-        let end = self.eval_expression(&range.end)?;
+    fn eval_range_expr(&mut self, range: &RangeExpr) -> RuntimeResult<EvalOutcome<RangeValue>> {
+        let start = match self.eval_expression(&range.start)? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
+        let end = match self.eval_expression(&range.end)? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
         let start_int = match start {
             Value::Int(v) => v,
             _ => {
@@ -1532,11 +1688,45 @@ impl Interpreter {
                 });
             }
         };
-        Ok(RangeValue {
+        Ok(EvalOutcome::Value(RangeValue {
             start: start_int,
             end: end_int,
             inclusive: range.inclusive,
-        })
+        }))
+    }
+
+    fn eval_try_operator(&self, value: Value) -> RuntimeResult<EvalOutcome<Value>> {
+        match value {
+            Value::Enum(enum_value) => {
+                if enum_value.enum_name != "Result" {
+                    return Err(RuntimeError::TypeMismatch {
+                        message: "? operator expects Result value".into(),
+                    });
+                }
+                match enum_value.variant.as_str() {
+                    "Ok" => {
+                        if enum_value.values.is_empty() {
+                            Ok(EvalOutcome::Value(Value::Unit))
+                        } else if enum_value.values.len() == 1 {
+                            Ok(EvalOutcome::Value(
+                                enum_value.values.into_iter().next().unwrap(),
+                            ))
+                        } else {
+                            Ok(EvalOutcome::Value(Value::Tuple(enum_value.values)))
+                        }
+                    }
+                    "Err" => Ok(EvalOutcome::Flow(FlowSignal::Propagate(Value::Enum(
+                        enum_value,
+                    )))),
+                    _ => Err(RuntimeError::TypeMismatch {
+                        message: "? operator expects Result value".into(),
+                    }),
+                }
+            }
+            _ => Err(RuntimeError::TypeMismatch {
+                message: "? operator expects Result value".into(),
+            }),
+        }
     }
 }
 
@@ -1545,6 +1735,7 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
         FlowSignal::Break => "break",
         FlowSignal::Continue => "continue",
         FlowSignal::Return(_) => "return",
+        FlowSignal::Propagate(_) => "error propagation",
     }
 }
 fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {

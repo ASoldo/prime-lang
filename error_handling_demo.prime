@@ -1,0 +1,49 @@
+module demos::error_handling;
+
+import core::types;
+
+fn parse_energy(value: int32) -> Result[int32, string] {
+  if value < 0 {
+    Err("energy below zero")
+  } else {
+    Ok(value)
+  }
+}
+
+fn apply_boost(value: int32) -> Result[int32, string] {
+  let int32 parsed = parse_energy(value)?;
+  if parsed % 2 == 0 {
+    Ok(parsed * 2)
+  } else {
+    Err("boost requires even energy")
+  }
+}
+
+fn calibrate_profile(value: int32) -> Result[int32, string] {
+  try {
+  let int32 boosted = apply_boost(value)?;
+  boosted + 5
+}
+}
+
+fn log_result(label: string, outcome: Result[int32, string]) {
+  match outcome {
+    Ok(score) => {
+      out(label);
+      out(" => success");
+      out(score);
+    },
+    Err(message) => {
+      out(label);
+      out(" => error");
+      out(message);
+    },
+  };
+}
+
+fn main() {
+  out("--- error handling demo ---");
+  log_result("stable", calibrate_profile(40));
+  log_result("odd energy", calibrate_profile(35));
+  log_result("overflow", calibrate_profile(140));
+}

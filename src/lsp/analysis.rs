@@ -168,6 +168,8 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
 fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
     match expr {
         Expr::Identifier(_) | Expr::Literal(_) => {}
+        Expr::Try { block, .. } => collect_decl_from_block(block, decls),
+        Expr::TryPropagate { expr: inner, .. } => collect_decl_from_expr(inner, decls),
         Expr::Binary { left, right, .. } => {
             collect_decl_from_expr(left, decls);
             collect_decl_from_expr(right, decls);
@@ -337,6 +339,8 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
             used.insert(ident.name.clone());
         }
         Expr::Literal(_) => {}
+        Expr::Try { block, .. } => collect_used_in_block(block, used),
+        Expr::TryPropagate { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Binary { left, right, .. } => {
             collect_expr_idents(left, used);
             collect_expr_idents(right, used);
@@ -423,6 +427,8 @@ pub fn expr_span(expr: &Expr) -> Span {
         | Expr::Literal(Literal::Bool(_, span))
         | Expr::Literal(Literal::String(_, span))
         | Expr::Literal(Literal::Rune(_, span)) => *span,
+        Expr::Try { span, .. } => *span,
+        Expr::TryPropagate { span, .. } => *span,
         Expr::Binary { span, .. } => *span,
         Expr::Unary { span, .. } => *span,
         Expr::Call { span, .. } => *span,
