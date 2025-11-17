@@ -9,6 +9,13 @@
 - **Tooling**: `prime run/build/fmt/lint` plus the LSP use the manifest graph (`prime.toml` v2) to resolve modules, imports, interfaces, and impl blocks. Treesitter/formatter keep indentation/mappings in sync with the new module/import syntax.
 
 ## Recent Milestones
+- Split the tooling into `src/tools/` so `lsp`, `lint`, `formatter`, and
+  diagnostics live in their own module instead of bloating `src/`.
+- Added declaration support to the LSP, so Neovim’s `gD` works the same way as
+  `gd`.
+- LSP member completion now includes methods defined in `impl Interface for
+  Struct` blocks (e.g. `hero.label()` from Nameable impls), matching the
+  examples in the demos.
 - Tree-sitter + Neovim updates: grammar covers `module`, `pub import`, interfaces/impls, and scoped identifiers; highlights/Aerial queries follow the new nodes in lock-step with the parser.
 - Manifest-aware lint/formatter: `prime lint` surfaces missing headers/duplicate imports/manifest mismatches; `prime fmt` auto-inserts module declarations based on `prime.toml`.
 - LSP improvements: scope-aware type tracking feeds completions/hover, so `self`/parameters resolve to the correct struct, chained completions like `self.position.x` work, and interface-typed values still expose their methods with manifest-aware visibility checks.
@@ -33,4 +40,9 @@
 - Extend `prime.toml` tooling: lint/formatter should resolve modules via the manifest, validate entry modules, and warn on private-item leaks. Hook package metadata into LSP diagnostics/hover.
 - Surface manifest drift diagnostics in CLI (`prime lint`/`prime build`) so users get the same missing-file warnings outside the editor.
 - Build the manifest-aware go-to-def/reference cache and land identical diagnostics/fixes in `prime fmt`/`prime lint` so CLI + editor experiences stay aligned.
+- Ensure demo modules avoid reserved keywords in their module paths (e.g. rename
+  `demos::interface` ➜ `demos::interface_demo`), and teach the parser to emit a
+  clearer diagnostic when a keyword sneaks into a path.
+- Add regression coverage for completion at `hero.` and other interface-impl
+  method sites so future refactors keep LSP behavior in sync.
 - Once packaging lands, finish the error-handling sugar and remove deprecated slice/map helpers.

@@ -7,6 +7,19 @@ parsing, interpretation, LLVM code generation, and Neovim integrations. This
 repository contains the compiler/interpreter (`prime-lang`), the LSP server, and
 the CLI utilities you use while editing `.prime` files.
 
+### Project Layout
+
+```
+src/
+ ├─ language/   # parser + AST + compiler lowering
+ ├─ runtime/    # interpreter + value/runtime support
+ └─ tools/      # editor tooling: formatter, lint, diagnostics, LSP
+```
+
+The `tools` module now owns the previously huge `formatter.rs`, `lint.rs`,
+`diagnostics.rs`, and `lsp.rs` files, which keeps the main binary lean and makes
+each tool easier to navigate.
+
 ---
 
 ## Quick Start
@@ -305,6 +318,8 @@ VS Code, Helix, and any other LSP client can plug in. Capabilities include:
 - structured completions (locals, structs, enums, constants, keywords)
 - `textDocument/formatting` via the built-in formatter
 - document symbols
+- method completions include interface impls, so `hero.label()` (from
+  `impl Nameable for Hero`) pops up next to data fields just like direct methods.
 
 Minimal `nvim-lspconfig` setup (Blink’s capabilities optional but recommended):
 
