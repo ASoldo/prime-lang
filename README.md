@@ -275,6 +275,12 @@ return {
 
       lspconfig.primelang.setup {
         on_attach = function(client, bufnr)
+          local map = function(lhs, rhs, desc)
+            vim.keymap.set("n", lhs, rhs, { buffer = bufnr, desc = desc })
+          end
+          map("gd", vim.lsp.buf.definition, "Go to definition (Prime)")
+          map("gD", vim.lsp.buf.declaration, "Go to declaration (Prime)")
+
           if client.server_capabilities.documentFormattingProvider then
             vim.api.nvim_create_autocmd("BufWritePre", {
               buffer = bufnr,
@@ -321,6 +327,12 @@ end
 lspconfig.primelang.setup {
   capabilities = capabilities,
   on_attach = function(client, bufnr)
+    local map = function(lhs, rhs, desc)
+      vim.keymap.set("n", lhs, rhs, { buffer = bufnr, desc = desc })
+    end
+    map("gd", vim.lsp.buf.definition, "Go to definition (Prime)")
+    map("gD", vim.lsp.buf.declaration, "Go to declaration (Prime)")
+
     if client.server_capabilities.documentFormattingProvider then
       vim.api.nvim_create_autocmd("BufWritePre", {
         buffer = bufnr,
@@ -330,6 +342,12 @@ lspconfig.primelang.setup {
   end,
 }
 ```
+
+> **AstroNvim tip:** drop the same `on_attach` block (or use `astrocore`'s
+> `opts.mappings.n["gd"] = ...`) inside your `user/plugins/*.lua` spec so that
+> `gd`/`gD` invoke the LSP. Without explicit keymaps Neovim falls back to its
+> built-in backward search, which only finds definitions that appear above the
+> cursor.
 
 ### Treesitter Highlighting & Symbols
 

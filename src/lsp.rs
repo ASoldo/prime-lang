@@ -485,6 +485,7 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
@@ -4075,5 +4076,24 @@ fn heal(player: Player) {
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
         assert!(labels.contains(&"x"));
         assert!(labels.contains(&"y"));
+    }
+
+    #[test]
+    fn goto_definition_finds_function_defined_below() {
+        use std::fs;
+        let source = fs::read_to_string("main.prime").expect("main.prime");
+        let module =
+            parse_module("app::main", PathBuf::from("main.prime"), &source).expect("module");
+        let tokens = lex(&source).expect("tokens");
+        let call_offset = source
+            .find("run_encounter(mission_ready, scout, brute)")
+            .expect("call site");
+        let (name, _) = identifier_at(&tokens, call_offset).expect("call identifier");
+        assert_eq!(name, "run_encounter");
+        let def_span = find_module_item_span(&module, &name).expect("definition span");
+        let start = def_span.start;
+        let end = (start + "run_encounter".len()).min(source.len());
+        let snippet = &source[start..end];
+        assert_eq!(snippet, "run_encounter");
     }
 }
