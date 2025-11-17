@@ -5,8 +5,11 @@ mod tools;
 mod lsp;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use language::{ast::Module, compiler::Compiler, parser::parse_module};
-use project::{FileErrors, PackageError, find_manifest, load_package, manifest::PackageManifest};
+use language::{compiler::Compiler, parser::parse_module};
+use project::{
+    apply_manifest_header, warn_manifest_drift, FileErrors, PackageError, find_manifest,
+    load_package, manifest::PackageManifest,
+};
 use runtime::Interpreter;
 use std::{
     env, fs, io,
@@ -536,43 +539,4 @@ fn ensure_module_header(path: &Path, module_name: &str) -> Result<(), Box<dyn st
     updated.push_str(&contents);
     fs::write(path, updated)?;
     Ok(())
-}
-fn apply_manifest_header(path: &Path, module: &mut Module) {
-    let Some(manifest_path) = find_manifest(path) else {
-        return;
-    };
-    let Ok(manifest) = PackageManifest::load(&manifest_path) else {
-        return;
-    };
-    if module.declared_name.is_none() {
-        if let Some(name) = manifest.module_name_for_path(path) {
-            module.declared_name = Some(name);
-        }
-    }
-}
-
-fn warn_manifest_drift(start: &Path) {
-    let Some(manifest_path) = find_manifest(start) else {
-        return;
-    };
-    let manifest = match PackageManifest::load(&manifest_path) {
-        Ok(manifest) => manifest,
-        Err(err) => {
-            eprintln!(
-                "prime-lang warning: failed to load manifest {}: {:?}",
-                manifest_path.display(),
-                err
-            );
-            return;
-        }
-    };
-    for entry in manifest.module_entries() {
-        if !entry.path.exists() {
-            eprintln!(
-                "prime-lang warning: manifest module `{}` points to missing file `{}`",
-                entry.name,
-                entry.path.display()
-            );
-        }
-    }
 }

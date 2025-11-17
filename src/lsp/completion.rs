@@ -966,3 +966,109 @@ fn struct_name_from_type<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::manifest::PackageManifest;
+    use std::fs;
+    use tempfile::tempdir;
+    use tower_lsp_server::lsp_types::CompletionTriggerKind;
+
+    struct ManifestEntry<'a> {
+        name: &'a str,
+        path: &'a str,
+        visibility: &'a str,
+        package: Option<&'a str>,
+        doc: Option<&'a str>,
+    }
+
+    fn manifest_with_entries(entries: &[ManifestEntry<'_>]) -> (tempfile::TempDir, PackageManifest) {
+        let dir = tempdir().expect("tempdir");
+        let manifest_path = dir.path().join("prime.toml");
+        let mut manifest = String::from(
+            r#"manifest_version = "2"
+
+[package]
+name = "demo"
+version = "0.1.0"
+kind = "binary"
+entry = "demo::main"
+"#,
+        );
+        for entry in entries {
+            let module_path = dir.path().join(entry.path);
+            if let Some(parent) = module_path.parent() {
+                fs::create_dir_all(parent).expect("create module dir");
+            }
+            fs::write(&module_path, "module demo;").expect("write module");
+            manifest.push_str("\n[[modules]]\n");
+            manifest.push_str(&format!("name = \"{}\"\n", entry.name));
+            manifest.push_str(&format!("path = \"{}\"\n", entry.path));
+            manifest.push_str(&format!("visibility = \"{}\"\n", entry.visibility));
+            if let Some(package) = entry.package {
+                manifest.push_str(&format!("package = \"{}\"\n", package));
+            }
+            if let Some(doc) = entry.doc {
+                manifest.push_str(&format!("doc = \"{}\"\n", doc));
+            }
+        }
+        fs::write(&manifest_path, manifest).expect("write manifest");
+        let manifest = PackageManifest::load(&manifest_path).expect("load manifest");
+        (dir, manifest)
+    }
+
+    #[test]
+    fn detects_module_context_in_declarations() {
+        let text = "module demo::core;";
+        let ctx = module_path_completion_context(text, text.len()).expect("context");
+        assert!(matches!(
+            ctx.kind,
+            ModulePathCompletionKind::Declaration
+        ));
+        assert_eq!(ctx.prefix.as_deref(), Some("demo::core"));
+    }
+
+    #[test]
+    fn module_completion_prioritizes_expected_entry() {
+        let entries = [
+            ManifestEntry {
+                name: "app::main",
+                path: "src/main.prime",
+                visibility: "pub",
+                package: Some("app"),
+                doc: Some("app entry"),
+            },
+            ManifestEntry {
+                name: "lib::math",
+                path: "lib/math.prime",
+                visibility: "package",
+                package: None,
+                doc: None,
+            },
+        ];
+        let (_dir, manifest) = manifest_with_entries(&entries);
+        let prioritized =
+            module_completion_items_from_manifest(&manifest, Some("app"), Some("app::main"));
+        assert!(!prioritized.is_empty());
+        assert_eq!(prioritized[0].label, "app::main");
+
+        let all_items = module_completion_items_from_manifest(&manifest, None, None);
+        let lib = all_items
+            .iter()
+            .find(|item| item.label == "lib::math")
+            .expect("lib completion item");
+        let detail = lib.detail.as_ref().expect("detail");
+        assert!(detail.contains("[package]"));
+    }
+
+    #[test]
+    fn completion_prefix_uses_trigger_when_identifier_missing() {
+        let ctx = CompletionContext {
+            trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+            trigger_character: Some("a".into()),
+        };
+        let prefix = completion_prefix("a", 0, Some(&ctx)).expect("prefix");
+        assert_eq!(prefix, "a");
+    }
+}

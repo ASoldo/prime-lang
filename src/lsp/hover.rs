@@ -364,7 +364,7 @@ fn hover_for_interface_method_definition(
     for item in &module.items {
         if let Item::Interface(def) = item {
             for method in &def.methods {
-                if method.name == name {
+                if method.name == name && span_contains(method.span, usage_span.start) {
                     let mut value = String::new();
                     value.push_str("```prime\n");
                     value.push_str(&format_interface_method_signature(method, None));
@@ -480,4 +480,79 @@ fn markdown_hover(text: &str, span: Span, value: String) -> Hover {
 
 fn span_contains(span: Span, offset: usize) -> bool {
     offset >= span.start && offset <= span.end
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::language::{lexer::lex, parser::parse_module};
+    use crate::lsp::completion::collect_struct_info;
+    use std::path::PathBuf;
+    use tower_lsp_server::lsp_types::HoverContents;
+
+    #[test]
+    fn collects_var_infos_with_types_and_values() {
+        let text = "let score: int32 = 10;\nlet mut label = \"hero\";";
+        let tokens = lex(text).expect("lex tokens");
+        let vars = collect_var_infos(text, &tokens);
+        assert_eq!(vars.len(), 2);
+        assert_eq!(vars[0].name, "score");
+        assert_eq!(vars[0].ty.as_deref(), Some("int32"));
+        assert_eq!(vars[0].expr_text.as_deref(), Some("10"));
+        assert_eq!(vars[1].name, "label");
+        assert!(vars[1].ty.is_none());
+        assert_eq!(vars[1].expr_text.as_deref(), Some("\"hero\""));
+    }
+
+    #[test]
+    fn hover_returns_struct_definition_for_usage() {
+        let text = r#"module demo::main;
+
+struct Player {
+  name: string;
+}
+
+fn main() {
+  let hero = Player { name: "Prime" };
+  out(hero.name);
+}
+"#;
+        let tokens = lex(text).expect("lex tokens");
+        let module = parse_module("demo::main", PathBuf::from("demo.prime"), text)
+            .expect("parse module");
+        let structs = collect_struct_info(&[module.clone()]);
+        let player_usage = tokens
+            .iter()
+            .filter(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "Player"))
+            .nth(1)
+            .expect("second Player token");
+        let hover = hover_for_token(text, player_usage, &[], Some(&module), Some(&structs))
+            .expect("hover result");
+        match hover.contents {
+            HoverContents::Markup(content) => {
+                assert!(content.value.contains("struct Player"));
+                assert!(content.value.contains("name: string"));
+            }
+            _ => panic!("expected markup hover"),
+        }
+    }
+
+    #[test]
+    fn hover_returns_var_info_snippet() {
+        let text = "let mut score: int32 = 10;";
+        let tokens = lex(text).expect("lex tokens");
+        let vars = collect_var_infos(text, &tokens);
+        let token = tokens
+            .iter()
+            .find(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "score"))
+            .expect("score token");
+        let hover = hover_for_token(text, token, &vars, None, None).expect("hover result");
+        match hover.contents {
+            HoverContents::Markup(content) => {
+                assert!(content.value.contains("let score: int32 = 10;"));
+                assert!(content.value.contains("Type: `int32`"));
+            }
+            _ => panic!("expected markup hover"),
+        }
+    }
 }

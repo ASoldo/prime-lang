@@ -1,4 +1,8 @@
 pub mod manifest;
 mod package;
+pub mod program;
 
-pub use package::{find_manifest, load_package, FileErrors, Package, PackageError};
+pub use program::{
+    apply_manifest_header, find_manifest, load_package, warn_manifest_drift, FileErrors, Package,
+    PackageError,
+};
