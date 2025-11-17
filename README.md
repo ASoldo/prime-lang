@@ -33,12 +33,16 @@ cargo install --path .
 prime-lang run main.prime         # interpret
 prime-lang build main.prime       # emit LLVM, link to ./.build.prime/output
 ./.build.prime/output/output      # run the native binary
+# Try another module: prime-lang run --entry demos::error_handling
 ```
 
 The repository ships with `main.prime` so you can confirm the full toolchain
 works end‑to‑end immediately after building. As of the April 2026 compiler
 updates the emitted native binary now exits with status code `0`, so scripting
 and CI integrations no longer see spurious failures after a successful build.
+Build-mode now mirrors the interpreter for control flow (`return`/`break`/`continue`)
+and for the new `try {}` / `?` sugar, so you can rely on identical semantics in both
+`prime run` and `prime build`.
 
 ## Language Basics
 
@@ -134,6 +138,8 @@ match damage {
 
 if hero.hp < 50 {
   out("status: fragile");
+} else if hero.hp > 250 {
+  out("status: unstoppable");
 } else {
   out("status: ready");
 }
@@ -176,6 +182,36 @@ fn calibrate_station(name: string) {
 - `&T` is a reference. You must dereference explicitly (`*target`) when copying.
 - `&mut T` gates mutation.
 - `defer` schedules work to run when the current scope exits—ideal for cleanup.
+
+### Error Handling (`Result`, `try`, `?`)
+
+```prime
+fn apply_boost(value: int32) -> Result[int32, string] {
+  let int32 parsed = parse_energy(value)?;
+  if parsed % 2 == 0 {
+    Ok(parsed * 2)
+  } else {
+    Err("boost requires even energy")
+  }
+}
+
+fn calibrate_profile(value: int32) -> Result[int32, string] {
+  try {
+    let int32 boosted = apply_boost(value)?;
+    boosted + 5
+  }
+}
+```
+
+- `try { ... }` wraps the final expression in `Result::Ok` and propagates any
+  `FlowSignal::Propagate` out of the block automatically—perfect for composing
+  fallible helpers.
+- The postfix `?` operator unwraps `Result::Ok` (returning the payload) or
+  triggers an early `Err` by propagating the current value outward. Both the
+  interpreter and build-mode backend now honor this control flow.
+
+See `demos/error_handling_demo.prime` for a full example that mixes `try {}`,
+`?`, and the multiple-return `span_measurements` helper.
 
 ### Built-in I/O & APIs
 

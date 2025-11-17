@@ -2,7 +2,7 @@
 
 ## Core Language (as of March 2026)
 - **Type System**: Explicit scalar types (bool, rune, int8-64, uint8-64, isize/usize, float32/64, string) plus user structs/enums with embedding. Slice (`[]T`) and map (`Map[K, V]`) literals are parsed into real AST nodes rather than helper calls.
-- **Control flow**: `if/else`, `for range`, `while`, `match` expressions with exhaustive checking, `break/continue`, `return`, `defer` for deterministic cleanup.
+- **Control flow**: `if/else` (including chained `else if`), `for range`, `while`, `match` expressions with exhaustive checking, `break/continue`, `return`, `defer` for deterministic cleanup, plus `try {}` / postfix `?` sugar for `Result`.
 - **Functions**: Free functions with explicit parameters/returns, multiple return values (tuple style), method-call sugar (`player.heal()` desugars to `heal(player)`), immutable-by-default bindings with `let`/`let mut`.
 - **Memory model**: Heap-backed boxes/slices/maps exist as first-class runtime values. Move semantics guard heap-owning identifiers (`let moved = move counter;`) and a simple borrow stack enforces “one mutable borrow at a time” for `&mut`.
 - **Interfaces**: Static `interface Foo { fn bar(hero: Hero) -> ... }` with `impl Foo for Hero { ... }`. Calls remain zero-cost (no vtables) and reuse the function registry. Formatter/LSP understand interfaces, generic impls, move semantics, and symbolic imports/manifests.
@@ -31,14 +31,14 @@
   produces native binaries that exit with status code 0 (no more CI flakes).
 - Moved package-loading logic into `src/project/package.rs` so the CLI/LSP share
   the same manifest traversal code without keeping everything in `mod.rs`.
+- Dedicated control-flow layer for build mode: compiler now mirrors the interpreter’s `FlowSignal`/`EvalOutcome`, so `return`/`break`/`continue`, `try {}`/`?`, and multi-value returns work identically across interpreter + LLVM backend. Parser/formatter/LSP were updated to support chained `else if`, and `error_handling_demo.prime` showcases the new flow with `Result` + tuple returns.
 
 ## In-Progress / Deferred
 1. **Module/Packaging metadata** – Manifest parsing (`prime.toml`) and `pub` visibility are wired in, but tooling still needs to enforce accessibility in linters/formatters, validate manifests, and expose package metadata to IDEs. Dependency resolution across manifests remains open.
 2. **Manifest-aware navigation cache** – Symbol index/go-to-def/reference queries must preload modules declared in the manifest, honor visibility (`pub`/package/private), and work even if files aren’t opened in the editor.
 3. **Formatter/lint parity** – `prime fmt`/`prime lint` need to share the same manifest/module/import diagnostics so CLI workflows match the LSP (missing headers, duplicate imports, manifest mismatches, suggested quick-fixes).
-4. **Error-Handling Sugar** – Provide `try`/`?` syntax for `Result`, ensuring both runtime and build-mode codegen handle early returns cleanly.
-5. **Trait-style helpers** – Auto-alias interface methods across modules (workspace symbols, go-to-def) and keep formatter/LSP parity as new syntax lands.
-6. **Deprecated Helpers Sunset** – Remove the `slice_*`/`map_*` helper API after literals/methods cover all use cases; warnings already fire to nudge users.
+4. **Trait-style helpers** – Auto-alias interface methods across modules (workspace symbols, go-to-def) and keep formatter/LSP parity as new syntax lands.
+5. **Deprecated Helpers Sunset** – Remove the `slice_*`/`map_*` helper API after literals/methods cover all use cases; warnings already fire to nudge users.
 
 ## Next Steps
 - Add regression demos/tests that mix generics with interfaces (e.g., interface constraints inside generic functions) to keep coverage high.
@@ -50,4 +50,4 @@
   clearer diagnostic when a keyword sneaks into a path.
 - Add regression coverage for completion at `hero.` and other interface-impl
   method sites so future refactors keep LSP behavior in sync.
-- Once packaging lands, finish the error-handling sugar and remove deprecated slice/map helpers.
+- Once packaging lands, wire the manifest diagnostics into CLI flows and finish removing deprecated slice/map helpers.
