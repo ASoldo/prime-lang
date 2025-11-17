@@ -4,13 +4,25 @@ use crate::language::ast::Module;
 
 use super::manifest::PackageManifest;
 
-pub use super::package::{find_manifest, load_package, FileErrors, Package, PackageError};
+pub use super::package::{FileErrors, Package, PackageError, find_manifest, load_package};
 
+#[allow(dead_code)]
 pub fn apply_manifest_header(path: &Path, module: &mut Module) {
     let Some(manifest_path) = find_manifest(path) else {
         return;
     };
     let Ok(manifest) = PackageManifest::load(&manifest_path) else {
+        return;
+    };
+    apply_manifest_header_with_manifest(Some(&manifest), path, module);
+}
+
+pub fn apply_manifest_header_with_manifest(
+    manifest: Option<&PackageManifest>,
+    path: &Path,
+    module: &mut Module,
+) {
+    let Some(manifest) = manifest else {
         return;
     };
     if module.declared_name.is_none() {

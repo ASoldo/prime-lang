@@ -14,8 +14,7 @@ use tower_lsp_server::lsp_types::{
 use super::{
     analysis::{find_local_decl, receiver_type_name, visible_locals},
     text::{
-        identifier_prefix_slice, is_ident_char, is_ident_string, offset_to_position,
-        prefix_matches,
+        identifier_prefix_slice, is_ident_char, is_ident_string, offset_to_position, prefix_matches,
     },
 };
 
@@ -61,8 +60,7 @@ pub fn module_path_completion_context(
 }
 
 pub fn completion_trigger_characters() -> Vec<String> {
-    const TRIGGER_CHARS: &str =
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.";
+    const TRIGGER_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.";
     TRIGGER_CHARS.chars().map(|ch| ch.to_string()).collect()
 }
 
@@ -294,11 +292,13 @@ pub fn collect_interface_info(modules: &[Module]) -> HashMap<String, Vec<Interfa
     for module in modules {
         for item in &module.items {
             if let Item::Interface(def) = item {
-                map.entry(def.name.clone()).or_default().push(InterfaceInfo {
-                    module_name: module.name.clone(),
-                    type_params: def.type_params.clone(),
-                    methods: def.methods.clone(),
-                });
+                map.entry(def.name.clone())
+                    .or_default()
+                    .push(InterfaceInfo {
+                        module_name: module.name.clone(),
+                        type_params: def.type_params.clone(),
+                        methods: def.methods.clone(),
+                    });
             }
         }
     }
@@ -983,7 +983,9 @@ mod tests {
         doc: Option<&'a str>,
     }
 
-    fn manifest_with_entries(entries: &[ManifestEntry<'_>]) -> (tempfile::TempDir, PackageManifest) {
+    fn manifest_with_entries(
+        entries: &[ManifestEntry<'_>],
+    ) -> (tempfile::TempDir, PackageManifest) {
         let dir = tempdir().expect("tempdir");
         let manifest_path = dir.path().join("prime.toml");
         let mut manifest = String::from(
@@ -1022,10 +1024,7 @@ entry = "demo::main"
     fn detects_module_context_in_declarations() {
         let text = "module demo::core;";
         let ctx = module_path_completion_context(text, text.len()).expect("context");
-        assert!(matches!(
-            ctx.kind,
-            ModulePathCompletionKind::Declaration
-        ));
+        assert!(matches!(ctx.kind, ModulePathCompletionKind::Declaration));
         assert_eq!(ctx.prefix.as_deref(), Some("demo::core"));
     }
 

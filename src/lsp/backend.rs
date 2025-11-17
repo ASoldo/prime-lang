@@ -1,6 +1,26 @@
+use super::{
+    analysis::{find_local_definition_span, find_module_item_span, unused_variable_diagnostics},
+    completion::{
+        ModulePathCompletionKind, collect_interface_info, collect_struct_info, completion_prefix,
+        completion_trigger_characters, expression_chain_before_dot, format_function_param,
+        format_function_signature, general_completion_items, keyword_completion_items,
+        member_completion_items, module_completion_items_from_manifest,
+        module_path_completion_context,
+    },
+    diagnostics::{
+        collect_parse_and_manifest_diagnostics, diagnostic_code, manifest_entry_action,
+    },
+    hover::{collect_var_infos, hover_for_token},
+    parser::parse_module_from_uri,
+    text::{
+        collect_identifier_spans, full_range, identifier_at, is_valid_identifier,
+        manifest_context_for_uri, position_to_offset, prefix_identifier, span_to_range, token_at,
+        url_to_path,
+    },
+};
 use crate::project::{
-    find_manifest, load_package,
-    manifest::{PackageManifest},
+    diagnostics::{CODE_MANIFEST_MISSING_MODULE, CODE_MISSING_MODULE_HEADER},
+    find_manifest, load_package, manifest::PackageManifest,
 };
 use crate::{
     language::{
@@ -12,27 +32,6 @@ use crate::{
     tools::formatter::format_module,
 };
 use serde_json::{Value, json};
-use super::{
-    analysis::{find_local_definition_span, find_module_item_span, unused_variable_diagnostics},
-    completion::{
-        collect_interface_info, collect_struct_info, completion_prefix,
-        completion_trigger_characters, expression_chain_before_dot, format_function_param,
-        format_function_signature, general_completion_items, keyword_completion_items,
-        member_completion_items, module_completion_items_from_manifest, module_path_completion_context,
-        ModulePathCompletionKind,
-    },
-    diagnostics::{
-        collect_parse_and_manifest_diagnostics, diagnostic_code, manifest_entry_action,
-        CODE_MANIFEST_MISSING_MODULE, CODE_MISSING_MODULE_HEADER,
-    },
-    hover::{collect_var_infos, hover_for_token},
-    parser::parse_module_from_uri,
-    text::{
-        collect_identifier_spans, full_range, identifier_at, is_valid_identifier,
-        manifest_context_for_uri, position_to_offset, prefix_identifier, span_to_range, token_at,
-        url_to_path,
-    },
-};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -47,16 +46,16 @@ use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams,
     Command, CompletionOptions, CompletionParams, CompletionResponse, DeclarationCapability,
-    Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, Location, MessageType, OneOf,
-    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams,
-    RenameParams, ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
+    Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, Location, MessageType, OneOf, ParameterInformation,
+    ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
+    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
     SignatureInformation, SymbolInformation, SymbolKind, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit, WorkspaceSymbol,
-    WorkspaceSymbolParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    WorkspaceSymbol, WorkspaceSymbolParams,
 };
 use tower_lsp_server::{Client, LanguageServer, UriExt};
 

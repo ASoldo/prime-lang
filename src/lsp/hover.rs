@@ -1,17 +1,17 @@
 use crate::language::{
     ast::{ConstDef, EnumDef, EnumVariant, InterfaceDef, Item, Module, StructDef},
-    token::{Token, TokenKind},
     span::Span,
+    token::{Token, TokenKind},
 };
 use std::collections::HashMap;
 use tower_lsp_server::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 
 use super::{
-    analysis::{find_local_decl},
+    analysis::find_local_decl,
     completion::{
-        chain_for_field_token, format_function_signature,
+        StructInfo, chain_for_field_token, format_function_signature,
         format_interface_method_signature, format_type_arguments, format_type_expr,
-        format_type_params, resolve_chain_from_scope, StructInfo,
+        format_type_params, resolve_chain_from_scope,
     },
     text::{extract_text, span_to_range},
 };
@@ -160,7 +160,9 @@ pub fn hover_for_token(
         TokenKind::Return => Some("Keyword **return**\n\nExits the current function.".to_string()),
         TokenKind::If => Some("Keyword **if**\n\nConditional execution.".to_string()),
         TokenKind::Else => Some("Keyword **else**\n\nAlternate branch for `if`.".to_string()),
-        TokenKind::While => Some("Keyword **while**\n\nLoop while the condition holds.".to_string()),
+        TokenKind::While => {
+            Some("Keyword **while**\n\nLoop while the condition holds.".to_string())
+        }
         TokenKind::For => Some("Keyword **for**\n\nRange-based loop.".to_string()),
         TokenKind::Match => Some("Keyword **match**\n\nPattern matching expression.".to_string()),
         TokenKind::Defer => Some("Keyword **defer**\n\nRun code when leaving scope.".to_string()),
@@ -307,12 +309,7 @@ fn hover_for_field_usage(
     None
 }
 
-fn markdown_struct_info(
-    text: &str,
-    usage_span: Span,
-    name: &str,
-    info: &StructInfo,
-) -> Hover {
+fn markdown_struct_info(text: &str, usage_span: Span, name: &str, info: &StructInfo) -> Hover {
     let mut value = String::new();
     value.push_str("```prime\nstruct ");
     value.push_str(name);
@@ -394,11 +391,19 @@ fn format_decl_kind(kind: super::analysis::DeclKind) -> &'static str {
 fn format_struct_hover(def: &StructDef) -> String {
     let mut value = String::new();
     value.push_str("```prime\n");
-    value.push_str(&format!("struct {}{}", def.name, format_type_params(&def.type_params)));
+    value.push_str(&format!(
+        "struct {}{}",
+        def.name,
+        format_type_params(&def.type_params)
+    ));
     value.push_str(" {\n");
     for field in &def.fields {
         if let Some(name) = &field.name {
-            value.push_str(&format!("  {}: {},\n", name, format_type_expr(&field.ty.ty)));
+            value.push_str(&format!(
+                "  {}: {},\n",
+                name,
+                format_type_expr(&field.ty.ty)
+            ));
         } else {
             value.push_str(&format!("  {};\n", format_type_expr(&field.ty.ty)));
         }
@@ -410,7 +415,11 @@ fn format_struct_hover(def: &StructDef) -> String {
 fn format_enum_hover(def: &EnumDef) -> String {
     let mut value = String::new();
     value.push_str("```prime\n");
-    value.push_str(&format!("enum {}{}", def.name, format_type_params(&def.type_params)));
+    value.push_str(&format!(
+        "enum {}{}",
+        def.name,
+        format_type_params(&def.type_params)
+    ));
     value.push_str(" {\n");
     for variant in &def.variants {
         value.push_str(&format!("  {},\n", format_enum_variant_signature(variant)));
@@ -518,8 +527,8 @@ fn main() {
 }
 "#;
         let tokens = lex(text).expect("lex tokens");
-        let module = parse_module("demo::main", PathBuf::from("demo.prime"), text)
-            .expect("parse module");
+        let module =
+            parse_module("demo::main", PathBuf::from("demo.prime"), text).expect("parse module");
         let structs = collect_struct_info(&[module.clone()]);
         let player_usage = tokens
             .iter()

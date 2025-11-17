@@ -1,14 +1,16 @@
 mod language;
+mod lsp;
 mod project;
 mod runtime;
 mod tools;
-mod lsp;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use language::{compiler::Compiler, parser::parse_module};
+use miette::NamedSource;
+use project::diagnostics::analyze_manifest_issues;
 use project::{
-    apply_manifest_header, warn_manifest_drift, FileErrors, PackageError, find_manifest,
-    load_package, manifest::PackageManifest,
+    apply_manifest_header_with_manifest, find_manifest, load_package, manifest::PackageManifest,
+    warn_manifest_drift, FileErrors, PackageError,
 };
 use runtime::Interpreter;
 use std::{
@@ -18,7 +20,9 @@ use std::{
 };
 use toml::{Value, value::Table as TomlTable};
 use tools::{
-    diagnostics::{emit_syntax_errors, report_io_error, report_runtime_error},
+    diagnostics::{
+        emit_manifest_issues, emit_syntax_errors, report_io_error, report_runtime_error,
+    },
     formatter::format_module,
     lint::run_lint,
 };
@@ -230,7 +234,16 @@ fn format_file(path: &Path, write: bool) -> Result<(), Box<dyn std::error::Error
             return Err("failed to parse module".into());
         }
     };
-    apply_manifest_header(path, &mut module);
+    let manifest =
+        find_manifest(path).and_then(|manifest_path| PackageManifest::load(&manifest_path).ok());
+    if let Some(manifest) = manifest.as_ref() {
+        let issues = analyze_manifest_issues(&module, path, Some(manifest));
+        if !issues.is_empty() {
+            let named = NamedSource::new(path.display().to_string(), source.clone());
+            emit_manifest_issues(&named, &issues);
+        }
+    }
+    apply_manifest_header_with_manifest(manifest.as_ref(), path, &mut module);
     let formatted = format_module(&module);
     if write {
         fs::write(path, formatted)?;

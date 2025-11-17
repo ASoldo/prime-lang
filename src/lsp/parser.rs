@@ -1,8 +1,4 @@
-use crate::language::{
-    ast::Module,
-    errors::SyntaxErrors,
-    parser::parse_module,
-};
+use crate::language::{ast::Module, errors::SyntaxErrors, parser::parse_module};
 use tower_lsp_server::lsp_types::Uri;
 
 use super::text::url_to_path;

@@ -1,4 +1,8 @@
-use crate::{language::errors::SyntaxError, project::FileErrors, runtime::error::RuntimeError};
+use crate::{
+    language::{errors::SyntaxError, span::Span},
+    project::{FileErrors, diagnostics::ManifestIssue},
+    runtime::error::RuntimeError,
+};
 use miette::{Diagnostic, NamedSource, Report, SourceSpan};
 use std::path::Path;
 use thiserror::Error;
@@ -44,4 +48,36 @@ pub fn report_runtime_error(error: &RuntimeError) {
 
 pub fn report_io_error(path: &Path, error: &std::io::Error) {
     eprintln!("Failed to access {}: {}", path.display(), error);
+}
+
+#[derive(Debug, Error, Diagnostic, Clone)]
+#[error("{message}")]
+pub struct ManifestDiagnostic {
+    #[source_code]
+    src: NamedSource<String>,
+    #[label("{message}")]
+    span: SourceSpan,
+    message: String,
+}
+
+pub fn emit_manifest_issues(named: &NamedSource<String>, issues: &[ManifestIssue]) -> bool {
+    let mut emitted = false;
+    for issue in issues {
+        let span = issue
+            .span
+            .map(span_to_source_span)
+            .unwrap_or_else(|| SourceSpan::from((0, 0)));
+        let diagnostic = ManifestDiagnostic {
+            src: named.clone(),
+            span,
+            message: issue.kind.message(),
+        };
+        eprintln!("{:?}", Report::new(diagnostic));
+        emitted = true;
+    }
+    emitted
+}
+
+fn span_to_source_span(span: Span) -> SourceSpan {
+    SourceSpan::from((span.start, span.end.saturating_sub(span.start)))
 }

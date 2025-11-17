@@ -1,31 +1,35 @@
-use crate::language::{
-    ast::Module,
-    errors::SyntaxError,
-    lexer::{LexError, lex},
-    span::Span,
+use crate::{
+    language::{
+        ast::Module,
+        errors::SyntaxError,
+        lexer::{LexError, lex},
+        span::Span,
+    },
+    project::{
+        diagnostics::{
+            CODE_DUPLICATE_IMPORT, CODE_MANIFEST_MISSING_MODULE, CODE_MISSING_MODULE_HEADER,
+            CODE_UNKNOWN_IMPORT, ManifestIssue, ManifestIssueKind, analyze_manifest_issues,
+        },
+        manifest::ModuleVisibility,
+    },
 };
 use serde_json::json;
-use std::{collections::HashSet, fs, path::PathBuf};
+use std::{fs, path::PathBuf};
 use tower_lsp_server::{
+    UriExt,
     lsp_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, DiagnosticSeverity,
         NumberOrString, Range, TextEdit, Uri, WorkspaceEdit,
     },
-    UriExt,
 };
 
 use super::{
     parser::parse_module_from_uri,
     text::{
         adjust_zero_length_offset, first_non_whitespace_span, manifest_context_for_uri,
-        manifest_relative_string, offset_to_position, resolve_import_relative_path, span_to_range,
+        offset_to_position, span_to_range,
     },
 };
-
-pub const CODE_MISSING_MODULE_HEADER: &str = "prime.missingModuleHeader";
-pub const CODE_MANIFEST_MISSING_MODULE: &str = "prime.manifestMissingModule";
-pub const CODE_DUPLICATE_IMPORT: &str = "prime.duplicateImport";
-pub const CODE_UNKNOWN_IMPORT: &str = "prime.unknownImport";
 
 pub fn collect_parse_and_manifest_diagnostics(
     uri: &Uri,
@@ -52,8 +56,14 @@ pub fn collect_parse_and_manifest_diagnostics(
         }
     };
     if let Some(module) = &module {
-        diags.extend(manifest_declaration_diagnostics(uri, text, module));
-        diags.extend(import_manifest_diagnostics(uri, text, module));
+        if let Some((manifest, file_path)) = manifest_context_for_uri(uri) {
+            let issues = analyze_manifest_issues(module, &file_path, Some(&manifest));
+            diags.extend(
+                issues
+                    .into_iter()
+                    .map(|issue| manifest_issue_to_diagnostic(text, issue)),
+            );
+        }
     }
     drop(tokens);
     (module, diags)
@@ -161,124 +171,119 @@ fn syntax_error_to_lsp(text: &str, err: SyntaxError) -> Diagnostic {
     }
 }
 
-fn manifest_declaration_diagnostics(uri: &Uri, text: &str, module: &Module) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    let Some((manifest, file_path)) = manifest_context_for_uri(uri) else {
-        return diags;
-    };
-    let expected = manifest.module_name_for_path(&file_path);
-    let declared = module.declared_name.as_deref();
-    match (expected.as_deref(), declared) {
-        (Some(expected_name), Some(actual)) if expected_name != actual => {
-            diags.push(module_mismatch_diagnostic(
+fn manifest_issue_to_diagnostic(text: &str, issue: ManifestIssue) -> Diagnostic {
+    match issue.kind {
+        ManifestIssueKind::ModuleNameMismatch { expected, actual } => module_mismatch_diagnostic(
+            text,
+            issue.span,
+            &format!("Module declared as `{actual}` but manifest maps this file to `{expected}`"),
+            None,
+            None,
+        ),
+        ManifestIssueKind::MissingModuleHeader { expected } => module_mismatch_diagnostic(
+            text,
+            issue.span,
+            &format!(
+                "Manifest maps this file to `{expected}` but the file is missing `module {expected};`"
+            ),
+            Some(CODE_MISSING_MODULE_HEADER),
+            Some(json!({ "module_name": expected })),
+        ),
+        ManifestIssueKind::DeclaredModuleNotInManifest {
+            declared,
+            manifest_path,
+            module_path,
+        } => module_mismatch_diagnostic(
+            text,
+            issue.span,
+            &format!(
+                "Module `{declared}` is declared here but not listed in prime.toml ({})",
+                manifest_path.display()
+            ),
+            Some(CODE_MANIFEST_MISSING_MODULE),
+            Some(json!({
+                "module_name": declared,
+                "module_path": module_path,
+                "manifest_path": manifest_path.to_string_lossy().to_string(),
+                "visibility": "pub",
+            })),
+        ),
+        ManifestIssueKind::DuplicateModuleDeclaration => Diagnostic {
+            range: span_to_range(
                 text,
-                module.declared_span,
-                &format!(
-                    "Module declared as `{actual}` but manifest maps this file to `{expected_name}`"
-                ),
-                None,
-                None,
-            ));
-        }
-        (Some(expected_name), None) => {
-            diags.push(module_mismatch_diagnostic(
-                text,
-                None,
-                &format!(
-                    "Manifest maps this file to `{expected_name}` but the file is missing `module {expected_name};`"
-                ),
-                Some(CODE_MISSING_MODULE_HEADER),
-                Some(json!({
-                    "module_name": expected_name,
-                })),
-            ));
-        }
-        (None, Some(actual)) => {
-            let module_path = manifest_relative_string(&file_path, &manifest);
-            diags.push(module_mismatch_diagnostic(
-                text,
-                module.declared_span,
-                &format!("Module `{actual}` is declared in this file but not listed in prime.toml"),
-                Some(CODE_MANIFEST_MISSING_MODULE),
-                Some(json!({
-                    "module_name": actual,
-                    "module_path": module_path,
-                    "manifest_path": manifest.path.to_string_lossy().to_string(),
-                    "visibility": "pub",
-                })),
-            ));
-        }
-        _ => {}
-    }
-    for span in &module.redundant_module_spans {
-        diags.push(Diagnostic {
-            range: span_to_range(text, *span),
+                issue
+                    .span
+                    .unwrap_or_else(|| first_non_whitespace_span(text)),
+            ),
             severity: Some(DiagnosticSeverity::WARNING),
             source: Some("prime-lang".into()),
             message: "Duplicate `module` declaration; only the first declaration is used".into(),
             ..Default::default()
-        });
+        },
+        ManifestIssueKind::DuplicateImport { module } => Diagnostic {
+            range: span_to_range(
+                text,
+                issue
+                    .span
+                    .unwrap_or_else(|| first_non_whitespace_span(text)),
+            ),
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("prime-lang".into()),
+            message: format!("Duplicate import `{module}`"),
+            code: Some(NumberOrString::String(CODE_DUPLICATE_IMPORT.into())),
+            ..Default::default()
+        },
+        ManifestIssueKind::ManifestMissingModule {
+            module,
+            module_path,
+            manifest_path,
+            visibility,
+        } => Diagnostic {
+            range: span_to_range(
+                text,
+                issue
+                    .span
+                    .unwrap_or_else(|| first_non_whitespace_span(text)),
+            ),
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("prime-lang".into()),
+            message: format!(
+                "Module `{module}` exists at `{module_path}` but is not listed in prime.toml ({})",
+                manifest_path.display()
+            ),
+            code: Some(NumberOrString::String(
+                CODE_MANIFEST_MISSING_MODULE.to_string(),
+            )),
+            data: Some(json!({
+                "module_name": module,
+                "module_path": module_path,
+                "manifest_path": manifest_path.to_string_lossy().to_string(),
+                "visibility": module_visibility_label(visibility),
+            })),
+            ..Default::default()
+        },
+        ManifestIssueKind::UnknownImport { module } => Diagnostic {
+            range: span_to_range(
+                text,
+                issue
+                    .span
+                    .unwrap_or_else(|| first_non_whitespace_span(text)),
+            ),
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("prime-lang".into()),
+            message: format!("Cannot resolve import `{module}` — no manifest entry or file found"),
+            code: Some(NumberOrString::String(CODE_UNKNOWN_IMPORT.into())),
+            ..Default::default()
+        },
     }
-    diags
 }
 
-fn import_manifest_diagnostics(uri: &Uri, text: &str, module: &Module) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    let Some((manifest, file_path)) = manifest_context_for_uri(uri) else {
-        return diags;
-    };
-    let mut seen = HashSet::new();
-    for import in &module.imports {
-        let import_name = import.path.to_string();
-        if !seen.insert(import_name.clone()) {
-            diags.push(Diagnostic {
-                range: span_to_range(text, import.span),
-                severity: Some(DiagnosticSeverity::WARNING),
-                source: Some("prime-lang".into()),
-                message: format!("Duplicate import `{import_name}`"),
-                code: Some(NumberOrString::String(CODE_DUPLICATE_IMPORT.into())),
-                ..Default::default()
-            });
-            continue;
-        }
-        if manifest.module_path(&import_name).is_some() {
-            continue;
-        }
-        let resolved = resolve_import_relative_path(&file_path, &import.path);
-        if resolved.exists() {
-            let module_path = manifest_relative_string(&resolved, &manifest);
-            diags.push(Diagnostic {
-                range: span_to_range(text, import.span),
-                severity: Some(DiagnosticSeverity::WARNING),
-                source: Some("prime-lang".into()),
-                message: format!(
-                    "Module `{import_name}` exists on disk but is not listed in prime.toml"
-                ),
-                code: Some(NumberOrString::String(
-                    CODE_MANIFEST_MISSING_MODULE.to_string(),
-                )),
-                data: Some(json!({
-                    "module_name": import_name,
-                    "module_path": module_path,
-                    "manifest_path": manifest.path.to_string_lossy().to_string(),
-                    "visibility": "pub",
-                })),
-                ..Default::default()
-            });
-        } else {
-            diags.push(Diagnostic {
-                range: span_to_range(text, import.span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                source: Some("prime-lang".into()),
-                message: format!(
-                    "Cannot resolve import `{import_name}` — no manifest entry or file found"
-                ),
-                code: Some(NumberOrString::String(CODE_UNKNOWN_IMPORT.into())),
-                ..Default::default()
-            });
-        }
+fn module_visibility_label(vis: ModuleVisibility) -> &'static str {
+    match vis {
+        ModuleVisibility::Public => "pub",
+        ModuleVisibility::Package => "package",
+        ModuleVisibility::Private => "private",
     }
-    diags
 }
 
 fn module_mismatch_diagnostic(
@@ -297,5 +302,61 @@ fn module_mismatch_diagnostic(
         code: code.map(|c| NumberOrString::String(c.to_string())),
         data,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_parse_and_manifest_diagnostics;
+    use std::fs;
+    use tempfile::tempdir;
+    use tower_lsp_server::{lsp_types::Uri, UriExt};
+
+    #[test]
+    fn reports_syntax_errors_for_missing_semicolon() {
+        let dir = tempdir().expect("tempdir");
+        let file_path = dir.path().join("main.prime");
+        fs::write(&file_path, "").expect("write file");
+        let uri = Uri::from_file_path(&file_path).expect("uri");
+        let text = "module test::main;\nfn main() {\n  let value = 42\n  out(value);\n}\n";
+        let (_module, diags) = collect_parse_and_manifest_diagnostics(&uri, text);
+        assert!(
+            diags
+                .iter()
+                .any(|diag| diag.message.contains("Expected") || diag.severity.is_some()),
+            "expected at least one diagnostic for syntax error, found {diags:?}"
+        );
+    }
+
+    #[test]
+    fn reports_missing_semicolon_between_statements() {
+        let dir = tempdir().expect("tempdir");
+        let file_path = dir.path().join("main.prime");
+        fs::write(&file_path, "").expect("write file");
+        let uri = Uri::from_file_path(&file_path).expect("uri");
+        let text = "module test::main;\nfn main() {\n  out(1)\n  out(2);\n}\n";
+        let (_module, diags) = collect_parse_and_manifest_diagnostics(&uri, text);
+        assert!(
+            diags
+                .iter()
+                .any(|diag| diag.message.contains("Expected") || diag.severity.is_some()),
+            "expected diagnostics for missing semi between statements, found {diags:?}"
+        );
+    }
+
+    #[test]
+    fn reports_missing_semicolon_in_module_declaration() {
+        let dir = tempdir().expect("tempdir");
+        let file_path = dir.path().join("main.prime");
+        fs::write(&file_path, "").expect("write file");
+        let uri = Uri::from_file_path(&file_path).expect("uri");
+        let text = "module test::main\nfn main() {}\n";
+        let (_module, diags) = collect_parse_and_manifest_diagnostics(&uri, text);
+        assert!(
+            diags
+                .iter()
+                .any(|diag| diag.message.contains("Expected Semicolon")),
+            "expected module header semicolon diagnostic, found {diags:?}"
+        );
     }
 }

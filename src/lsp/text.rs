@@ -1,6 +1,5 @@
 use crate::{
     language::{
-        ast::ImportPath,
         span::Span,
         token::{Token, TokenKind},
     },
@@ -11,8 +10,8 @@ use std::{
     path::{Path, PathBuf},
 };
 use tower_lsp_server::{
-    lsp_types::{Position, Range, Uri},
     UriExt,
+    lsp_types::{Position, Range, Uri},
 };
 
 pub fn token_at<'a>(tokens: &'a [Token], offset: usize) -> Option<&'a Token> {
@@ -273,30 +272,6 @@ pub fn prettify_error_message(message: &str) -> String {
         "Expected Semi" => "Expected Semicolon ';'".to_string(),
         other => other.to_string(),
     }
-}
-
-pub fn manifest_relative_string(path: &Path, manifest: &PackageManifest) -> String {
-    let relative = path.strip_prefix(manifest.root()).unwrap_or(path);
-    relative
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-pub fn resolve_import_relative_path(base: &Path, import_path: &ImportPath) -> PathBuf {
-    let mut path = import_path.to_relative_path();
-    if path.extension().and_then(|ext| ext.to_str()) != Some("prime") {
-        path.set_extension("prime");
-    }
-    if path.is_absolute() {
-        return path;
-    }
-    let base_dir = base
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    base_dir.join(path)
 }
 
 pub fn is_ident_char(ch: u8) -> bool {
