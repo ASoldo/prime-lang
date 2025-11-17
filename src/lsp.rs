@@ -35,18 +35,20 @@ use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams,
     Command, CompletionContext, CompletionItem, CompletionItemKind, CompletionOptions,
-    CompletionParams, CompletionResponse, CompletionTextEdit, Diagnostic, DiagnosticSeverity,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
-    DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    MessageType, NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position,
-    PrepareRenameResponse, Range, ReferenceParams, RenameParams, ServerCapabilities, SignatureHelp,
-    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkspaceEdit, WorkspaceSymbol, WorkspaceSymbolParams,
+    CompletionParams, CompletionResponse, CompletionTextEdit, DeclarationCapability, Diagnostic,
+    DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+    MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf, ParameterInformation,
+    ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
+    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
+    SignatureInformation, SymbolInformation, SymbolKind, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit, WorkspaceSymbol,
+    WorkspaceSymbolParams,
 };
+use tower_lsp_server::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse};
 use tower_lsp_server::{Client, LanguageServer, LspService, Server, UriExt};
 
 pub fn serve_stdio() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -470,6 +472,37 @@ impl Backend {
             }
         }
     }
+
+    async fn resolve_symbol_location(
+        &self,
+        uri: &Uri,
+        position: Position,
+    ) -> Option<Location> {
+        let text = self.docs.get(uri).await?;
+        let tokens = lex(&text).ok()?;
+        let module = self.parse_cached_module(uri, &text).await;
+        let offset = position_to_offset(&text, position);
+        let (name, _) = identifier_at(&tokens, offset)?;
+        if let Some(module) = module.as_ref() {
+            if let Some(span) = find_local_definition_span(module, &name, offset) {
+                return Some(Location::new(uri.clone(), span_to_range(&text, span)));
+            }
+            if let Some(span) = find_module_item_span(module, &name) {
+                return Some(Location::new(uri.clone(), span_to_range(&text, span)));
+            }
+        }
+        self.preload_for_navigation(uri).await;
+        let candidates = self.symbols.lookup(&name).await;
+        let symbol = select_symbol_location(uri, module.as_ref(), &candidates)?;
+        let range = if symbol.uri == *uri {
+            span_to_range(&text, symbol.span)
+        } else if let Some(def_text) = self.text_for_uri(&symbol.uri).await {
+            span_to_range(&def_text, symbol.span)
+        } else {
+            return None;
+        };
+        Some(Location::new(symbol.uri.clone(), range))
+    }
 }
 
 impl LanguageServer for Backend {
@@ -485,6 +518,7 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                declaration_provider: Some(DeclarationCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
@@ -618,40 +652,20 @@ impl LanguageServer for Backend {
     ) -> RpcResult<Option<GotoDefinitionResponse>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some(text) = self.docs.get(&uri).await else {
-            return Ok(None);
-        };
-        let tokens = match lex(&text) {
-            Ok(tokens) => tokens,
-            Err(_) => return Ok(None),
-        };
-        let module = self.parse_cached_module(&uri, &text).await;
-        let offset = position_to_offset(&text, position);
-        let Some((name, _)) = identifier_at(&tokens, offset) else {
-            return Ok(None);
-        };
-        if let Some(module) = module.as_ref() {
-            if let Some(span) = find_local_definition_span(module, &name, offset) {
-                let location = Location::new(uri.clone(), span_to_range(&text, span));
-                return Ok(Some(GotoDefinitionResponse::Scalar(location)));
-            }
-            if let Some(span) = find_module_item_span(module, &name) {
-                let location = Location::new(uri.clone(), span_to_range(&text, span));
-                return Ok(Some(GotoDefinitionResponse::Scalar(location)));
-            }
-        }
-        self.preload_for_navigation(&uri).await;
-        let candidates = self.symbols.lookup(&name).await;
-        if let Some(symbol) = select_symbol_location(&uri, module.as_ref(), &candidates) {
-            let range = if symbol.uri == uri {
-                span_to_range(&text, symbol.span)
-            } else if let Some(def_text) = self.text_for_uri(&symbol.uri).await {
-                span_to_range(&def_text, symbol.span)
-            } else {
-                return Ok(None);
-            };
-            let location = Location::new(symbol.uri.clone(), range);
+        if let Some(location) = self.resolve_symbol_location(&uri, position).await {
             return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+        }
+        Ok(None)
+    }
+
+    async fn goto_declaration(
+        &self,
+        params: GotoDeclarationParams,
+    ) -> RpcResult<Option<GotoDeclarationResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        if let Some(location) = self.resolve_symbol_location(&uri, position).await {
+            return Ok(Some(GotoDeclarationResponse::Scalar(location)));
         }
         Ok(None)
     }

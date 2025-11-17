@@ -280,6 +280,7 @@ return {
           end
           map("gd", vim.lsp.buf.definition, "Go to definition (Prime)")
           map("gD", vim.lsp.buf.declaration, "Go to declaration (Prime)")
+          map("<leader>cr", vim.lsp.buf.rename, "Rename symbol (Prime)")
 
           if client.server_capabilities.documentFormattingProvider then
             vim.api.nvim_create_autocmd("BufWritePre", {
@@ -332,6 +333,7 @@ lspconfig.primelang.setup {
     end
     map("gd", vim.lsp.buf.definition, "Go to definition (Prime)")
     map("gD", vim.lsp.buf.declaration, "Go to declaration (Prime)")
+    map("<leader>cr", vim.lsp.buf.rename, "Rename symbol (Prime)")
 
     if client.server_capabilities.documentFormattingProvider then
       vim.api.nvim_create_autocmd("BufWritePre", {
