@@ -6,11 +6,11 @@ use llvm_sys::{
     LLVMLinkage,
     core::{
         LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMBuildCall2, LLVMBuildGlobalString,
-        LLVMBuildRetVoid, LLVMConstInt, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
+        LLVMBuildRet, LLVMConstInt, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
         LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
         LLVMDoubleTypeInContext, LLVMFunctionType, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
         LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilderAtEnd,
-        LLVMPrintModuleToFile, LLVMSetLinkage, LLVMVoidTypeInContext,
+        LLVMPrintModuleToFile, LLVMSetLinkage,
     },
     prelude::*,
 };
@@ -419,7 +419,8 @@ impl Compiler {
         self.exit_scope()?;
 
         unsafe {
-            LLVMBuildRetVoid(self.builder);
+            let zero = LLVMConstInt(self.i32_type, 0, 0);
+            LLVMBuildRet(self.builder, zero);
         }
 
         Ok(())
@@ -2065,8 +2066,7 @@ impl Compiler {
             let module_name = CString::new("prime").unwrap();
             self.module = LLVMModuleCreateWithNameInContext(module_name.as_ptr(), self.context);
 
-            let void_type = LLVMVoidTypeInContext(self.context);
-            let main_type = LLVMFunctionType(void_type, ptr::null_mut(), 0, 0);
+            let main_type = LLVMFunctionType(self.i32_type, ptr::null_mut(), 0, 0);
             let main_name = CString::new("main").unwrap();
             self.main_fn = LLVMAddFunction(self.module, main_name.as_ptr(), main_type);
 
