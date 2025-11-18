@@ -60,3 +60,8 @@ visibility = "pub"
 name = "demos::ns"
 path = "ns_demo.prime"
 visibility = "pub"
+
+[[modules]]
+name = "demos::borrow"
+path = "borrow_demo.prime"
+visibility = "pub"

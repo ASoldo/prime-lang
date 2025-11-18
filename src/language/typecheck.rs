@@ -288,6 +288,7 @@ impl Checker {
         match statement {
             Statement::Let(stmt) => {
                 let expected = stmt.ty.as_ref().map(|ann| ann.ty.clone());
+                let mut pending_borrow: Option<String> = None;
                 if let Some(value) = &stmt.value {
                     let ty = self.check_expression(module, value, expected.as_ref(), returns, env);
                     if let Some(expected) = expected.as_ref() {
@@ -295,12 +296,17 @@ impl Checker {
                     } else if let Some(actual) = ty {
                         env.infer(&stmt.name, Some(actual));
                     }
+                    pending_borrow = mutable_reference_target(value);
                 }
                 env.declare(&stmt.name, expected, stmt.span, &mut self.errors);
+                if let Some(target) = pending_borrow {
+                    env.register_binding_borrow(&stmt.name, target);
+                }
             }
             Statement::Assign(assign) => {
                 if let Expr::Identifier(ident) = &assign.target {
-                    let expected_type = env.lookup(&ident.name).cloned().flatten();
+                    env.clear_binding_borrows(&ident.name);
+                    let expected_type = env.lookup(&ident.name).and_then(|info| info.ty.clone());
                     if let Some(expected) = expected_type {
                         let ty = self.check_expression(
                             module,
@@ -310,8 +316,14 @@ impl Checker {
                             env,
                         );
                         self.ensure_type(module, ident.span, &expected, ty.as_ref());
+                        if let Some(target) = mutable_reference_target(&assign.value) {
+                            env.register_binding_borrow(&ident.name, target);
+                        }
                     } else {
                         self.check_expression(module, &assign.value, None, returns, env);
+                        if let Some(target) = mutable_reference_target(&assign.value) {
+                            env.register_binding_borrow(&ident.name, target);
+                        }
                     }
                 } else {
                     self.check_expression(module, &assign.value, None, returns, env);
@@ -419,7 +431,7 @@ impl Checker {
         match expr {
             Expr::Identifier(ident) => {
                 if let Some(entry) = env.lookup(&ident.name) {
-                    return entry.clone();
+                    return entry.ty.clone();
                 }
                 if let Some(const_info) = self.registry.consts.get(&ident.name) {
                     return const_info.ty.as_ref().map(|ann| ann.ty.clone());
@@ -494,12 +506,22 @@ impl Checker {
                 }
                 None => None,
             },
-            Expr::Reference { mutable, expr, .. } => self
-                .check_expression(module, expr, None, returns, env)
-                .map(|inner| TypeExpr::Reference {
-                    mutable: *mutable,
-                    ty: Box::new(inner),
-                }),
+            Expr::Reference {
+                mutable,
+                expr,
+                span,
+            } => {
+                if *mutable {
+                    if let Expr::Identifier(ident) = expr.as_ref() {
+                        env.ensure_mut_borrow_allowed(module, *span, &ident.name, &mut self.errors);
+                    }
+                }
+                self.check_expression(module, expr, None, returns, env)
+                    .map(|inner| TypeExpr::Reference {
+                        mutable: *mutable,
+                        ty: Box::new(inner),
+                    })
+            }
             Expr::Deref { expr, span } => {
                 let ty = self.check_expression(module, expr, None, returns, env);
                 if let Some(TypeExpr::Reference { ty, .. }) = ty {
@@ -1736,10 +1758,25 @@ impl Checker {
 }
 
 #[derive(Clone)]
+struct BindingInfo {
+    ty: Option<TypeExpr>,
+    mut_borrows: Vec<String>,
+}
+
+impl BindingInfo {
+    fn new(ty: Option<TypeExpr>) -> Self {
+        Self {
+            ty,
+            mut_borrows: Vec::new(),
+        }
+    }
+}
+
 struct FnEnv {
     path: PathBuf,
     _type_params: HashSet<String>,
-    scopes: Vec<HashMap<String, Option<TypeExpr>>>,
+    scopes: Vec<HashMap<String, BindingInfo>>,
+    active_mut_borrows: HashMap<String, usize>,
 }
 
 impl FnEnv {
@@ -1748,6 +1785,7 @@ impl FnEnv {
             path,
             _type_params: type_params.into_iter().collect(),
             scopes: vec![HashMap::new()],
+            active_mut_borrows: HashMap::new(),
         }
     }
 
@@ -1756,7 +1794,13 @@ impl FnEnv {
     }
 
     fn pop_scope(&mut self) {
-        self.scopes.pop();
+        if let Some(scope) = self.scopes.pop() {
+            for info in scope.values() {
+                for target in &info.mut_borrows {
+                    self.end_mut_borrow(target);
+                }
+            }
+        }
         if self.scopes.is_empty() {
             self.scopes.push(HashMap::new());
         }
@@ -1770,7 +1814,7 @@ impl FnEnv {
         errors: &mut Vec<TypeError>,
     ) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), ty);
+            scope.insert(name.to_string(), BindingInfo::new(ty));
         } else {
             errors.push(TypeError::new(
                 &self.path,
@@ -1782,17 +1826,68 @@ impl FnEnv {
 
     fn infer(&mut self, name: &str, ty: Option<TypeExpr>) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), ty);
+            scope
+                .entry(name.to_string())
+                .or_insert_with(|| BindingInfo::new(None))
+                .ty = ty;
         }
     }
 
-    fn lookup(&self, name: &str) -> Option<&Option<TypeExpr>> {
+    fn lookup(&self, name: &str) -> Option<&BindingInfo> {
         for scope in self.scopes.iter().rev() {
-            if let Some(ty) = scope.get(name) {
-                return Some(ty);
+            if let Some(info) = scope.get(name) {
+                return Some(info);
             }
         }
         None
+    }
+
+    fn clear_binding_borrows(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(info) = scope.get_mut(name) {
+                let targets: Vec<String> = info.mut_borrows.drain(..).collect();
+                for target in targets {
+                    self.end_mut_borrow(&target);
+                }
+                return;
+            }
+        }
+    }
+
+    fn register_binding_borrow(&mut self, name: &str, target: String) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(info) = scope.get_mut(name) {
+                info.mut_borrows.push(target.clone());
+                *self.active_mut_borrows.entry(target).or_default() += 1;
+                return;
+            }
+        }
+    }
+
+    fn ensure_mut_borrow_allowed(
+        &self,
+        module: &Module,
+        span: Span,
+        target: &str,
+        errors: &mut Vec<TypeError>,
+    ) {
+        if self.active_mut_borrows.get(target).copied().unwrap_or(0) > 0 {
+            errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!("`{}` is already mutably borrowed", target),
+            ));
+        }
+    }
+
+    fn end_mut_borrow(&mut self, target: &str) {
+        if let Some(entry) = self.active_mut_borrows.get_mut(target) {
+            if *entry > 1 {
+                *entry -= 1;
+            } else {
+                self.active_mut_borrows.remove(target);
+            }
+        }
     }
 }
 
@@ -1991,6 +2086,20 @@ fn pattern_span(pattern: &Pattern) -> Span {
             .map(pattern_span)
             .unwrap_or_else(|| Span::new(0, 0)),
     }
+}
+
+fn mutable_reference_target(expr: &Expr) -> Option<String> {
+    if let Expr::Reference {
+        mutable: true,
+        expr,
+        ..
+    } = expr
+    {
+        if let Expr::Identifier(ident) = expr.as_ref() {
+            return Some(ident.name.clone());
+        }
+    }
+    None
 }
 
 fn strip_references<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {

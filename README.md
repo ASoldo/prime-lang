@@ -227,6 +227,8 @@ verifies:
 - `let` bindings and function returns honor their declared types.
 - Function calls supply the right number of arguments/type arguments.
 - `match` expressions cover every enum variant unless a wildcard arm is present.
+- Mutable borrows (`&mut foo`) are checked so only one active reference to a
+  binding exists at a time; shadowing or leaving a scope releases the borrow.
 
 Type errors are reported with file/line spans, so you can fix mistakes before
 running code.

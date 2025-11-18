@@ -1,0 +1,12 @@
+module demos::borrow;
+
+fn alias_mut() {
+  let mut int32 value = 10;
+  let int32 copy = value;
+  let &mut int32 first_ref = &mut value;
+  out(*first_ref);
+}
+
+fn main() {
+  alias_mut();
+}
