@@ -401,43 +401,61 @@ impl Checker {
             Statement::While(while_stmt) => match &while_stmt.condition {
                 WhileCondition::Expr(condition) => {
                     self.check_expression(module, condition, Some(&bool_type()), returns, env);
-                    self.check_block(module, &while_stmt.body, returns, env);
+                    let entry_state = env.snapshot_borrows();
+                    let (_, body_state) = env.run_branch(|env| {
+                        self.check_block(module, &while_stmt.body, returns, env);
+                    });
+                    env.merge_branch_borrows(&[entry_state, body_state]);
                 }
                 WhileCondition::Let { pattern, value } => {
                     let value_ty = self.check_expression(module, value, None, returns, env);
-                    env.push_scope();
-                    self.bind_pattern(module, pattern, value_ty.as_ref(), env);
-                    self.check_block(module, &while_stmt.body, returns, env);
-                    env.pop_scope();
+                    let pattern_value_ty = value_ty.clone();
+                    let entry_state = env.snapshot_borrows();
+                    let (_, body_state) = env.run_branch(move |env| {
+                        env.push_scope();
+                        self.bind_pattern(module, pattern, pattern_value_ty.as_ref(), env);
+                        self.check_block(module, &while_stmt.body, returns, env);
+                        env.pop_scope();
+                    });
+                    env.merge_branch_borrows(&[entry_state, body_state]);
                 }
             },
             Statement::For(for_stmt) => match &for_stmt.target {
                 ForTarget::Range(range) => {
                     self.check_expression(module, &range.start, Some(&int_type()), returns, env);
                     self.check_expression(module, &range.end, Some(&int_type()), returns, env);
-                    env.push_scope();
-                    env.declare(
-                        &for_stmt.binding,
-                        Some(int_type()),
-                        for_stmt.span,
-                        &mut self.errors,
-                    );
-                    self.check_block(module, &for_stmt.body, returns, env);
-                    env.pop_scope();
+                    let entry_state = env.snapshot_borrows();
+                    let (_, body_state) = env.run_branch(|env| {
+                        env.push_scope();
+                        env.declare(
+                            &for_stmt.binding,
+                            Some(int_type()),
+                            for_stmt.span,
+                            &mut self.errors,
+                        );
+                        self.check_block(module, &for_stmt.body, returns, env);
+                        env.pop_scope();
+                    });
+                    env.merge_branch_borrows(&[entry_state, body_state]);
                 }
                 ForTarget::Collection(expr) => {
                     let collection_ty = self.check_expression(module, expr, None, returns, env);
                     if let Some(coll_ty) = collection_ty {
                         if let Some(element_ty) = self.collection_element_type(&coll_ty) {
-                            env.push_scope();
-                            env.declare(
-                                &for_stmt.binding,
-                                Some(element_ty),
-                                for_stmt.span,
-                                &mut self.errors,
-                            );
-                            self.check_block(module, &for_stmt.body, returns, env);
-                            env.pop_scope();
+                            let entry_state = env.snapshot_borrows();
+                            let element_ty_clone = element_ty.clone();
+                            let (_, body_state) = env.run_branch(move |env| {
+                                env.push_scope();
+                                env.declare(
+                                    &for_stmt.binding,
+                                    Some(element_ty_clone.clone()),
+                                    for_stmt.span,
+                                    &mut self.errors,
+                                );
+                                self.check_block(module, &for_stmt.body, returns, env);
+                                env.pop_scope();
+                            });
+                            env.merge_branch_borrows(&[entry_state, body_state]);
                         } else {
                             self.errors.push(TypeError::new(
                                 &module.path,
@@ -637,7 +655,7 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
-        let then_ty = match &expr.condition {
+        let (then_ty, then_state) = env.run_branch(|env| match &expr.condition {
             IfCondition::Expr(condition) => {
                 self.check_expression(module, condition, Some(&bool_type()), returns, env);
                 self.check_block(module, &expr.then_branch, returns, env)
@@ -650,20 +668,23 @@ impl Checker {
                 env.pop_scope();
                 ty
             }
-        };
+        });
         if let Some(else_branch) = &expr.else_branch {
-            let else_ty = match else_branch {
+            let (else_ty, else_state) = env.run_branch(|env| match else_branch {
                 ElseBranch::Block(block) => self.check_block(module, block, returns, env),
                 ElseBranch::ElseIf(nested) => {
                     self.check_if_expression(module, nested, expected, returns, env)
                 }
-            };
+            });
+            env.merge_branch_borrows(&[then_state, else_state]);
             if let (Some(expected), Some(actual)) = (expected, else_ty.as_ref()) {
                 self.ensure_type(module, expr.span, expected, Some(actual));
                 return Some(actual.clone());
             }
             else_ty
         } else {
+            let inactive_state = env.snapshot_borrows();
+            env.merge_branch_borrows(&[then_state, inactive_state]);
             then_ty
         }
     }
@@ -680,13 +701,18 @@ impl Checker {
         let mut arm_type: Option<TypeExpr> = None;
         let mut covered_variants: HashSet<String> = HashSet::new();
         let mut has_wildcard = false;
+        let mut borrow_states: Vec<BorrowState> = Vec::new();
         for arm in &expr.arms {
-            env.push_scope();
-            self.bind_pattern(module, &arm.pattern, scrutinee_ty.as_ref(), env);
-            if let Some(guard) = &arm.guard {
-                self.check_expression(module, guard, Some(&bool_type()), returns, env);
-            }
-            let value_ty = self.check_expression(module, &arm.value, expected, returns, env);
+            let (value_ty, state) = env.run_branch(|env| {
+                env.push_scope();
+                self.bind_pattern(module, &arm.pattern, scrutinee_ty.as_ref(), env);
+                if let Some(guard) = &arm.guard {
+                    self.check_expression(module, guard, Some(&bool_type()), returns, env);
+                }
+                let ty = self.check_expression(module, &arm.value, expected, returns, env);
+                env.pop_scope();
+                ty
+            });
             if arm_type.is_none() {
                 arm_type = value_ty.clone();
             } else if let (Some(a), Some(b)) = (arm_type.as_ref(), value_ty.as_ref()) {
@@ -697,8 +723,9 @@ impl Checker {
             } else if matches!(arm.pattern, Pattern::Wildcard) {
                 has_wildcard = true;
             }
-            env.pop_scope();
+            borrow_states.push(state);
         }
+        env.merge_branch_borrows(&borrow_states);
         if let Some(TypeExpr::Named(enum_name, _)) = &scrutinee_ty {
             if let Some(enum_info) = self.registry.enums.get(enum_name) {
                 if !has_wildcard {
@@ -1979,6 +2006,12 @@ struct FnEnv {
     active_mut_borrows: HashMap<String, usize>,
 }
 
+#[derive(Clone)]
+struct BorrowState {
+    active_mut_borrows: HashMap<String, usize>,
+    scope_borrows: Vec<HashMap<String, HashMap<String, usize>>>,
+}
+
 impl FnEnv {
     fn new(path: PathBuf, type_params: Vec<String>) -> Self {
         Self {
@@ -1987,6 +2020,123 @@ impl FnEnv {
             scopes: vec![HashMap::new()],
             active_mut_borrows: HashMap::new(),
         }
+    }
+
+    fn snapshot_borrows(&self) -> BorrowState {
+        let mut scope_borrows = Vec::new();
+        for scope in &self.scopes {
+            let mut binding_map = HashMap::new();
+            for (name, info) in scope {
+                binding_map.insert(name.clone(), Self::borrow_counts(&info.mut_borrows));
+            }
+            scope_borrows.push(binding_map);
+        }
+        BorrowState {
+            active_mut_borrows: self.active_mut_borrows.clone(),
+            scope_borrows,
+        }
+    }
+
+    fn restore_borrow_state(&mut self, state: &BorrowState) {
+        self.active_mut_borrows = state.active_mut_borrows.clone();
+        self.apply_scope_borrows(&state.scope_borrows);
+    }
+
+    fn run_branch<T, F>(&mut self, branch: F) -> (T, BorrowState)
+    where
+        F: FnOnce(&mut Self) -> T,
+    {
+        let snapshot = self.snapshot_borrows();
+        let result = branch(self);
+        let branch_state = self.snapshot_borrows();
+        self.restore_borrow_state(&snapshot);
+        (result, branch_state)
+    }
+
+    fn merge_branch_borrows(&mut self, states: &[BorrowState]) {
+        if states.is_empty() {
+            self.active_mut_borrows.clear();
+            for scope in &mut self.scopes {
+                for info in scope.values_mut() {
+                    info.mut_borrows.clear();
+                }
+            }
+            return;
+        }
+        let mut merged = states[0].clone();
+        for state in &states[1..] {
+            Self::intersect_counts(&mut merged.active_mut_borrows, &state.active_mut_borrows);
+            for (idx, scope) in merged.scope_borrows.iter_mut().enumerate() {
+                if let Some(other_scope) = state.scope_borrows.get(idx) {
+                    Self::intersect_binding_borrows(scope, other_scope);
+                } else {
+                    scope.clear();
+                }
+            }
+        }
+        self.active_mut_borrows = merged.active_mut_borrows;
+        self.apply_scope_borrows(&merged.scope_borrows);
+    }
+
+    fn intersect_counts(counts: &mut HashMap<String, usize>, other: &HashMap<String, usize>) {
+        counts.retain(|target, count| {
+            if let Some(other_count) = other.get(target) {
+                *count = (*count).min(*other_count);
+                *count > 0
+            } else {
+                false
+            }
+        });
+    }
+
+    fn intersect_binding_borrows(
+        scope: &mut HashMap<String, HashMap<String, usize>>,
+        other: &HashMap<String, HashMap<String, usize>>,
+    ) {
+        scope.retain(|name, counts| {
+            if let Some(other_counts) = other.get(name) {
+                Self::intersect_counts(counts, other_counts);
+                !counts.is_empty()
+            } else {
+                false
+            }
+        });
+    }
+
+    fn apply_scope_borrows(&mut self, scope_borrows: &[HashMap<String, HashMap<String, usize>>]) {
+        for (idx, scope) in self.scopes.iter_mut().enumerate() {
+            if let Some(saved_scope) = scope_borrows.get(idx) {
+                for (name, info) in scope.iter_mut() {
+                    if let Some(counts) = saved_scope.get(name) {
+                        info.mut_borrows = Self::counts_to_borrows(counts);
+                    } else {
+                        info.mut_borrows.clear();
+                    }
+                }
+            } else {
+                for info in scope.values_mut() {
+                    info.mut_borrows.clear();
+                }
+            }
+        }
+    }
+
+    fn borrow_counts(borrows: &[String]) -> HashMap<String, usize> {
+        let mut counts = HashMap::new();
+        for target in borrows {
+            *counts.entry(target.clone()).or_default() += 1;
+        }
+        counts
+    }
+
+    fn counts_to_borrows(counts: &HashMap<String, usize>) -> Vec<String> {
+        let mut borrows = Vec::new();
+        for (target, count) in counts {
+            for _ in 0..*count {
+                borrows.push(target.clone());
+            }
+        }
+        borrows
     }
 
     fn push_scope(&mut self) {
