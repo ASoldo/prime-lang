@@ -2966,6 +2966,28 @@ fn release_after_for_collection() {
   *after = 10;
 }
 
+fn release_in_nested_block() {
+  let mut int32 value = 0;
+  {
+    let &mut int32 alias = &mut value;
+    *alias = 11;
+  }
+  let &mut int32 after = &mut value;
+  *after = 12;
+}
+
+fn release_after_early_return(flag: bool) -> int32 {
+  let mut int32 value = 0;
+  if flag {
+    let &mut int32 alias = &mut value;
+    *alias = 13;
+    return value;
+  }
+  let &mut int32 final_ref = &mut value;
+  *final_ref = 14;
+  value
+}
+
 fn main() {
   release_after_if();
   release_after_match();
@@ -2973,6 +2995,9 @@ fn main() {
   release_after_while_let();
   release_after_for_range();
   release_after_for_collection();
+  release_in_nested_block();
+  let _ = release_after_early_return(true);
+  let _ = release_after_early_return(false);
 }
 "#;
         compile_source(source).expect("borrow-aware control flow should compile");

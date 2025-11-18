@@ -2185,7 +2185,7 @@ mod tests {
     use crate::project::Package;
     use std::path::PathBuf;
 
-    fn interpreter_from_source(source: &str) -> Interpreter {
+fn interpreter_from_source(source: &str) -> Interpreter {
         let module =
             parse_module("tests::runtime", PathBuf::from("test.prime"), source).expect("parse");
         let program = Program {
@@ -2204,7 +2204,7 @@ mod tests {
     }
 
     #[test]
-    fn interpreter_releases_borrows_after_control_flow() {
+fn interpreter_releases_borrows_after_control_flow() {
         let source = r#"
 module tests::runtime;
 
@@ -2281,6 +2281,28 @@ fn release_after_for_collection() {
   let &mut int32 after = &mut value;
   *after = 8;
 }
+
+fn release_in_nested_block() {
+  let mut int32 value = 0;
+  {
+    let &mut int32 alias = &mut value;
+    *alias = 9;
+  }
+  let &mut int32 after = &mut value;
+  *after = 10;
+}
+
+fn release_after_early_return(flag: bool) -> int32 {
+  let mut int32 value = 0;
+  if flag {
+    let &mut int32 alias = &mut value;
+    *alias = 11;
+    return value;
+  }
+  let &mut int32 final_ref = &mut value;
+  *final_ref = 12;
+  value
+}
 "#;
         let mut interpreter = interpreter_from_source(source);
         interpreter.bootstrap().expect("bootstrap");
@@ -2291,8 +2313,29 @@ fn release_after_for_collection() {
             "release_after_while_let",
             "release_after_for_range",
             "release_after_for_collection",
+            "release_in_nested_block",
         ] {
             call_unit(&mut interpreter, func);
+        }
+        for flag in [true, false] {
+            let result = interpreter
+                .call_function(
+                    "release_after_early_return",
+                    None,
+                    &[],
+                    vec![Value::Bool(flag)],
+                )
+                .expect("early return result");
+            match result.as_slice() {
+                [Value::Int(val)] => {
+                    if flag {
+                        assert_eq!(*val, 11);
+                    } else {
+                        assert_eq!(*val, 12);
+                    }
+                }
+                other => panic!("unexpected early return result: {:?}", other),
+            }
         }
     }
 
