@@ -65,3 +65,8 @@ visibility = "pub"
 name = "demos::borrow"
 path = "borrow_demo.prime"
 visibility = "pub"
+
+[[modules]]
+name = "demos::patterns"
+path = "pattern_demo.prime"
+visibility = "pub"

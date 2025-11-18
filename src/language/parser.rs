@@ -1369,11 +1369,30 @@ impl Parser {
             .map(|s| s.start)
             .unwrap_or_else(|| self.current_span_start());
         self.enter_block_context();
-        let condition = match self.parse_expression() {
-            Ok(expr) => expr,
-            Err(err) => {
-                self.exit_block_context();
-                return Err(err);
+        let condition = if self.matches(TokenKind::Let) {
+            let pattern = match self.parse_pattern() {
+                Ok(pattern) => pattern,
+                Err(err) => {
+                    self.exit_block_context();
+                    return Err(err);
+                }
+            };
+            self.expect(TokenKind::Eq)?;
+            let value = match self.parse_expression() {
+                Ok(expr) => expr,
+                Err(err) => {
+                    self.exit_block_context();
+                    return Err(err);
+                }
+            };
+            IfCondition::Let { pattern, value }
+        } else {
+            match self.parse_expression() {
+                Ok(expr) => IfCondition::Expr(expr),
+                Err(err) => {
+                    self.exit_block_context();
+                    return Err(err);
+                }
             }
         };
         self.exit_block_context();
@@ -1409,15 +1428,57 @@ impl Parser {
         if self.matches(TokenKind::Identifier("_".into())) {
             return Ok(Pattern::Wildcard);
         }
-        if let Some(TokenKind::Identifier(_)) = self.peek_kind() {
-            return self.parse_named_pattern();
+        if self.matches(TokenKind::LParen) {
+            let start = self
+                .previous_span()
+                .map(|s| s.start)
+                .unwrap_or_else(|| self.current_span_start());
+            return self.parse_tuple_pattern(start);
         }
-        if let Some(TokenKind::Integer(_)) = self.peek_kind() {
-            let lit = self.parse_int_literal()?;
-            return Ok(Pattern::Literal(match lit {
-                Expr::Literal(lit) => lit,
-                _ => unreachable!(),
-            }));
+        if self.matches(TokenKind::Hash) {
+            let start = self
+                .previous_span()
+                .map(|s| s.start)
+                .unwrap_or_else(|| self.current_span_start());
+            return self.parse_map_pattern(start);
+        }
+        if let Some(kind) = self.peek_kind() {
+            match kind {
+                TokenKind::Identifier(_) => return self.parse_named_pattern(),
+                TokenKind::Integer(_) => {
+                    let lit = self.parse_int_literal()?;
+                    if let Expr::Literal(lit) = lit {
+                        return Ok(Pattern::Literal(lit));
+                    }
+                }
+                TokenKind::Float(_) => {
+                    let lit = self.parse_float_literal()?;
+                    if let Expr::Literal(lit) = lit {
+                        return Ok(Pattern::Literal(lit));
+                    }
+                }
+                TokenKind::String(_) => {
+                    let lit = self.parse_string_literal()?;
+                    if let Expr::Literal(lit) = lit {
+                        return Ok(Pattern::Literal(lit));
+                    }
+                }
+                TokenKind::Rune(_) => {
+                    let lit = self.parse_rune_literal()?;
+                    if let Expr::Literal(lit) = lit {
+                        return Ok(Pattern::Literal(lit));
+                    }
+                }
+                TokenKind::True => {
+                    let span = self.advance().span;
+                    return Ok(Pattern::Literal(Literal::Bool(true, span)));
+                }
+                TokenKind::False => {
+                    let span = self.advance().span;
+                    return Ok(Pattern::Literal(Literal::Bool(false, span)));
+                }
+                _ => {}
+            }
         }
         Err(self.error_here("Unsupported pattern"))
     }
@@ -1468,6 +1529,61 @@ impl Parser {
         }
         self.expect(TokenKind::RParen)?;
         Ok(bindings)
+    }
+
+    fn parse_tuple_pattern(&mut self, start: usize) -> Result<Pattern, SyntaxError> {
+        let mut elements = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            loop {
+                elements.push(self.parse_pattern()?);
+                if self.matches(TokenKind::Comma) {
+                    if self.check(TokenKind::RParen) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        let end = self.expect(TokenKind::RParen)?.span.end;
+        Ok(Pattern::Tuple(elements, Span::new(start, end)))
+    }
+
+    fn parse_map_pattern(&mut self, start: usize) -> Result<Pattern, SyntaxError> {
+        self.expect(TokenKind::LBrace)?;
+        let mut entries = Vec::new();
+        while !self.check(TokenKind::RBrace) && !self.is_eof() {
+            let key_token = self.expect_string("Expected string literal map key")?;
+            self.expect(TokenKind::Colon)?;
+            let pattern = self.parse_pattern()?;
+            entries.push(MapPatternEntry {
+                key: key_token,
+                pattern,
+            });
+            if self.matches(TokenKind::Comma) {
+                if self.check(TokenKind::RBrace) {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+        let end = self.expect(TokenKind::RBrace)?.span.end;
+        Ok(Pattern::Map(entries, Span::new(start, end)))
+    }
+
+    fn expect_string(&mut self, msg: &str) -> Result<String, SyntaxError> {
+        if let Some(TokenKind::String(value)) = self.peek_kind() {
+            self.advance();
+            Ok(value)
+        } else {
+            let span = self
+                .tokens
+                .get(self.pos)
+                .map(|t| t.span)
+                .unwrap_or_else(|| Span::new(0, 0));
+            Err(self.error_at(span, msg))
+        }
     }
 
     fn parse_int_literal(&mut self) -> Result<Expr, SyntaxError> {
@@ -1748,6 +1864,10 @@ impl Parser {
                     .map(|t| t.span)
                     .unwrap_or_else(|| Span::new(0, 0))
             });
+        SyntaxError::new(message.to_string(), span)
+    }
+
+    fn error_at(&self, span: Span, message: &str) -> SyntaxError {
         SyntaxError::new(message.to_string(), span)
     }
 

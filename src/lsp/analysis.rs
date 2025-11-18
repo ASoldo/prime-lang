@@ -1,7 +1,7 @@
 use crate::language::{
     ast::{
-        Block, ElseBranch, Expr, ForTarget, FunctionBody, FunctionDef, IfExpr, Item, LetStmt,
-        Literal, Module, Pattern, RangeExpr, Statement, StructLiteralKind,
+        Block, ElseBranch, Expr, ForTarget, FunctionBody, FunctionDef, IfCondition, IfExpr, Item,
+        LetStmt, Literal, Module, Pattern, RangeExpr, Statement, StructLiteralKind,
     },
     span::Span,
     types::{Mutability, TypeExpr},
@@ -209,7 +209,8 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
             collect_decl_from_expr(&match_expr.expr, decls);
             for arm in &match_expr.arms {
                 let value_span = expr_span(&arm.value);
-                collect_pattern_decls(&arm.pattern, value_span, value_span.start, decls);
+                let pat_span = pattern_span(&arm.pattern);
+                collect_pattern_decls(&arm.pattern, value_span, value_span.start, decls, pat_span);
                 if let Some(guard) = &arm.guard {
                     collect_decl_from_expr(guard, decls);
                 }
@@ -229,7 +230,20 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
 }
 
 fn collect_decl_from_if_expr(if_expr: &IfExpr, decls: &mut Vec<DeclInfo>) {
-    collect_decl_from_expr(&if_expr.condition, decls);
+    match &if_expr.condition {
+        IfCondition::Expr(expr) => collect_decl_from_expr(expr, decls),
+        IfCondition::Let { pattern, value, .. } => {
+            collect_decl_from_expr(value, decls);
+            let pat_span = pattern_span(pattern);
+            collect_pattern_decls(
+                pattern,
+                if_expr.then_branch.span,
+                if_expr.then_branch.span.start,
+                decls,
+                pat_span,
+            );
+        }
+    }
     collect_decl_from_block(&if_expr.then_branch, decls);
     if let Some(else_branch) = &if_expr.else_branch {
         collect_decl_from_else_branch(else_branch, decls);
@@ -261,6 +275,7 @@ fn collect_pattern_decls(
     scope: Span,
     available_from: usize,
     decls: &mut Vec<DeclInfo>,
+    pattern_span: Span,
 ) {
     match pattern {
         Pattern::Identifier(name, span) => decls.push(DeclInfo {
@@ -269,13 +284,23 @@ fn collect_pattern_decls(
             scope,
             available_from,
             ty: None,
-            value_span: None,
+            value_span: Some(pattern_span),
             mutability: Mutability::Immutable,
             kind: DeclKind::Pattern,
         }),
         Pattern::EnumVariant { bindings, .. } => {
             for binding in bindings {
-                collect_pattern_decls(binding, scope, available_from, decls);
+                collect_pattern_decls(binding, scope, available_from, decls, pattern_span);
+            }
+        }
+        Pattern::Tuple(elements, _) => {
+            for element in elements {
+                collect_pattern_decls(element, scope, available_from, decls, pattern_span);
+            }
+        }
+        Pattern::Map(entries, _) => {
+            for entry in entries {
+                collect_pattern_decls(&entry.pattern, scope, available_from, decls, pattern_span);
             }
         }
         _ => {}
@@ -423,7 +448,10 @@ fn collect_range_expr(range: &RangeExpr, used: &mut HashSet<String>) {
 }
 
 fn collect_used_in_if_expr(if_expr: &IfExpr, used: &mut HashSet<String>) {
-    collect_expr_idents(&if_expr.condition, used);
+    match &if_expr.condition {
+        IfCondition::Expr(expr) => collect_expr_idents(expr, used),
+        IfCondition::Let { value, .. } => collect_expr_idents(value, used),
+    }
     collect_used_in_block(&if_expr.then_branch, used);
     if let Some(else_branch) = &if_expr.else_branch {
         collect_used_in_else_branch(else_branch, used);
@@ -434,6 +462,30 @@ fn collect_used_in_else_branch(else_branch: &ElseBranch, used: &mut HashSet<Stri
     match else_branch {
         ElseBranch::Block(block) => collect_used_in_block(block, used),
         ElseBranch::ElseIf(if_expr) => collect_used_in_if_expr(if_expr, used),
+    }
+}
+
+fn pattern_span(pattern: &Pattern) -> Span {
+    match pattern {
+        Pattern::Wildcard => Span::new(0, 0),
+        Pattern::Identifier(_, span) => *span,
+        Pattern::Literal(lit) => literal_span(lit),
+        Pattern::EnumVariant { bindings, .. } => bindings
+            .first()
+            .map(pattern_span)
+            .unwrap_or_else(|| Span::new(0, 0)),
+        Pattern::Tuple(_, span) => *span,
+        Pattern::Map(_, span) => *span,
+    }
+}
+
+fn literal_span(lit: &Literal) -> Span {
+    match lit {
+        Literal::Int(_, span)
+        | Literal::Float(_, span)
+        | Literal::Bool(_, span)
+        | Literal::String(_, span)
+        | Literal::Rune(_, span) => *span,
     }
 }
 

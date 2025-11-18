@@ -807,7 +807,10 @@ fn emit_if_expression(out: &mut String, indent: usize, if_expr: &IfExpr, include
     if include_indent {
         write_indent(out, indent);
     }
-    out.push_str(&format!("if {} {{\n", format_expr(&if_expr.condition)));
+    out.push_str(&format!(
+        "if {} {{\n",
+        format_if_condition(&if_expr.condition)
+    ));
     format_block(out, &if_expr.then_branch, indent + 2);
     write_indent(out, indent);
     out.push('}');
@@ -860,6 +863,34 @@ fn format_pattern(pattern: &Pattern) -> String {
                     .join(", ");
                 format!("{prefix}({args})")
             }
+        }
+        Pattern::Tuple(elements, _) => {
+            let inner = elements
+                .iter()
+                .map(format_pattern)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({inner})")
+        }
+        Pattern::Map(entries, _) => {
+            if entries.is_empty() {
+                return "#{{}}".into();
+            }
+            let inner = entries
+                .iter()
+                .map(|entry| format!("\"{}\": {}", entry.key, format_pattern(&entry.pattern)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("#{{ {inner} }}")
+        }
+    }
+}
+
+fn format_if_condition(condition: &IfCondition) -> String {
+    match condition {
+        IfCondition::Expr(expr) => format_expr(expr),
+        IfCondition::Let { pattern, value, .. } => {
+            format!("let {} = {}", format_pattern(pattern), format_expr(value))
         }
     }
 }

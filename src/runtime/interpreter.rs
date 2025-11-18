@@ -1537,6 +1537,44 @@ impl Interpreter {
                 }
                 Ok(false)
             }
+            Pattern::Tuple(patterns, _) => {
+                let concrete = match value {
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                if let Value::Tuple(values) = concrete {
+                    if patterns.len() != values.len() {
+                        return Ok(false);
+                    }
+                    for (pat, val) in patterns.iter().zip(values.iter()) {
+                        if !self.match_pattern(pat, val)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Pattern::Map(entries, _) => {
+                let concrete = match value {
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                if let Value::Map(map) = concrete {
+                    for entry in entries {
+                        let Some(val) = map.get(&entry.key) else {
+                            return Ok(false);
+                        };
+                        if !self.match_pattern(&entry.pattern, &val)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
         }
     }
 
@@ -1794,25 +1832,62 @@ impl Interpreter {
     }
 
     fn eval_if_expression(&mut self, if_expr: &IfExpr) -> RuntimeResult<EvalOutcome<Value>> {
-        let condition = match self.eval_expression(&if_expr.condition)? {
-            EvalOutcome::Value(value) => value,
-            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
-        };
-        if condition.as_bool() {
-            match self.eval_block(&if_expr.then_branch)? {
-                BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+        match &if_expr.condition {
+            IfCondition::Expr(condition) => {
+                let value = match self.eval_expression(condition)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                if value.as_bool() {
+                    match self.eval_block(&if_expr.then_branch)? {
+                        BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                        BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                    }
+                } else if let Some(else_branch) = &if_expr.else_branch {
+                    match else_branch {
+                        ElseBranch::Block(block) => match self.eval_block(block)? {
+                            BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                            BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                        },
+                        ElseBranch::ElseIf(nested) => self.eval_if_expression(nested),
+                    }
+                } else {
+                    Ok(EvalOutcome::Value(Value::Unit))
+                }
             }
-        } else if let Some(else_branch) = &if_expr.else_branch {
-            match else_branch {
-                ElseBranch::Block(block) => match self.eval_block(block)? {
-                    BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                    BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-                },
-                ElseBranch::ElseIf(nested) => self.eval_if_expression(nested),
+            IfCondition::Let { pattern, value, .. } => {
+                let scrutinee = match self.eval_expression(value)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                self.env.push_scope();
+                let matches = self.match_pattern(pattern, &scrutinee)?;
+                if matches {
+                    match self.eval_block(&if_expr.then_branch)? {
+                        BlockEval::Value(value) => {
+                            self.env.pop_scope();
+                            Ok(EvalOutcome::Value(value))
+                        }
+                        BlockEval::Flow(flow) => {
+                            self.env.pop_scope();
+                            Ok(EvalOutcome::Flow(flow))
+                        }
+                    }
+                } else {
+                    self.env.pop_scope();
+                    if let Some(else_branch) = &if_expr.else_branch {
+                        match else_branch {
+                            ElseBranch::Block(block) => match self.eval_block(block)? {
+                                BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                            },
+                            ElseBranch::ElseIf(nested) => self.eval_if_expression(nested),
+                        }
+                    } else {
+                        Ok(EvalOutcome::Value(Value::Unit))
+                    }
+                }
             }
-        } else {
-            Ok(EvalOutcome::Value(Value::Unit))
         }
     }
 

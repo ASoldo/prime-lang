@@ -1,0 +1,38 @@
+module demos::patterns;
+
+import core::types;
+
+fn describe_reading(reading: (string, int32)) {
+  match reading {
+    ("temp", value) => out(value),
+    ("status", code) => out(code),
+    _ => out("unrecognized reading"),
+  }
+}
+
+fn summarize_stats(stats: Map[string, int32]) {
+  match stats {
+    #{ "hp": hp, "mp": mp } => {
+      out("stats ready");
+      out(hp);
+      out(mp);
+    },
+    _ => out("missing stats"),
+  }
+  if let Some(hp) = stats.map_get("hp") {
+    out("hp present");
+    out(hp);
+  } else {
+    out("no hp measurement");
+  }
+}
+
+fn main() {
+  describe_reading(("temp", 72));
+  let Map[string, int32] stats = #{
+    "hp": 120,
+    "mp": 55,
+  };
+
+  summarize_stats(stats);
+}

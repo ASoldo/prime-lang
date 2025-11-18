@@ -246,6 +246,14 @@ pub enum Pattern {
         variant: String,
         bindings: Vec<Pattern>,
     },
+    Tuple(Vec<Pattern>, Span),
+    Map(Vec<MapPatternEntry>, Span),
+}
+
+#[derive(Clone, Debug)]
+pub struct MapPatternEntry {
+    pub key: String,
+    pub pattern: Pattern,
 }
 
 #[derive(Clone, Debug)]
@@ -355,10 +363,16 @@ pub enum UnaryOp {
 
 #[derive(Clone, Debug)]
 pub struct IfExpr {
-    pub condition: Expr,
+    pub condition: IfCondition,
     pub then_branch: Block,
     pub else_branch: Option<ElseBranch>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum IfCondition {
+    Expr(Expr),
+    Let { pattern: Pattern, value: Expr },
 }
 
 #[derive(Clone, Debug)]

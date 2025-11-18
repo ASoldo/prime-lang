@@ -986,33 +986,71 @@ impl Compiler {
     }
 
     fn emit_if_expression(&mut self, if_expr: &IfExpr) -> Result<EvalOutcome<Value>, String> {
-        let condition = match self.emit_expression(&if_expr.condition)? {
-            EvalOutcome::Value(value) => value,
-            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
-        };
-        if self.value_to_bool(condition)? {
-            self.push_scope();
-            let value = self.execute_block_contents(&if_expr.then_branch)?;
-            self.exit_scope()?;
-            match value {
-                BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-            }
-        } else if let Some(else_branch) = &if_expr.else_branch {
-            match else_branch {
-                ElseBranch::Block(block) => {
+        match &if_expr.condition {
+            IfCondition::Expr(condition) => {
+                let cond_value = match self.emit_expression(condition)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                if self.value_to_bool(cond_value)? {
                     self.push_scope();
-                    let value = self.execute_block_contents(block)?;
+                    let value = self.execute_block_contents(&if_expr.then_branch)?;
                     self.exit_scope()?;
                     match value {
                         BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
                         BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                     }
+                } else if let Some(else_branch) = &if_expr.else_branch {
+                    match else_branch {
+                        ElseBranch::Block(block) => {
+                            self.push_scope();
+                            let value = self.execute_block_contents(block)?;
+                            self.exit_scope()?;
+                            match value {
+                                BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                            }
+                        }
+                        ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
+                    }
+                } else {
+                    Ok(EvalOutcome::Value(Value::Unit))
                 }
-                ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
             }
-        } else {
-            Ok(EvalOutcome::Value(Value::Unit))
+            IfCondition::Let { pattern, value, .. } => {
+                let scrutinee = match self.emit_expression(value)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                self.push_scope();
+                let matches = self.match_pattern(&scrutinee, pattern)?;
+                if matches {
+                    let result = self.execute_block_contents(&if_expr.then_branch)?;
+                    self.exit_scope()?;
+                    match result {
+                        BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                        BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                    }
+                } else {
+                    self.exit_scope()?;
+                    if let Some(else_branch) = &if_expr.else_branch {
+                        match else_branch {
+                            ElseBranch::Block(block) => {
+                                self.push_scope();
+                                let value = self.execute_block_contents(block)?;
+                                self.exit_scope()?;
+                                match value {
+                                    BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                                    BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                                }
+                            }
+                            ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
+                        }
+                    } else {
+                        Ok(EvalOutcome::Value(Value::Unit))
+                    }
+                }
+            }
         }
     }
 
@@ -1242,6 +1280,44 @@ impl Compiler {
                 }
                 Ok(false)
             }
+            Pattern::Tuple(patterns, _) => {
+                let concrete = match value {
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                if let Value::Tuple(values) = concrete {
+                    if patterns.len() != values.len() {
+                        return Ok(false);
+                    }
+                    for (pat, val) in patterns.iter().zip(values.iter()) {
+                        if !self.match_pattern(val, pat)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Pattern::Map(entries, _) => {
+                let concrete = match value {
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                if let Value::Map(map) = concrete {
+                    for entry in entries {
+                        let Some(val) = map.get(&entry.key) else {
+                            return Ok(false);
+                        };
+                        if !self.match_pattern(&val, &entry.pattern)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
         }
     }
 
@@ -1261,6 +1337,13 @@ impl Compiler {
                     .constant()
                     .map(|val| val == want)
                     .ok_or_else(|| "Non-constant boolean pattern in build mode".into())
+            }
+            (Literal::Float(expected, _), Value::Float(float_value)) => float_value
+                .constant()
+                .map(|val| val == *expected)
+                .ok_or_else(|| "Non-constant float pattern in build mode".into()),
+            (Literal::String(expected, _), Value::Str(string_value)) => {
+                Ok(&*string_value.text == expected)
             }
             (Literal::Rune(expected, _), Value::Int(int_value)) => {
                 let want = *expected as i128;

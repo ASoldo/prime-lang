@@ -322,6 +322,13 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &super::analysis::De
     if decl.mutability.is_mutable() {
         value.push_str("\nMutable binding");
     }
+    if decl.kind == super::analysis::DeclKind::Pattern {
+        if let Some(span) = decl.value_span {
+            value.push_str("\nPattern:\n```prime\n");
+            value.push_str(&extract_text(text, span.start, span.end));
+            value.push_str("\n```");
+        }
+    }
     markdown_hover(text, usage_span, value)
 }
 

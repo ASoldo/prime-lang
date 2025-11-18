@@ -138,6 +138,20 @@ match damage {
   Percent(rate) => { /* fallback */ },
 };
 
+if let Some(reserve) = stats.map_get("hp") {
+  out(reserve);
+}
+
+match stats {
+  #{ "hp": hp, "mp": mp } => out(hp + mp),
+  _ => out("incomplete"),
+};
+
+match reading {
+  ("status", code) => out(code),
+  _ => out("other"),
+};
+
 if hero.hp < 50 {
   out("status: fragile");
 } else if hero.hp > 250 {

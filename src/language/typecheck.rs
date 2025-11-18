@@ -599,8 +599,20 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
-        self.check_expression(module, &expr.condition, Some(&bool_type()), returns, env);
-        let then_ty = self.check_block(module, &expr.then_branch, returns, env);
+        let then_ty = match &expr.condition {
+            IfCondition::Expr(condition) => {
+                self.check_expression(module, condition, Some(&bool_type()), returns, env);
+                self.check_block(module, &expr.then_branch, returns, env)
+            }
+            IfCondition::Let { pattern, value, .. } => {
+                let value_ty = self.check_expression(module, value, None, returns, env);
+                env.push_scope();
+                self.bind_pattern(module, pattern, value_ty.as_ref(), env);
+                let ty = self.check_block(module, &expr.then_branch, returns, env);
+                env.pop_scope();
+                ty
+            }
+        };
         if let Some(else_branch) = &expr.else_branch {
             let else_ty = match else_branch {
                 ElseBranch::Block(block) => self.check_block(module, block, returns, env),
@@ -1502,6 +1514,47 @@ impl Checker {
                     ));
                 }
             }
+            Pattern::Tuple(elements, span) => {
+                if let Some(TypeExpr::Tuple(types)) = ty {
+                    if elements.len() != types.len() {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            *span,
+                            format!(
+                                "tuple pattern expects {} element(s), found {}",
+                                types.len(),
+                                elements.len()
+                            ),
+                        ));
+                        return;
+                    }
+                    for (pat, elem_ty) in elements.iter().zip(types.iter()) {
+                        self.bind_pattern(module, pat, Some(elem_ty), env);
+                    }
+                } else if let Some(actual) = ty {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        *span,
+                        format!("expected tuple type, found `{}`", actual.canonical_name()),
+                    ));
+                } else {
+                    for pat in elements {
+                        self.bind_pattern(module, pat, None, env);
+                    }
+                }
+            }
+            Pattern::Map(entries, span) => {
+                let value_ty = match ty {
+                    Some(actual) => match self.expect_map_type(module, *span, Some(actual)) {
+                        Some((_key, value)) => Some(value),
+                        None => return,
+                    },
+                    None => None,
+                };
+                for entry in entries {
+                    self.bind_pattern(module, &entry.pattern, value_ty.as_ref(), env);
+                }
+            }
         }
     }
 
@@ -2085,6 +2138,8 @@ fn pattern_span(pattern: &Pattern) -> Span {
             .first()
             .map(pattern_span)
             .unwrap_or_else(|| Span::new(0, 0)),
+        Pattern::Tuple(_, span) => *span,
+        Pattern::Map(_, span) => *span,
     }
 }
 
