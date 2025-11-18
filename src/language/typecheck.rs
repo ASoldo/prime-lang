@@ -827,6 +827,19 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
+        let mut seen_mut_refs = HashSet::new();
+        for arg in args {
+            if let Some(target) = mutable_reference_target(arg) {
+                if !seen_mut_refs.insert(target.clone()) {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        expr_span(arg),
+                        format!("`{}` is already mutably borrowed in this call", target),
+                    ));
+                }
+            }
+        }
+
         match callee {
             Expr::Identifier(ident) => {
                 if self.is_builtin_name(&ident.name) {
@@ -2282,6 +2295,20 @@ fn pattern_span(pattern: &Pattern) -> Span {
 fn expression_borrow_targets(expr: &Expr) -> Vec<String> {
     let context = HashMap::new();
     expression_borrow_targets_with_context(expr, &context)
+}
+
+fn mutable_reference_target(expr: &Expr) -> Option<String> {
+    if let Expr::Reference {
+        mutable: true,
+        expr: inner,
+        ..
+    } = expr
+    {
+        if let Expr::Identifier(ident) = inner.as_ref() {
+            return Some(ident.name.clone());
+        }
+    }
+    None
 }
 
 fn expression_borrow_targets_with_context(
