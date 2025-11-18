@@ -1,7 +1,7 @@
 use crate::language::{
     ast::{
         Block, ElseBranch, Expr, ForTarget, FunctionBody, FunctionDef, IfCondition, IfExpr, Item,
-        LetStmt, Literal, Module, Pattern, RangeExpr, Statement, StructLiteralKind,
+        LetStmt, Literal, Module, Pattern, RangeExpr, Statement, StructLiteralKind, WhileCondition,
     },
     span::Span,
     types::{Mutability, TypeExpr},
@@ -137,7 +137,7 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                 }
             }
             Statement::While(while_stmt) => {
-                collect_decl_from_expr(&while_stmt.condition, decls);
+                collect_decl_from_while_condition(&while_stmt.condition, decls);
                 collect_decl_from_block(&while_stmt.body, decls);
             }
             Statement::For(for_stmt) => {
@@ -255,6 +255,13 @@ fn collect_decl_from_if_expr(if_expr: &IfExpr, decls: &mut Vec<DeclInfo>) {
     collect_decl_from_block(&if_expr.then_branch, decls);
     if let Some(else_branch) = &if_expr.else_branch {
         collect_decl_from_else_branch(else_branch, decls);
+    }
+}
+
+fn collect_decl_from_while_condition(condition: &WhileCondition, decls: &mut Vec<DeclInfo>) {
+    match condition {
+        WhileCondition::Expr(expr) => collect_decl_from_expr(expr, decls),
+        WhileCondition::Let { value, .. } => collect_decl_from_expr(value, decls),
     }
 }
 
@@ -413,7 +420,7 @@ fn collect_used_in_statement(statement: &Statement, used: &mut HashSet<String>) 
             }
         }
         Statement::While(while_stmt) => {
-            collect_expr_idents(&while_stmt.condition, used);
+            collect_expr_idents_from_while_condition(&while_stmt.condition, used);
             collect_used_in_block(&while_stmt.body, used);
         }
         Statement::For(for_stmt) => {
@@ -506,6 +513,16 @@ fn collect_used_in_if_expr(if_expr: &IfExpr, used: &mut HashSet<String>) {
     collect_used_in_block(&if_expr.then_branch, used);
     if let Some(else_branch) = &if_expr.else_branch {
         collect_used_in_else_branch(else_branch, used);
+    }
+}
+
+fn collect_expr_idents_from_while_condition(
+    condition: &WhileCondition,
+    used: &mut HashSet<String>,
+) {
+    match condition {
+        WhileCondition::Expr(expr) => collect_expr_idents(expr, used),
+        WhileCondition::Let { value, .. } => collect_expr_idents(value, used),
     }
 }
 

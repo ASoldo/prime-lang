@@ -482,7 +482,18 @@ fn format_assign_statement(out: &mut String, stmt: &AssignStmt, indent: usize) -
 
 fn format_while_statement(out: &mut String, stmt: &WhileStmt, indent: usize) {
     write_indent(out, indent);
-    out.push_str(&format!("while {} {{\n", format_expr(&stmt.condition)));
+    match &stmt.condition {
+        WhileCondition::Expr(expr) => {
+            out.push_str(&format!("while {} {{\n", format_expr(expr)));
+        }
+        WhileCondition::Let { pattern, value } => {
+            out.push_str(&format!(
+                "while let {} = {} {{\n",
+                format_pattern(pattern),
+                format_expr(value)
+            ));
+        }
+    }
     format_block(out, &stmt.body, indent + 2);
     write_indent(out, indent);
     out.push_str("}\n");

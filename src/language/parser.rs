@@ -869,9 +869,33 @@ impl Parser {
 
     fn parse_while(&mut self) -> Result<WhileStmt, SyntaxError> {
         self.enter_block_context();
-        let condition = self.parse_expression();
+        let condition = if self.matches(TokenKind::Let) {
+            let pattern = match self.parse_pattern() {
+                Ok(pattern) => pattern,
+                Err(err) => {
+                    self.exit_block_context();
+                    return Err(err);
+                }
+            };
+            self.expect(TokenKind::Eq)?;
+            let value = match self.parse_expression() {
+                Ok(expr) => expr,
+                Err(err) => {
+                    self.exit_block_context();
+                    return Err(err);
+                }
+            };
+            WhileCondition::Let { pattern, value }
+        } else {
+            match self.parse_expression() {
+                Ok(expr) => WhileCondition::Expr(expr),
+                Err(err) => {
+                    self.exit_block_context();
+                    return Err(err);
+                }
+            }
+        };
         self.exit_block_context();
-        let condition = condition?;
         let body = self.parse_block()?;
         Ok(WhileStmt { condition, body })
     }

@@ -648,24 +648,47 @@ impl Compiler {
                     );
                 }
             },
-            Statement::While(stmt) => loop {
-                let condition = match self.emit_expression(&stmt.condition)? {
-                    EvalOutcome::Value(value) => value,
-                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
-                };
-                if !self.value_to_bool(condition)? {
-                    break;
-                }
-                self.push_scope();
-                let result = self.execute_block_contents(&stmt.body)?;
-                self.exit_scope()?;
-                match result {
-                    BlockEval::Value(_) => {}
-                    BlockEval::Flow(FlowSignal::Continue) => continue,
-                    BlockEval::Flow(FlowSignal::Break) => break,
-                    BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
-                    BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
-                }
+            Statement::While(stmt) => match &stmt.condition {
+                WhileCondition::Expr(expr) => loop {
+                    let condition = match self.emit_expression(expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    if !self.value_to_bool(condition)? {
+                        break;
+                    }
+                    self.push_scope();
+                    let result = self.execute_block_contents(&stmt.body)?;
+                    self.exit_scope()?;
+                    match result {
+                        BlockEval::Value(_) => {}
+                        BlockEval::Flow(FlowSignal::Continue) => continue,
+                        BlockEval::Flow(FlowSignal::Break) => break,
+                        BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
+                    }
+                },
+                WhileCondition::Let { pattern, value } => loop {
+                    let candidate = match self.emit_expression(value)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    self.push_scope();
+                    let matched = self.match_pattern(&candidate, pattern)?;
+                    if !matched {
+                        self.exit_scope()?;
+                        break;
+                    }
+                    let result = self.execute_block_contents(&stmt.body)?;
+                    self.exit_scope()?;
+                    match result {
+                        BlockEval::Value(_) => {}
+                        BlockEval::Flow(FlowSignal::Continue) => continue,
+                        BlockEval::Flow(FlowSignal::Break) => break,
+                        BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
+                    }
+                },
             },
             Statement::For(stmt) => match &stmt.target {
                 ForTarget::Range(range_expr) => {

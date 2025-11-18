@@ -181,11 +181,18 @@ while probes < 2 {
 for explorer in explorers {
   out(explorer);
 }
+
+let []string probe_notes = ["ok", "stable"];
+let mut int32 idx = 0;
+while let Some(note) = probe_notes.get(idx) {
+  out(note);
+  idx = idx + 1;
+}
 ```
 
 - `match` is exhaustive, supports `Enum::Variant` syntax, and each arm can carry
   an `if guard` to refine patterns.
-- Loops include `for range`, `while`, and `match` drives branching.
+- Loops include `for range`, `while`, `while let`, and `match` drives branching.
 
 ### References, Pointers & `defer`
 

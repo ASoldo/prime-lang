@@ -213,8 +213,14 @@ pub struct ReturnStmt {
 
 #[derive(Clone, Debug)]
 pub struct WhileStmt {
-    pub condition: Expr,
+    pub condition: WhileCondition,
     pub body: Block,
+}
+
+#[derive(Clone, Debug)]
+pub enum WhileCondition {
+    Expr(Expr),
+    Let { pattern: Pattern, value: Expr },
 }
 
 #[derive(Clone, Debug)]

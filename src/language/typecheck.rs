@@ -363,16 +363,19 @@ impl Checker {
                     }
                 }
             }
-            Statement::While(while_stmt) => {
-                self.check_expression(
-                    module,
-                    &while_stmt.condition,
-                    Some(&bool_type()),
-                    returns,
-                    env,
-                );
-                self.check_block(module, &while_stmt.body, returns, env);
-            }
+            Statement::While(while_stmt) => match &while_stmt.condition {
+                WhileCondition::Expr(condition) => {
+                    self.check_expression(module, condition, Some(&bool_type()), returns, env);
+                    self.check_block(module, &while_stmt.body, returns, env);
+                }
+                WhileCondition::Let { pattern, value } => {
+                    let value_ty = self.check_expression(module, value, None, returns, env);
+                    env.push_scope();
+                    self.bind_pattern(module, pattern, value_ty.as_ref(), env);
+                    self.check_block(module, &while_stmt.body, returns, env);
+                    env.pop_scope();
+                }
+            },
             Statement::For(for_stmt) => match &for_stmt.target {
                 ForTarget::Range(range) => {
                     self.check_expression(module, &range.start, Some(&int_type()), returns, env);
@@ -2038,7 +2041,6 @@ impl FnEnv {
             }
         }
     }
-
 }
 
 fn instantiate_function(
@@ -2263,25 +2265,21 @@ fn expression_borrow_targets_with_context(
                 Vec::new()
             }
         }
-        Expr::Identifier(ident) => context
-            .get(&ident.name)
-            .cloned()
-            .into_iter()
-            .collect(),
+        Expr::Identifier(ident) => context.get(&ident.name).cloned().into_iter().collect(),
         Expr::Block(block) => block_borrow_targets(block, context),
         _ => Vec::new(),
     }
 }
 
-fn block_borrow_targets(
-    block: &Block,
-    parent: &HashMap<String, String>,
-) -> Vec<String> {
+fn block_borrow_targets(block: &Block, parent: &HashMap<String, String>) -> Vec<String> {
     let mut map = parent.clone();
     for statement in &block.statements {
         if let Statement::Let(stmt) = statement {
             if let Some(value) = &stmt.value {
-                if let Some(target) = expression_borrow_targets_with_context(value, &map).into_iter().next() {
+                if let Some(target) = expression_borrow_targets_with_context(value, &map)
+                    .into_iter()
+                    .next()
+                {
                     map.insert(stmt.name.clone(), target);
                 }
             }
