@@ -310,7 +310,7 @@ mod tests {
     use super::collect_parse_and_manifest_diagnostics;
     use std::fs;
     use tempfile::tempdir;
-    use tower_lsp_server::{lsp_types::Uri, UriExt};
+    use tower_lsp_server::{UriExt, lsp_types::Uri};
 
     #[test]
     fn reports_syntax_errors_for_missing_semicolon() {

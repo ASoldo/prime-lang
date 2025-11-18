@@ -22,6 +22,12 @@ pub fn parse_module(name: &str, path: PathBuf, source: &str) -> Result<Module, S
     Parser::new(name, path, tokens).parse()
 }
 
+fn is_pascal_case(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
+}
+
 struct Parser {
     module_name: String,
     path: PathBuf,
@@ -1300,11 +1306,16 @@ impl Parser {
         let mut arms = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.is_eof() {
             let pattern = self.parse_pattern()?;
+            let guard = if self.matches(TokenKind::If) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
             self.expect(TokenKind::FatArrow)?;
             let value = self.parse_expression()?;
             arms.push(MatchArmExpr {
                 pattern,
-                guard: None,
+                guard,
                 value,
             });
             if self.matches(TokenKind::Comma) {
@@ -1369,26 +1380,7 @@ impl Parser {
             return Ok(Pattern::Wildcard);
         }
         if let Some(TokenKind::Identifier(_)) = self.peek_kind() {
-            let ident = self.expect_identifier("Expected pattern identifier")?;
-            if self.matches(TokenKind::LParen) {
-                let mut bindings = Vec::new();
-                if !self.check(TokenKind::RParen) {
-                    loop {
-                        bindings.push(self.parse_pattern()?);
-                        if self.matches(TokenKind::Comma) {
-                            continue;
-                        }
-                        break;
-                    }
-                }
-                self.expect(TokenKind::RParen)?;
-                return Ok(Pattern::EnumVariant {
-                    enum_name: None,
-                    variant: ident.name,
-                    bindings,
-                });
-            }
-            return Ok(Pattern::Identifier(ident.name, ident.span));
+            return self.parse_named_pattern();
         }
         if let Some(TokenKind::Integer(_)) = self.peek_kind() {
             let lit = self.parse_int_literal()?;
@@ -1398,6 +1390,54 @@ impl Parser {
             }));
         }
         Err(self.error_here("Unsupported pattern"))
+    }
+
+    fn parse_named_pattern(&mut self) -> Result<Pattern, SyntaxError> {
+        let ident = self.expect_identifier("Expected pattern identifier")?;
+        if self.matches(TokenKind::ColonColon) {
+            let variant = self.expect_identifier("Expected variant name after `::`")?;
+            let bindings = if self.matches(TokenKind::LParen) {
+                self.parse_pattern_bindings()?
+            } else {
+                Vec::new()
+            };
+            return Ok(Pattern::EnumVariant {
+                enum_name: Some(ident.name),
+                variant: variant.name,
+                bindings,
+            });
+        }
+        if self.matches(TokenKind::LParen) {
+            let bindings = self.parse_pattern_bindings()?;
+            return Ok(Pattern::EnumVariant {
+                enum_name: None,
+                variant: ident.name,
+                bindings,
+            });
+        }
+        if is_pascal_case(&ident.name) {
+            return Ok(Pattern::EnumVariant {
+                enum_name: None,
+                variant: ident.name,
+                bindings: Vec::new(),
+            });
+        }
+        Ok(Pattern::Identifier(ident.name, ident.span))
+    }
+
+    fn parse_pattern_bindings(&mut self) -> Result<Vec<Pattern>, SyntaxError> {
+        let mut bindings = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            loop {
+                bindings.push(self.parse_pattern()?);
+                if self.matches(TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        Ok(bindings)
     }
 
     fn parse_int_literal(&mut self) -> Result<Expr, SyntaxError> {

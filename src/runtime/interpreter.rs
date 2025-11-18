@@ -1125,8 +1125,7 @@ impl Interpreter {
                     EvalOutcome::Value(value) => value,
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
-                self.eval_binary(*op, lhs, rhs)
-                    .map(EvalOutcome::Value)
+                self.eval_binary(*op, lhs, rhs).map(EvalOutcome::Value)
             }
             Expr::Unary { op, expr, .. } => {
                 let value = match self.eval_expression(expr)? {
@@ -1140,7 +1139,7 @@ impl Interpreter {
                         _ => {
                             return Err(RuntimeError::TypeMismatch {
                                 message: "Unary - expects numeric value".into(),
-                            })
+                            });
                         }
                     },
                     UnaryOp::Not => Value::Bool(!value.as_bool()),
@@ -1161,8 +1160,7 @@ impl Interpreter {
                     if let Some(variant) = self.enum_variants.get(&ident.name) {
                         let enum_name = variant.enum_name.clone();
                         let variant_name = ident.name.clone();
-                        let value =
-                            self.instantiate_enum(&enum_name, &variant_name, arg_values)?;
+                        let value = self.instantiate_enum(&enum_name, &variant_name, arg_values)?;
                         return Ok(EvalOutcome::Value(value));
                     }
                     let results = self.call_function(&ident.name, None, type_args, arg_values)?;
@@ -1256,28 +1254,24 @@ impl Interpreter {
                 }
                 Ok(EvalOutcome::Value(Value::Tuple(evaluated)))
             }
-            Expr::Range(range) => {
-                match self.eval_range_expr(range)? {
-                    EvalOutcome::Value(range_value) => Ok(EvalOutcome::Value(Value::Range(range_value))),
-                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            Expr::Range(range) => match self.eval_range_expr(range)? {
+                EvalOutcome::Value(range_value) => {
+                    Ok(EvalOutcome::Value(Value::Range(range_value)))
                 }
-            }
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
             Expr::Reference { mutable, expr, .. } => self.build_reference(expr, *mutable),
-            Expr::Deref { expr, .. } => {
-                match self.eval_expression(expr)? {
-                    EvalOutcome::Value(Value::Reference(reference)) => {
-                        Ok(EvalOutcome::Value(reference.cell.borrow().clone()))
-                    }
-                    EvalOutcome::Value(_) => Err(RuntimeError::TypeMismatch {
-                        message: "Cannot dereference non-reference value".into(),
-                    }),
-                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            Expr::Deref { expr, .. } => match self.eval_expression(expr)? {
+                EvalOutcome::Value(Value::Reference(reference)) => {
+                    Ok(EvalOutcome::Value(reference.cell.borrow().clone()))
                 }
-            }
+                EvalOutcome::Value(_) => Err(RuntimeError::TypeMismatch {
+                    message: "Cannot dereference non-reference value".into(),
+                }),
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
             Expr::ArrayLiteral(values, _) => self.eval_array_literal(values),
-            Expr::Move { expr, .. } => self
-                .eval_move_expression(expr)
-                .map(EvalOutcome::Value),
+            Expr::Move { expr, .. } => self.eval_move_expression(expr).map(EvalOutcome::Value),
         }
     }
 
@@ -1306,18 +1300,16 @@ impl Interpreter {
                     origin: Some(ident.name.clone()),
                 })))
             }
-            _ => {
-                match self.eval_expression(expr)? {
-                    EvalOutcome::Value(value) => Ok(EvalOutcome::Value(Value::Reference(
-                        ReferenceValue {
-                            cell: Rc::new(RefCell::new(value)),
-                            mutable,
-                            origin: None,
-                        },
-                    ))),
-                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            _ => match self.eval_expression(expr)? {
+                EvalOutcome::Value(value) => {
+                    Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
+                        cell: Rc::new(RefCell::new(value)),
+                        mutable,
+                        origin: None,
+                    })))
                 }
-            }
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
         }
     }
 
@@ -1329,7 +1321,9 @@ impl Interpreter {
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
             }
         }
-        Ok(EvalOutcome::Value(Value::Slice(SliceValue::from_vec(items))))
+        Ok(EvalOutcome::Value(Value::Slice(SliceValue::from_vec(
+            items,
+        ))))
     }
 
     fn eval_move_expression(&mut self, expr: &Expr) -> RuntimeResult<Value> {
@@ -1382,6 +1376,24 @@ impl Interpreter {
         for arm in &expr.arms {
             self.env.push_scope();
             if self.match_pattern(&arm.pattern, &target)? {
+                if let Some(guard_expr) = &arm.guard {
+                    let guard_value = match self.eval_expression(guard_expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => {
+                            self.env.pop_scope();
+                            return Ok(EvalOutcome::Flow(flow));
+                        }
+                    };
+                    let guard_passed = guard_value.as_bool();
+                    if let Some(flow) = self.execute_deferred()? {
+                        self.env.pop_scope();
+                        return Ok(EvalOutcome::Flow(flow));
+                    }
+                    if !guard_passed {
+                        self.env.pop_scope();
+                        continue;
+                    }
+                }
                 let outcome = self.eval_expression(&arm.value)?;
                 if let Some(flow) = self.execute_deferred()? {
                     self.env.pop_scope();

@@ -180,7 +180,7 @@ fn main() {
   out(hero_ready);
   out("Scout battle ready?");
   out(scout_ready);
-  let MissionEvent ridge = plan_mission("Ridge scouting", true, true);
+  let MissionEvent ridge = plan_mission("Prime ascent", true, true);
   let MissionEvent harbor = plan_mission("Harbor sweep", false, true);
   describe_event(ridge);
   describe_event(harbor);
@@ -461,6 +461,10 @@ fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
 
 fn describe_event(event: MissionEvent) {
   match event {
+    Completed(stage) if stage == "Prime ascent" => {
+      out("mission completed with honors:");
+      out(stage);
+    },
     Completed(stage) => {
       out("mission completed:");
       out(stage);
@@ -469,7 +473,7 @@ fn describe_event(event: MissionEvent) {
       out("mission failed:");
       out(reason);
     },
-    Waiting => {
+    MissionEvent::Waiting => {
       out("mission awaiting clearance");
     },
   }
@@ -479,7 +483,7 @@ fn summarize_event(event: MissionEvent) -> string {
   match event {
     Completed(stage) => stage,
     Failed(reason) => reason,
-    Waiting => "Awaiting assignment",
+    MissionEvent::Waiting => "Awaiting assignment",
   }
 }
 

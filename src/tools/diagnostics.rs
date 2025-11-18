@@ -1,5 +1,5 @@
 use crate::{
-    language::{errors::SyntaxError, span::Span},
+    language::{errors::SyntaxError, span::Span, typecheck::TypeError},
     project::{FileErrors, diagnostics::ManifestIssue},
     runtime::error::RuntimeError,
 };
@@ -76,6 +76,42 @@ pub fn emit_manifest_issues(named: &NamedSource<String>, issues: &[ManifestIssue
         emitted = true;
     }
     emitted
+}
+
+#[derive(Debug, Error, Diagnostic, Clone)]
+#[error("{message}")]
+pub struct TypeDiagnostic {
+    #[source_code]
+    src: NamedSource<String>,
+    #[label("{label}")]
+    span: SourceSpan,
+    message: String,
+    label: String,
+}
+
+pub fn emit_type_errors(errors: &[TypeError]) {
+    for err in errors {
+        match std::fs::read_to_string(&err.path) {
+            Ok(contents) => {
+                let named = NamedSource::new(err.path.display().to_string(), contents);
+                let diagnostic = TypeDiagnostic {
+                    span: span_to_source_span(err.span),
+                    message: err.message.clone(),
+                    label: err.label.clone(),
+                    src: named,
+                };
+                eprintln!("{:?}", Report::new(diagnostic));
+            }
+            Err(read_err) => {
+                eprintln!(
+                    "type error at {}:{} - {}",
+                    err.path.display(),
+                    err.span.start,
+                    read_err
+                );
+            }
+        }
+    }
 }
 
 fn span_to_source_span(span: Span) -> SourceSpan {

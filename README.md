@@ -133,7 +133,9 @@ fn move_player(p: Player, delta: Vec2) -> Player {
 ```prime
 match damage {
   Flat(amount) => Player{ .. },
-  Percent(rate) => { /* block */ },
+  Percent(rate) if rate > 25 => { /* guard branch */ },
+  MissionEvent::Waiting => { /* zero-field variant */ },
+  Percent(rate) => { /* fallback */ },
 };
 
 if hero.hp < 50 {
@@ -154,8 +156,8 @@ while probes < 2 {
 }
 ```
 
-- `match` is exhaustive and destructures enum payloads or patterns like
-  `let Vec2 next = add_vec2(...)`.
+- `match` is exhaustive, supports `Enum::Variant` syntax, and each arm can carry
+  an `if guard` to refine patterns.
 - Loops include `for range`, `while`, and `match` drives branching.
 
 ### References, Pointers & `defer`
@@ -212,6 +214,18 @@ fn calibrate_profile(value: int32) -> Result[int32, string] {
 
 See `demos/error_handling_demo.prime` for a full example that mixes `try {}`,
 `?`, and the multiple-return `span_measurements` helper.
+
+### Static Type Checking
+
+Before interpreting or compiling, Prime now runs a lightweight checker that
+verifies:
+
+- `let` bindings and function returns honor their declared types.
+- Function calls supply the right number of arguments/type arguments.
+- `match` expressions cover every enum variant unless a wildcard arm is present.
+
+Type errors are reported with file/line spans, so you can fix mistakes before
+running code.
 
 ### Built-in I/O & APIs
 

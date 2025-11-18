@@ -691,9 +691,9 @@ impl Compiler {
                 self.const_int_value(*value as i128),
             ))),
             Expr::Literal(Literal::Bool(value, _)) => Ok(EvalOutcome::Value(Value::Bool(*value))),
-            Expr::Literal(Literal::Float(value, _)) => {
-                Ok(EvalOutcome::Value(Value::Float(self.const_float_value(*value))))
-            }
+            Expr::Literal(Literal::Float(value, _)) => Ok(EvalOutcome::Value(Value::Float(
+                self.const_float_value(*value),
+            ))),
             Expr::Literal(Literal::String(value, _)) => {
                 let c_value = CString::new(value.as_str())
                     .map_err(|_| "String literal contains null byte".to_string())?;
@@ -716,9 +716,7 @@ impl Compiler {
                         let wrapped = self.instantiate_enum_variant("Ok", vec![value])?;
                         Ok(EvalOutcome::Value(wrapped))
                     }
-                    BlockEval::Flow(FlowSignal::Propagate(value)) => {
-                        Ok(EvalOutcome::Value(value))
-                    }
+                    BlockEval::Flow(FlowSignal::Propagate(value)) => Ok(EvalOutcome::Value(value)),
                     BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                 }
             }
@@ -746,8 +744,7 @@ impl Compiler {
                     EvalOutcome::Value(value) => value,
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
-                self.eval_binary(*op, lhs, rhs)
-                    .map(EvalOutcome::Value)
+                self.eval_binary(*op, lhs, rhs).map(EvalOutcome::Value)
             }
             Expr::StructLiteral { name, fields, .. } => self.build_struct_literal(name, fields),
             Expr::Match(match_expr) => self.emit_match_expression(match_expr),
@@ -773,12 +770,10 @@ impl Compiler {
             }
             Expr::If(if_expr) => self.emit_if_expression(if_expr),
             Expr::Reference { mutable, expr, .. } => self.build_reference(expr, *mutable),
-            Expr::Deref { expr, .. } => {
-                match self.emit_expression(expr)? {
-                    EvalOutcome::Value(value) => self.deref_value(value).map(EvalOutcome::Value),
-                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-                }
-            }
+            Expr::Deref { expr, .. } => match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => self.deref_value(value).map(EvalOutcome::Value),
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = match self.emit_expression(base)? {
@@ -970,7 +965,11 @@ impl Compiler {
         }
     }
 
-    fn build_reference(&mut self, expr: &Expr, mutable: bool) -> Result<EvalOutcome<Value>, String> {
+    fn build_reference(
+        &mut self,
+        expr: &Expr,
+        mutable: bool,
+    ) -> Result<EvalOutcome<Value>, String> {
         match expr {
             Expr::Identifier(ident) => {
                 let (cell, binding_mut) = self
@@ -991,18 +990,16 @@ impl Compiler {
                     origin: Some(ident.name.clone()),
                 })))
             }
-            _ => {
-                match self.emit_expression(expr)? {
-                    EvalOutcome::Value(value) => Ok(EvalOutcome::Value(Value::Reference(
-                        ReferenceValue {
-                            cell: Rc::new(RefCell::new(value)),
-                            mutable,
-                            origin: None,
-                        },
-                    ))),
-                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            _ => match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => {
+                    Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
+                        cell: Rc::new(RefCell::new(value)),
+                        mutable,
+                        origin: None,
+                    })))
                 }
-            }
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
         }
     }
 
@@ -1014,9 +1011,9 @@ impl Compiler {
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
             }
         }
-        Ok(EvalOutcome::Value(Value::Slice(
-            SliceValue::from_vec(items),
-        )))
+        Ok(EvalOutcome::Value(Value::Slice(SliceValue::from_vec(
+            items,
+        ))))
     }
 
     fn emit_move_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<Value>, String> {
@@ -1060,7 +1057,10 @@ impl Compiler {
         }
     }
 
-    fn emit_match_expression(&mut self, match_expr: &MatchExpr) -> Result<EvalOutcome<Value>, String> {
+    fn emit_match_expression(
+        &mut self,
+        match_expr: &MatchExpr,
+    ) -> Result<EvalOutcome<Value>, String> {
         let target = match self.emit_expression(&match_expr.expr)? {
             EvalOutcome::Value(value) => value,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
@@ -1539,12 +1539,10 @@ impl Compiler {
                 }
                 _ => Err("Only direct function calls are supported in build mode".into()),
             },
-            _ => {
-                match self.emit_expression(expr)? {
-                    EvalOutcome::Value(_) => Ok(None),
-                    EvalOutcome::Flow(flow) => Ok(Some(flow)),
-                }
-            }
+            _ => match self.emit_expression(expr)? {
+                EvalOutcome::Value(_) => Ok(None),
+                EvalOutcome::Flow(flow) => Ok(Some(flow)),
+            },
         }
     }
 
@@ -1558,10 +1556,12 @@ impl Compiler {
         for expr in args {
             match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => evaluated_args.push(value),
-                EvalOutcome::Flow(flow) => return Err(format!(
-                    "Control flow {} cannot escape argument position in build mode",
-                    flow_name(&flow)
-                )),
+                EvalOutcome::Flow(flow) => {
+                    return Err(format!(
+                        "Control flow {} cannot escape argument position in build mode",
+                        flow_name(&flow)
+                    ));
+                }
             }
         }
         let receiver_candidate = self.receiver_name_from_values(&evaluated_args);
@@ -2218,7 +2218,10 @@ impl Compiler {
         }
     }
 
-    fn evaluate_range(&mut self, range: &RangeExpr) -> Result<EvalOutcome<(i128, i128, bool)>, String> {
+    fn evaluate_range(
+        &mut self,
+        range: &RangeExpr,
+    ) -> Result<EvalOutcome<(i128, i128, bool)>, String> {
         let start_expr = match self.emit_expression(&range.start)? {
             EvalOutcome::Value(value) => value,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
@@ -2235,7 +2238,11 @@ impl Compiler {
         let end_const = end_value
             .constant()
             .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
-        Ok(EvalOutcome::Value((start_const, end_const, range.inclusive)))
+        Ok(EvalOutcome::Value((
+            start_const,
+            end_const,
+            range.inclusive,
+        )))
     }
 
     fn push_scope(&mut self) {

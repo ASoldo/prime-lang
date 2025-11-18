@@ -1,0 +1,1342 @@
+use crate::language::{
+    ast::*,
+    span::Span,
+    types::{TypeAnnotation, TypeExpr},
+};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
+
+#[derive(Clone, Debug)]
+pub struct TypeError {
+    pub path: PathBuf,
+    pub span: Span,
+    pub message: String,
+    pub label: String,
+}
+
+impl TypeError {
+    fn new(path: &PathBuf, span: Span, message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self {
+            path: path.clone(),
+            span,
+            label: message.clone(),
+            message,
+        }
+    }
+}
+
+#[derive(Default)]
+struct TypeRegistry {
+    structs: HashMap<String, StructInfo>,
+    enums: HashMap<String, EnumInfo>,
+    enum_variants: HashMap<String, EnumVariantInfo>,
+    functions: HashMap<FunctionKey, FunctionSignature>,
+    consts: HashMap<String, ConstInfo>,
+}
+
+#[derive(Clone)]
+struct StructInfo {
+    def: StructDef,
+}
+
+#[derive(Clone)]
+struct EnumInfo {
+    def: EnumDef,
+}
+
+#[derive(Clone)]
+struct EnumVariantInfo {
+    enum_name: String,
+    def: EnumVariant,
+    span: Span,
+}
+
+#[derive(Clone)]
+struct ConstInfo {
+    ty: Option<TypeAnnotation>,
+    _span: Span,
+}
+
+#[derive(Clone)]
+struct FunctionSignature {
+    name: String,
+    type_params: Vec<String>,
+    params: Vec<TypeAnnotation>,
+    returns: Vec<TypeAnnotation>,
+    span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FunctionKey {
+    name: String,
+    receiver: Option<String>,
+}
+
+pub fn check_program(program: &Program) -> Result<(), Vec<TypeError>> {
+    let mut registry = TypeRegistry::default();
+    for module in &program.modules {
+        collect_definitions(&mut registry, module);
+    }
+    let mut checker = Checker {
+        registry,
+        errors: Vec::new(),
+    };
+    checker.check_program(program);
+    if checker.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(checker.errors)
+    }
+}
+
+fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
+    for item in &module.items {
+        match item {
+            Item::Struct(def) => {
+                registry
+                    .structs
+                    .insert(def.name.clone(), StructInfo { def: def.clone() });
+            }
+            Item::Enum(def) => {
+                for variant in &def.variants {
+                    registry.enum_variants.insert(
+                        variant.name.clone(),
+                        EnumVariantInfo {
+                            enum_name: def.name.clone(),
+                            def: variant.clone(),
+                            span: variant.span,
+                        },
+                    );
+                }
+                registry
+                    .enums
+                    .insert(def.name.clone(), EnumInfo { def: def.clone() });
+            }
+            Item::Function(def) => {
+                register_function(registry, &module.name, def.clone(), None);
+            }
+            Item::Const(def) => {
+                registry.consts.insert(
+                    def.name.clone(),
+                    ConstInfo {
+                        ty: def.ty.clone(),
+                        _span: def.span,
+                    },
+                );
+            }
+            Item::Impl(block) => {
+                for method in &block.methods {
+                    let mut method_def = method.clone();
+                    substitute_self(&mut method_def, &block.target);
+                    register_function(
+                        registry,
+                        &module.name,
+                        method_def,
+                        Some(block.target.clone()),
+                    );
+                }
+            }
+            Item::Interface(_) => {}
+        }
+    }
+}
+
+fn substitute_self(def: &mut FunctionDef, target: &str) {
+    let concrete = TypeExpr::named(target);
+    for param in &mut def.params {
+        param.ty = param.ty.replace_self(&concrete);
+    }
+    for ret in &mut def.returns {
+        *ret = ret.replace_self(&concrete);
+    }
+}
+
+fn register_function(
+    registry: &mut TypeRegistry,
+    module: &str,
+    def: FunctionDef,
+    receiver: Option<String>,
+) {
+    let key = FunctionKey {
+        name: def.name.clone(),
+        receiver: receiver.clone(),
+    };
+    let params: Vec<TypeAnnotation> = def.params.iter().map(|param| param.ty.clone()).collect();
+    let returns = def.returns.clone();
+    let base_signature = FunctionSignature {
+        name: def.name.clone(),
+        type_params: def.type_params.clone(),
+        params: params.clone(),
+        returns: returns.clone(),
+        span: def.span,
+    };
+    registry.functions.insert(key, base_signature);
+    let qualified_name = format!("{}::{}", module, def.name);
+    let qualified = FunctionKey {
+        name: qualified_name.clone(),
+        receiver,
+    };
+    registry.functions.insert(
+        qualified,
+        FunctionSignature {
+            name: qualified_name,
+            type_params: def.type_params,
+            params,
+            returns,
+            span: def.span,
+        },
+    );
+}
+
+struct Checker {
+    registry: TypeRegistry,
+    errors: Vec<TypeError>,
+}
+
+impl Checker {
+    fn check_program(&mut self, program: &Program) {
+        for module in &program.modules {
+            self.check_module(module);
+        }
+    }
+
+    fn check_module(&mut self, module: &Module) {
+        for item in &module.items {
+            match item {
+                Item::Function(def) => self.check_function(module, def),
+                Item::Const(def) => self.check_const(module, def),
+                Item::Impl(block) => {
+                    for method in &block.methods {
+                        self.check_function(module, method);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn check_function(&mut self, module: &Module, def: &FunctionDef) {
+        let mut env = FnEnv::new(module.path.clone(), def.type_params.clone());
+        let return_types: Vec<TypeExpr> = def.returns.iter().map(|ann| ann.ty.clone()).collect();
+        for param in &def.params {
+            env.declare(
+                &param.name,
+                Some(param.ty.ty.clone()),
+                param.span,
+                &mut self.errors,
+            );
+        }
+        match &def.body {
+            FunctionBody::Block(block) => {
+                self.check_block(module, block, &return_types, &mut env);
+            }
+            FunctionBody::Expr(expr) => {
+                let expected = return_types.get(0);
+                let ty =
+                    self.check_expression(module, &expr.node, expected, &return_types, &mut env);
+                if let Some(expected) = expected {
+                    self.ensure_type(module, expr.span, expected, ty.as_ref());
+                } else if ty.is_some() && !return_types.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        expr.span,
+                        "expression form cannot return multiple values",
+                    ));
+                }
+            }
+        }
+    }
+
+    fn check_const(&mut self, module: &Module, def: &ConstDef) {
+        if let Some(annotation) = &def.ty {
+            let mut env = FnEnv::new(module.path.clone(), Vec::new());
+            let ty = self.check_expression(module, &def.value, Some(&annotation.ty), &[], &mut env);
+            self.ensure_type(module, def.span, &annotation.ty, ty.as_ref());
+        }
+    }
+
+    fn check_block(
+        &mut self,
+        module: &Module,
+        block: &Block,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
+        env.push_scope();
+        for stmt in &block.statements {
+            self.check_statement(module, stmt, returns, env);
+        }
+        let tail_type = if let Some(tail) = &block.tail {
+            self.check_expression(module, tail, None, returns, env)
+        } else {
+            None
+        };
+        env.pop_scope();
+        tail_type
+    }
+
+    fn check_statement(
+        &mut self,
+        module: &Module,
+        statement: &Statement,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) {
+        match statement {
+            Statement::Let(stmt) => {
+                let expected = stmt.ty.as_ref().map(|ann| ann.ty.clone());
+                if let Some(value) = &stmt.value {
+                    let ty = self.check_expression(module, value, expected.as_ref(), returns, env);
+                    if let Some(expected) = expected.as_ref() {
+                        self.ensure_type(module, stmt.span, expected, ty.as_ref());
+                    } else if let Some(actual) = ty {
+                        env.infer(&stmt.name, Some(actual));
+                    }
+                }
+                env.declare(&stmt.name, expected, stmt.span, &mut self.errors);
+            }
+            Statement::Assign(assign) => {
+                if let Expr::Identifier(ident) = &assign.target {
+                    let expected_type = env.lookup(&ident.name).cloned().flatten();
+                    if let Some(expected) = expected_type {
+                        let ty = self.check_expression(
+                            module,
+                            &assign.value,
+                            Some(&expected),
+                            returns,
+                            env,
+                        );
+                        self.ensure_type(module, ident.span, &expected, ty.as_ref());
+                    } else {
+                        self.check_expression(module, &assign.value, None, returns, env);
+                    }
+                } else {
+                    self.check_expression(module, &assign.value, None, returns, env);
+                }
+            }
+            Statement::Expr(expr) => {
+                self.check_expression(module, &expr.expr, None, returns, env);
+            }
+            Statement::Return(ret) => {
+                if returns.is_empty() && !ret.values.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        ret.values
+                            .first()
+                            .map(expr_span)
+                            .unwrap_or(stmt_span(statement)),
+                        "function does not return a value",
+                    ));
+                    return;
+                }
+                if ret.values.len() != returns.len() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        stmt_span(statement),
+                        format!(
+                            "function returns {} value(s) but return statement provided {}",
+                            returns.len(),
+                            ret.values.len()
+                        ),
+                    ));
+                }
+                for (idx, value) in ret.values.iter().enumerate() {
+                    let expected = returns.get(idx);
+                    let ty = self.check_expression(module, value, expected, returns, env);
+                    if let Some(expected) = expected {
+                        self.ensure_type(module, expr_span(value), expected, ty.as_ref());
+                    }
+                }
+            }
+            Statement::While(while_stmt) => {
+                self.check_expression(
+                    module,
+                    &while_stmt.condition,
+                    Some(&bool_type()),
+                    returns,
+                    env,
+                );
+                self.check_block(module, &while_stmt.body, returns, env);
+            }
+            Statement::ForRange(for_range) => {
+                self.check_expression(
+                    module,
+                    &for_range.range.start,
+                    Some(&int_type()),
+                    returns,
+                    env,
+                );
+                self.check_expression(
+                    module,
+                    &for_range.range.end,
+                    Some(&int_type()),
+                    returns,
+                    env,
+                );
+                env.push_scope();
+                env.declare(
+                    &for_range.binding,
+                    Some(int_type()),
+                    for_range.span,
+                    &mut self.errors,
+                );
+                self.check_block(module, &for_range.body, returns, env);
+                env.pop_scope();
+            }
+            Statement::Defer(defer_stmt) => {
+                self.check_expression(module, &defer_stmt.expr, None, returns, env);
+            }
+            Statement::Break | Statement::Continue => {}
+            Statement::Block(block) => {
+                self.check_block(module, block, returns, env);
+            }
+        }
+    }
+
+    fn check_expression(
+        &mut self,
+        module: &Module,
+        expr: &Expr,
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
+        match expr {
+            Expr::Identifier(ident) => {
+                if let Some(entry) = env.lookup(&ident.name) {
+                    return entry.clone();
+                }
+                if let Some(const_info) = self.registry.consts.get(&ident.name) {
+                    return const_info.ty.as_ref().map(|ann| ann.ty.clone());
+                }
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    ident.span,
+                    format!("unknown identifier `{}`", ident.name),
+                ));
+                None
+            }
+            Expr::Literal(lit) => Some(literal_type(lit)),
+            Expr::Binary {
+                op,
+                left,
+                right,
+                span,
+            } => self.check_binary(module, *op, left, right, *span, returns, env),
+            Expr::Unary { op, expr, span } => {
+                self.check_unary(module, *op, expr, *span, returns, env)
+            }
+            Expr::Call {
+                callee,
+                args,
+                type_args,
+                span,
+            } => self.check_call(
+                module, callee, args, type_args, *span, expected, returns, env,
+            ),
+            Expr::FieldAccess { base, field, span } => {
+                self.check_field_access(module, base, field, *span, returns, env)
+            }
+            Expr::StructLiteral { name, fields, span } => {
+                self.check_struct_literal(module, name, fields, *span, returns, env);
+                Some(TypeExpr::Named(name.clone(), Vec::new()))
+            }
+            Expr::Block(block) => self.check_block(module, block, returns, env),
+            Expr::If(if_expr) => self.check_if_expression(module, if_expr, expected, returns, env),
+            Expr::Match(match_expr) => {
+                self.check_match_expression(module, match_expr, expected, returns, env)
+            }
+            Expr::Tuple(values, _) => {
+                let mut types = Vec::new();
+                for value in values {
+                    types.push(self.check_expression(module, value, None, returns, env));
+                }
+                if types.iter().all(|ty| ty.is_some()) {
+                    Some(TypeExpr::Tuple(
+                        types.into_iter().map(|ty| ty.unwrap()).collect(),
+                    ))
+                } else {
+                    None
+                }
+            }
+            Expr::ArrayLiteral(values, _) => {
+                if let Some(expected) = expected {
+                    for value in values {
+                        self.check_expression(module, value, Some(expected), returns, env);
+                    }
+                    Some(TypeExpr::Slice(Box::new(expected.clone())))
+                } else {
+                    None
+                }
+            }
+            Expr::Reference { mutable, expr, .. } => self
+                .check_expression(module, expr, None, returns, env)
+                .map(|inner| TypeExpr::Reference {
+                    mutable: *mutable,
+                    ty: Box::new(inner),
+                }),
+            Expr::Deref { expr, span } => {
+                let ty = self.check_expression(module, expr, None, returns, env);
+                if let Some(TypeExpr::Reference { ty, .. }) = ty {
+                    Some(*ty)
+                } else {
+                    if let Some(actual) = ty {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            *span,
+                            format!("cannot dereference `{}`", actual.canonical_name()),
+                        ));
+                    }
+                    None
+                }
+            }
+            Expr::Try { block, span } => {
+                if let Some(expected) = expected {
+                    if let TypeExpr::Named(name, args) = expected {
+                        if name == "Result" && args.len() == 2 {
+                            self.check_block(module, block, returns, env);
+                            return Some(expected.clone());
+                        }
+                    }
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        *span,
+                        "`try {}` must be used when the expected type is Result",
+                    ));
+                }
+                None
+            }
+            Expr::TryPropagate { expr, span } => {
+                let ty = self.check_expression(module, expr, None, returns, env);
+                if let Some(TypeExpr::Named(name, args)) = ty {
+                    if name == "Result" && !args.is_empty() {
+                        return Some(args[0].clone());
+                    }
+                }
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    *span,
+                    "`?` operator requires a Result value",
+                ));
+                None
+            }
+            Expr::Move { expr, .. } => self.check_expression(module, expr, None, returns, env),
+            Expr::Range(_) => None,
+        }
+    }
+
+    fn check_if_expression(
+        &mut self,
+        module: &Module,
+        expr: &IfExpr,
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
+        self.check_expression(module, &expr.condition, Some(&bool_type()), returns, env);
+        let then_ty = self.check_block(module, &expr.then_branch, returns, env);
+        if let Some(else_branch) = &expr.else_branch {
+            let else_ty = match else_branch {
+                ElseBranch::Block(block) => self.check_block(module, block, returns, env),
+                ElseBranch::ElseIf(nested) => {
+                    self.check_if_expression(module, nested, expected, returns, env)
+                }
+            };
+            if let (Some(expected), Some(actual)) = (expected, else_ty.as_ref()) {
+                self.ensure_type(module, expr.span, expected, Some(actual));
+                return Some(actual.clone());
+            }
+            else_ty
+        } else {
+            then_ty
+        }
+    }
+
+    fn check_match_expression(
+        &mut self,
+        module: &Module,
+        expr: &MatchExpr,
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
+        let scrutinee_ty = self.check_expression(module, &expr.expr, None, returns, env);
+        let mut arm_type: Option<TypeExpr> = None;
+        let mut covered_variants: HashSet<String> = HashSet::new();
+        let mut has_wildcard = false;
+        for arm in &expr.arms {
+            env.push_scope();
+            self.bind_pattern(module, &arm.pattern, scrutinee_ty.as_ref(), env);
+            if let Some(guard) = &arm.guard {
+                self.check_expression(module, guard, Some(&bool_type()), returns, env);
+            }
+            let value_ty = self.check_expression(module, &arm.value, expected, returns, env);
+            if arm_type.is_none() {
+                arm_type = value_ty.clone();
+            } else if let (Some(a), Some(b)) = (arm_type.as_ref(), value_ty.as_ref()) {
+                self.ensure_type(module, pattern_span(&arm.pattern), a, Some(b));
+            }
+            if let Some(enum_variant) = self.pattern_variant(&arm.pattern) {
+                covered_variants.insert(enum_variant);
+            } else if matches!(arm.pattern, Pattern::Wildcard) {
+                has_wildcard = true;
+            }
+            env.pop_scope();
+        }
+        if let Some(TypeExpr::Named(enum_name, _)) = &scrutinee_ty {
+            if let Some(enum_info) = self.registry.enums.get(enum_name) {
+                if !has_wildcard {
+                    let all_variants: HashSet<String> = enum_info
+                        .def
+                        .variants
+                        .iter()
+                        .map(|variant| variant.name.clone())
+                        .collect();
+                    if !covered_variants.is_superset(&all_variants) {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            expr.span,
+                            format!(
+                                "`match` is not exhaustive; missing variants: {}",
+                                all_variants
+                                    .difference(&covered_variants)
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        arm_type
+    }
+
+    fn check_field_access(
+        &mut self,
+        module: &Module,
+        base: &Expr,
+        field: &str,
+        span: Span,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
+        let base_ty = self.check_expression(module, base, None, returns, env)?;
+        if let TypeExpr::Named(name, _) = &base_ty {
+            if let Some(struct_info) = self.registry.structs.get(name) {
+                return lookup_struct_field(&self.registry, &struct_info.def, field);
+            }
+        }
+        self.errors.push(TypeError::new(
+            &module.path,
+            span,
+            format!("`{}` has no field `{}`", base_ty.canonical_name(), field),
+        ));
+        None
+    }
+
+    fn check_struct_literal(
+        &mut self,
+        module: &Module,
+        name: &str,
+        fields: &StructLiteralKind,
+        span: Span,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) {
+        let Some(struct_info) = self.registry.structs.get(name) else {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!("Unknown struct `{}`", name),
+            ));
+            return;
+        };
+        let struct_fields = struct_info.def.fields.clone();
+        match fields {
+            StructLiteralKind::Named(named_fields) => {
+                for field in named_fields {
+                    let expected = struct_fields
+                        .iter()
+                        .find(|f| f.name.as_deref() == Some(&field.name))
+                        .map(|f| f.ty.ty.clone());
+                    if let Some(expected) = expected {
+                        let ty = self.check_expression(
+                            module,
+                            &field.value,
+                            Some(&expected),
+                            returns,
+                            env,
+                        );
+                        self.ensure_type(module, expr_span(&field.value), &expected, ty.as_ref());
+                    } else {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            expr_span(&field.value),
+                            format!("`{}` has no field `{}`", name, field.name),
+                        ));
+                    }
+                }
+            }
+            StructLiteralKind::Positional(values) => {
+                if values.len() != struct_fields.len() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!(
+                            "`{}` expects {} field(s), found {}",
+                            name,
+                            struct_fields.len(),
+                            values.len()
+                        ),
+                    ));
+                }
+                for (value, def) in values.iter().zip(struct_fields.iter()) {
+                    let expected = def.ty.ty.clone();
+                    let ty = self.check_expression(module, value, Some(&expected), returns, env);
+                    self.ensure_type(module, expr_span(value), &expected, ty.as_ref());
+                }
+            }
+        }
+    }
+
+    fn check_call(
+        &mut self,
+        module: &Module,
+        callee: &Expr,
+        args: &[Expr],
+        type_args: &[TypeExpr],
+        span: Span,
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
+        match callee {
+            Expr::Identifier(ident) => {
+                if let Some(builtin) =
+                    self.check_builtin_call(module, &ident.name, args, returns, env, span)
+                {
+                    return Some(builtin);
+                }
+                if let Some(sig) = self.lookup_function(&ident.name, None) {
+                    return self.check_function_call(
+                        module, sig, args, type_args, expected, returns, env, span,
+                    );
+                }
+                if let Some(variant) = self.registry.enum_variants.get(&ident.name).cloned() {
+                    return self
+                        .check_variant_call(module, variant, args, expected, returns, env, span);
+                }
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    ident.span,
+                    format!("Unknown function `{}`", ident.name),
+                ));
+                None
+            }
+            Expr::FieldAccess { base, field, .. } => {
+                if let Expr::Identifier(module_ident) = base.as_ref() {
+                    let qualified = format!("{}::{}", module_ident.name, field);
+                    if let Some(sig) = self.lookup_function(&qualified, None) {
+                        return self.check_function_call(
+                            module, sig, args, type_args, expected, returns, env, span,
+                        );
+                    }
+                }
+                let receiver = self.check_expression(module, base, None, returns, env)?;
+                if let TypeExpr::Named(name, _) = &receiver {
+                    if let Some(sig) = self.lookup_function(field, Some(name)) {
+                        return self.check_method_call(
+                            module, sig, &receiver, args, type_args, expected, returns, env, span,
+                        );
+                    }
+                }
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "Unsupported call target",
+                ));
+                None
+            }
+            _ => {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "Unsupported call target",
+                ));
+                None
+            }
+        }
+    }
+
+    fn check_builtin_call(
+        &mut self,
+        module: &Module,
+        name: &str,
+        args: &[Expr],
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        match name {
+            "out" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`out` expects 1 argument, got {}", args.len()),
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                self.check_expression(module, &args[0], None, returns, env);
+                Some(TypeExpr::Unit)
+            }
+            _ => None,
+        }
+    }
+
+    fn check_function_call(
+        &mut self,
+        module: &Module,
+        sig: FunctionSignature,
+        args: &[Expr],
+        type_args: &[TypeExpr],
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        let instantiated =
+            instantiate_function(&sig, type_args, &module.path, span, &mut self.errors);
+        if args.len() != instantiated.params.len() {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!(
+                    "`{}` expects {} argument(s), got {}",
+                    sig.name,
+                    instantiated.params.len(),
+                    args.len()
+                ),
+            ));
+        }
+        for (expr, param) in args.iter().zip(instantiated.params.iter()) {
+            self.check_expression(module, expr, Some(&param.ty), returns, env);
+        }
+        self.select_call_result(module, span, &instantiated.returns, expected)
+    }
+
+    fn check_method_call(
+        &mut self,
+        module: &Module,
+        sig: FunctionSignature,
+        receiver_type: &TypeExpr,
+        args: &[Expr],
+        type_args: &[TypeExpr],
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        let instantiated =
+            instantiate_function(&sig, type_args, &module.path, span, &mut self.errors);
+        if instantiated.params.is_empty() {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                "method is missing receiver parameter",
+            ));
+            return None;
+        }
+        self.ensure_type(
+            module,
+            span,
+            &instantiated.params[0].ty,
+            Some(receiver_type),
+        );
+        if instantiated.params.len() - 1 != args.len() {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!(
+                    "method expects {} argument(s) after `self`, got {}",
+                    instantiated.params.len() - 1,
+                    args.len()
+                ),
+            ));
+        }
+        for (expr, param) in args.iter().zip(instantiated.params.iter().skip(1)) {
+            self.check_expression(module, expr, Some(&param.ty), returns, env);
+        }
+        self.select_call_result(module, span, &instantiated.returns, expected)
+    }
+
+    fn check_variant_call(
+        &mut self,
+        module: &Module,
+        variant: EnumVariantInfo,
+        args: &[Expr],
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        if args.len() != variant.def.fields.len() {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!(
+                    "`{}` expects {} argument(s), got {}",
+                    variant.def.name,
+                    variant.def.fields.len(),
+                    args.len()
+                ),
+            ));
+        }
+        if let Some(expected) = expected {
+            if let TypeExpr::Named(name, _) = expected {
+                if name != &variant.enum_name {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!(
+                            "`{}` variant belongs to `{}` but expression expected `{}`",
+                            variant.def.name, variant.enum_name, name
+                        ),
+                    ));
+                }
+            }
+        }
+        for (expr, field) in args.iter().zip(variant.def.fields.iter()) {
+            self.check_expression(module, expr, Some(&field.ty), returns, env);
+        }
+        expected.cloned().or_else(|| {
+            Some(TypeExpr::Named(
+                variant.enum_name.clone(),
+                variant.def.fields.iter().map(|f| f.ty.clone()).collect(),
+            ))
+        })
+    }
+
+    fn select_call_result(
+        &mut self,
+        module: &Module,
+        span: Span,
+        returns: &[TypeAnnotation],
+        expected: Option<&TypeExpr>,
+    ) -> Option<TypeExpr> {
+        let result = match returns.len() {
+            0 => Some(TypeExpr::Unit),
+            1 => Some(returns[0].ty.clone()),
+            _ => Some(TypeExpr::Tuple(
+                returns.iter().map(|ret| ret.ty.clone()).collect(),
+            )),
+        };
+        if let (Some(expected), Some(actual)) = (expected, result.as_ref()) {
+            self.ensure_type(module, span, expected, Some(actual));
+        }
+        result
+    }
+
+    fn ensure_type(
+        &mut self,
+        module: &Module,
+        span: Span,
+        expected: &TypeExpr,
+        actual: Option<&TypeExpr>,
+    ) {
+        if let Some(actual) = actual {
+            if expected != actual {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    format!(
+                        "expected `{}`, found `{}`",
+                        expected.canonical_name(),
+                        actual.canonical_name()
+                    ),
+                ));
+            }
+        }
+    }
+
+    fn lookup_function(&self, name: &str, receiver: Option<&str>) -> Option<FunctionSignature> {
+        let key = FunctionKey {
+            name: name.to_string(),
+            receiver: receiver.map(|s| s.to_string()),
+        };
+        self.registry.functions.get(&key).cloned()
+    }
+
+    fn pattern_variant(&self, pattern: &Pattern) -> Option<String> {
+        match pattern {
+            Pattern::EnumVariant { variant, .. } => Some(variant.clone()),
+            _ => None,
+        }
+    }
+
+    fn bind_pattern(
+        &mut self,
+        module: &Module,
+        pattern: &Pattern,
+        ty: Option<&TypeExpr>,
+        env: &mut FnEnv,
+    ) {
+        match pattern {
+            Pattern::Wildcard => {}
+            Pattern::Identifier(name, span) => {
+                env.declare(name, ty.cloned(), *span, &mut self.errors);
+            }
+            Pattern::Literal(lit) => {
+                if let Some(actual) = ty {
+                    let literal_ty = literal_type(lit);
+                    if &literal_ty != actual {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            literal_span(lit),
+                            format!(
+                                "pattern expects `{}`, found `{}`",
+                                literal_ty.canonical_name(),
+                                actual.canonical_name()
+                            ),
+                        ));
+                    }
+                }
+            }
+            Pattern::EnumVariant {
+                enum_name,
+                variant,
+                bindings,
+            } => {
+                if let Some(info) = self.registry.enum_variants.get(variant).cloned() {
+                    if let Some(actual_enum) = enum_name {
+                        if actual_enum != &info.enum_name {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                info.span,
+                                format!("`{}` does not belong to enum `{}`", variant, actual_enum),
+                            ));
+                            return;
+                        }
+                    } else if let Some(TypeExpr::Named(actual_enum, _)) = ty {
+                        if actual_enum != &info.enum_name {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                pattern_span(pattern),
+                                format!("`{}` does not belong to enum `{}`", variant, actual_enum),
+                            ));
+                            return;
+                        }
+                    }
+                    if bindings.len() != info.def.fields.len() {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            pattern_span(pattern),
+                            format!(
+                                "`{}` expects {} field(s), found {}",
+                                variant,
+                                info.def.fields.len(),
+                                bindings.len()
+                            ),
+                        ));
+                        return;
+                    }
+                    for (binding, field) in bindings.iter().zip(info.def.fields.iter()) {
+                        self.bind_pattern(module, binding, Some(&field.ty), env);
+                    }
+                } else {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        pattern_span(pattern),
+                        format!("Unknown variant `{}`", variant),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn check_binary(
+        &mut self,
+        module: &Module,
+        op: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        span: Span,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
+        let expected = match op {
+            BinaryOp::Add
+            | BinaryOp::Sub
+            | BinaryOp::Mul
+            | BinaryOp::Div
+            | BinaryOp::Rem
+            | BinaryOp::BitAnd
+            | BinaryOp::BitOr
+            | BinaryOp::BitXor => Some(int_type()),
+            BinaryOp::And | BinaryOp::Or => Some(bool_type()),
+            BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Lt
+            | BinaryOp::LtEq
+            | BinaryOp::Gt
+            | BinaryOp::GtEq => None,
+        };
+        let left_ty = self.check_expression(module, left, expected.as_ref(), returns, env);
+        let right_ty = self.check_expression(module, right, expected.as_ref(), returns, env);
+        if let Some(expected) = expected {
+            self.ensure_type(module, span, &expected, left_ty.as_ref());
+            self.ensure_type(module, span, &expected, right_ty.as_ref());
+            Some(expected)
+        } else {
+            Some(bool_type())
+        }
+    }
+
+    fn check_unary(
+        &mut self,
+        module: &Module,
+        op: UnaryOp,
+        expr: &Expr,
+        _span: Span,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
+        match op {
+            UnaryOp::Neg => {
+                self.check_expression(module, expr, Some(&int_type()), returns, env);
+                Some(int_type())
+            }
+            UnaryOp::Not => {
+                self.check_expression(module, expr, Some(&bool_type()), returns, env);
+                Some(bool_type())
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FnEnv {
+    path: PathBuf,
+    _type_params: HashSet<String>,
+    scopes: Vec<HashMap<String, Option<TypeExpr>>>,
+}
+
+impl FnEnv {
+    fn new(path: PathBuf, type_params: Vec<String>) -> Self {
+        Self {
+            path,
+            _type_params: type_params.into_iter().collect(),
+            scopes: vec![HashMap::new()],
+        }
+    }
+
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+        if self.scopes.is_empty() {
+            self.scopes.push(HashMap::new());
+        }
+    }
+
+    fn declare(
+        &mut self,
+        name: &str,
+        ty: Option<TypeExpr>,
+        span: Span,
+        errors: &mut Vec<TypeError>,
+    ) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), ty);
+        } else {
+            errors.push(TypeError::new(
+                &self.path,
+                span,
+                format!("Failed to declare `{}`", name),
+            ));
+        }
+    }
+
+    fn infer(&mut self, name: &str, ty: Option<TypeExpr>) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), ty);
+        }
+    }
+
+    fn lookup(&self, name: &str) -> Option<&Option<TypeExpr>> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(ty) = scope.get(name) {
+                return Some(ty);
+            }
+        }
+        None
+    }
+}
+
+fn instantiate_function(
+    sig: &FunctionSignature,
+    type_args: &[TypeExpr],
+    path: &PathBuf,
+    span: Span,
+    errors: &mut Vec<TypeError>,
+) -> FunctionSignature {
+    if sig.type_params.is_empty() {
+        if !type_args.is_empty() {
+            errors.push(TypeError::new(
+                path,
+                span,
+                format!(
+                    "`{}` is not generic but {} type argument(s) were provided",
+                    sig.name,
+                    type_args.len()
+                ),
+            ));
+        }
+    } else if sig.type_params.len() != type_args.len() {
+        errors.push(TypeError::new(
+            path,
+            span,
+            format!(
+                "`{}` expects {} type argument(s), got {}",
+                sig.name,
+                sig.type_params.len(),
+                type_args.len()
+            ),
+        ));
+        return sig.clone();
+    }
+    let mut map = HashMap::new();
+    for (param, arg) in sig.type_params.iter().zip(type_args.iter()) {
+        map.insert(param.clone(), arg.clone());
+    }
+    FunctionSignature {
+        name: sig.name.clone(),
+        type_params: sig.type_params.clone(),
+        params: sig
+            .params
+            .iter()
+            .map(|ann| TypeAnnotation {
+                ty: ann.ty.substitute(&map),
+                span: ann.span,
+            })
+            .collect(),
+        returns: sig
+            .returns
+            .iter()
+            .map(|ann| TypeAnnotation {
+                ty: ann.ty.substitute(&map),
+                span: ann.span,
+            })
+            .collect(),
+        span: sig.span,
+    }
+}
+
+fn lookup_struct_field(registry: &TypeRegistry, def: &StructDef, field: &str) -> Option<TypeExpr> {
+    for struct_field in &def.fields {
+        if let Some(name) = &struct_field.name {
+            if name == field {
+                return Some(struct_field.ty.ty.clone());
+            }
+        }
+    }
+    for struct_field in &def.fields {
+        if struct_field.embedded {
+            if let TypeExpr::Named(embed, _) = &struct_field.ty.ty {
+                if let Some(embed_info) = registry.structs.get(embed) {
+                    if let Some(found) = lookup_struct_field(registry, &embed_info.def, field) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn literal_type(lit: &Literal) -> TypeExpr {
+    match lit {
+        Literal::Int(_, _) => int_type(),
+        Literal::Float(_, _) => float_type(),
+        Literal::Bool(_, _) => bool_type(),
+        Literal::String(_, _) => TypeExpr::Named("string".into(), Vec::new()),
+        Literal::Rune(_, _) => TypeExpr::Named("rune".into(), Vec::new()),
+    }
+}
+
+fn int_type() -> TypeExpr {
+    TypeExpr::Named("int32".into(), Vec::new())
+}
+
+fn float_type() -> TypeExpr {
+    TypeExpr::Named("float32".into(), Vec::new())
+}
+
+fn bool_type() -> TypeExpr {
+    TypeExpr::Named("bool".into(), Vec::new())
+}
+
+fn expr_span(expr: &Expr) -> Span {
+    match expr {
+        Expr::Identifier(ident) => ident.span,
+        Expr::Literal(lit) => literal_span(lit),
+        Expr::Binary { span, .. } => *span,
+        Expr::Unary { span, .. } => *span,
+        Expr::Call { span, .. } => *span,
+        Expr::FieldAccess { span, .. } => *span,
+        Expr::StructLiteral { span, .. } => *span,
+        Expr::Block(block) => block.span,
+        Expr::If(if_expr) => if_expr.span,
+        Expr::Match(m) => m.span,
+        Expr::Tuple(_, span) => *span,
+        Expr::ArrayLiteral(_, span) => *span,
+        Expr::Range(range) => range.span,
+        Expr::Reference { span, .. } => *span,
+        Expr::Deref { span, .. } => *span,
+        Expr::Try { span, .. } => *span,
+        Expr::TryPropagate { span, .. } => *span,
+        Expr::Move { span, .. } => *span,
+    }
+}
+
+fn stmt_span(statement: &Statement) -> Span {
+    match statement {
+        Statement::Let(stmt) => stmt.span,
+        Statement::Assign(AssignStmt { target, .. }) => expr_span(target),
+        Statement::Expr(expr) => expr_span(&expr.expr),
+        Statement::Return(_) => Span::new(0, 0),
+        Statement::While(while_stmt) => while_stmt.body.span,
+        Statement::ForRange(range) => range.span,
+        Statement::Defer(_) => Span::new(0, 0),
+        Statement::Break | Statement::Continue => Span::new(0, 0),
+        Statement::Block(block) => block.span,
+    }
+}
+
+fn literal_span(lit: &Literal) -> Span {
+    match lit {
+        Literal::Int(_, span)
+        | Literal::Float(_, span)
+        | Literal::Bool(_, span)
+        | Literal::String(_, span)
+        | Literal::Rune(_, span) => *span,
+    }
+}
+
+fn pattern_span(pattern: &Pattern) -> Span {
+    match pattern {
+        Pattern::Wildcard => Span::new(0, 0),
+        Pattern::Identifier(_, span) => *span,
+        Pattern::Literal(lit) => literal_span(lit),
+        Pattern::EnumVariant { bindings, .. } => bindings
+            .first()
+            .map(pattern_span)
+            .unwrap_or_else(|| Span::new(0, 0)),
+    }
+}

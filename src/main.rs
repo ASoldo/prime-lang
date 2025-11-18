@@ -5,12 +5,12 @@ mod runtime;
 mod tools;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use language::{compiler::Compiler, parser::parse_module};
+use language::{compiler::Compiler, parser::parse_module, typecheck};
 use miette::NamedSource;
 use project::diagnostics::analyze_manifest_issues;
 use project::{
-    apply_manifest_header_with_manifest, find_manifest, load_package, manifest::PackageManifest,
-    warn_manifest_drift, FileErrors, PackageError,
+    FileErrors, PackageError, apply_manifest_header_with_manifest, find_manifest, load_package,
+    manifest::PackageManifest, warn_manifest_drift,
 };
 use runtime::Interpreter;
 use std::{
@@ -21,7 +21,8 @@ use std::{
 use toml::{Value, value::Table as TomlTable};
 use tools::{
     diagnostics::{
-        emit_manifest_issues, emit_syntax_errors, report_io_error, report_runtime_error,
+        emit_manifest_issues, emit_syntax_errors, emit_type_errors, report_io_error,
+        report_runtime_error,
     },
     formatter::format_module,
     lint::run_lint,
@@ -142,6 +143,10 @@ fn run_entry(path: &Path) {
     warn_manifest_drift(path);
     match load_package(path) {
         Ok(package) => {
+            if let Err(errors) = typecheck::check_program(&package.program) {
+                emit_type_errors(&errors);
+                std::process::exit(1);
+            }
             let mut interpreter = Interpreter::new(package.clone());
             if let Err(err) = interpreter.run() {
                 report_runtime_error(&err);
@@ -168,6 +173,10 @@ fn build_entry(path: &Path, name: &str) {
     warn_manifest_drift(path);
     match load_package(path) {
         Ok(package) => {
+            if let Err(errors) = typecheck::check_program(&package.program) {
+                emit_type_errors(&errors);
+                std::process::exit(1);
+            }
             let mut compiler = Compiler::new();
             if let Err(err) = compiler.compile_program(&package.program) {
                 eprintln!("Build failed: {err}");

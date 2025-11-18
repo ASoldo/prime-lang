@@ -7,9 +7,7 @@ use super::{
         member_completion_items, module_completion_items_from_manifest,
         module_path_completion_context,
     },
-    diagnostics::{
-        collect_parse_and_manifest_diagnostics, diagnostic_code, manifest_entry_action,
-    },
+    diagnostics::{collect_parse_and_manifest_diagnostics, diagnostic_code, manifest_entry_action},
     hover::{collect_var_infos, hover_for_token},
     parser::parse_module_from_uri,
     text::{
@@ -20,7 +18,8 @@ use super::{
 };
 use crate::project::{
     diagnostics::{CODE_MANIFEST_MISSING_MODULE, CODE_MISSING_MODULE_HEADER},
-    find_manifest, load_package, manifest::PackageManifest,
+    find_manifest, load_package,
+    manifest::PackageManifest,
 };
 use crate::{
     language::{
