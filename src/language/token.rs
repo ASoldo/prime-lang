@@ -63,6 +63,7 @@ pub enum TokenKind {
     Dot,
     DotDot,
     DotDotEq,
+    Hash,
     Comma,
     Colon,
     ColonColon,

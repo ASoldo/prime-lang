@@ -179,7 +179,7 @@ pub enum Statement {
     Expr(ExprStmt),
     Return(ReturnStmt),
     While(WhileStmt),
-    ForRange(ForRangeStmt),
+    For(ForStmt),
     Defer(DeferStmt),
     Break,
     Continue,
@@ -218,11 +218,17 @@ pub struct WhileStmt {
 }
 
 #[derive(Clone, Debug)]
-pub struct ForRangeStmt {
+pub struct ForStmt {
     pub binding: String,
-    pub range: RangeExpr,
+    pub target: ForTarget,
     pub body: Block,
     pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum ForTarget {
+    Range(RangeExpr),
+    Collection(Expr),
 }
 
 #[derive(Clone, Debug)]
@@ -279,6 +285,10 @@ pub enum Expr {
     StructLiteral {
         name: String,
         fields: StructLiteralKind,
+        span: Span,
+    },
+    MapLiteral {
+        entries: Vec<MapLiteralEntry>,
         span: Span,
     },
     Block(Box<Block>),
@@ -388,5 +398,11 @@ pub enum StructLiteralKind {
 #[derive(Clone, Debug)]
 pub struct StructLiteralField {
     pub name: String,
+    pub value: Expr,
+}
+
+#[derive(Clone, Debug)]
+pub struct MapLiteralEntry {
+    pub key: Expr,
     pub value: Expr,
 }

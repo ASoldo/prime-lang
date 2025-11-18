@@ -235,6 +235,14 @@ impl MapValue {
         }
     }
 
+    pub fn from_entries(entries: Vec<(String, Value)>) -> Self {
+        let map = Self::new();
+        for (key, value) in entries {
+            map.insert(key, value);
+        }
+        map
+    }
+
     pub fn insert(&self, key: String, value: Value) {
         self.entries.borrow_mut().insert(key, value);
     }

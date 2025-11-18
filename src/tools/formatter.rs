@@ -301,10 +301,14 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
             match &expr.expr {
                 Expr::Match(match_expr) => {
                     write_match_expression(out, match_expr, indent);
-                    out.push_str(";\n");
+                    out.push('\n');
                 }
                 Expr::If(if_expr) => {
                     emit_if_expression(out, indent, if_expr, true);
+                    out.push('\n');
+                }
+                Expr::MapLiteral { entries, .. } => {
+                    emit_map_literal(out, indent, entries);
                     out.push('\n');
                 }
                 Expr::Try { block, .. } => {
@@ -349,7 +353,7 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
             format_while_statement(out, while_stmt, indent);
             false
         }
-        Statement::ForRange(for_stmt) => {
+        Statement::For(for_stmt) => {
             format_for_statement(out, for_stmt, indent);
             false
         }
@@ -383,6 +387,10 @@ fn format_tail_expression(out: &mut String, expr: &Expr, indent: usize) {
     match expr {
         Expr::Match(match_expr) => {
             write_match_expression(out, match_expr, indent);
+            out.push('\n');
+        }
+        Expr::MapLiteral { entries, .. } => {
+            emit_map_literal(out, indent, entries);
             out.push('\n');
         }
         Expr::If(if_expr) => {
@@ -428,6 +436,12 @@ fn format_let_statement(out: &mut String, stmt: &LetStmt, indent: usize) -> bool
             format_struct_literal_inline(out, indent, name, fields);
             out.push_str(";\n");
             return true;
+        } else if let Expr::MapLiteral { entries, .. } = expr {
+            write_indent(out, indent);
+            out.push_str(&format!("let {}{} = ", mutability, binding));
+            format_map_literal_inline(out, indent, entries);
+            out.push_str(";\n");
+            return true;
         }
         write_indent(out, indent);
         out.push_str(&format!(
@@ -450,6 +464,12 @@ fn format_assign_statement(out: &mut String, stmt: &AssignStmt, indent: usize) -
         format_struct_literal_inline(out, indent, name, fields);
         out.push_str(";\n");
         return true;
+    } else if let Expr::MapLiteral { entries, .. } = &stmt.value {
+        write_indent(out, indent);
+        out.push_str(&format!("{} = ", format_expr(&stmt.target)));
+        format_map_literal_inline(out, indent, entries);
+        out.push_str(";\n");
+        return true;
     }
     write_indent(out, indent);
     out.push_str(&format!(
@@ -468,13 +488,13 @@ fn format_while_statement(out: &mut String, stmt: &WhileStmt, indent: usize) {
     out.push_str("}\n");
 }
 
-fn format_for_statement(out: &mut String, stmt: &ForRangeStmt, indent: usize) {
+fn format_for_statement(out: &mut String, stmt: &ForStmt, indent: usize) {
     write_indent(out, indent);
-    out.push_str(&format!(
-        "for {} in {} {{\n",
-        stmt.binding,
-        format_range(&stmt.range)
-    ));
+    let iterable = match &stmt.target {
+        ForTarget::Range(range) => format_range(range),
+        ForTarget::Collection(expr) => format_expr(expr),
+    };
+    out.push_str(&format!("for {} in {} {{\n", stmt.binding, iterable));
     format_block(out, &stmt.body, indent + 2);
     write_indent(out, indent);
     out.push_str("}\n");
@@ -584,6 +604,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
                 format!("{name}{{ {inner} }}")
             }
         },
+        Expr::MapLiteral { entries, .. } => format_map_literal(entries),
         Expr::FieldAccess { base, field, .. } => {
             let base_str = format_expr_prec(base, 100);
             format!("{base_str}.{field}")
@@ -681,7 +702,7 @@ fn emit_struct_literal(out: &mut String, indent: usize, name: &str, fields: &Str
             for field in named {
                 write_indent(out, indent + 2);
                 out.push_str(&format!("{}: ", field.name));
-                emit_named_value(out, indent + 2, &field.value);
+                emit_composite_value(out, indent + 2, &field.value);
                 out.push_str(",\n");
             }
         }
@@ -690,6 +711,10 @@ fn emit_struct_literal(out: &mut String, indent: usize, name: &str, fields: &Str
                 match value {
                     Expr::StructLiteral { name, fields, .. } => {
                         emit_struct_literal(out, indent + 2, name, fields);
+                        out.push_str(",\n");
+                    }
+                    Expr::MapLiteral { entries, .. } => {
+                        emit_map_literal(out, indent + 2, entries);
                         out.push_str(",\n");
                     }
                     _ => {
@@ -704,11 +729,33 @@ fn emit_struct_literal(out: &mut String, indent: usize, name: &str, fields: &Str
     out.push('}');
 }
 
-fn emit_named_value(out: &mut String, indent: usize, expr: &Expr) {
+fn emit_map_literal(out: &mut String, indent: usize, entries: &[MapLiteralEntry]) {
+    write_indent(out, indent);
+    out.push_str("#{");
+    if entries.is_empty() {
+        out.push('}');
+        return;
+    }
+    out.push('\n');
+    for entry in entries {
+        write_indent(out, indent + 2);
+        out.push_str(&format!("{}: ", format_expr(&entry.key)));
+        emit_composite_value(out, indent + 2, &entry.value);
+        out.push_str(",\n");
+    }
+    write_indent(out, indent);
+    out.push('}');
+}
+
+fn emit_composite_value(out: &mut String, indent: usize, expr: &Expr) {
     match expr {
         Expr::StructLiteral { name, fields, .. } => {
             out.push('\n');
             emit_struct_literal(out, indent + 2, name, fields);
+        }
+        Expr::MapLiteral { entries, .. } => {
+            out.push('\n');
+            emit_map_literal(out, indent + 2, entries);
         }
         _ => out.push_str(&format_expr(expr)),
     }
@@ -722,6 +769,28 @@ fn format_range(range: &RangeExpr) -> String {
         op,
         format_expr(&range.end)
     )
+}
+
+fn format_map_literal(entries: &[MapLiteralEntry]) -> String {
+    let mut buf = String::new();
+    format_map_literal_inline(&mut buf, 0, entries);
+    buf
+}
+
+fn format_map_literal_inline(out: &mut String, indent: usize, entries: &[MapLiteralEntry]) {
+    out.push_str("#{");
+    if entries.is_empty() {
+        out.push('}');
+        return;
+    }
+    out.push('\n');
+    for entry in entries {
+        write_indent(out, indent + 2);
+        out.push_str(&format!("{}: {}", format_expr(&entry.key), format_expr(&entry.value)));
+        out.push_str(",\n");
+    }
+    write_indent(out, indent);
+    out.push('}');
 }
 
 fn format_if_expression(if_expr: &IfExpr) -> String {

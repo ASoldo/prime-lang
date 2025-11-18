@@ -361,31 +361,43 @@ impl Checker {
                 );
                 self.check_block(module, &while_stmt.body, returns, env);
             }
-            Statement::ForRange(for_range) => {
-                self.check_expression(
-                    module,
-                    &for_range.range.start,
-                    Some(&int_type()),
-                    returns,
-                    env,
-                );
-                self.check_expression(
-                    module,
-                    &for_range.range.end,
-                    Some(&int_type()),
-                    returns,
-                    env,
-                );
-                env.push_scope();
-                env.declare(
-                    &for_range.binding,
-                    Some(int_type()),
-                    for_range.span,
-                    &mut self.errors,
-                );
-                self.check_block(module, &for_range.body, returns, env);
-                env.pop_scope();
-            }
+            Statement::For(for_stmt) => match &for_stmt.target {
+                ForTarget::Range(range) => {
+                    self.check_expression(module, &range.start, Some(&int_type()), returns, env);
+                    self.check_expression(module, &range.end, Some(&int_type()), returns, env);
+                    env.push_scope();
+                    env.declare(
+                        &for_stmt.binding,
+                        Some(int_type()),
+                        for_stmt.span,
+                        &mut self.errors,
+                    );
+                    self.check_block(module, &for_stmt.body, returns, env);
+                    env.pop_scope();
+                }
+                ForTarget::Collection(expr) => {
+                    let collection_ty = self.check_expression(module, expr, None, returns, env);
+                    if let Some(coll_ty) = collection_ty {
+                        if let Some(element_ty) = self.collection_element_type(&coll_ty) {
+                            env.push_scope();
+                            env.declare(
+                                &for_stmt.binding,
+                                Some(element_ty),
+                                for_stmt.span,
+                                &mut self.errors,
+                            );
+                            self.check_block(module, &for_stmt.body, returns, env);
+                            env.pop_scope();
+                        } else {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                for_stmt.span,
+                                "`for` loops over collections support slices and maps",
+                            ));
+                        }
+                    }
+                }
+            },
             Statement::Defer(defer_stmt) => {
                 self.check_expression(module, &defer_stmt.expr, None, returns, env);
             }
@@ -444,6 +456,9 @@ impl Checker {
                 self.check_struct_literal(module, name, fields, *span, returns, env);
                 Some(TypeExpr::Named(name.clone(), Vec::new()))
             }
+            Expr::MapLiteral { entries, span } => {
+                self.check_map_literal(module, entries, *span, expected, returns, env)
+            }
             Expr::Block(block) => self.check_block(module, block, returns, env),
             Expr::If(if_expr) => self.check_if_expression(module, if_expr, expected, returns, env),
             Expr::Match(match_expr) => {
@@ -462,16 +477,29 @@ impl Checker {
                     None
                 }
             }
-            Expr::ArrayLiteral(values, _) => {
-                if let Some(expected) = expected {
+            Expr::ArrayLiteral(values, span) => match expected {
+                Some(TypeExpr::Slice(inner)) => {
                     for value in values {
-                        self.check_expression(module, value, Some(expected), returns, env);
+                        self.check_expression(
+                            module,
+                            value,
+                            Some(inner.as_ref()),
+                            returns,
+                            env,
+                        );
                     }
-                    Some(TypeExpr::Slice(Box::new(expected.clone())))
-                } else {
+                    Some(TypeExpr::Slice(inner.clone()))
+                }
+                Some(other) => {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        *span,
+                        format!("array literal cannot produce `{}`", other.canonical_name()),
+                    ));
                     None
                 }
-            }
+                None => None,
+            },
             Expr::Reference { mutable, expr, .. } => self
                 .check_expression(module, expr, None, returns, env)
                 .map(|inner| TypeExpr::Reference {
@@ -523,7 +551,26 @@ impl Checker {
                 ));
                 None
             }
-            Expr::Move { expr, .. } => self.check_expression(module, expr, None, returns, env),
+            Expr::Move { expr, span } => {
+                if !matches!(expr.as_ref(), Expr::Identifier(_)) {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        *span,
+                        "`move` expressions require identifiers",
+                    ));
+                }
+                let ty = self.check_expression(module, expr, None, returns, env);
+                if let Some(actual) = ty.as_ref() {
+                    if !is_heap_type(actual) {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            *span,
+                            "`move` only supports Box, slice, or Map values",
+                        ));
+                    }
+                }
+                ty
+            }
             Expr::Range(_) => None,
         }
     }
@@ -716,10 +763,17 @@ impl Checker {
     ) -> Option<TypeExpr> {
         match callee {
             Expr::Identifier(ident) => {
-                if let Some(builtin) =
-                    self.check_builtin_call(module, &ident.name, args, returns, env, span)
-                {
-                    return Some(builtin);
+                if self.is_builtin_name(&ident.name) {
+                    return self.check_builtin_call(
+                        module,
+                        &ident.name,
+                        args,
+                        type_args,
+                        expected,
+                        returns,
+                        env,
+                        span,
+                    );
                 }
                 if let Some(sig) = self.lookup_function(&ident.name, None) {
                     return self.check_function_call(
@@ -777,10 +831,19 @@ impl Checker {
         module: &Module,
         name: &str,
         args: &[Expr],
+        type_args: &[TypeExpr],
+        expected: Option<&TypeExpr>,
         returns: &[TypeExpr],
         env: &mut FnEnv,
         span: Span,
     ) -> Option<TypeExpr> {
+        if !type_args.is_empty() {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!("`{}` does not accept type arguments", name),
+            ));
+        }
         match name {
             "out" => {
                 if args.len() != 1 {
@@ -793,6 +856,195 @@ impl Checker {
                 }
                 self.check_expression(module, &args[0], None, returns, env);
                 Some(TypeExpr::Unit)
+            }
+            "box_new" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`box_new` expects 1 argument, got {}", args.len()),
+                    ));
+                    return None;
+                }
+                let value_ty = self.check_expression(module, &args[0], None, returns, env)?;
+                Some(make_box_type(value_ty))
+            }
+            "box_get" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`box_get` expects 1 argument, got {}", args.len()),
+                    ));
+                    return None;
+                }
+                let ty = self.check_expression(module, &args[0], None, returns, env);
+                self.expect_box_inner(module, span, ty.as_ref())
+            }
+            "box_set" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`box_set` expects 2 arguments, got {}", args.len()),
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                let box_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some(inner) = self.expect_box_inner(module, span, box_ty.as_ref()) {
+                    let value_ty =
+                        self.check_expression(module, &args[1], Some(&inner), returns, env);
+                    self.ensure_type(module, expr_span(&args[1]), &inner, value_ty.as_ref());
+                }
+                Some(TypeExpr::Unit)
+            }
+            "box_take" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`box_take` expects 1 argument, got {}", args.len()),
+                    ));
+                    return None;
+                }
+                let ty = self.check_expression(module, &args[0], None, returns, env);
+                self.expect_box_inner(module, span, ty.as_ref())
+            }
+            "slice_new" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`slice_new` expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                let slice_ty = expected.and_then(|ty| match ty {
+                    TypeExpr::Slice(inner) => Some(TypeExpr::Slice(inner.clone())),
+                    _ => None,
+                });
+                if let Some(slice_ty) = slice_ty {
+                    Some(slice_ty)
+                } else {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`slice_new` requires a contextual slice type",
+                    ));
+                    None
+                }
+            }
+            "slice_push" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`slice_push` expects 2 arguments, got {}", args.len()),
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                let slice_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some(elem_ty) = self.expect_slice_type(module, span, slice_ty.as_ref()) {
+                    let value_ty =
+                        self.check_expression(module, &args[1], Some(&elem_ty), returns, env);
+                    self.ensure_type(module, expr_span(&args[1]), &elem_ty, value_ty.as_ref());
+                }
+                Some(TypeExpr::Unit)
+            }
+            "slice_len" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`slice_len` expects 1 argument, got {}", args.len()),
+                    ));
+                    return Some(int_type());
+                }
+                self.check_expression(module, &args[0], None, returns, env);
+                Some(int_type())
+            }
+            "slice_get" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`slice_get` expects 2 arguments, got {}", args.len()),
+                    ));
+                    return None;
+                }
+                let slice_ty = self.check_expression(module, &args[0], None, returns, env);
+                self.check_expression(module, &args[1], Some(&int_type()), returns, env);
+                self.expect_slice_type(module, span, slice_ty.as_ref())
+                    .map(|elem| make_option_type(elem))
+            }
+            "map_new" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`map_new` expects 0 arguments, got {}", args.len()),
+                    ));
+                }
+                if let Some(TypeExpr::Named(name, args)) = expected {
+                    if name == "Map" && args.len() == 2 {
+                        if !is_string_type(&args[0]) {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                span,
+                                "Map keys must be `string`",
+                            ));
+                        }
+                        return Some(TypeExpr::Named(name.clone(), args.clone()));
+                    }
+                }
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "`map_new` requires a contextual Map type",
+                ));
+                None
+            }
+            "map_insert" => {
+                if args.len() != 3 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`map_insert` expects 3 arguments, got {}", args.len()),
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                let map_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some((key_ty, value_ty)) =
+                    self.expect_map_type(module, span, map_ty.as_ref())
+                {
+                    self.check_expression(module, &args[1], Some(&key_ty), returns, env);
+                    let value_expr_ty =
+                        self.check_expression(module, &args[2], Some(&value_ty), returns, env);
+                    self.ensure_type(
+                        module,
+                        expr_span(&args[2]),
+                        &value_ty,
+                        value_expr_ty.as_ref(),
+                    );
+                }
+                Some(TypeExpr::Unit)
+            }
+            "map_get" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`map_get` expects 2 arguments, got {}", args.len()),
+                    ));
+                    return None;
+                }
+                let map_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some((key_ty, value_ty)) =
+                    self.expect_map_type(module, span, map_ty.as_ref())
+                {
+                    self.check_expression(module, &args[1], Some(&key_ty), returns, env);
+                    return Some(make_option_type(value_ty));
+                }
+                None
             }
             _ => None,
         }
@@ -1058,6 +1310,193 @@ impl Checker {
         }
     }
 
+    fn collection_element_type(&self, ty: &TypeExpr) -> Option<TypeExpr> {
+        match ty {
+            TypeExpr::Slice(inner) => Some((**inner).clone()),
+            TypeExpr::Named(name, args) if name == "Map" && args.len() == 2 => {
+                Some(TypeExpr::Tuple(vec![args[0].clone(), args[1].clone()]))
+            }
+            TypeExpr::Reference { ty: inner, .. } => self.collection_element_type(inner.as_ref()),
+            _ => None,
+        }
+    }
+
+    fn is_builtin_name(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "out"
+                | "box_new"
+                | "box_get"
+                | "box_set"
+                | "box_take"
+                | "slice_new"
+                | "slice_push"
+                | "slice_len"
+                | "slice_get"
+                | "map_new"
+                | "map_insert"
+                | "map_get"
+        )
+    }
+
+    fn expect_box_inner(
+        &mut self,
+        module: &Module,
+        span: Span,
+        ty: Option<&TypeExpr>,
+    ) -> Option<TypeExpr> {
+        match ty {
+            Some(TypeExpr::Reference { ty: inner, .. }) => {
+                self.expect_box_inner(module, span, Some(inner.as_ref()))
+            }
+            Some(TypeExpr::Named(name, args)) if name == "Box" && args.len() == 1 => {
+                Some(args[0].clone())
+            }
+            Some(other) => {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    format!("expected `Box[T]`, found `{}`", other.canonical_name()),
+                ));
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn expect_slice_type(
+        &mut self,
+        module: &Module,
+        span: Span,
+        ty: Option<&TypeExpr>,
+    ) -> Option<TypeExpr> {
+        match ty {
+            Some(TypeExpr::Reference { ty: inner, .. }) => {
+                self.expect_slice_type(module, span, Some(inner.as_ref()))
+            }
+            Some(TypeExpr::Slice(inner)) => Some((**inner).clone()),
+            Some(other) => {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    format!("expected slice type, found `{}`", other.canonical_name()),
+                ));
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn expect_map_type(
+        &mut self,
+        module: &Module,
+        span: Span,
+        ty: Option<&TypeExpr>,
+    ) -> Option<(TypeExpr, TypeExpr)> {
+        match ty {
+            Some(TypeExpr::Reference { ty: inner, .. }) => {
+                self.expect_map_type(module, span, Some(inner.as_ref()))
+            }
+            Some(TypeExpr::Named(name, args)) if name == "Map" && args.len() == 2 => {
+                if !is_string_type(&args[0]) {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "Map keys must be of type `string`",
+                    ));
+                }
+                Some((args[0].clone(), args[1].clone()))
+            }
+            Some(other) => {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    format!(
+                        "expected `Map[string, T]`, found `{}`",
+                        other.canonical_name()
+                    ),
+                ));
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn check_map_literal(
+        &mut self,
+        module: &Module,
+        entries: &[MapLiteralEntry],
+        span: Span,
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
+        if let Some((key_ty, value_ty)) = self.expect_map_type(module, span, expected) {
+            for entry in entries {
+                let key = self.check_expression(module, &entry.key, Some(&key_ty), returns, env);
+                self.ensure_type(module, expr_span(&entry.key), &key_ty, key.as_ref());
+                let value =
+                    self.check_expression(module, &entry.value, Some(&value_ty), returns, env);
+                self.ensure_type(module, expr_span(&entry.value), &value_ty, value.as_ref());
+            }
+            return expected.cloned();
+        }
+
+        if entries.is_empty() {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                "cannot infer type of empty map literal; add a `Map[string, T]` annotation",
+            ));
+            return None;
+        }
+
+        let key_ty = string_type();
+        let mut inferred_value: Option<TypeExpr> = None;
+        for entry in entries {
+            let key = self.check_expression(module, &entry.key, Some(&key_ty), returns, env);
+            self.ensure_type(module, expr_span(&entry.key), &key_ty, key.as_ref());
+
+            let value =
+                self.check_expression(module, &entry.value, inferred_value.as_ref(), returns, env);
+            match (inferred_value.as_ref(), value.as_ref()) {
+                (None, Some(actual)) => inferred_value = Some(actual.clone()),
+                (Some(expected), Some(actual)) => {
+                    self.ensure_type(module, expr_span(&entry.value), expected, Some(actual));
+                }
+                _ => {}
+            }
+        }
+        inferred_value.map(|value_ty| TypeExpr::Named("Map".into(), vec![key_ty.clone(), value_ty]))
+    }
+
+    fn resolve_numeric_type(
+        &mut self,
+        module: &Module,
+        span: Span,
+        left: Option<&TypeExpr>,
+        right: Option<&TypeExpr>,
+    ) -> Option<TypeExpr> {
+        let left_kind = left.and_then(numeric_kind);
+        let right_kind = right.and_then(numeric_kind);
+        match (left_kind, right_kind) {
+            (Some(NumericKind::Float), _) | (_, Some(NumericKind::Float)) => Some(float_type()),
+            (Some(NumericKind::Int), Some(NumericKind::Int)) => Some(int_type()),
+            (Some(kind), None) | (None, Some(kind)) => match kind {
+                NumericKind::Float => Some(float_type()),
+                NumericKind::Int => Some(int_type()),
+            },
+            _ => {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "numeric operations require int or float operands",
+                ));
+                None
+            }
+        }
+    }
+
     fn check_binary(
         &mut self,
         module: &Module,
@@ -1068,31 +1507,36 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
-        let expected = match op {
-            BinaryOp::Add
-            | BinaryOp::Sub
-            | BinaryOp::Mul
-            | BinaryOp::Div
-            | BinaryOp::Rem
-            | BinaryOp::BitAnd
-            | BinaryOp::BitOr
-            | BinaryOp::BitXor => Some(int_type()),
-            BinaryOp::And | BinaryOp::Or => Some(bool_type()),
-            BinaryOp::Eq
-            | BinaryOp::NotEq
-            | BinaryOp::Lt
-            | BinaryOp::LtEq
-            | BinaryOp::Gt
-            | BinaryOp::GtEq => None,
-        };
-        let left_ty = self.check_expression(module, left, expected.as_ref(), returns, env);
-        let right_ty = self.check_expression(module, right, expected.as_ref(), returns, env);
-        if let Some(expected) = expected {
-            self.ensure_type(module, span, &expected, left_ty.as_ref());
-            self.ensure_type(module, span, &expected, right_ty.as_ref());
-            Some(expected)
-        } else {
-            Some(bool_type())
+        match op {
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
+                let left_ty = self.check_expression(module, left, None, returns, env);
+                let right_ty = self.check_expression(module, right, None, returns, env);
+                self.resolve_numeric_type(module, span, left_ty.as_ref(), right_ty.as_ref())
+            }
+            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
+                self.check_expression(module, left, Some(&int_type()), returns, env);
+                self.check_expression(module, right, Some(&int_type()), returns, env);
+                Some(int_type())
+            }
+            BinaryOp::And | BinaryOp::Or => {
+                self.check_expression(module, left, Some(&bool_type()), returns, env);
+                self.check_expression(module, right, Some(&bool_type()), returns, env);
+                Some(bool_type())
+            }
+            BinaryOp::Eq | BinaryOp::NotEq => {
+                let left_ty = self.check_expression(module, left, None, returns, env);
+                let right_ty = self.check_expression(module, right, left_ty.as_ref(), returns, env);
+                if let Some(left_ty) = left_ty.as_ref() {
+                    self.ensure_type(module, span, left_ty, right_ty.as_ref());
+                }
+                Some(bool_type())
+            }
+            BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
+                let left_ty = self.check_expression(module, left, None, returns, env);
+                let right_ty = self.check_expression(module, right, None, returns, env);
+                self.resolve_numeric_type(module, span, left_ty.as_ref(), right_ty.as_ref());
+                Some(bool_type())
+            }
         }
     }
 
@@ -1265,7 +1709,7 @@ fn literal_type(lit: &Literal) -> TypeExpr {
         Literal::Int(_, _) => int_type(),
         Literal::Float(_, _) => float_type(),
         Literal::Bool(_, _) => bool_type(),
-        Literal::String(_, _) => TypeExpr::Named("string".into(), Vec::new()),
+        Literal::String(_, _) => string_type(),
         Literal::Rune(_, _) => TypeExpr::Named("rune".into(), Vec::new()),
     }
 }
@@ -1282,6 +1726,22 @@ fn bool_type() -> TypeExpr {
     TypeExpr::Named("bool".into(), Vec::new())
 }
 
+fn string_type() -> TypeExpr {
+    TypeExpr::Named("string".into(), Vec::new())
+}
+
+fn make_box_type(inner: TypeExpr) -> TypeExpr {
+    TypeExpr::Named("Box".into(), vec![inner])
+}
+
+fn make_option_type(inner: TypeExpr) -> TypeExpr {
+    TypeExpr::Named("Option".into(), vec![inner])
+}
+
+fn is_string_type(ty: &TypeExpr) -> bool {
+    matches!(ty, TypeExpr::Named(name, args) if name == "string" && args.is_empty())
+}
+
 fn expr_span(expr: &Expr) -> Span {
     match expr {
         Expr::Identifier(ident) => ident.span,
@@ -1291,6 +1751,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Call { span, .. } => *span,
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
+        Expr::MapLiteral { span, .. } => *span,
         Expr::Block(block) => block.span,
         Expr::If(if_expr) => if_expr.span,
         Expr::Match(m) => m.span,
@@ -1312,11 +1773,29 @@ fn stmt_span(statement: &Statement) -> Span {
         Statement::Expr(expr) => expr_span(&expr.expr),
         Statement::Return(_) => Span::new(0, 0),
         Statement::While(while_stmt) => while_stmt.body.span,
-        Statement::ForRange(range) => range.span,
+        Statement::For(stmt) => stmt.span,
         Statement::Defer(_) => Span::new(0, 0),
         Statement::Break | Statement::Continue => Span::new(0, 0),
         Statement::Block(block) => block.span,
     }
+}
+
+enum NumericKind {
+    Int,
+    Float,
+}
+
+fn numeric_kind(ty: &TypeExpr) -> Option<NumericKind> {
+    match ty {
+        TypeExpr::Named(name, _) if name == "int32" => Some(NumericKind::Int),
+        TypeExpr::Named(name, _) if name == "float32" => Some(NumericKind::Float),
+        _ => None,
+    }
+}
+
+fn is_heap_type(ty: &TypeExpr) -> bool {
+    matches!(ty, TypeExpr::Slice(_))
+        || matches!(ty, TypeExpr::Named(name, _) if name == "Box" || name == "Map")
 }
 
 fn literal_span(lit: &Literal) -> Span {

@@ -324,6 +324,7 @@ impl<'a> Lexer<'a> {
             Some('%') => self.single(TokenKind::Percent),
             Some('?') => self.single(TokenKind::Question),
             Some('@') => self.single(TokenKind::At),
+            Some('#') => self.single(TokenKind::Hash),
             Some('+') => self.single(TokenKind::Plus),
             Some('*') => self.single(TokenKind::Star),
             Some('^') => self.single(TokenKind::Caret),

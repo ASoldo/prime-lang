@@ -205,6 +205,14 @@ impl MapValue {
         }
     }
 
+    fn from_entries(entries: Vec<(String, Value)>) -> Self {
+        let map = Self::new();
+        for (key, value) in entries {
+            map.insert(key, value);
+        }
+        map
+    }
+
     fn insert(&self, key: String, value: Value) {
         self.entries.borrow_mut().insert(key, value);
     }
@@ -655,32 +663,58 @@ impl Compiler {
                     BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
                 }
             },
-            Statement::ForRange(stmt) => {
-                let (start, end, inclusive) = match self.evaluate_range(&stmt.range)? {
-                    EvalOutcome::Value(values) => values,
-                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
-                };
-                let mut current = start;
-                let limit = if inclusive { end + 1 } else { end };
-                while current < limit {
-                    self.push_scope();
-                    self.insert_var(
-                        &stmt.binding,
-                        Value::Int(self.const_int_value(current)),
-                        false,
-                    )?;
-                    let result = self.execute_block_contents(&stmt.body)?;
-                    self.exit_scope()?;
-                    match result {
-                        BlockEval::Value(_) => {}
-                        BlockEval::Flow(FlowSignal::Continue) => {}
-                        BlockEval::Flow(FlowSignal::Break) => break,
-                        BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
-                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
+            Statement::For(stmt) => match &stmt.target {
+                ForTarget::Range(range_expr) => {
+                    let (start, end, inclusive) = match self.evaluate_range(range_expr)? {
+                        EvalOutcome::Value(values) => values,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    let mut current = start;
+                    let limit = if inclusive { end + 1 } else { end };
+                    while current < limit {
+                        self.push_scope();
+                        self.insert_var(
+                            &stmt.binding,
+                            Value::Int(self.const_int_value(current)),
+                            false,
+                        )?;
+                        let result = self.execute_block_contents(&stmt.body)?;
+                        self.exit_scope()?;
+                        match result {
+                            BlockEval::Value(_) => {}
+                            BlockEval::Flow(FlowSignal::Continue) => {}
+                            BlockEval::Flow(FlowSignal::Break) => break,
+                            BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                            BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                return Ok(Some(flow));
+                            }
+                        }
+                        current += 1;
                     }
-                    current += 1;
                 }
-            }
+                ForTarget::Collection(expr) => {
+                    let iterable = match self.emit_expression(expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    let elements = self.collect_iterable_values(iterable)?;
+                    for element in elements {
+                        self.push_scope();
+                        self.insert_var(&stmt.binding, element, false)?;
+                        let result = self.execute_block_contents(&stmt.body)?;
+                        self.exit_scope()?;
+                        match result {
+                            BlockEval::Value(_) => {}
+                            BlockEval::Flow(FlowSignal::Continue) => continue,
+                            BlockEval::Flow(FlowSignal::Break) => break,
+                            BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                            BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                return Ok(Some(flow));
+                            }
+                        }
+                    }
+                }
+            },
         }
         Ok(None)
     }
@@ -747,6 +781,7 @@ impl Compiler {
                 self.eval_binary(*op, lhs, rhs).map(EvalOutcome::Value)
             }
             Expr::StructLiteral { name, fields, .. } => self.build_struct_literal(name, fields),
+            Expr::MapLiteral { entries, .. } => self.emit_map_literal(entries),
             Expr::Match(match_expr) => self.emit_match_expression(match_expr),
             Expr::Tuple(values, _) => {
                 let mut items = Vec::new();
@@ -1013,6 +1048,28 @@ impl Compiler {
         }
         Ok(EvalOutcome::Value(Value::Slice(SliceValue::from_vec(
             items,
+        ))))
+    }
+
+    fn emit_map_literal(
+        &mut self,
+        entries: &[MapLiteralEntry],
+    ) -> Result<EvalOutcome<Value>, String> {
+        let mut pairs = Vec::new();
+        for entry in entries {
+            let key_value = match self.emit_expression(&entry.key)? {
+                EvalOutcome::Value(value) => value,
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            };
+            let key = self.expect_string_value(key_value, "map literal key")?;
+            let value = match self.emit_expression(&entry.value)? {
+                EvalOutcome::Value(value) => value,
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            };
+            pairs.push((key, value));
+        }
+        Ok(EvalOutcome::Value(Value::Map(MapValue::from_entries(
+            pairs,
         ))))
     }
 
@@ -2048,6 +2105,17 @@ impl Compiler {
         }
     }
 
+    fn make_string_value(&self, text: &str) -> Result<Value, String> {
+        let c_value = CString::new(text.as_bytes())
+            .map_err(|_| "string value cannot contain interior null bytes".to_string())?;
+        let name = CString::new("map_key").unwrap();
+        let text_rc = Rc::new(text.to_string());
+        unsafe {
+            let ptr = LLVMBuildGlobalString(self.builder, c_value.as_ptr(), name.as_ptr());
+            Ok(Value::Str(StringValue::new(ptr, text_rc)))
+        }
+    }
+
     fn builtin_box_new(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
         if args.len() != 1 {
             return Err("box_new expects 1 argument".into());
@@ -2344,6 +2412,54 @@ impl Compiler {
             LLVMSetLinkage(self.printf, LLVMLinkage::LLVMExternalLinkage);
         }
     }
+
+    fn collect_iterable_values(&self, value: Value) -> Result<Vec<Value>, String> {
+        match value {
+            Value::Slice(slice) => {
+                let mut items = Vec::new();
+                for idx in 0..slice.len() {
+                    if let Some(item) = slice.get(idx) {
+                        items.push(item);
+                    }
+                }
+                Ok(items)
+            }
+            Value::Map(map) => {
+                let mut items = Vec::new();
+                for (key, value) in map.entries.borrow().iter() {
+                    let key_value = self.make_string_value(key)?;
+                    items.push(Value::Tuple(vec![key_value, value.clone()]));
+                }
+                Ok(items)
+            }
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.collect_iterable_values(inner)
+            }
+            other => Err(format!(
+                "`for ... in` only supports slices or maps (found {})",
+                self.describe_value(&other)
+            )),
+        }
+    }
+
+    fn describe_value(&self, value: &Value) -> &'static str {
+        match value {
+            Value::Slice(_) => "slice",
+            Value::Map(_) => "map",
+            Value::Boxed(_) => "box",
+            Value::Reference(_) => "reference",
+            Value::Struct(_) => "struct",
+            Value::Enum(_) => "enum",
+            Value::Tuple(_) => "tuple",
+            Value::Str(_) => "string",
+            Value::Bool(_) => "bool",
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::Unit => "unit",
+            Value::Moved => "moved value",
+        }
+    }
 }
 
 impl Drop for Compiler {
@@ -2409,6 +2525,7 @@ fn describe_expr(expr: &Expr) -> &'static str {
         Expr::Call { .. } => "call",
         Expr::FieldAccess { .. } => "field access",
         Expr::StructLiteral { .. } => "struct literal",
+        Expr::MapLiteral { .. } => "map literal",
         Expr::Block(_) => "block",
         Expr::If(_) => "if expression",
         Expr::Match(_) => "match expression",

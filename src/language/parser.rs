@@ -642,8 +642,8 @@ impl Parser {
             return Ok(StatementOrTail::Statement(Statement::While(stmt)));
         }
         if self.matches(TokenKind::For) {
-            let stmt = self.parse_for_range()?;
-            return Ok(StatementOrTail::Statement(Statement::ForRange(stmt)));
+            let stmt = self.parse_for_statement()?;
+            return Ok(StatementOrTail::Statement(Statement::For(stmt)));
         }
         if self.matches(TokenKind::Break) {
             self.expect(TokenKind::Semi)?;
@@ -693,7 +693,7 @@ impl Parser {
             return Ok(StatementOrTail::Tail(expr));
         }
 
-        if matches!(expr, Expr::If(_)) {
+        if matches!(expr, Expr::If(_) | Expr::Match(_)) {
             return Ok(StatementOrTail::Statement(Statement::Expr(ExprStmt {
                 expr,
             })));
@@ -883,7 +883,7 @@ impl Parser {
         )
     }
 
-    fn parse_for_range(&mut self) -> Result<ForRangeStmt, SyntaxError> {
+    fn parse_for_statement(&mut self) -> Result<ForStmt, SyntaxError> {
         let start = self
             .previous_span()
             .map(|s| s.start)
@@ -894,16 +894,16 @@ impl Parser {
         let range_expr = self.parse_expression();
         self.exit_block_context();
         let range_expr = range_expr?;
-        let range = if let Expr::Range(expr) = range_expr {
-            expr
+        let target = if let Expr::Range(expr) = range_expr {
+            ForTarget::Range(expr)
         } else {
-            return Err(self.error_here("Expected range expression (start..end)"));
+            ForTarget::Collection(range_expr)
         };
         let body = self.parse_block()?;
         let body_end = body.span.end;
-        Ok(ForRangeStmt {
+        Ok(ForStmt {
             binding: binding.name,
-            range,
+            target,
             body,
             span: Span::new(start, body_end),
         })
@@ -1124,6 +1124,9 @@ impl Parser {
         if self.matches(TokenKind::Try) {
             return self.parse_try_expression();
         }
+        if self.matches(TokenKind::Hash) {
+            return self.parse_map_literal();
+        }
         if !self.suppress_block_literal && self.matches(TokenKind::LBrace) {
             self.rewind();
             let block = self.parse_block()?;
@@ -1191,6 +1194,33 @@ impl Parser {
             }
             _ => Err(self.error_here("Unexpected token in expression")),
         }
+    }
+
+    fn parse_map_literal(&mut self) -> Result<Expr, SyntaxError> {
+        let start = self
+            .previous_span()
+            .map(|s| s.start)
+            .unwrap_or_else(|| self.current_span_start());
+        self.expect(TokenKind::LBrace)?;
+        let mut entries = Vec::new();
+        while !self.check(TokenKind::RBrace) && !self.is_eof() {
+            let key = self.parse_expression()?;
+            self.expect(TokenKind::Colon)?;
+            let value = self.parse_expression()?;
+            entries.push(MapLiteralEntry { key, value });
+            if self.matches(TokenKind::Comma) {
+                if self.check(TokenKind::RBrace) {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+        let end = self.expect(TokenKind::RBrace)?.span.end;
+        Ok(Expr::MapLiteral {
+            entries,
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_try_expression(&mut self) -> Result<Expr, SyntaxError> {
@@ -1768,6 +1798,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Call { span, .. } => *span,
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
+        Expr::MapLiteral { span, .. } => *span,
         Expr::Block(block) => block.span,
         Expr::If(expr) => expr.span,
         Expr::Match(expr) => expr.span,

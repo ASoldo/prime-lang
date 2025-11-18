@@ -8,21 +8,27 @@ fn main() {
   out("box counter:");
   out(box_get(counter));
   let mut []string explorers = ["Prime Hero", "Sparrow"];
+  out("explorer roster:");
+  for explorer in explorers {
+    out(explorer);
+  }
   out("slice len:");
   out(slice_len(explorers));
   out("first explorer:");
   match slice_get(explorers, 0) {
     Some(name) => out(name),
     None => out("n/a"),
+  }
+  let Map[string, int32] rewards = #{
+    "Ridge scouting": 250,
+    "Harbor sweep": 175,
   };
-  let mut Map[string, int32] rewards = map_new();
-  map_insert(&mut rewards, "Ridge scouting", 250);
-  map_insert(&mut rewards, "Harbor sweep", 175);
+
   out("harbor reward:");
   match map_get(rewards, "Harbor sweep") {
     Some(value) => out(value),
     None => out("none"),
-  };
+  }
 }
 
 fn bump_counter(counter: &Box[int32], amount: int32) {

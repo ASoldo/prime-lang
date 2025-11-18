@@ -1,7 +1,7 @@
 use crate::language::{
     ast::{
-        Block, ElseBranch, Expr, FunctionBody, FunctionDef, IfExpr, Item, LetStmt, Literal, Module,
-        Pattern, RangeExpr, Statement, StructLiteralKind,
+        Block, ElseBranch, Expr, ForTarget, FunctionBody, FunctionDef, IfExpr, Item, LetStmt,
+        Literal, Module, Pattern, RangeExpr, Statement, StructLiteralKind,
     },
     span::Span,
     types::{Mutability, TypeExpr},
@@ -140,8 +140,11 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                 collect_decl_from_expr(&while_stmt.condition, decls);
                 collect_decl_from_block(&while_stmt.body, decls);
             }
-            Statement::ForRange(for_stmt) => {
-                collect_decl_from_range(&for_stmt.range, decls);
+            Statement::For(for_stmt) => {
+                match &for_stmt.target {
+                    ForTarget::Range(range) => collect_decl_from_range(range, decls),
+                    ForTarget::Collection(expr) => collect_decl_from_expr(expr, decls),
+                }
                 let body_span = for_stmt.body.span;
                 decls.push(DeclInfo {
                     name: for_stmt.binding.clone(),
@@ -194,6 +197,12 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
                 }
             }
         },
+        Expr::MapLiteral { entries, .. } => {
+            for entry in entries {
+                collect_decl_from_expr(&entry.key, decls);
+                collect_decl_from_expr(&entry.value, decls);
+            }
+        }
         Expr::Block(block) => collect_decl_from_block(block, decls),
         Expr::If(if_expr) => collect_decl_from_if_expr(if_expr, decls),
         Expr::Match(match_expr) => {
@@ -331,9 +340,14 @@ fn collect_used_in_statement(statement: &Statement, used: &mut HashSet<String>) 
             collect_expr_idents(&while_stmt.condition, used);
             collect_used_in_block(&while_stmt.body, used);
         }
-        Statement::ForRange(for_stmt) => {
-            collect_expr_idents(&for_stmt.range.start, used);
-            collect_expr_idents(&for_stmt.range.end, used);
+        Statement::For(for_stmt) => {
+            match &for_stmt.target {
+                ForTarget::Range(range) => {
+                    collect_expr_idents(&range.start, used);
+                    collect_expr_idents(&range.end, used);
+                }
+                ForTarget::Collection(expr) => collect_expr_idents(expr, used),
+            }
             collect_used_in_block(&for_stmt.body, used);
         }
         Statement::Defer(defer_stmt) => collect_expr_idents(&defer_stmt.expr, used),
@@ -374,6 +388,12 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
                 }
             }
         },
+        Expr::MapLiteral { entries, .. } => {
+            for entry in entries {
+                collect_expr_idents(&entry.key, used);
+                collect_expr_idents(&entry.value, used);
+            }
+        }
         Expr::Block(block) => collect_used_in_block(block, used),
         Expr::If(if_expr) => collect_used_in_if_expr(if_expr, used),
         Expr::Match(match_expr) => {
@@ -452,6 +472,7 @@ pub fn expr_span(expr: &Expr) -> Span {
         Expr::Call { span, .. } => *span,
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
+        Expr::MapLiteral { span, .. } => *span,
         Expr::Block(block) => block.span,
         Expr::If(if_expr) => if_expr.span,
         Expr::Match(match_expr) => match_expr.span,

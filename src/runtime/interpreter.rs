@@ -965,35 +965,66 @@ impl Interpreter {
                 }
                 Ok(None)
             }
-            Statement::ForRange(stmt) => {
-                let range = match self.eval_range_expr(&stmt.range)? {
-                    EvalOutcome::Value(value) => value,
-                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
-                };
-                let end = if range.inclusive {
-                    range.end + 1
-                } else {
-                    range.end
-                };
-                for i in range.start..end {
-                    self.env.push_scope();
-                    self.env.declare(&stmt.binding, Value::Int(i), false)?;
-                    let result = self.eval_block(&stmt.body)?;
-                    if let Some(flow) = self.execute_deferred()? {
+            Statement::For(stmt) => match &stmt.target {
+                ForTarget::Range(range_expr) => {
+                    let range = match self.eval_range_expr(range_expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    let end = if range.inclusive {
+                        range.end + 1
+                    } else {
+                        range.end
+                    };
+                    for i in range.start..end {
+                        self.env.push_scope();
+                        self.env.declare(&stmt.binding, Value::Int(i), false)?;
+                        let result = self.eval_block(&stmt.body)?;
+                        if let Some(flow) = self.execute_deferred()? {
+                            self.env.pop_scope();
+                            return Ok(Some(flow));
+                        }
                         self.env.pop_scope();
-                        return Ok(Some(flow));
+                        match result {
+                            BlockEval::Value(_) => {}
+                            BlockEval::Flow(FlowSignal::Continue) => continue,
+                            BlockEval::Flow(FlowSignal::Break) => break,
+                            BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                            BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                return Ok(Some(flow));
+                            }
+                        }
                     }
-                    self.env.pop_scope();
-                    match result {
-                        BlockEval::Value(_) => {}
-                        BlockEval::Flow(FlowSignal::Continue) => continue,
-                        BlockEval::Flow(FlowSignal::Break) => break,
-                        BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
-                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
-                    }
+                    Ok(None)
                 }
-                Ok(None)
-            }
+                ForTarget::Collection(expr) => {
+                    let iterable = match self.eval_expression(expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    let elements = self.collect_iterable_values(iterable)?;
+                    for element in elements {
+                        self.env.push_scope();
+                        self.env.declare(&stmt.binding, element, false)?;
+                        let result = self.eval_block(&stmt.body)?;
+                        if let Some(flow) = self.execute_deferred()? {
+                            self.env.pop_scope();
+                            return Ok(Some(flow));
+                        }
+                        self.env.pop_scope();
+                        match result {
+                            BlockEval::Value(_) => {}
+                            BlockEval::Flow(FlowSignal::Continue) => continue,
+                            BlockEval::Flow(FlowSignal::Break) => break,
+                            BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                            BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                return Ok(Some(flow));
+                            }
+                        }
+                    }
+                    Ok(None)
+                }
+            },
             Statement::Break => Ok(Some(FlowSignal::Break)),
             Statement::Continue => Ok(Some(FlowSignal::Continue)),
             Statement::Defer(stmt) => {
@@ -1238,6 +1269,7 @@ impl Interpreter {
                 }
             }
             Expr::StructLiteral { name, fields, .. } => self.instantiate_struct(name, fields),
+            Expr::MapLiteral { entries, .. } => self.eval_map_literal(entries),
             Expr::Match(expr) => self.eval_match(expr),
             Expr::Block(block) => match self.eval_block(block)? {
                 BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
@@ -1323,6 +1355,44 @@ impl Interpreter {
         }
         Ok(EvalOutcome::Value(Value::Slice(SliceValue::from_vec(
             items,
+        ))))
+    }
+
+    fn eval_map_literal(
+        &mut self,
+        entries: &[MapLiteralEntry],
+    ) -> RuntimeResult<EvalOutcome<Value>> {
+        let mut pairs = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let key_value = match self.eval_expression(&entry.key)? {
+                EvalOutcome::Value(value) => value,
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            };
+            let key = match key_value {
+                Value::String(text) => text,
+                Value::Reference(reference) => {
+                    if let Value::String(text) = reference.cell.borrow().clone() {
+                        text
+                    } else {
+                        return Err(RuntimeError::TypeMismatch {
+                            message: "Map literal keys must be strings".into(),
+                        });
+                    }
+                }
+                _ => {
+                    return Err(RuntimeError::TypeMismatch {
+                        message: "Map literal keys must be strings".into(),
+                    });
+                }
+            };
+            let value = match self.eval_expression(&entry.value)? {
+                EvalOutcome::Value(value) => value,
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            };
+            pairs.push((key, value));
+        }
+        Ok(EvalOutcome::Value(Value::Map(MapValue::from_entries(
+            pairs,
         ))))
     }
 
@@ -1743,6 +1813,59 @@ impl Interpreter {
             }
         } else {
             Ok(EvalOutcome::Value(Value::Unit))
+        }
+    }
+
+    fn collect_iterable_values(&self, value: Value) -> RuntimeResult<Vec<Value>> {
+        match value {
+            Value::Slice(slice) => {
+                let mut items = Vec::new();
+                for idx in 0..slice.len() {
+                    if let Some(item) = slice.get(idx) {
+                        items.push(item);
+                    }
+                }
+                Ok(items)
+            }
+            Value::Map(map) => {
+                let mut items = Vec::new();
+                for (key, value) in map.entries.borrow().iter() {
+                    items.push(Value::Tuple(vec![
+                        Value::String(key.clone()),
+                        value.clone(),
+                    ]));
+                }
+                Ok(items)
+            }
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.collect_iterable_values(inner)
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!(
+                    "`for ... in` only supports slices or maps; found {}",
+                    self.describe_value(&other)
+                ),
+            }),
+        }
+    }
+
+    fn describe_value(&self, value: &Value) -> &'static str {
+        match value {
+            Value::Slice(_) => "slice",
+            Value::Map(_) => "map",
+            Value::Boxed(_) => "box",
+            Value::Reference(_) => "reference",
+            Value::Struct(_) => "struct",
+            Value::Enum(_) => "enum",
+            Value::Tuple(_) => "tuple",
+            Value::String(_) => "string",
+            Value::Bool(_) => "bool",
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::Range(_) => "range",
+            Value::Unit => "unit",
+            Value::Moved => "moved value",
         }
     }
 }

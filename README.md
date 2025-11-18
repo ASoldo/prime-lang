@@ -154,6 +154,10 @@ while probes < 2 {
   out("probe");
   probes = probes + 1;
 }
+
+for explorer in explorers {
+  out(explorer);
+}
 ```
 
 - `match` is exhaustive, supports `Enum::Variant` syntax, and each arm can carry
@@ -226,6 +230,22 @@ verifies:
 
 Type errors are reported with file/line spans, so you can fix mistakes before
 running code.
+
+### Map & Slice Literals
+
+- `["Prime Hero", "Sparrow"]` builds a dynamic slice without calling
+  `slice_new`/`slice_push`.
+- `#{ "Harbor sweep": 175, "Ridge scouting": 250 }` constructs a map literal.
+  If the literal has at least one entry, Prime now infers `Map[string, T]`
+  automatically so you can skip type annotations on the binding.
+
+### Collection Iteration
+
+- `for hero in squad { ... }` consumes slices (and references to slices) element
+  by element.
+- `for entry in rewards { ... }` walks a map, binding each `(string, T)` tuple so
+  you can destructure it with `let (mission, payout) = entry;` before using the
+  key/value pair.
 
 ### Built-in I/O & APIs
 
