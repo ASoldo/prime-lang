@@ -985,11 +985,6 @@ impl Interpreter {
                             .declare(name, value, stmt.mutability == Mutability::Mutable)?;
                     }
                     pattern => {
-                        if stmt.mutability == Mutability::Mutable {
-                            return Err(RuntimeError::Panic {
-                                message: "Destructuring bindings cannot be `mut`".into(),
-                            });
-                        }
                         let expr = stmt.value.as_ref().ok_or_else(|| RuntimeError::Panic {
                             message: "Destructuring bindings require an initializer".into(),
                         })?;
@@ -997,7 +992,8 @@ impl Interpreter {
                             EvalOutcome::Value(value) => value,
                             EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                         };
-                        if !self.match_pattern(pattern, &value)? {
+                        let allow_mut = stmt.mutability == Mutability::Mutable;
+                        if !self.match_pattern(pattern, &value, allow_mut)? {
                             return Err(RuntimeError::MatchError {
                                 message: "Pattern did not match value".into(),
                             });
@@ -1093,7 +1089,7 @@ impl Interpreter {
                             EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                         };
                         self.env.push_scope();
-                        let matched = self.match_pattern(pattern, &candidate)?;
+                        let matched = self.match_pattern(pattern, &candidate, false)?;
                         if !matched {
                             self.env.pop_scope();
                             break;
@@ -1597,7 +1593,7 @@ impl Interpreter {
         };
         for arm in &expr.arms {
             self.env.push_scope();
-            if self.match_pattern(&arm.pattern, &target)? {
+            if self.match_pattern(&arm.pattern, &target, false)? {
                 if let Some(guard_expr) = &arm.guard {
                     let guard_value = match self.eval_expression(guard_expr)? {
                         EvalOutcome::Value(value) => value,
@@ -1631,7 +1627,12 @@ impl Interpreter {
         })
     }
 
-    fn match_pattern(&mut self, pattern: &Pattern, value: &Value) -> RuntimeResult<bool> {
+    fn match_pattern(
+        &mut self,
+        pattern: &Pattern,
+        value: &Value,
+        mutable_bindings: bool,
+    ) -> RuntimeResult<bool> {
         match pattern {
             Pattern::Wildcard => Ok(true),
             Pattern::Identifier(name, _) => {
@@ -1639,7 +1640,7 @@ impl Interpreter {
                     Value::Reference(reference) => reference.cell.borrow().clone(),
                     other => other.clone(),
                 };
-                self.env.declare(name, concrete, false)?;
+                self.env.declare(name, concrete, mutable_bindings)?;
                 Ok(true)
             }
             Pattern::Literal(lit) => {
@@ -1680,7 +1681,7 @@ impl Interpreter {
                             .unwrap_or(true)
                     {
                         for (binding, val) in bindings.iter().zip(enum_value.values.iter()) {
-                            if !self.match_pattern(binding, val)? {
+                            if !self.match_pattern(binding, val, mutable_bindings)? {
                                 return Ok(false);
                             }
                         }
@@ -1699,7 +1700,7 @@ impl Interpreter {
                         return Ok(false);
                     }
                     for (pat, val) in patterns.iter().zip(values.iter()) {
-                        if !self.match_pattern(pat, val)? {
+                        if !self.match_pattern(pat, val, mutable_bindings)? {
                             return Ok(false);
                         }
                     }
@@ -1718,7 +1719,7 @@ impl Interpreter {
                         let Some(val) = map.get(&entry.key) else {
                             return Ok(false);
                         };
-                        if !self.match_pattern(&entry.pattern, &val)? {
+                        if !self.match_pattern(&entry.pattern, &val, mutable_bindings)? {
                             return Ok(false);
                         }
                     }
@@ -1747,7 +1748,7 @@ impl Interpreter {
                         let Some(field_value) = instance.get_field(&field.name) else {
                             return Ok(false);
                         };
-                        if !self.match_pattern(&field.pattern, &field_value)? {
+                        if !self.match_pattern(&field.pattern, &field_value, mutable_bindings)? {
                             return Ok(false);
                         }
                     }
@@ -1777,12 +1778,12 @@ impl Interpreter {
                     return Ok(false);
                 }
                 for (pat, val) in prefix.iter().zip(elements.iter()) {
-                    if !self.match_pattern(pat, val)? {
+                    if !self.match_pattern(pat, val, mutable_bindings)? {
                         return Ok(false);
                     }
                 }
                 for (pat, val) in suffix.iter().rev().zip(elements.iter().rev()) {
-                    if !self.match_pattern(pat, val)? {
+                    if !self.match_pattern(pat, val, mutable_bindings)? {
                         return Ok(false);
                     }
                 }
@@ -1790,7 +1791,7 @@ impl Interpreter {
                     let start = prefix.len();
                     let end = elements.len() - suffix.len();
                     let slice = SliceValue::from_vec(elements[start..end].to_vec());
-                    if !self.match_pattern(rest_pattern, &Value::Slice(slice))? {
+                    if !self.match_pattern(rest_pattern, &Value::Slice(slice), mutable_bindings)? {
                         return Ok(false);
                     }
                 } else if elements.len() != prefix.len() + suffix.len() {
@@ -2084,7 +2085,7 @@ impl Interpreter {
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
                 self.env.push_scope();
-                let matches = self.match_pattern(pattern, &scrutinee)?;
+                let matches = self.match_pattern(pattern, &scrutinee, false)?;
                 if matches {
                     match self.eval_block(&if_expr.then_branch)? {
                         BlockEval::Value(value) => {

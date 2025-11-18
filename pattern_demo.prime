@@ -60,6 +60,33 @@ fn inspect_telemetry(data: Telemetry) {
   }
 }
 
+fn mutate_destructured_bindings() {
+  let mut (left, right) = (15, 5);
+  left = left + right;
+  out("tuple mutation:");
+  out(left);
+
+  let Map[string, int32] records = #{
+    "hp": 80,
+    "mp": 40,
+  };
+  let mut #{ "hp": hp_score, "mp": mp_score } = records;
+  hp_score = hp_score + 10;
+  out("map mutation:");
+  out(hp_score + mp_score);
+
+  let Telemetry reading = Telemetry{
+    hp: 70,
+    mp: 35,
+    notes: ["alpha"],
+  };
+  let mut Telemetry{ hp, mp, .. } = reading;
+  hp = hp + 5;
+  mp = mp - 5;
+  out("struct mutation:");
+  out(hp + mp);
+}
+
 fn main() {
   describe_reading(("temp", 72));
   let Map[string, int32] stats = #{
@@ -78,4 +105,5 @@ fn main() {
   out(base_hp + base_mp);
 
   inspect_telemetry(snapshot);
+  mutate_destructured_bindings();
 }

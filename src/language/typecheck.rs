@@ -312,13 +312,6 @@ impl Checker {
                         }
                     }
                     pattern => {
-                        if stmt.mutability.is_mutable() {
-                            self.errors.push(TypeError::new(
-                                &module.path,
-                                stmt.span,
-                                "destructuring bindings cannot be `mut`",
-                            ));
-                        }
                         if let Some(value_expr) = &stmt.value {
                             let ty = self.check_expression(
                                 module,

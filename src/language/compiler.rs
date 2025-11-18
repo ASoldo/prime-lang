@@ -581,9 +581,6 @@ impl Compiler {
                     self.insert_var(name, value, stmt.mutability == Mutability::Mutable)?;
                 }
                 pattern => {
-                    if stmt.mutability == Mutability::Mutable {
-                        return Err("Destructuring bindings cannot be `mut` in build mode".into());
-                    }
                     let expr = stmt.value.as_ref().ok_or_else(|| {
                         "Destructuring bindings require an initializer".to_string()
                     })?;
@@ -591,7 +588,8 @@ impl Compiler {
                         EvalOutcome::Value(value) => value,
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
-                    if !self.match_pattern(&value, pattern)? {
+                    let allow_mut = stmt.mutability == Mutability::Mutable;
+                    if !self.match_pattern(&value, pattern, allow_mut)? {
                         return Err("Pattern did not match value".into());
                     }
                 }
@@ -691,7 +689,7 @@ impl Compiler {
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
                     self.push_scope();
-                    let matched = self.match_pattern(&candidate, pattern)?;
+                    let matched = self.match_pattern(&candidate, pattern, false)?;
                     if !matched {
                         self.exit_scope()?;
                         break;
@@ -1071,7 +1069,7 @@ impl Compiler {
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
                 self.push_scope();
-                let matches = self.match_pattern(&scrutinee, pattern)?;
+                let matches = self.match_pattern(&scrutinee, pattern, false)?;
                 if matches {
                     let result = self.execute_block_contents(&if_expr.then_branch)?;
                     self.exit_scope()?;
@@ -1241,7 +1239,7 @@ impl Compiler {
         };
         for arm in &match_expr.arms {
             self.push_scope();
-            if self.match_pattern(&target, &arm.pattern)? {
+            if self.match_pattern(&target, &arm.pattern, false)? {
                 let value = self.emit_expression(&arm.value)?;
                 self.exit_scope()?;
                 return Ok(value);
@@ -1278,7 +1276,12 @@ impl Compiler {
         }
     }
 
-    fn match_pattern(&mut self, value: &Value, pattern: &Pattern) -> Result<bool, String> {
+    fn match_pattern(
+        &mut self,
+        value: &Value,
+        pattern: &Pattern,
+        mutable_bindings: bool,
+    ) -> Result<bool, String> {
         match pattern {
             Pattern::Wildcard => Ok(true),
             Pattern::Identifier(name, _) => {
@@ -1286,7 +1289,7 @@ impl Compiler {
                     Value::Reference(reference) => reference.cell.borrow().clone(),
                     other => other.clone(),
                 };
-                self.insert_var(name, concrete, false)?;
+                self.insert_var(name, concrete, mutable_bindings)?;
                 Ok(true)
             }
             Pattern::Literal(lit) => self.match_literal(value.clone(), lit),
@@ -1319,7 +1322,7 @@ impl Compiler {
                         }
                         for (binding, field_value) in bindings.iter().zip(enum_value.values.iter())
                         {
-                            if !self.match_pattern(field_value, binding)? {
+                            if !self.match_pattern(field_value, binding, mutable_bindings)? {
                                 return Ok(false);
                             }
                         }
@@ -1338,7 +1341,7 @@ impl Compiler {
                         return Ok(false);
                     }
                     for (pat, val) in patterns.iter().zip(values.iter()) {
-                        if !self.match_pattern(val, pat)? {
+                        if !self.match_pattern(val, pat, mutable_bindings)? {
                             return Ok(false);
                         }
                     }
@@ -1357,7 +1360,7 @@ impl Compiler {
                         let Some(val) = map.get(&entry.key) else {
                             return Ok(false);
                         };
-                        if !self.match_pattern(&val, &entry.pattern)? {
+                        if !self.match_pattern(&val, &entry.pattern, mutable_bindings)? {
                             return Ok(false);
                         }
                     }
@@ -1386,7 +1389,7 @@ impl Compiler {
                         let Some(field_value) = instance.get(&field.name) else {
                             return Ok(false);
                         };
-                        if !self.match_pattern(&field_value, &field.pattern)? {
+                        if !self.match_pattern(&field_value, &field.pattern, mutable_bindings)? {
                             return Ok(false);
                         }
                     }
@@ -1416,12 +1419,12 @@ impl Compiler {
                     return Ok(false);
                 }
                 for (pat, val) in prefix.iter().zip(elements.iter()) {
-                    if !self.match_pattern(val, pat)? {
+                    if !self.match_pattern(val, pat, mutable_bindings)? {
                         return Ok(false);
                     }
                 }
                 for (pat, val) in suffix.iter().rev().zip(elements.iter().rev()) {
-                    if !self.match_pattern(val, pat)? {
+                    if !self.match_pattern(val, pat, mutable_bindings)? {
                         return Ok(false);
                     }
                 }
@@ -1429,7 +1432,7 @@ impl Compiler {
                     let start = prefix.len();
                     let end = elements.len() - suffix.len();
                     let slice = SliceValue::from_vec(elements[start..end].to_vec());
-                    if !self.match_pattern(&Value::Slice(slice), rest_pattern)? {
+                    if !self.match_pattern(&Value::Slice(slice), rest_pattern, mutable_bindings)? {
                         return Ok(false);
                     }
                 } else if elements.len() != prefix.len() + suffix.len() {

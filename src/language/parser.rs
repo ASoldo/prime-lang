@@ -813,9 +813,6 @@ impl Parser {
         if value.is_none() && !matches!(pattern, Pattern::Identifier(_, _)) {
             return Err(self.error_here("destructuring bindings require an initializer expression"));
         }
-        if mutability.is_mutable() && !matches!(pattern, Pattern::Identifier(_, _)) {
-            return Err(self.error_here("only single bindings can be marked `mut`"));
-        }
 
         let end = value
             .as_ref()
@@ -909,10 +906,39 @@ impl Parser {
     }
 
     fn type_expr_without_identifier_start(&self) -> bool {
-        matches!(
-            self.peek_kind(),
-            Some(TokenKind::LBracket | TokenKind::LParen | TokenKind::Star | TokenKind::Ampersand)
-        )
+        match self.peek_kind() {
+            Some(TokenKind::LParen) => self.tuple_type_followed_by_binding(),
+            Some(TokenKind::LBracket | TokenKind::Star | TokenKind::Ampersand) => true,
+            _ => false,
+        }
+    }
+
+    fn tuple_type_followed_by_binding(&self) -> bool {
+        let mut depth = 0usize;
+        let mut offset = 0usize;
+        while let Some(kind) = self.peek_kind_n(offset) {
+            match kind {
+                TokenKind::LParen => {
+                    depth += 1;
+                }
+                TokenKind::RParen => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(
+                            self.peek_kind_n(offset + 1),
+                            Some(TokenKind::Identifier(_))
+                        );
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            offset += 1;
+        }
+        false
     }
 
     fn upcoming_type_annotation_with_binding(&self) -> bool {
