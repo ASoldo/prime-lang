@@ -2,12 +2,13 @@ use crate::language::{
     ast::{ConstDef, EnumDef, EnumVariant, InterfaceDef, Item, Module, StructDef},
     span::Span,
     token::{Token, TokenKind},
+    types::{Mutability, TypeExpr},
 };
 use std::collections::HashMap;
 use tower_lsp_server::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 
 use super::{
-    analysis::find_local_decl,
+    analysis::{DeclInfo, DeclKind, find_local_decl},
     completion::{
         StructInfo, chain_for_field_token, format_function_signature,
         format_interface_method_signature, format_type_arguments, format_type_expr,
@@ -140,11 +141,19 @@ pub fn hover_for_token(
                 if let Some(info) = vars.iter().rev().find(|var| var.name == *name) {
                     return Some(markdown_var_info(text, span, info));
                 }
-                Some(format!("Identifier `{name}`"))
+                let decl_info = find_decl_for_identifier(module, name, span.end);
+                let ty = decl_info.ty.as_ref();
+                let mut content = identifier_hover(name, ty);
+                if let Some(value_span) = decl_info.value_span {
+                    content.push_str("\nPattern:\n```prime\n");
+                    content.push_str(&extract_text(text, value_span.start, value_span.end));
+                    content.push_str("\n```");
+                }
+                Some(content)
             } else if let Some(info) = vars.iter().rev().find(|var| var.name == *name) {
                 return Some(markdown_var_info(text, span, info));
             } else {
-                Some(format!("Identifier `{name}`"))
+                Some(identifier_hover(name, None))
             }
         }
         TokenKind::Let => Some("Keyword **let**\n\nIntroduces a new binding.".to_string()),
@@ -310,7 +319,7 @@ fn hover_for_module_symbol(
     None
 }
 
-fn hover_for_local_decl(text: &str, usage_span: Span, decl: &super::analysis::DeclInfo) -> Hover {
+fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover {
     let mut value = String::new();
     value.push_str("```prime\n");
     value.push_str(&extract_text(text, decl.span.start, decl.span.end));
@@ -322,7 +331,7 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &super::analysis::De
     if decl.mutability.is_mutable() {
         value.push_str("\nMutable binding");
     }
-    if decl.kind == super::analysis::DeclKind::Pattern {
+    if decl.kind == DeclKind::Pattern {
         if let Some(span) = decl.value_span {
             value.push_str("\nPattern:\n```prime\n");
             value.push_str(&extract_text(text, span.start, span.end));
@@ -340,25 +349,119 @@ fn hover_for_field_usage(
     offset: usize,
 ) -> Option<Hover> {
     let chain = chain_for_field_token(text, span)?;
-    let (target_type, field_info) = resolve_chain_from_scope(&chain, module, struct_info, offset)?;
-    if let Some((struct_name, field)) = field_info {
-        let mut value = String::new();
-        value.push_str(&format!("Field `{}`\n\n", chain.last()?));
-        value.push_str(&format!("Type: `{}`", format_type_expr(&field.ty)));
-        value.push_str(&format!("\nStruct: `{struct_name}`"));
-        return Some(markdown_hover(text, span, value));
-    }
-    if let Some((name, _)) = super::completion::named_type_with_args(&target_type) {
-        if let Some(info) = struct_info.get(&name) {
+    let name = chain.last()?.clone();
+    if let Some((target_type, field_info)) =
+        resolve_chain_from_scope(&chain, module, struct_info, offset)
+    {
+        if let Some((struct_name, field)) = field_info {
             let mut value = String::new();
-            value.push_str(&format!("Struct `{name}`\n\n"));
-            for method in &info.methods {
-                value.push_str(&format!("- {}\n", method.signature));
-            }
+            value.push_str(&format!("Field `{name}`\n\n"));
+            value.push_str(&format!("Type: `{}`", format_type_expr(&field.ty)));
+            value.push_str(&format!("\nStruct: `{struct_name}`"));
             return Some(markdown_hover(text, span, value));
+        }
+        if let Some((struct_name, _)) = super::completion::named_type_with_args(&target_type) {
+            if let Some(info) = struct_info.get(&struct_name) {
+                let mut value = String::new();
+                value.push_str(&format!("Struct `{struct_name}`\n\n"));
+                for method in &info.methods {
+                    value.push_str(&format!("- {}\n", method.signature));
+                }
+                return Some(markdown_hover(text, span, value));
+            }
+        }
+    }
+    if chain.len() >= 2 {
+        let base_chain = &chain[..chain.len() - 1];
+        if let Some((base_type, _)) =
+            resolve_chain_from_scope(base_chain, module, struct_info, offset)
+        {
+            if let Some(hover) = hover_for_builtin_method(text, span, &base_type, name.as_str()) {
+                return Some(hover);
+            }
         }
     }
     None
+}
+
+fn hover_for_builtin_method(
+    text: &str,
+    usage_span: Span,
+    ty: &TypeExpr,
+    method: &str,
+) -> Option<Hover> {
+    let stripped = strip_type_refs(ty);
+    let (kind, signature) = builtin_method_signature(stripped, method)?;
+    let mut value = String::new();
+    value.push_str(&format!("Built-in {kind}\n```prime\n{signature}\n```\n"));
+    value.push_str(&format!("Receiver: `{}`", format_type_expr(stripped)));
+    Some(markdown_hover(text, usage_span, value))
+}
+
+fn builtin_method_signature(ty: &TypeExpr, method: &str) -> Option<(&'static str, String)> {
+    match ty {
+        TypeExpr::Slice(inner) => {
+            let element_ty = inner.as_ref().clone();
+            let option_ty = TypeExpr::Named("Option".into(), vec![element_ty.clone()]);
+            match method {
+                "len" => Some(("slice method", "fn len() -> int32".into())),
+                "get" => Some((
+                    "slice method",
+                    format!("fn get(index: int32) -> {}", format_type_expr(&option_ty)),
+                )),
+                "push" => Some((
+                    "slice method",
+                    format!("fn push(value: {}) -> ()", format_type_expr(&element_ty)),
+                )),
+                _ => None,
+            }
+        }
+        TypeExpr::Named(name, args) if name == "Map" && args.len() == 2 => {
+            let value_ty = args[1].clone();
+            let option_ty = TypeExpr::Named("Option".into(), vec![value_ty.clone()]);
+            match method {
+                "get" => Some((
+                    "map method",
+                    format!("fn get(key: string) -> {}", format_type_expr(&option_ty)),
+                )),
+                "insert" => Some((
+                    "map method",
+                    format!(
+                        "fn insert(key: string, value: {}) -> ()",
+                        format_type_expr(&value_ty)
+                    ),
+                )),
+                "len" => Some(("map method", "fn len() -> int32".into())),
+                _ => None,
+            }
+        }
+        TypeExpr::Named(name, args) if name == "Box" && args.len() == 1 => {
+            let inner = args[0].clone();
+            match method {
+                "box_get" => Some((
+                    "box method",
+                    format!("fn box_get() -> {}", format_type_expr(&inner)),
+                )),
+                "box_set" => Some((
+                    "box method",
+                    format!("fn box_set(value: {}) -> ()", format_type_expr(&inner)),
+                )),
+                "box_take" => Some((
+                    "box method",
+                    format!("fn box_take() -> {}", format_type_expr(&inner)),
+                )),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn strip_type_refs<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
+    match ty {
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => strip_type_refs(ty),
+        _ => ty,
+    }
 }
 
 fn markdown_struct_info(text: &str, usage_span: Span, name: &str, info: &StructInfo) -> Hover {
@@ -431,12 +534,12 @@ fn hover_for_interface_method_definition(
     None
 }
 
-fn format_decl_kind(kind: super::analysis::DeclKind) -> &'static str {
+fn format_decl_kind(kind: DeclKind) -> &'static str {
     match kind {
-        super::analysis::DeclKind::Param => "parameter",
-        super::analysis::DeclKind::Let => "local binding",
-        super::analysis::DeclKind::ForBinding => "loop binding",
-        super::analysis::DeclKind::Pattern => "pattern binding",
+        DeclKind::Param => "parameter",
+        DeclKind::Let => "local binding",
+        DeclKind::ForBinding => "loop binding",
+        DeclKind::Pattern => "pattern binding",
     }
 }
 
@@ -541,6 +644,27 @@ fn markdown_hover(text: &str, span: Span, value: String) -> Hover {
 
 fn span_contains(span: Span, offset: usize) -> bool {
     offset >= span.start && offset <= span.end
+}
+
+fn identifier_hover(name: &str, ty: Option<&TypeExpr>) -> String {
+    let mut content = format!("Identifier `{}`", name);
+    if let Some(ty) = ty {
+        content.push_str(&format!("\nType: `{}`", format_type_expr(ty)));
+    }
+    content
+}
+
+fn find_decl_for_identifier<'a>(module: &'a Module, name: &str, offset: usize) -> DeclInfo {
+    find_local_decl(module, name, offset).unwrap_or_else(|| DeclInfo {
+        name: name.to_string(),
+        span: Span::new(offset, offset),
+        scope: Span::new(0, 0),
+        available_from: 0,
+        ty: None,
+        value_span: None,
+        mutability: Mutability::Immutable,
+        kind: DeclKind::Pattern,
+    })
 }
 
 #[cfg(test)]
