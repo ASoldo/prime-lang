@@ -1338,13 +1338,12 @@ impl Compiler {
                     .map(|val| val == want)
                     .ok_or_else(|| "Non-constant boolean pattern in build mode".into())
             }
+            (Literal::Bool(expected, _), Value::Bool(actual)) => Ok(*expected == actual),
             (Literal::Float(expected, _), Value::Float(float_value)) => float_value
                 .constant()
                 .map(|val| val == *expected)
                 .ok_or_else(|| "Non-constant float pattern in build mode".into()),
-            (Literal::String(expected, _), Value::Str(string_value)) => {
-                Ok(&*string_value.text == expected)
-            }
+            (Literal::String(expected, _), Value::Str(inner)) => Ok(*inner.text == *expected),
             (Literal::Rune(expected, _), Value::Int(int_value)) => {
                 let want = *expected as i128;
                 int_value
