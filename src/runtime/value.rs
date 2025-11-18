@@ -18,6 +18,7 @@ pub enum Value {
     Boxed(BoxValue),
     Slice(SliceValue),
     Map(MapValue),
+    FormatTemplate(FormatTemplateValue),
     Moved,
 }
 
@@ -33,6 +34,7 @@ impl Value {
             Value::Boxed(b) => b.cell.borrow().as_bool(),
             Value::Slice(slice) => !slice.items.borrow().is_empty(),
             Value::Map(map) => !map.entries.borrow().is_empty(),
+            Value::FormatTemplate(_) => true,
             Value::Unit => false,
             Value::Moved => panic!("attempted to read moved value"),
         }
@@ -90,6 +92,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::FormatTemplate(_) => write!(f, "<format string>"),
             Value::Moved => write!(f, "<moved>"),
         }
     }
@@ -145,6 +148,22 @@ pub struct EnumValue {
     pub enum_name: String,
     pub variant: String,
     pub values: Vec<Value>,
+}
+
+pub type FormatTemplateValue = FormatTemplateValueGeneric<Value>;
+pub type FormatRuntimeSegment = FormatRuntimeSegmentGeneric<Value>;
+
+#[derive(Clone, Debug)]
+pub struct FormatTemplateValueGeneric<T> {
+    pub segments: Vec<FormatRuntimeSegmentGeneric<T>>,
+    pub implicit_placeholders: usize,
+}
+
+#[derive(Clone, Debug)]
+pub enum FormatRuntimeSegmentGeneric<T> {
+    Literal(String),
+    Named(T),
+    Implicit,
 }
 
 impl fmt::Display for EnumValue {

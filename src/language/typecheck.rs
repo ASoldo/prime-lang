@@ -203,6 +203,25 @@ impl Checker {
         }
     }
 
+    fn validate_format_string(
+        &mut self,
+        module: &Module,
+        literal: &FormatStringLiteral,
+        env: &mut FnEnv,
+    ) {
+        for segment in &literal.segments {
+            if let FormatSegment::Named { name, span } = segment {
+                if env.lookup(name).is_none() && !self.registry.consts.contains_key(name) {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        *span,
+                        format!("unknown identifier `{}` in format string", name),
+                    ));
+                }
+            }
+        }
+    }
+
     fn check_module(&mut self, module: &Module) {
         for item in &module.items {
             match item {
@@ -493,6 +512,10 @@ impl Checker {
                 None
             }
             Expr::Literal(lit) => Some(literal_type(lit)),
+            Expr::FormatString(literal) => {
+                self.validate_format_string(module, literal, env);
+                Some(string_type())
+            }
             Expr::Binary {
                 op,
                 left,
@@ -953,15 +976,55 @@ impl Checker {
         }
         match name {
             "out" => {
-                if args.len() != 1 {
+                if args.is_empty() {
                     self.errors.push(TypeError::new(
                         &module.path,
                         span,
-                        format!("`out` expects 1 argument, got {}", args.len()),
+                        "`out` expects at least 1 argument",
                     ));
                     return Some(TypeExpr::Unit);
                 }
-                self.check_expression(module, &args[0], None, returns, env);
+                if let Expr::FormatString(literal) = &args[0] {
+                    let implicit_spans: Vec<Span> = literal
+                        .segments
+                        .iter()
+                        .filter_map(|seg| {
+                            if let FormatSegment::Implicit(span) = seg {
+                                Some(*span)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    let implicit = implicit_spans.len();
+                    if args.len() - 1 != implicit {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            span,
+                            format!(
+                                "`out` expects {} argument(s) to fill format placeholders, got {}",
+                                implicit,
+                                args.len().saturating_sub(1)
+                            ),
+                        ));
+                    }
+                    self.check_expression(module, &args[0], None, returns, env);
+                    for arg in args.iter().skip(1) {
+                        self.check_expression(module, arg, None, returns, env);
+                    }
+                } else {
+                    if args.len() != 1 {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            span,
+                            format!(
+                                "`out` expects 1 argument or a format literal, got {}",
+                                args.len()
+                            ),
+                        ));
+                    }
+                    self.check_expression(module, &args[0], None, returns, env);
+                }
                 Some(TypeExpr::Unit)
             }
             "box_new" => {
@@ -2357,6 +2420,7 @@ fn expr_span(expr: &Expr) -> Span {
     match expr {
         Expr::Identifier(ident) => ident.span,
         Expr::Literal(lit) => literal_span(lit),
+        Expr::FormatString(literal) => literal.span,
         Expr::Binary { span, .. } => *span,
         Expr::Unary { span, .. } => *span,
         Expr::Call { span, .. } => *span,
@@ -2723,5 +2787,46 @@ fn mutate_destructuring() {
                     .collect::<Vec<_>>()
             ),
         }
+    }
+
+    #[test]
+    fn format_string_requires_known_identifiers() {
+        let source = r#"
+module tests::format_lookup;
+
+fn check() {
+  let int32 hp = 10;
+  out(`hp is {hp}`);
+  out(`missing {mp}`);
+}
+"#;
+        let errors =
+            typecheck_source(source).expect_err("expected error for unknown format identifier");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("unknown identifier `mp`")),
+            "expected unknown identifier error, got {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn format_string_argument_mismatch_is_rejected() {
+        let source = r#"
+module tests::format_args;
+
+fn report() {
+  out(`value {} {}`, 1);
+}
+"#;
+        let errors = typecheck_source(source).expect_err("expected format arg count error");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("fill format placeholders")),
+            "expected placeholder count error, got {:?}",
+            errors
+        );
     }
 }

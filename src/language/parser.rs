@@ -1210,6 +1210,7 @@ impl Parser {
             Some(TokenKind::Integer(_)) => self.parse_int_literal(),
             Some(TokenKind::Float(_)) => self.parse_float_literal(),
             Some(TokenKind::String(_)) => self.parse_string_literal(),
+            Some(TokenKind::TemplateString(_)) => self.parse_template_string_literal(),
             Some(TokenKind::Rune(_)) => self.parse_rune_literal(),
             Some(TokenKind::True) => {
                 let span = self.advance().span;
@@ -1781,6 +1782,108 @@ impl Parser {
         }
     }
 
+    fn build_format_string(
+        &self,
+        value: String,
+        span: Span,
+    ) -> Result<FormatStringLiteral, SyntaxError> {
+        let mut segments = Vec::new();
+        let mut literal = String::new();
+        let mut iter = value.char_indices().peekable();
+        let content_start = span.start + 1;
+        while let Some((idx, ch)) = iter.next() {
+            match ch {
+                '{' => {
+                    if let Some((_, '{')) = iter.peek() {
+                        literal.push('{');
+                        iter.next();
+                        continue;
+                    }
+                    if !literal.is_empty() {
+                        segments.push(FormatSegment::Literal(std::mem::take(&mut literal)));
+                    }
+                    let placeholder_start = content_start + idx;
+                    match iter.peek() {
+                        Some((close_idx, '}')) => {
+                            let close_abs = content_start + *close_idx + 1;
+                            iter.next();
+                            segments.push(FormatSegment::Implicit(Span::new(
+                                placeholder_start,
+                                close_abs,
+                            )));
+                            continue;
+                        }
+                        Some((_, next_ch)) if Self::is_identifier_start(*next_ch) => {}
+                        _ => {
+                            return Err(self.error_at(
+                                Span::new(placeholder_start, placeholder_start + 1),
+                                "Invalid format placeholder",
+                            ));
+                        }
+                    }
+                    let (_, first_char) = iter.next().unwrap();
+                    let mut name = String::new();
+                    name.push(first_char);
+                    while let Some((_, peek_ch)) = iter.peek() {
+                        if Self::is_identifier_part(*peek_ch) {
+                            name.push(*peek_ch);
+                            iter.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    match iter.next() {
+                        Some((close_idx, '}')) => {
+                            let close_abs = content_start + close_idx + 1;
+                            segments.push(FormatSegment::Named {
+                                name,
+                                span: Span::new(placeholder_start, close_abs),
+                            });
+                        }
+                        Some((close_idx, _)) => {
+                            let err_span =
+                                Span::new(content_start + close_idx, content_start + close_idx + 1);
+                            return Err(
+                                self.error_at(err_span, "Expected `}` in format placeholder")
+                            );
+                        }
+                        None => {
+                            return Err(self.error_at(
+                                Span::new(placeholder_start, span.end),
+                                "Unterminated format placeholder",
+                            ));
+                        }
+                    }
+                }
+                '}' => {
+                    if let Some((_, '}')) = iter.peek() {
+                        literal.push('}');
+                        iter.next();
+                    } else {
+                        let err_span = Span::new(content_start + idx, content_start + idx + 1);
+                        return Err(self.error_at(err_span, "Unmatched `}` in format string"));
+                    }
+                }
+                _ => literal.push(ch),
+            }
+        }
+        if !literal.is_empty() {
+            segments.push(FormatSegment::Literal(literal));
+        }
+        Ok(FormatStringLiteral { segments, span })
+    }
+
+    fn parse_template_string_literal(&mut self) -> Result<Expr, SyntaxError> {
+        match self.advance().kind.clone() {
+            TokenKind::TemplateString(value) => {
+                let span = self.previous_span().unwrap();
+                let literal = self.build_format_string(value, span)?;
+                Ok(Expr::FormatString(literal))
+            }
+            _ => Err(self.error_here("Expected format string literal")),
+        }
+    }
+
     fn parse_rune_literal(&mut self) -> Result<Expr, SyntaxError> {
         match self.advance().kind.clone() {
             TokenKind::Rune(value) => {
@@ -2053,6 +2156,14 @@ impl Parser {
         }
     }
 
+    fn is_identifier_start(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphabetic()
+    }
+
+    fn is_identifier_part(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphanumeric()
+    }
+
     fn rewind(&mut self) {
         self.pos = self.pos.saturating_sub(1);
     }
@@ -2093,5 +2204,6 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Reference { span, .. } => *span,
         Expr::Deref { span, .. } => *span,
         Expr::Move { span, .. } => *span,
+        Expr::FormatString(literal) => literal.span,
     }
 }

@@ -13,6 +13,7 @@ pub enum TokenKind {
     Float(f64),
     String(String),
     Rune(char),
+    TemplateString(String),
 
     Fn,
     Let,

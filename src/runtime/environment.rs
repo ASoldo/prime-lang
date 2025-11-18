@@ -1,5 +1,8 @@
 use crate::language::ast::Expr;
-use crate::runtime::{error::RuntimeError, value::Value};
+use crate::runtime::{
+    error::RuntimeError,
+    value::{FormatRuntimeSegment, Value},
+};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -154,23 +157,43 @@ impl Environment {
         value: &Value,
         scope_index: usize,
     ) -> Result<(), RuntimeError> {
-        if let Value::Reference(reference) = value {
-            if reference.mutable {
-                if let Some(origin) = &reference.origin {
-                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
+        match value {
+            Value::Reference(reference) => {
+                if reference.mutable {
+                    if let Some(origin) = &reference.origin {
+                        self.begin_mut_borrow_in_scope(origin, scope_index)?;
+                    }
                 }
             }
+            Value::FormatTemplate(template) => {
+                for segment in &template.segments {
+                    if let FormatRuntimeSegment::Named(named) = segment {
+                        self.track_reference_borrow_in_scope(named, scope_index)?;
+                    }
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
 
     fn release_reference_borrow(&mut self, value: &Value) {
-        if let Value::Reference(reference) = value {
-            if reference.mutable {
-                if let Some(origin) = &reference.origin {
-                    self.end_mut_borrow(origin);
+        match value {
+            Value::Reference(reference) => {
+                if reference.mutable {
+                    if let Some(origin) = &reference.origin {
+                        self.end_mut_borrow(origin);
+                    }
                 }
             }
+            Value::FormatTemplate(template) => {
+                for segment in &template.segments {
+                    if let FormatRuntimeSegment::Named(named) = segment {
+                        self.release_reference_borrow(named);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 

@@ -7,8 +7,8 @@ use crate::runtime::{
     environment::Environment,
     error::{RuntimeError, RuntimeResult},
     value::{
-        BoxValue, EnumValue, MapValue, RangeValue, ReferenceValue, SliceValue, StructInstance,
-        Value,
+        BoxValue, EnumValue, FormatRuntimeSegment, FormatTemplateValue, MapValue, RangeValue,
+        ReferenceValue, SliceValue, StructInstance, Value,
     },
 };
 use std::cell::RefCell;
@@ -641,14 +641,37 @@ impl Interpreter {
     }
 
     fn call_out(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
-        if args.len() != 1 {
+        if args.is_empty() {
             return Err(RuntimeError::ArityMismatch {
                 name: "out".into(),
                 expected: 1,
-                received: args.len(),
+                received: 0,
             });
         }
-        println!("{}", args[0]);
+        let mut iter = args.into_iter();
+        let first = iter.next().unwrap();
+        match first {
+            Value::FormatTemplate(template) => {
+                let provided: Vec<Value> = iter.collect();
+                if template.implicit_placeholders != provided.len() {
+                    return Err(RuntimeError::ArityMismatch {
+                        name: "out".into(),
+                        expected: template.implicit_placeholders,
+                        received: provided.len(),
+                    });
+                }
+                self.print_format_template(template, provided)?;
+            }
+            other => {
+                if iter.next().is_some() {
+                    return Err(RuntimeError::Panic {
+                        message: "`out` with multiple arguments requires a format string literal"
+                            .into(),
+                    });
+                }
+                println!("{}", other);
+            }
+        }
         Ok(Vec::new())
     }
 
@@ -1281,6 +1304,10 @@ impl Interpreter {
                 Literal::String(value, _) => Value::String(value.clone()),
                 Literal::Rune(value, _) => Value::Int(*value as i128),
             })),
+            Expr::FormatString(literal) => {
+                let value = self.evaluate_format_string(literal)?;
+                Ok(EvalOutcome::Value(value))
+            }
             Expr::Try { block, .. } => match self.eval_block(block)? {
                 BlockEval::Value(value) => {
                     let wrapped = self.instantiate_enum("Result", "Ok", vec![value])?;
@@ -2149,6 +2176,68 @@ impl Interpreter {
         }
     }
 
+    fn evaluate_format_string(&mut self, literal: &FormatStringLiteral) -> RuntimeResult<Value> {
+        let mut segments = Vec::new();
+        let mut implicit = 0usize;
+        let mut rendered = String::new();
+        let mut has_placeholders = false;
+        for segment in &literal.segments {
+            match segment {
+                FormatSegment::Literal(text) => {
+                    rendered.push_str(text);
+                    segments.push(FormatRuntimeSegment::Literal(text.clone()));
+                }
+                FormatSegment::Named { name, .. } => {
+                    has_placeholders = true;
+                    let value = self
+                        .env
+                        .get(name)
+                        .ok_or_else(|| RuntimeError::UnknownSymbol { name: name.clone() })?;
+                    segments.push(FormatRuntimeSegment::Named(value));
+                }
+                FormatSegment::Implicit(_) => {
+                    has_placeholders = true;
+                    implicit += 1;
+                    segments.push(FormatRuntimeSegment::Implicit);
+                }
+            }
+        }
+        if !has_placeholders {
+            Ok(Value::String(rendered))
+        } else {
+            Ok(Value::FormatTemplate(FormatTemplateValue {
+                segments,
+                implicit_placeholders: implicit,
+            }))
+        }
+    }
+
+    fn format_value(&self, value: &Value) -> String {
+        format!("{value}")
+    }
+
+    fn print_format_template(
+        &mut self,
+        template: FormatTemplateValue,
+        mut values: Vec<Value>,
+    ) -> RuntimeResult<()> {
+        let mut value_iter = values.drain(..);
+        let mut output = String::new();
+        for segment in template.segments {
+            match segment {
+                FormatRuntimeSegment::Literal(text) => output.push_str(&text),
+                FormatRuntimeSegment::Named(value) => output.push_str(&self.format_value(&value)),
+                FormatRuntimeSegment::Implicit => {
+                    if let Some(value) = value_iter.next() {
+                        output.push_str(&self.format_value(&value));
+                    }
+                }
+            }
+        }
+        println!("{output}");
+        Ok(())
+    }
+
     fn describe_value(&self, value: &Value) -> &'static str {
         match value {
             Value::Slice(_) => "slice",
@@ -2163,6 +2252,7 @@ impl Interpreter {
             Value::Int(_) => "int",
             Value::Float(_) => "float",
             Value::Range(_) => "range",
+            Value::FormatTemplate(_) => "format string",
             Value::Unit => "unit",
             Value::Moved => "moved value",
         }
@@ -2477,6 +2567,83 @@ fn slice_mut() -> string {
         match slice.as_slice() {
             [Value::String(text)] => assert_eq!(text, "launch"),
             other => panic!("unexpected slice result: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn interpreter_builds_format_template_values() {
+        use crate::language::span::Span;
+
+        let mut interpreter = interpreter_from_source(
+            r#"
+module tests::runtime;
+
+fn stub() {}
+"#,
+        );
+        interpreter.bootstrap().expect("bootstrap");
+        interpreter
+            .env
+            .declare("hp", Value::Int(12), false)
+            .expect("declare hp");
+
+        let literal = FormatStringLiteral {
+            segments: vec![
+                FormatSegment::Literal("HP ".into()),
+                FormatSegment::Named {
+                    name: "hp".into(),
+                    span: Span::new(0, 0),
+                },
+                FormatSegment::Literal(" delta ".into()),
+                FormatSegment::Implicit(Span::new(0, 0)),
+            ],
+            span: Span::new(0, 0),
+        };
+
+        let value = interpreter
+            .evaluate_format_string(&literal)
+            .expect("format literal");
+        match value {
+            Value::FormatTemplate(template) => {
+                assert_eq!(template.implicit_placeholders, 1);
+                assert!(matches!(
+                    template.segments.first(),
+                    Some(FormatRuntimeSegment::Literal(text)) if text == "HP "
+                ));
+                assert!(matches!(
+                    template.segments.get(1),
+                    Some(FormatRuntimeSegment::Named(Value::Int(value))) if *value == 12
+                ));
+            }
+            other => panic!("expected format template value, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn interpreter_out_requires_all_arguments() {
+        let source = r#"
+module tests::runtime;
+
+fn broken() {
+  out(`numbers {} {} {}`, 1, 2);
+}
+"#;
+        let mut interpreter = interpreter_from_source(source);
+        interpreter.bootstrap().expect("bootstrap");
+        let err = interpreter
+            .call_function("broken", None, &[], Vec::new())
+            .expect_err("expected runtime error");
+        match err {
+            RuntimeError::ArityMismatch {
+                name,
+                expected,
+                received,
+            } => {
+                assert_eq!(name, "out");
+                assert_eq!(expected, 3);
+                assert_eq!(received, 2);
+            }
+            other => panic!("unexpected error: {:?}", other),
         }
     }
 

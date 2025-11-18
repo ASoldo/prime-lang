@@ -1,6 +1,9 @@
-use crate::language::{
-    ast::*,
-    types::{Mutability, TypeExpr},
+use crate::{
+    language::{
+        ast::*,
+        types::{Mutability, TypeExpr},
+    },
+    runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric},
 };
 use llvm_sys::{
     LLVMLinkage,
@@ -75,6 +78,7 @@ enum Value {
     Boxed(BoxValue),
     Slice(SliceValue),
     Map(MapValue),
+    FormatTemplate(FormatTemplateValue),
     Moved,
 }
 
@@ -84,6 +88,9 @@ struct EnumValue {
     variant: String,
     values: Vec<Value>,
 }
+
+type FormatTemplateValue = FormatTemplateValueGeneric<Value>;
+type FormatRuntimeSegment = FormatRuntimeSegmentGeneric<Value>;
 
 #[derive(Clone)]
 struct IntValue {
@@ -343,6 +350,54 @@ impl Compiler {
         }
     }
 
+    fn build_string_constant(&mut self, text: String) -> Result<Value, String> {
+        let c_value = CString::new(text.as_str())
+            .map_err(|_| "String literal contains null byte".to_string())?;
+        let name = CString::new("str_lit").unwrap();
+        let rc = Rc::new(text);
+        unsafe {
+            let ptr = LLVMBuildGlobalString(self.builder, c_value.as_ptr(), name.as_ptr());
+            Ok(Value::Str(StringValue::new(ptr, rc)))
+        }
+    }
+
+    fn build_format_string_value(
+        &mut self,
+        literal: &FormatStringLiteral,
+    ) -> Result<Value, String> {
+        let mut segments = Vec::new();
+        let mut implicit = 0usize;
+        let mut has_placeholders = false;
+        let mut literal_text = String::new();
+        for segment in &literal.segments {
+            match segment {
+                FormatSegment::Literal(text) => {
+                    literal_text.push_str(text);
+                    segments.push(FormatRuntimeSegment::Literal(text.clone()));
+                }
+                FormatSegment::Named { name, .. } => {
+                    has_placeholders = true;
+                    let value = self
+                        .get_var(name)
+                        .ok_or_else(|| format!("Unknown symbol `{}`", name))?;
+                    segments.push(FormatRuntimeSegment::Named(value));
+                }
+                FormatSegment::Implicit(_) => {
+                    has_placeholders = true;
+                    implicit += 1;
+                    segments.push(FormatRuntimeSegment::Implicit);
+                }
+            }
+        }
+        if !has_placeholders {
+            return self.build_string_constant(literal_text);
+        }
+        Ok(Value::FormatTemplate(FormatTemplateValue {
+            segments,
+            implicit_placeholders: implicit,
+        }))
+    }
+
     pub fn compile_program(&mut self, program: &Program) -> Result<(), String> {
         self.reset_module();
         self.scopes.clear();
@@ -498,6 +553,31 @@ impl Compiler {
         Ok(())
     }
 
+    fn emit_format_template(
+        &mut self,
+        template: FormatTemplateValue,
+        mut values: Vec<Value>,
+    ) -> Result<(), String> {
+        let mut args_iter = values.drain(..);
+        for segment in template.segments {
+            match segment {
+                FormatRuntimeSegment::Literal(text) => {
+                    self.emit_printf_call(&text, &mut []);
+                }
+                FormatRuntimeSegment::Named(value) => {
+                    self.print_value(value)?;
+                }
+                FormatRuntimeSegment::Implicit => {
+                    if let Some(value) = args_iter.next() {
+                        self.print_value(value)?;
+                    }
+                }
+            }
+        }
+        self.emit_printf_call("\n", &mut []);
+        Ok(())
+    }
+
     fn print_value(&mut self, value: Value) -> Result<(), String> {
         match value {
             Value::Int(int_value) => {
@@ -562,6 +642,7 @@ impl Compiler {
             Value::Boxed(_) | Value::Slice(_) | Value::Map(_) => {
                 Err("Cannot print heap value in build mode".into())
             }
+            Value::FormatTemplate(_) => Err("Format string must be printed via out()".into()),
             Value::Moved => Err("Cannot print moved value in build mode".into()),
         }
     }
@@ -771,14 +852,12 @@ impl Compiler {
                 self.const_float_value(*value),
             ))),
             Expr::Literal(Literal::String(value, _)) => {
-                let c_value = CString::new(value.as_str())
-                    .map_err(|_| "String literal contains null byte".to_string())?;
-                let name = CString::new("str_lit").unwrap();
-                let text = Rc::new(value.clone());
-                unsafe {
-                    let ptr = LLVMBuildGlobalString(self.builder, c_value.as_ptr(), name.as_ptr());
-                    Ok(EvalOutcome::Value(Value::Str(StringValue::new(ptr, text))))
-                }
+                let string = self.build_string_constant(value.clone())?;
+                Ok(EvalOutcome::Value(string))
+            }
+            Expr::FormatString(literal) => {
+                let value = self.build_format_string_value(literal)?;
+                Ok(EvalOutcome::Value(value))
             }
             Expr::Literal(Literal::Rune(value, _)) => Ok(EvalOutcome::Value(Value::Int(
                 self.const_int_value(*value as i128),
@@ -885,6 +964,9 @@ impl Compiler {
                         Value::Tuple(_) => {
                             return Err("Cannot access field on tuple value".into());
                         }
+                        Value::FormatTemplate(_) => {
+                            return Err("Cannot access field on format string value".into());
+                        }
                         Value::Unit => {
                             return Err("Cannot access field on unit value".into());
                         }
@@ -972,15 +1054,40 @@ impl Compiler {
     }
 
     fn emit_out_call(&mut self, args: &[Expr]) -> Result<EvalOutcome<Value>, String> {
-        if args.len() != 1 {
-            return Err("out() expects exactly one argument".into());
+        if args.is_empty() {
+            return Err("out() expects at least one argument".into());
         }
-        match self.emit_expression(&args[0])? {
-            EvalOutcome::Value(value) => {
-                self.emit_out_value(value)?;
+        let mut evaluated = Vec::new();
+        for expr in args {
+            match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => evaluated.push(value),
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            }
+        }
+        let mut iter = evaluated.into_iter();
+        let first = iter.next().unwrap();
+        match first {
+            Value::FormatTemplate(template) => {
+                let provided: Vec<Value> = iter.collect();
+                if template.implicit_placeholders != provided.len() {
+                    return Err(format!(
+                        "Format string expects {} argument(s), got {}",
+                        template.implicit_placeholders,
+                        provided.len()
+                    ));
+                }
+                self.emit_format_template(template, provided)?;
                 Ok(EvalOutcome::Value(Value::Unit))
             }
-            EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            other => {
+                if iter.next().is_some() {
+                    return Err(
+                        "out() with multiple arguments requires a format string literal".into(),
+                    );
+                }
+                self.emit_out_value(other)?;
+                Ok(EvalOutcome::Value(Value::Unit))
+            }
         }
     }
 
@@ -2273,23 +2380,43 @@ impl Compiler {
         value: &Value,
         scope_index: usize,
     ) -> Result<(), String> {
-        if let Value::Reference(reference) = value {
-            if reference.mutable {
-                if let Some(origin) = &reference.origin {
-                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
+        match value {
+            Value::Reference(reference) => {
+                if reference.mutable {
+                    if let Some(origin) = &reference.origin {
+                        self.begin_mut_borrow_in_scope(origin, scope_index)?;
+                    }
                 }
             }
+            Value::FormatTemplate(template) => {
+                for segment in &template.segments {
+                    if let FormatRuntimeSegment::Named(named) = segment {
+                        self.track_reference_borrow_in_scope(named, scope_index)?;
+                    }
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
 
     fn release_reference_borrow(&mut self, value: &Value) {
-        if let Value::Reference(reference) = value {
-            if reference.mutable {
-                if let Some(origin) = &reference.origin {
-                    self.end_mut_borrow(origin);
+        match value {
+            Value::Reference(reference) => {
+                if reference.mutable {
+                    if let Some(origin) = &reference.origin {
+                        self.end_mut_borrow(origin);
+                    }
                 }
             }
+            Value::FormatTemplate(template) => {
+                for segment in &template.segments {
+                    if let FormatRuntimeSegment::Named(named) = segment {
+                        self.release_reference_borrow(named);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2771,6 +2898,7 @@ impl Compiler {
             Value::Bool(_) => "bool",
             Value::Int(_) => "int",
             Value::Float(_) => "float",
+            Value::FormatTemplate(_) => "format string",
             Value::Unit => "unit",
             Value::Moved => "moved value",
         }
@@ -2850,6 +2978,7 @@ fn describe_expr(expr: &Expr) -> &'static str {
         Expr::Range(_) => "range",
         Expr::Reference { .. } => "reference",
         Expr::Deref { .. } => "deref",
+        Expr::FormatString(_) => "format string",
     }
 }
 
@@ -2867,6 +2996,7 @@ fn describe_value(value: &Value) -> &'static str {
         Value::Boxed(_) => "box",
         Value::Slice(_) => "slice",
         Value::Map(_) => "map",
+        Value::FormatTemplate(_) => "format string",
         Value::Moved => "moved",
     }
 }
@@ -3092,6 +3222,21 @@ fn main() {
 }
 "#;
         compile_source(source).expect("mutable destructuring should compile");
+    }
+
+    #[test]
+    fn compiler_supports_format_strings_in_out() {
+        let source = r#"
+module tests::format_out;
+
+fn main() {
+  let int32 hp = 15;
+  out(`hp is {hp} delta {}`, hp + 5);
+  out(`exact {hp}`);
+  out("plain string");
+}
+"#;
+        compile_source(source).expect("format string calls should compile");
     }
 
     fn compile_entry(entry: &str) -> Result<(), String> {

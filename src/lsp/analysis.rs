@@ -181,7 +181,7 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
 
 fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
     match expr {
-        Expr::Identifier(_) | Expr::Literal(_) => {}
+        Expr::Identifier(_) | Expr::Literal(_) | Expr::FormatString(_) => {}
         Expr::Try { block, .. } => collect_decl_from_block(block, decls),
         Expr::TryPropagate { expr: inner, .. } => collect_decl_from_expr(inner, decls),
         Expr::Binary { left, right, .. } => {
@@ -508,6 +508,7 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
         Expr::Reference { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Deref { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Move { expr: inner, .. } => collect_expr_idents(inner, used),
+        Expr::FormatString(_) => {}
     }
 }
 
@@ -615,6 +616,7 @@ pub fn expr_span(expr: &Expr) -> Span {
         Expr::Reference { span, .. } => *span,
         Expr::Deref { span, .. } => *span,
         Expr::Move { span, .. } => *span,
+        Expr::FormatString(literal) => literal.span,
     }
 }
 

@@ -645,6 +645,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
                 .join(", ");
             format!("[{inner}]")
         }
+        Expr::FormatString(literal) => format_format_string(literal),
         Expr::Move { expr, .. } => format!("move {}", format_expr_prec(expr, 100)),
         Expr::Range(range) => format_range(range),
         Expr::Reference { mutable, expr, .. } => {
@@ -972,6 +973,24 @@ fn format_literal(lit: &Literal) -> String {
     }
 }
 
+fn format_format_string(literal: &FormatStringLiteral) -> String {
+    let mut buf = String::new();
+    buf.push('`');
+    for segment in &literal.segments {
+        match segment {
+            FormatSegment::Literal(text) => buf.push_str(&escape_format_literal(text)),
+            FormatSegment::Named { name, .. } => {
+                buf.push('{');
+                buf.push_str(name);
+                buf.push('}');
+            }
+            FormatSegment::Implicit(_) => buf.push_str("{}"),
+        }
+    }
+    buf.push('`');
+    buf
+}
+
 fn needs_leading_blank_line(_block: &Block) -> bool {
     false
 }
@@ -988,6 +1007,22 @@ fn escape_string(value: &str) -> String {
             other => other.to_string(),
         })
         .collect::<String>()
+}
+
+fn escape_format_literal(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\\' => "\\\\".into(),
+            '`' => "\\`".into(),
+            '\n' => "\\n".into(),
+            '\r' => "\\r".into(),
+            '\t' => "\\t".into(),
+            '{' => "{{".into(),
+            '}' => "}}".into(),
+            other => other.to_string(),
+        })
+        .collect()
 }
 
 fn escape_rune(value: char) -> String {

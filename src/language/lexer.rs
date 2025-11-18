@@ -48,6 +48,7 @@ impl<'a> Lexer<'a> {
                 ch if ch.is_ascii_alphabetic() || ch == '_' => self.lex_identifier(),
                 ch if ch.is_ascii_digit() => self.lex_number(),
                 '"' => self.lex_string(),
+                '`' => self.lex_template_string(),
                 '\'' => self.lex_rune(),
                 _ => self.lex_symbol(),
             }
@@ -250,6 +251,44 @@ impl<'a> Lexer<'a> {
             }
         }
         self.error(start, self.offset, "Unterminated string literal");
+    }
+
+    fn lex_template_string(&mut self) {
+        let start = self.offset;
+        self.bump();
+        let mut value = String::new();
+        while let Some(ch) = self.current {
+            match ch {
+                '`' => {
+                    self.bump();
+                    let end = self.offset;
+                    self.push_token(TokenKind::TemplateString(value), start, end);
+                    return;
+                }
+                '\\' => {
+                    self.bump();
+                    if let Some(escaped) = self.current {
+                        value.push(match escaped {
+                            'n' => '\n',
+                            'r' => '\r',
+                            't' => '\t',
+                            '\\' => '\\',
+                            '`' => '`',
+                            '"' => '"',
+                            other => other,
+                        });
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                _ => {
+                    value.push(ch);
+                    self.bump();
+                }
+            }
+        }
+        self.error(start, self.offset, "Unterminated format string literal");
     }
 
     fn lex_rune(&mut self) {

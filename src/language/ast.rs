@@ -284,6 +284,7 @@ pub struct StructPatternField {
 pub enum Expr {
     Identifier(Identifier),
     Literal(Literal),
+    FormatString(FormatStringLiteral),
     Try {
         block: Box<Block>,
         span: Span,
@@ -357,6 +358,19 @@ pub enum Literal {
     Bool(bool, Span),
     String(String, Span),
     Rune(char, Span),
+}
+
+#[derive(Clone, Debug)]
+pub struct FormatStringLiteral {
+    pub segments: Vec<FormatSegment>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum FormatSegment {
+    Literal(String),
+    Implicit(Span),
+    Named { name: String, span: Span },
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]

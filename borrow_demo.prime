@@ -9,7 +9,8 @@ fn alias_mut() {
   let int32 copy = value;
   let &mut int32 first_ref = &mut value;
   *first_ref = copy + 5;
-  out(*first_ref);
+  let int32 final_value = *first_ref;
+  out(`alias_mut copy {copy} final {}`, final_value);
 }
 
 fn if_and_match_merging(flag: bool) -> int32 {
@@ -84,20 +85,20 @@ fn mutable_destructuring_examples() {
   let mut (int32, int32) pair = (5, 10);
   let mut (left, right) = pair;
   left = left + right;
-  out(left);
+  out(`tuple left {left} right {right} total {}`, left);
   let Map[string, int32] points = #{
     "hp": 20,
     "mp": 15,
   };
   let mut #{ "hp": hp, "mp": mp } = points;
   hp = hp + mp;
-  out(hp);
+  out(`points hp {hp} mp {mp}`);
   let Refill refill = Refill{
     amount: 30,
   };
   let mut Refill{ amount: amount } = refill;
   amount = amount + 5;
-  out(amount);
+  out(`refill amount -> {}`, amount);
 }
 
 fn borrow_through_block() {
@@ -109,20 +110,22 @@ fn borrow_through_block() {
       &mut gauge
     };
     *block_ref = *block_ref + 3;
-    out(*block_ref);
+    out(`block boosted to {}`, *block_ref);
   }
   let &mut int32 after_block = &mut gauge;
   *after_block = *after_block - 2;
-  out(gauge);
+  out(`after block gauge {gauge}`);
 }
 
 fn main() {
   alias_mut();
-  out(if_and_match_merging(true));
-  out(if_and_match_merging(false));
-  out(loop_merging());
-  out(nested_scope_and_return(true));
-  out(nested_scope_and_return(false));
+  out(`if_and_match_merging(true) => {}`, if_and_match_merging(true));
+  out(`if_and_match_merging(false) => {}`, if_and_match_merging(false));
+  out(`loop_merging => {}`, loop_merging());
+  out(`nested_scope_and_return(true) => {}`, nested_scope_and_return(true));
+  out(`nested_scope_and_return(false) => {}`, nested_scope_and_return(false));
   mutable_destructuring_examples();
   borrow_through_block();
+  let int32 hey = 5;
+  out(`hello {hey}`);
 }
