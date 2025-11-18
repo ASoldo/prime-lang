@@ -250,4 +250,8 @@ impl MapValue {
     pub fn get(&self, key: &str) -> Option<Value> {
         self.entries.borrow().get(key).cloned()
     }
+
+    pub fn len(&self) -> usize {
+        self.entries.borrow().len()
+    }
 }

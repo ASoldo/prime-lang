@@ -514,30 +514,24 @@ fn builtin_member_completion_items(
                 qualifier,
                 prefix,
                 edit_range,
-                "slice_len",
-                "fn slice_len() -> int32".into(),
+                "len",
+                "fn len() -> int32".into(),
             );
             push_builtin_member(
                 &mut items,
                 qualifier,
                 prefix,
                 edit_range,
-                "slice_get",
-                format!(
-                    "fn slice_get(index: int32) -> {}",
-                    format_type_expr(&option_ty)
-                ),
+                "get",
+                format!("fn get(index: int32) -> {}", format_type_expr(&option_ty)),
             );
             push_builtin_member(
                 &mut items,
                 qualifier,
                 prefix,
                 edit_range,
-                "slice_push",
-                format!(
-                    "fn slice_push(value: {}) -> ()",
-                    format_type_expr(&element_ty)
-                ),
+                "push",
+                format!("fn push(value: {}) -> ()", format_type_expr(&element_ty)),
             );
         }
         TypeExpr::Named(name, args) if name == "Box" && args.len() == 1 => {
@@ -575,10 +569,18 @@ fn builtin_member_completion_items(
                 qualifier,
                 prefix,
                 edit_range,
-                "map_get",
+                "get",
+                format!("fn get(key: string) -> {}", format_type_expr(&option_ty)),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "insert",
                 format!(
-                    "fn map_get(key: string) -> {}",
-                    format_type_expr(&option_ty)
+                    "fn insert(key: string, value: {}) -> ()",
+                    format_type_expr(&value_ty)
                 ),
             );
             push_builtin_member(
@@ -586,11 +588,8 @@ fn builtin_member_completion_items(
                 qualifier,
                 prefix,
                 edit_range,
-                "map_insert",
-                format!(
-                    "fn map_insert(key: string, value: {}) -> ()",
-                    format_type_expr(&value_ty)
-                ),
+                "len",
+                "fn len() -> int32".into(),
             );
         }
         _ => {}

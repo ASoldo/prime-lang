@@ -674,6 +674,10 @@ impl Interpreter {
             "map_new" => self.builtin_map_new(args),
             "map_insert" => self.builtin_map_insert(args),
             "map_get" => self.builtin_map_get(args),
+            "len" => self.builtin_len(args),
+            "get" => self.builtin_get(args),
+            "push" => self.builtin_push(args),
+            "insert" => self.builtin_insert(args),
             _ => return None,
         };
         Some(result)
@@ -693,6 +697,10 @@ impl Interpreter {
                 | "map_new"
                 | "map_insert"
                 | "map_get"
+                | "len"
+                | "get"
+                | "push"
+                | "insert"
         )
     }
 
@@ -834,6 +842,19 @@ impl Interpreter {
         }
     }
 
+    fn expect_int_value(&self, name: &str, value: Value) -> RuntimeResult<i128> {
+        match value {
+            Value::Int(i) => Ok(i),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.borrow().clone();
+                self.expect_int_value(name, cloned)
+            }
+            _ => Err(RuntimeError::TypeMismatch {
+                message: format!("{name} expects integer value"),
+            }),
+        }
+    }
+
     fn expect_string(&self, name: &str, value: Value) -> RuntimeResult<String> {
         if let Value::String(s) = value {
             Ok(s)
@@ -872,6 +893,80 @@ impl Interpreter {
             let none = self.instantiate_enum("Option", "None", Vec::new())?;
             Ok(vec![none])
         }
+    }
+
+    fn builtin_len(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("len", &args, 1)?;
+        let value = args.remove(0);
+        match value {
+            Value::Slice(slice) => Ok(vec![Value::Int(slice.len() as i128)]),
+            Value::Map(map) => Ok(vec![Value::Int(map.len() as i128)]),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.builtin_len(vec![inner])
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!("`len` not supported for {}", self.describe_value(&other)),
+            }),
+        }
+    }
+
+    fn builtin_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("get", &args, 2)?;
+        let receiver = args.remove(0);
+        match receiver {
+            Value::Slice(slice) => {
+                let index = self.expect_int_value("get", args.remove(0))?;
+                if index < 0 {
+                    let none = self.instantiate_enum("Option", "None", Vec::new())?;
+                    return Ok(vec![none]);
+                }
+                if let Some(value) = slice.get(index as usize) {
+                    let some = self.instantiate_enum("Option", "Some", vec![value])?;
+                    Ok(vec![some])
+                } else {
+                    let none = self.instantiate_enum("Option", "None", Vec::new())?;
+                    Ok(vec![none])
+                }
+            }
+            Value::Map(map) => {
+                let key = self.expect_string("get", args.remove(0))?;
+                if let Some(value) = map.get(&key) {
+                    let some = self.instantiate_enum("Option", "Some", vec![value])?;
+                    Ok(vec![some])
+                } else {
+                    let none = self.instantiate_enum("Option", "None", Vec::new())?;
+                    Ok(vec![none])
+                }
+            }
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                let mut new_args = Vec::with_capacity(args.len() + 1);
+                new_args.push(inner);
+                new_args.extend(args);
+                self.builtin_get(new_args)
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!("`get` not supported for {}", self.describe_value(&other)),
+            }),
+        }
+    }
+
+    fn builtin_push(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("push", &args, 2)?;
+        let slice = self.expect_slice("push", args.remove(0))?;
+        let value = args.remove(0);
+        slice.push(value);
+        Ok(Vec::new())
+    }
+
+    fn builtin_insert(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("insert", &args, 3)?;
+        let map = self.expect_map("insert", args.remove(0))?;
+        let key = self.expect_string("insert", args.remove(0))?;
+        let value = args.remove(0);
+        map.insert(key, value);
+        Ok(Vec::new())
     }
 
     fn eval_statement(&mut self, statement: &Statement) -> RuntimeResult<Option<FlowSignal>> {

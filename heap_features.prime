@@ -4,9 +4,9 @@ import core::types;
 
 fn describe_slice(label: string, collection: []string) {
   out(label);
-  let int32 total = slice_len(collection);
+  let int32 total = collection.len();
   for i in 0..total {
-    match slice_get(collection, i) {
+    match collection.get(i) {
       Some(value) => out(value),
       None => {},
     };

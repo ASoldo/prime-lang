@@ -1246,17 +1246,17 @@ impl Checker {
         span: Span,
     ) -> Option<TypeExpr> {
         match method {
-            "slice_len" => {
+            "slice_len" | "len" => {
                 if !args.is_empty() {
                     self.errors.push(TypeError::new(
                         &module.path,
                         span,
-                        "`slice_len` expects 0 argument(s) after receiver",
+                        "`slice len` expects 0 argument(s) after receiver",
                     ));
                 }
                 Some(int_type())
             }
-            "slice_get" => {
+            "slice_get" | "get" => {
                 if args.len() != 1 {
                     self.errors.push(TypeError::new(
                         &module.path,
@@ -1268,7 +1268,7 @@ impl Checker {
                 self.check_expression(module, &args[0], Some(&int_type()), returns, env);
                 Some(make_option_type(inner.clone()))
             }
-            "slice_push" => {
+            "slice_push" | "push" => {
                 if args.len() != 1 {
                     self.errors.push(TypeError::new(
                         &module.path,
@@ -1297,7 +1297,7 @@ impl Checker {
     ) -> Option<TypeExpr> {
         let (key_ty, value_ty) = self.expect_map_type(module, span, Some(map_ty))?;
         match method {
-            "map_get" => {
+            "map_get" | "get" => {
                 if args.len() != 1 {
                     self.errors.push(TypeError::new(
                         &module.path,
@@ -1309,7 +1309,7 @@ impl Checker {
                 }
                 Some(make_option_type(value_ty))
             }
-            "map_insert" => {
+            "map_insert" | "insert" => {
                 if args.len() != 2 {
                     self.errors.push(TypeError::new(
                         &module.path,
@@ -1328,6 +1328,16 @@ impl Checker {
                     value_ty_expr.as_ref(),
                 );
                 Some(TypeExpr::Unit)
+            }
+            "map_len" | "len" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`len` expects 0 argument(s) after receiver",
+                    ));
+                }
+                Some(int_type())
             }
             _ => None,
         }

@@ -13,9 +13,9 @@ fn main() {
     out(explorer);
   }
   out("slice len:");
-  out(explorers.slice_len());
+  out(explorers.len());
   out("first explorer:");
-  match explorers.slice_get(0) {
+  match explorers.get(0) {
     Some(name) => out(name),
     None => out("n/a"),
   }
@@ -25,7 +25,7 @@ fn main() {
   };
 
   out("harbor reward:");
-  match rewards.map_get("Harbor sweep") {
+  match rewards.get("Harbor sweep") {
     Some(value) => out(value),
     None => out("none"),
   }

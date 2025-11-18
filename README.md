@@ -138,7 +138,7 @@ match damage {
   Percent(rate) => { /* fallback */ },
 };
 
-if let Some(reserve) = stats.map_get("hp") {
+if let Some(reserve) = stats.get("hp") {
   out(reserve);
 }
 
@@ -157,7 +157,7 @@ match player {
 };
 
 match queue {
-  [first, ..rest] => out(first),
+  [head, ..tail] => out(head),
   [] => out("empty"),
 };
 
@@ -263,9 +263,11 @@ running code.
 - `#{ "Harbor sweep": 175, "Ridge scouting": 250 }` constructs a map literal.
   If the literal has at least one entry, Prime now infers `Map[string, T]`
   automatically so you can skip type annotations on the binding.
-- Heap helpers (`slice_len`, `slice_get`, `map_get`, `box_get`, etc.) can be
-  invoked as methods on the value itself: `explorers.slice_get(0)`,
-  `rewards.map_get("Harbor sweep")`, `counter.box_set(10)`.
+- Slices and maps expose methods for common operations:
+  - `squad.len()`, `squad.get(0)`, `squad.push("name")`
+  - `rewards.get("Harbor sweep")`, `rewards.insert("bonus", 42)`, `rewards.len()`
+- Heap helpers now have ergonomic method aliases:
+  `explorers.get(0)`, `rewards.get("Harbor sweep")`, `counter.box_set(10)`.
 
 ### Collection Iteration
 

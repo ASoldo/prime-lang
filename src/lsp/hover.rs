@@ -220,7 +220,7 @@ fn builtin_function_docs(name: &str) -> Option<String> {
                 .into(),
         ),
         "map_get" => Some(
-            "Built-in map helper\n```prime\nfn map_get[V](map: Map[string, V], key: string) -> Option[V]\n```"
+            "Built-in map helper\n```prime\nfn map_get[V](map: Map[string, V], key: string) -> Option[V]\n```\nEquivalent available via `map.get(key)`"
                 .into(),
         ),
         _ => None,

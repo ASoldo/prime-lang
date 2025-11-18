@@ -210,7 +210,14 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
             for arm in &match_expr.arms {
                 let value_span = expr_span(&arm.value);
                 let pat_span = pattern_span(&arm.pattern);
-                collect_pattern_decls(&arm.pattern, value_span, value_span.start, decls, pat_span);
+                collect_pattern_decls(
+                    &arm.pattern,
+                    value_span,
+                    value_span.start,
+                    decls,
+                    pat_span,
+                    None,
+                );
                 if let Some(guard) = &arm.guard {
                     collect_decl_from_expr(guard, decls);
                 }
@@ -241,6 +248,7 @@ fn collect_decl_from_if_expr(if_expr: &IfExpr, decls: &mut Vec<DeclInfo>) {
                 if_expr.then_branch.span.start,
                 decls,
                 pat_span,
+                None,
             );
         }
     }
@@ -276,6 +284,7 @@ fn collect_pattern_decls(
     available_from: usize,
     decls: &mut Vec<DeclInfo>,
     pattern_span: Span,
+    inferred_type: Option<TypeExpr>,
 ) {
     match pattern {
         Pattern::Identifier(name, span) => decls.push(DeclInfo {
@@ -283,29 +292,43 @@ fn collect_pattern_decls(
             span: *span,
             scope,
             available_from,
-            ty: None,
+            ty: inferred_type.clone(),
             value_span: Some(pattern_span),
             mutability: Mutability::Immutable,
             kind: DeclKind::Pattern,
         }),
         Pattern::EnumVariant { bindings, .. } => {
             for binding in bindings {
-                collect_pattern_decls(binding, scope, available_from, decls, pattern_span);
+                collect_pattern_decls(binding, scope, available_from, decls, pattern_span, None);
             }
         }
         Pattern::Tuple(elements, _) => {
             for element in elements {
-                collect_pattern_decls(element, scope, available_from, decls, pattern_span);
+                collect_pattern_decls(element, scope, available_from, decls, pattern_span, None);
             }
         }
         Pattern::Map(entries, _) => {
             for entry in entries {
-                collect_pattern_decls(&entry.pattern, scope, available_from, decls, pattern_span);
+                collect_pattern_decls(
+                    &entry.pattern,
+                    scope,
+                    available_from,
+                    decls,
+                    pattern_span,
+                    None,
+                );
             }
         }
         Pattern::Struct { fields, .. } => {
             for field in fields {
-                collect_pattern_decls(&field.pattern, scope, available_from, decls, pattern_span);
+                collect_pattern_decls(
+                    &field.pattern,
+                    scope,
+                    available_from,
+                    decls,
+                    pattern_span,
+                    None,
+                );
             }
         }
         Pattern::Slice {
@@ -315,13 +338,20 @@ fn collect_pattern_decls(
             ..
         } => {
             for pat in prefix {
-                collect_pattern_decls(pat, scope, available_from, decls, pattern_span);
+                collect_pattern_decls(pat, scope, available_from, decls, pattern_span, None);
             }
             if let Some(rest_pattern) = rest {
-                collect_pattern_decls(rest_pattern, scope, available_from, decls, pattern_span);
+                collect_pattern_decls(
+                    rest_pattern,
+                    scope,
+                    available_from,
+                    decls,
+                    pattern_span,
+                    Some(TypeExpr::Slice(Box::new(TypeExpr::Unit))),
+                );
             }
             for pat in suffix {
-                collect_pattern_decls(pat, scope, available_from, decls, pattern_span);
+                collect_pattern_decls(pat, scope, available_from, decls, pattern_span, None);
             }
         }
         _ => {}

@@ -220,6 +220,10 @@ impl MapValue {
     fn get(&self, key: &str) -> Option<Value> {
         self.entries.borrow().get(key).cloned()
     }
+
+    fn len(&self) -> usize {
+        self.entries.borrow().len()
+    }
 }
 
 impl StructValue {
@@ -981,6 +985,10 @@ impl Compiler {
             "map_get" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_map_get(values)))
             }
+            "len" => Some(self.invoke_builtin(args, |this, values| this.builtin_len(values))),
+            "get" => Some(self.invoke_builtin(args, |this, values| this.builtin_get(values))),
+            "push" => Some(self.invoke_builtin(args, |this, values| this.builtin_push(values))),
+            "insert" => Some(self.invoke_builtin(args, |this, values| this.builtin_insert(values))),
             _ => None,
         }
     }
@@ -2422,6 +2430,80 @@ impl Compiler {
             Some(value) => self.instantiate_enum_variant("Some", vec![value]),
             None => self.instantiate_enum_variant("None", Vec::new()),
         }
+    }
+
+    fn builtin_len(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("len expects 1 argument".into());
+        }
+        let receiver = args.pop().unwrap();
+        match receiver {
+            Value::Slice(slice) => Ok(Value::Int(self.const_int_value(slice.len() as i128))),
+            Value::Map(map) => Ok(Value::Int(self.const_int_value(map.len() as i128))),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.builtin_len(vec![inner])
+            }
+            _ => Err("len expects slice or map".into()),
+        }
+    }
+
+    fn builtin_get(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("get expects receiver and argument".into());
+        }
+        let receiver = args.remove(0);
+        match receiver {
+            Value::Slice(slice) => {
+                let int_value = self.expect_int(args.remove(0))?;
+                let idx = int_value
+                    .constant()
+                    .ok_or_else(|| "get index must be constant in build mode".to_string())?;
+                if idx < 0 {
+                    return self.instantiate_enum_variant("None", Vec::new());
+                }
+                let value = slice.get(idx as usize);
+                match value {
+                    Some(value) => self.instantiate_enum_variant("Some", vec![value]),
+                    None => self.instantiate_enum_variant("None", Vec::new()),
+                }
+            }
+            Value::Map(map) => {
+                let key = self.expect_string_value(args.remove(0), "get")?;
+                match map.get(&key) {
+                    Some(value) => self.instantiate_enum_variant("Some", vec![value]),
+                    None => self.instantiate_enum_variant("None", Vec::new()),
+                }
+            }
+            Value::Reference(reference) => {
+                let mut forwarded = Vec::new();
+                forwarded.push(reference.cell.borrow().clone());
+                forwarded.extend(args);
+                self.builtin_get(forwarded)
+            }
+            _ => Err("get expects slice or map".into()),
+        }
+    }
+
+    fn builtin_push(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("push expects receiver and value".into());
+        }
+        let value = args.pop().unwrap();
+        let slice = self.expect_slice_value(args.pop().unwrap(), "push")?;
+        slice.push(value);
+        Ok(Value::Unit)
+    }
+
+    fn builtin_insert(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 3 {
+            return Err("insert expects receiver, key, and value".into());
+        }
+        let value = args.pop().unwrap();
+        let key = self.expect_string_value(args.pop().unwrap(), "insert")?;
+        let map = self.expect_map_value(args.pop().unwrap(), "insert")?;
+        map.insert(key, value);
+        Ok(Value::Unit)
     }
 
     fn execute_block_contents(&mut self, block: &Block) -> Result<BlockEval, String> {
