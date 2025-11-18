@@ -2870,3 +2870,166 @@ fn describe_value(value: &Value) -> &'static str {
         Value::Moved => "moved",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::language::{ast::Program, parser::parse_module};
+    use std::path::PathBuf;
+
+    fn compile_source(source: &str) -> Result<(), String> {
+        let module =
+            parse_module("tests::build", PathBuf::from("test.prime"), source).expect("parse");
+        let program = Program {
+            modules: vec![module],
+        };
+        let mut compiler = Compiler::new();
+        compiler.compile_program(&program)
+    }
+
+    #[test]
+    fn compiler_releases_borrows_across_control_flow() {
+        let source = r#"
+module tests::build;
+
+fn release_after_if() {
+  let mut int32 value = 0;
+  if true {
+    let &mut int32 alias = &mut value;
+    *alias = 1;
+  } else {
+    let &mut int32 alias = &mut value;
+    *alias = 2;
+  }
+  let &mut int32 after_if = &mut value;
+  *after_if = 3;
+}
+
+fn release_after_match() {
+  let mut int32 value = 0;
+  match true {
+    true => {
+      let &mut int32 alias = &mut value;
+      *alias = 4;
+    },
+    false => {
+      let &mut int32 alias = &mut value;
+      *alias = 5;
+    },
+  }
+  let &mut int32 after_match = &mut value;
+  *after_match = 6;
+}
+
+fn release_after_while() {
+  let mut int32 value = 0;
+  let mut int32 idx = 0;
+  while idx < 1 {
+    let &mut int32 alias = &mut value;
+    *alias = idx;
+    idx = idx + 1;
+  }
+  let &mut int32 after = &mut value;
+  *after = 7;
+}
+
+fn release_after_while_let() {
+  let mut int32 value = 0;
+  let mut int32 idx = 0;
+  while let true = idx == 0 {
+    let &mut int32 alias = &mut value;
+    *alias = idx;
+    idx = idx + 1;
+  }
+  let &mut int32 after = &mut value;
+  *after = 8;
+}
+
+fn release_after_for_range() {
+  let mut int32 value = 0;
+  for count in 0..1 {
+    let &mut int32 alias = &mut value;
+    *alias = count;
+  }
+  let &mut int32 after = &mut value;
+  *after = 9;
+}
+
+fn release_after_for_collection() {
+  let []int32 items = [1, 2];
+  let mut int32 value = 0;
+  for entry in items {
+    let &mut int32 alias = &mut value;
+    *alias = entry;
+  }
+  let &mut int32 after = &mut value;
+  *after = 10;
+}
+
+fn main() {
+  release_after_if();
+  release_after_match();
+  release_after_while();
+  release_after_while_let();
+  release_after_for_range();
+  release_after_for_collection();
+}
+"#;
+        compile_source(source).expect("borrow-aware control flow should compile");
+    }
+
+    #[test]
+    fn compiler_reports_live_alias() {
+        let source = r#"
+module tests::build;
+
+fn main() {
+  let mut int32 value = 0;
+  let &mut int32 alias = &mut value;
+  let &mut int32 second = &mut value;
+  *second = 1;
+}
+"#;
+        let err = compile_source(source).expect_err("expected borrow error");
+        assert!(
+            err.contains("already mutably borrowed"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn compiler_supports_mutable_destructuring() {
+        let source = r#"
+module tests::build_patterns;
+
+struct Telemetry {
+  hp: int32;
+  mp: int32;
+  notes: []string;
+}
+
+fn main() {
+  let mut (left, right) = (10, 5);
+  left = left + right;
+
+  let mut #{ "hp": hp_score, "mp": mp_score } = #{
+    "hp": 80,
+    "mp": 40,
+  };
+  hp_score = hp_score + mp_score;
+
+  let mut Telemetry{ hp, mp, .. } = Telemetry{
+    hp: 70,
+    mp: 35,
+    notes: ["alpha"],
+  };
+  hp = hp + mp;
+
+  let mut [first, ..rest] = ["steady", "ready"];
+  first = "launch";
+  rest = rest;
+}
+"#;
+        compile_source(source).expect("mutable destructuring should compile");
+    }
+}

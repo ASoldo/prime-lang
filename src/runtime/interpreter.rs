@@ -2177,6 +2177,231 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
         FlowSignal::Propagate(_) => "error propagation",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::language::{ast::Program, parser::parse_module};
+    use crate::project::Package;
+    use std::path::PathBuf;
+
+    fn interpreter_from_source(source: &str) -> Interpreter {
+        let module =
+            parse_module("tests::runtime", PathBuf::from("test.prime"), source).expect("parse");
+        let program = Program {
+            modules: vec![module],
+        };
+        Interpreter::new(Package {
+            program,
+            modules: Vec::new(),
+        })
+    }
+
+    fn call_unit(interpreter: &mut Interpreter, name: &str) {
+        interpreter
+            .call_function(name, None, &[], Vec::new())
+            .expect(name);
+    }
+
+    #[test]
+    fn interpreter_releases_borrows_after_control_flow() {
+        let source = r#"
+module tests::runtime;
+
+fn release_after_if() {
+  let mut int32 value = 0;
+  if true {
+    let &mut int32 alias = &mut value;
+    *alias = 1;
+  } else {
+    let &mut int32 alias = &mut value;
+    *alias = 2;
+  }
+  let &mut int32 again = &mut value;
+  *again = 3;
+}
+
+fn release_after_match() {
+  let mut int32 value = 0;
+  match true {
+    true => {
+      let &mut int32 alias = &mut value;
+      *alias = 1;
+    },
+    false => {
+      let &mut int32 alias = &mut value;
+      *alias = 2;
+    },
+  }
+  let &mut int32 next = &mut value;
+  *next = 4;
+}
+
+fn release_after_while() {
+  let mut int32 value = 0;
+  let mut int32 idx = 0;
+  while idx < 1 {
+    let &mut int32 alias = &mut value;
+    *alias = idx;
+    idx = idx + 1;
+  }
+  let &mut int32 after = &mut value;
+  *after = 5;
+}
+
+fn release_after_while_let() {
+  let mut int32 value = 0;
+  let mut int32 idx = 0;
+  while let true = idx == 0 {
+    let &mut int32 alias = &mut value;
+    *alias = idx;
+    idx = idx + 1;
+  }
+  let &mut int32 after = &mut value;
+  *after = 6;
+}
+
+fn release_after_for_range() {
+  let mut int32 value = 0;
+  for count in 0..1 {
+    let &mut int32 alias = &mut value;
+    *alias = count;
+  }
+  let &mut int32 after = &mut value;
+  *after = 7;
+}
+
+fn release_after_for_collection() {
+  let []int32 entries = [1, 2];
+  let mut int32 value = 0;
+  for entry in entries {
+    let &mut int32 alias = &mut value;
+    *alias = entry;
+  }
+  let &mut int32 after = &mut value;
+  *after = 8;
+}
+"#;
+        let mut interpreter = interpreter_from_source(source);
+        interpreter.bootstrap().expect("bootstrap");
+        for func in [
+            "release_after_if",
+            "release_after_match",
+            "release_after_while",
+            "release_after_while_let",
+            "release_after_for_range",
+            "release_after_for_collection",
+        ] {
+            call_unit(&mut interpreter, func);
+        }
+    }
+
+    #[test]
+    fn interpreter_reports_live_alias() {
+        let source = r#"
+module tests::runtime;
+
+fn alias_survives_scope() {
+  let mut int32 value = 0;
+  let &mut int32 alias = &mut value;
+  let &mut int32 second = &mut value;
+  *second = 1;
+}
+"#;
+        let mut interpreter = interpreter_from_source(source);
+        interpreter.bootstrap().expect("bootstrap");
+        let err = interpreter
+            .call_function("alias_survives_scope", None, &[], Vec::new())
+            .expect_err("expected borrow violation");
+        match err {
+            RuntimeError::Panic { message } => {
+                assert!(
+                    message.contains("already mutably borrowed"),
+                    "unexpected panic message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn interpreter_mutable_destructuring_returns_values() {
+        let source = r#"
+module tests::runtime;
+
+struct Telemetry {
+  hp: int32;
+  mp: int32;
+  notes: []string;
+}
+
+fn tuple_mut() -> int32 {
+  let mut (left, right) = (10, 5);
+  left = left + right;
+  left
+}
+
+fn map_mut() -> int32 {
+  let mut #{ "hp": hp_score, "mp": mp_score } = #{
+    "hp": 80,
+    "mp": 40,
+  };
+  hp_score = hp_score + mp_score;
+  hp_score
+}
+
+fn struct_mut() -> int32 {
+  let mut Telemetry{ hp, mp, .. } = Telemetry{
+    hp: 70,
+    mp: 35,
+    notes: ["alpha"],
+  };
+  hp = hp + mp;
+  hp
+}
+
+fn slice_mut() -> string {
+  let mut [first, ..rest] = ["steady", "ready"];
+  first = "launch";
+  first
+}
+"#;
+        let mut interpreter = interpreter_from_source(source);
+        interpreter.bootstrap().expect("bootstrap");
+
+        let tuple = interpreter
+            .call_function("tuple_mut", None, &[], Vec::new())
+            .expect("tuple result");
+        match tuple.as_slice() {
+            [Value::Int(value)] => assert_eq!(*value, 15),
+            other => panic!("unexpected tuple result: {:?}", other),
+        }
+
+        let map = interpreter
+            .call_function("map_mut", None, &[], Vec::new())
+            .expect("map result");
+        match map.as_slice() {
+            [Value::Int(total)] => assert_eq!(*total, 120),
+            other => panic!("unexpected map result: {:?}", other),
+        }
+
+        let structure = interpreter
+            .call_function("struct_mut", None, &[], Vec::new())
+            .expect("struct result");
+        match structure.as_slice() {
+            [Value::Int(total)] => assert_eq!(*total, 105),
+            other => panic!("unexpected struct result: {:?}", other),
+        }
+
+        let slice = interpreter
+            .call_function("slice_mut", None, &[], Vec::new())
+            .expect("slice result");
+        match slice.as_slice() {
+            [Value::String(text)] => assert_eq!(text, "launch"),
+            other => panic!("unexpected slice result: {:?}", other),
+        }
+    }
+}
 fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {
     def.params
         .first()
