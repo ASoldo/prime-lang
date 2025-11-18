@@ -4,9 +4,27 @@ fn alias_mut() {
   let mut int32 value = 10;
   let int32 copy = value;
   let &mut int32 first_ref = &mut value;
+  *first_ref = copy + 5;
   out(*first_ref);
+}
+
+fn borrow_through_block() {
+  let mut int32 gauge = 12;
+  {
+    let &mut int32 block_ref = if gauge > 10 {
+      &mut gauge
+    } else {
+      &mut gauge
+    };
+    *block_ref = *block_ref + 3;
+    out(*block_ref);
+  }
+  let &mut int32 after_block = &mut gauge;
+  *after_block = *after_block - 2;
+  out(gauge);
 }
 
 fn main() {
   alias_mut();
+  borrow_through_block();
 }

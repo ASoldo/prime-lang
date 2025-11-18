@@ -67,6 +67,11 @@ path = "borrow_demo.prime"
 visibility = "pub"
 
 [[modules]]
+name = "demos::borrow_checker_errors"
+path = "borrow_error_demo.prime"
+visibility = "pub"
+
+[[modules]]
 name = "demos::patterns"
 path = "pattern_demo.prime"
 visibility = "pub"

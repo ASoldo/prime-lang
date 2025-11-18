@@ -1,0 +1,29 @@
+module demos::borrow_checker_errors;
+
+fn nested_borrow_release() {
+  let mut int32 gauge = 20;
+  let int32 snapshot = gauge;
+  {
+    let &mut int32 escaping = {
+      if gauge > 15 {
+        &mut gauge
+      } else {
+        &mut gauge
+      }
+    };
+    *escaping = snapshot + 5;
+    out(*escaping);
+  }
+  {
+    let &mut int32 scoped = &mut gauge;
+    *scoped = *scoped - 2;
+    out(*scoped);
+  }
+  let &mut int32 after_scope = &mut gauge;
+  *after_scope = *after_scope + 1;
+  out(gauge);
+}
+
+fn main() {
+  nested_borrow_release();
+}

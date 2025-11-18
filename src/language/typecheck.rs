@@ -288,7 +288,7 @@ impl Checker {
         match statement {
             Statement::Let(stmt) => {
                 let expected = stmt.ty.as_ref().map(|ann| ann.ty.clone());
-                let mut pending_borrow: Option<String> = None;
+                let mut pending_borrows: Vec<String> = Vec::new();
                 if let Some(value) = &stmt.value {
                     let ty = self.check_expression(module, value, expected.as_ref(), returns, env);
                     if let Some(expected) = expected.as_ref() {
@@ -296,10 +296,10 @@ impl Checker {
                     } else if let Some(actual) = ty {
                         env.infer(&stmt.name, Some(actual));
                     }
-                    pending_borrow = mutable_reference_target(value);
+                    pending_borrows = expression_borrow_targets(value);
                 }
                 env.declare(&stmt.name, expected, stmt.span, &mut self.errors);
-                if let Some(target) = pending_borrow {
+                for target in pending_borrows {
                     env.register_binding_borrow(&stmt.name, target);
                 }
             }
@@ -316,12 +316,12 @@ impl Checker {
                             env,
                         );
                         self.ensure_type(module, ident.span, &expected, ty.as_ref());
-                        if let Some(target) = mutable_reference_target(&assign.value) {
+                        for target in expression_borrow_targets(&assign.value) {
                             env.register_binding_borrow(&ident.name, target);
                         }
                     } else {
                         self.check_expression(module, &assign.value, None, returns, env);
-                        if let Some(target) = mutable_reference_target(&assign.value) {
+                        for target in expression_borrow_targets(&assign.value) {
                             env.register_binding_borrow(&ident.name, target);
                         }
                     }
@@ -2038,6 +2038,7 @@ impl FnEnv {
             }
         }
     }
+
 }
 
 fn instantiate_function(
@@ -2241,18 +2242,56 @@ fn pattern_span(pattern: &Pattern) -> Span {
     }
 }
 
-fn mutable_reference_target(expr: &Expr) -> Option<String> {
-    if let Expr::Reference {
-        mutable: true,
-        expr,
-        ..
-    } = expr
-    {
-        if let Expr::Identifier(ident) = expr.as_ref() {
-            return Some(ident.name.clone());
+fn expression_borrow_targets(expr: &Expr) -> Vec<String> {
+    let context = HashMap::new();
+    expression_borrow_targets_with_context(expr, &context)
+}
+
+fn expression_borrow_targets_with_context(
+    expr: &Expr,
+    context: &HashMap<String, String>,
+) -> Vec<String> {
+    match expr {
+        Expr::Reference {
+            mutable: true,
+            expr,
+            ..
+        } => {
+            if let Expr::Identifier(ident) = expr.as_ref() {
+                vec![ident.name.clone()]
+            } else {
+                Vec::new()
+            }
+        }
+        Expr::Identifier(ident) => context
+            .get(&ident.name)
+            .cloned()
+            .into_iter()
+            .collect(),
+        Expr::Block(block) => block_borrow_targets(block, context),
+        _ => Vec::new(),
+    }
+}
+
+fn block_borrow_targets(
+    block: &Block,
+    parent: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut map = parent.clone();
+    for statement in &block.statements {
+        if let Statement::Let(stmt) = statement {
+            if let Some(value) = &stmt.value {
+                if let Some(target) = expression_borrow_targets_with_context(value, &map).into_iter().next() {
+                    map.insert(stmt.name.clone(), target);
+                }
+            }
         }
     }
-    None
+    if let Some(tail) = &block.tail {
+        expression_borrow_targets_with_context(tail, &map)
+    } else {
+        Vec::new()
+    }
 }
 
 fn strip_references<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
