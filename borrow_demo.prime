@@ -126,6 +126,6 @@ fn main() {
   out(`nested_scope_and_return(false) => {}`, nested_scope_and_return(false));
   mutable_destructuring_examples();
   borrow_through_block();
-  let int32 hey = 5;
-  out(`hello {hey}`);
+  let int32 my_var = 5;
+  out(`hello {my_var}`);
 }

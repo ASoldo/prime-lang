@@ -1,7 +1,8 @@
 use crate::language::{
     ast::{
-        Block, ElseBranch, Expr, ForTarget, FunctionBody, FunctionDef, IfCondition, IfExpr, Item,
-        LetStmt, Literal, Module, Pattern, RangeExpr, Statement, StructLiteralKind, WhileCondition,
+        Block, ElseBranch, Expr, ForTarget, FormatSegment, FormatStringLiteral, FunctionBody,
+        FunctionDef, IfCondition, IfExpr, Item, LetStmt, Literal, Module, Pattern, RangeExpr,
+        Statement, StructLiteralKind, WhileCondition,
     },
     span::Span,
     types::{Mutability, TypeExpr},
@@ -508,13 +509,21 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
         Expr::Reference { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Deref { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Move { expr: inner, .. } => collect_expr_idents(inner, used),
-        Expr::FormatString(_) => {}
+        Expr::FormatString(literal) => collect_format_string_idents(literal, used),
     }
 }
 
 fn collect_range_expr(range: &RangeExpr, used: &mut HashSet<String>) {
     collect_expr_idents(&range.start, used);
     collect_expr_idents(&range.end, used);
+}
+
+fn collect_format_string_idents(literal: &FormatStringLiteral, used: &mut HashSet<String>) {
+    for segment in &literal.segments {
+        if let FormatSegment::Named { name, .. } = segment {
+            used.insert(name.clone());
+        }
+    }
 }
 
 fn collect_used_in_if_expr(if_expr: &IfExpr, used: &mut HashSet<String>) {
@@ -655,4 +664,29 @@ pub fn find_module_item_span(module: &Module, name: &str) -> Option<Span> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unused_variable_diagnostics;
+    use crate::language::parser::parse_module;
+    use std::path::PathBuf;
+
+    #[test]
+    fn format_string_counts_as_usage_for_unused_analysis() {
+        let source = r#"
+module tests::fmt;
+
+fn main() {
+  let int32 hp = 5;
+  out(`hp is {hp}`);
+}
+"#;
+        let module = parse_module("tests::fmt", PathBuf::from("fmt.prime"), source).expect("parse");
+        let diags = unused_variable_diagnostics(&module, source);
+        assert!(
+            diags.iter().all(|diag| !diag.message.contains("hp")),
+            "expected no unused-variable diagnostic for identifiers referenced in format strings, found {diags:?}"
+        );
+    }
 }

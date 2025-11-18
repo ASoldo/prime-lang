@@ -439,4 +439,29 @@ fn main() {
             "expected type error diagnostic, found {diags:?}"
         );
     }
+
+    #[test]
+    fn reports_borrow_errors_from_checker() {
+        let dir = tempdir().expect("tempdir");
+        let file_path = dir.path().join("main.prime");
+        fs::write(&file_path, "").expect("write file");
+        let uri = Uri::from_file_path(&file_path).expect("uri");
+        let text = r#"
+module test::main;
+
+fn main() {
+  let mut int32 value = 0;
+  let &mut int32 alias = &mut value;
+  let &mut int32 second = &mut value;
+  *second = 1;
+}
+"#;
+        let (_module, diags) = collect_parse_and_manifest_diagnostics(&uri, text);
+        assert!(
+            diags
+                .iter()
+                .any(|diag| diag.message.contains("already mutably borrowed")),
+            "expected borrow-checker diagnostic, found {diags:?}"
+        );
+    }
 }
