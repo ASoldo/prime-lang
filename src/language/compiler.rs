@@ -2988,6 +2988,39 @@ fn release_after_early_return(flag: bool) -> int32 {
   value
 }
 
+fn release_after_nested_match() {
+  let mut int32 value = 0;
+  match true {
+    true => {
+      match false {
+        true => {
+          let &mut int32 alias = &mut value;
+          *alias = 15;
+        },
+        false => {
+          let &mut int32 alias = &mut value;
+          *alias = 16;
+        },
+      }
+    },
+    false => {},
+  }
+  let &mut int32 after = &mut value;
+  *after = 17;
+}
+
+fn release_after_defer() {
+  let mut int32 value = 0;
+  {
+    defer {
+      let &mut int32 alias = &mut value;
+      *alias = 18;
+    };
+  }
+  let &mut int32 after = &mut value;
+  *after = 19;
+}
+
 fn main() {
   release_after_if();
   release_after_match();
@@ -2998,6 +3031,8 @@ fn main() {
   release_in_nested_block();
   let _ = release_after_early_return(true);
   let _ = release_after_early_return(false);
+  release_after_nested_match();
+  release_after_defer();
 }
 "#;
         compile_source(source).expect("borrow-aware control flow should compile");

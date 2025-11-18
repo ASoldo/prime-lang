@@ -2303,6 +2303,39 @@ fn release_after_early_return(flag: bool) -> int32 {
   *final_ref = 12;
   value
 }
+fn release_after_nested_match() {
+  let mut int32 value = 0;
+  match true {
+    true => {
+      match false {
+        true => {
+          let &mut int32 alias = &mut value;
+          *alias = 13;
+        },
+        false => {
+          let &mut int32 alias = &mut value;
+          *alias = 14;
+        },
+      }
+    },
+    false => {},
+  }
+  let &mut int32 after = &mut value;
+  *after = 15;
+}
+
+fn release_after_defer() {
+  let mut int32 value = 0;
+  {
+    defer {
+      let &mut int32 alias = &mut value;
+      *alias = 16;
+    };
+  }
+  let &mut int32 after = &mut value;
+  *after = 17;
+}
+
 "#;
         let mut interpreter = interpreter_from_source(source);
         interpreter.bootstrap().expect("bootstrap");
@@ -2314,6 +2347,8 @@ fn release_after_early_return(flag: bool) -> int32 {
             "release_after_for_range",
             "release_after_for_collection",
             "release_in_nested_block",
+            "release_after_nested_match",
+            "release_after_defer",
         ] {
             call_unit(&mut interpreter, func);
         }
