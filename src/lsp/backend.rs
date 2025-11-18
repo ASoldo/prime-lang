@@ -1,5 +1,8 @@
 use super::{
-    analysis::{find_local_definition_span, find_module_item_span, unused_variable_diagnostics},
+    analysis::{
+        find_local_decl, find_local_definition_span, find_module_item_span,
+        unused_variable_diagnostics,
+    },
     completion::{
         ModulePathCompletionKind, collect_interface_info, collect_struct_info, completion_prefix,
         completion_trigger_characters, expression_chain_before_dot, format_function_param,
@@ -11,9 +14,9 @@ use super::{
     hover::{collect_var_infos, hover_for_token},
     parser::parse_module_from_uri,
     text::{
-        collect_identifier_spans, full_range, identifier_at, is_valid_identifier,
-        manifest_context_for_uri, position_to_offset, prefix_identifier, span_to_range, token_at,
-        url_to_path,
+        collect_identifier_spans, collect_identifier_spans_in_scope, full_range, identifier_at,
+        is_valid_identifier, manifest_context_for_uri, position_to_offset, prefix_identifier,
+        span_to_range, token_at, url_to_path,
     },
 };
 use crate::project::{
@@ -855,7 +858,20 @@ impl LanguageServer for Backend {
         let Some((target_name, _)) = identifier_at(&tokens, offset) else {
             return Ok(None);
         };
-        let spans = collect_identifier_spans(&tokens, &target_name);
+        let module = self.parse_cached_module(&uri, &text).await;
+        let scoped_spans = module
+            .as_ref()
+            .and_then(|module| find_local_decl(module, &target_name, offset))
+            .map(|decl| collect_identifier_spans_in_scope(&tokens, &target_name, decl.scope));
+        let spans = if let Some(spans) = scoped_spans {
+            if spans.is_empty() {
+                collect_identifier_spans(&tokens, &target_name)
+            } else {
+                spans
+            }
+        } else {
+            collect_identifier_spans(&tokens, &target_name)
+        };
         if spans.is_empty() {
             return Ok(None);
         }

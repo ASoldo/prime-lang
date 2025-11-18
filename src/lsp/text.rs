@@ -27,17 +27,30 @@ pub fn identifier_at(tokens: &[Token], offset: usize) -> Option<(String, Span)> 
     })
 }
 
-pub fn collect_identifier_spans(tokens: &[Token], target: &str) -> Vec<Span> {
+fn collect_identifier_spans_filtered<F>(tokens: &[Token], target: &str, mut filter: F) -> Vec<Span>
+where
+    F: FnMut(Span) -> bool,
+{
     let mut spans: Vec<Span> = tokens
         .iter()
         .filter_map(|token| match &token.kind {
-            TokenKind::Identifier(name) if name == target => Some(token.span),
+            TokenKind::Identifier(name) if name == target && filter(token.span) => Some(token.span),
             _ => None,
         })
         .collect();
     spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
     spans.dedup();
     spans
+}
+
+pub fn collect_identifier_spans(tokens: &[Token], target: &str) -> Vec<Span> {
+    collect_identifier_spans_filtered(tokens, target, |_| true)
+}
+
+pub fn collect_identifier_spans_in_scope(tokens: &[Token], target: &str, scope: Span) -> Vec<Span> {
+    collect_identifier_spans_filtered(tokens, target, |span| {
+        span.start >= scope.start && span.start < scope.end
+    })
 }
 
 pub fn is_valid_identifier(name: &str) -> bool {
