@@ -972,15 +972,38 @@ impl Interpreter {
     fn eval_statement(&mut self, statement: &Statement) -> RuntimeResult<Option<FlowSignal>> {
         match statement {
             Statement::Let(stmt) => {
-                let value = match &stmt.value {
-                    Some(expr) => match self.eval_expression(expr)? {
-                        EvalOutcome::Value(value) => value,
-                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
-                    },
-                    None => Value::Unit,
-                };
-                self.env
-                    .declare(&stmt.name, value, stmt.mutability == Mutability::Mutable)?;
+                match &stmt.pattern {
+                    Pattern::Identifier(name, _) => {
+                        let value = match &stmt.value {
+                            Some(expr) => match self.eval_expression(expr)? {
+                                EvalOutcome::Value(value) => value,
+                                EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                            },
+                            None => Value::Unit,
+                        };
+                        self.env
+                            .declare(name, value, stmt.mutability == Mutability::Mutable)?;
+                    }
+                    pattern => {
+                        if stmt.mutability == Mutability::Mutable {
+                            return Err(RuntimeError::Panic {
+                                message: "Destructuring bindings cannot be `mut`".into(),
+                            });
+                        }
+                        let expr = stmt.value.as_ref().ok_or_else(|| RuntimeError::Panic {
+                            message: "Destructuring bindings require an initializer".into(),
+                        })?;
+                        let value = match self.eval_expression(expr)? {
+                            EvalOutcome::Value(value) => value,
+                            EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                        };
+                        if !self.match_pattern(pattern, &value)? {
+                            return Err(RuntimeError::MatchError {
+                                message: "Pattern did not match value".into(),
+                            });
+                        }
+                    }
+                }
                 Ok(None)
             }
             Statement::Assign(stmt) => {

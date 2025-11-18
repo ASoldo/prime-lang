@@ -568,17 +568,34 @@ impl Compiler {
 
     fn emit_statement(&mut self, statement: &Statement) -> Result<Option<FlowSignal>, String> {
         match statement {
-            Statement::Let(stmt) => {
-                let value = if let Some(expr) = &stmt.value {
-                    match self.emit_expression(expr)? {
+            Statement::Let(stmt) => match &stmt.pattern {
+                Pattern::Identifier(name, _) => {
+                    let value = if let Some(expr) = &stmt.value {
+                        match self.emit_expression(expr)? {
+                            EvalOutcome::Value(value) => value,
+                            EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                        }
+                    } else {
+                        Value::Unit
+                    };
+                    self.insert_var(name, value, stmt.mutability == Mutability::Mutable)?;
+                }
+                pattern => {
+                    if stmt.mutability == Mutability::Mutable {
+                        return Err("Destructuring bindings cannot be `mut` in build mode".into());
+                    }
+                    let expr = stmt.value.as_ref().ok_or_else(|| {
+                        "Destructuring bindings require an initializer".to_string()
+                    })?;
+                    let value = match self.emit_expression(expr)? {
                         EvalOutcome::Value(value) => value,
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    if !self.match_pattern(&value, pattern)? {
+                        return Err("Pattern did not match value".into());
                     }
-                } else {
-                    Value::Int(self.const_int_value(0))
-                };
-                self.insert_var(&stmt.name, value, stmt.mutability == Mutability::Mutable)?;
-            }
+                }
+            },
             Statement::Expr(expr_stmt) => {
                 if let Some(flow) = self.eval_expression_statement(&expr_stmt.expr)? {
                     return Ok(Some(flow));

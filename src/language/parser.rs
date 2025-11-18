@@ -767,39 +767,40 @@ impl Parser {
         };
 
         let mut ty = None;
-        let name;
+        let pattern;
 
         if self.type_expr_without_identifier_start() {
             let annotation = self.parse_type_annotation()?;
             let ident = self.expect_identifier("Expected binding name")?;
             ty = Some(annotation);
-            name = ident;
-        } else {
-            let first = self.expect_identifier("Expected binding name or type")?;
-
-            if let Some(TokenKind::Identifier(_)) = self.peek_kind() {
-                let inferred_type = TypeAnnotation {
-                    ty: TypeExpr::named(first.name.clone()),
-                    span: first.span,
-                };
-                ty = Some(inferred_type);
-                let second = self.expect_identifier("Expected binding name")?;
-                name = second;
-            } else if self.check(TokenKind::LBracket) {
-                self.expect(TokenKind::LBracket)?;
+            pattern = Pattern::Identifier(ident.name, ident.span);
+        } else if self.upcoming_type_annotation_with_binding() {
+            let first = self.expect_identifier("Expected type name or binding")?;
+            let mut type_expr = TypeExpr::named(first.name.clone());
+            let mut span_end = first.span.end;
+            if self.matches(TokenKind::LBracket) {
                 let (args, end) = self.parse_type_arguments()?;
-                ty = Some(TypeAnnotation {
-                    ty: TypeExpr::Named(first.name.clone(), args),
-                    span: Span::new(first.span.start, end),
-                });
-                let second = self.expect_identifier("Expected binding name")?;
-                name = second;
-            } else if self.matches(TokenKind::Colon) {
+                type_expr = TypeExpr::Named(first.name.clone(), args);
+                span_end = end;
+            }
+            ty = Some(TypeAnnotation {
+                ty: type_expr,
+                span: Span::new(first.span.start, span_end),
+            });
+            let binding_ident = self.expect_identifier("Expected binding name")?;
+            pattern = Pattern::Identifier(binding_ident.name, binding_ident.span);
+        } else {
+            pattern = self.parse_pattern()?;
+        }
+
+        if self.matches(TokenKind::Colon) {
+            if let Pattern::Identifier(_, _) = pattern {
                 let annotation = self.parse_type_annotation()?;
                 ty = Some(annotation);
-                name = first;
             } else {
-                name = first;
+                return Err(
+                    self.error_here("type annotations are only supported for identifier bindings")
+                );
             }
         }
 
@@ -809,13 +810,20 @@ impl Parser {
             None
         };
 
+        if value.is_none() && !matches!(pattern, Pattern::Identifier(_, _)) {
+            return Err(self.error_here("destructuring bindings require an initializer expression"));
+        }
+        if mutability.is_mutable() && !matches!(pattern, Pattern::Identifier(_, _)) {
+            return Err(self.error_here("only single bindings can be marked `mut`"));
+        }
+
         let end = value
             .as_ref()
             .map(|expr| expr_span(expr).end)
-            .unwrap_or(name.span.end);
+            .unwrap_or_else(|| self.last_span_end(start));
 
         Ok(LetStmt {
-            name: name.name,
+            pattern,
             ty,
             value,
             mutability,
@@ -905,6 +913,16 @@ impl Parser {
             self.peek_kind(),
             Some(TokenKind::LBracket | TokenKind::LParen | TokenKind::Star | TokenKind::Ampersand)
         )
+    }
+
+    fn upcoming_type_annotation_with_binding(&self) -> bool {
+        match self.peek_kind() {
+            Some(TokenKind::Identifier(_)) => matches!(
+                self.peek_kind_n(1),
+                Some(TokenKind::Identifier(_)) | Some(TokenKind::LBracket)
+            ),
+            _ => false,
+        }
     }
 
     fn parse_for_statement(&mut self) -> Result<ForStmt, SyntaxError> {

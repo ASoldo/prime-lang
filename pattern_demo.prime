@@ -17,6 +17,10 @@ fn describe_reading(reading: (string, int32)) {
 }
 
 fn summarize_stats(stats: Map[string, int32]) {
+  let #{ "hp": hp_total, "mp": mp_total } = stats;
+  out("direct stats pair:");
+  out(hp_total);
+  out(mp_total);
   match stats {
     #{ "hp": hp, "mp": mp } => {
       out("stats ready");
@@ -69,6 +73,9 @@ fn main() {
     mp: 45,
     notes: ["stable", "ready"],
   };
+  let Telemetry{ hp: base_hp, mp: base_mp, .. } = snapshot;
+  out("snapshot sums:");
+  out(base_hp + base_mp);
 
   inspect_telemetry(snapshot);
 }

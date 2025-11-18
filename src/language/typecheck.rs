@@ -288,19 +288,54 @@ impl Checker {
         match statement {
             Statement::Let(stmt) => {
                 let expected = stmt.ty.as_ref().map(|ann| ann.ty.clone());
-                let mut pending_borrows: Vec<String> = Vec::new();
-                if let Some(value) = &stmt.value {
-                    let ty = self.check_expression(module, value, expected.as_ref(), returns, env);
-                    if let Some(expected) = expected.as_ref() {
-                        self.ensure_type(module, stmt.span, expected, ty.as_ref());
-                    } else if let Some(actual) = ty {
-                        env.infer(&stmt.name, Some(actual));
+                match &stmt.pattern {
+                    Pattern::Identifier(name, _span) => {
+                        let mut pending_borrows: Vec<String> = Vec::new();
+                        if let Some(value) = &stmt.value {
+                            let ty = self.check_expression(
+                                module,
+                                value,
+                                expected.as_ref(),
+                                returns,
+                                env,
+                            );
+                            if let Some(expected) = expected.as_ref() {
+                                self.ensure_type(module, stmt.span, expected, ty.as_ref());
+                            } else if let Some(actual) = ty {
+                                env.infer(name, Some(actual));
+                            }
+                            pending_borrows = expression_borrow_targets(value);
+                        }
+                        env.declare(name, expected, stmt.span, &mut self.errors);
+                        for target in pending_borrows {
+                            env.register_binding_borrow(name, target);
+                        }
                     }
-                    pending_borrows = expression_borrow_targets(value);
-                }
-                env.declare(&stmt.name, expected, stmt.span, &mut self.errors);
-                for target in pending_borrows {
-                    env.register_binding_borrow(&stmt.name, target);
+                    pattern => {
+                        if stmt.mutability.is_mutable() {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                stmt.span,
+                                "destructuring bindings cannot be `mut`",
+                            ));
+                        }
+                        if let Some(value_expr) = &stmt.value {
+                            let ty = self.check_expression(
+                                module,
+                                value_expr,
+                                expected.as_ref(),
+                                returns,
+                                env,
+                            );
+                            self.bind_pattern(module, pattern, ty.as_ref(), env);
+                        } else {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                stmt.span,
+                                "destructuring bindings require an initializer",
+                            ));
+                        }
+                    }
                 }
             }
             Statement::Assign(assign) => {
@@ -2276,11 +2311,13 @@ fn block_borrow_targets(block: &Block, parent: &HashMap<String, String>) -> Vec<
     for statement in &block.statements {
         if let Statement::Let(stmt) = statement {
             if let Some(value) = &stmt.value {
-                if let Some(target) = expression_borrow_targets_with_context(value, &map)
-                    .into_iter()
-                    .next()
-                {
-                    map.insert(stmt.name.clone(), target);
+                if let Pattern::Identifier(name, _) = &stmt.pattern {
+                    if let Some(target) = expression_borrow_targets_with_context(value, &map)
+                        .into_iter()
+                        .next()
+                    {
+                        map.insert(name.clone(), target);
+                    }
                 }
             }
         }

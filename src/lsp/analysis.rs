@@ -115,16 +115,27 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                 if ty.is_none() {
                     ty = infer_type_from_let_value(stmt);
                 }
-                decls.push(DeclInfo {
-                    name: stmt.name.clone(),
-                    span: stmt.span,
-                    scope,
-                    available_from: stmt.span.end,
-                    ty,
-                    value_span: stmt.value.as_ref().map(expr_span),
-                    mutability: stmt.mutability,
-                    kind: DeclKind::Let,
-                });
+                if let Pattern::Identifier(name, _span) = &stmt.pattern {
+                    decls.push(DeclInfo {
+                        name: name.clone(),
+                        span: stmt.span,
+                        scope,
+                        available_from: stmt.span.end,
+                        ty,
+                        value_span: stmt.value.as_ref().map(expr_span),
+                        mutability: stmt.mutability,
+                        kind: DeclKind::Let,
+                    });
+                } else {
+                    collect_pattern_decls(
+                        &stmt.pattern,
+                        scope,
+                        stmt.span.end,
+                        decls,
+                        pattern_span(&stmt.pattern),
+                        ty,
+                    );
+                }
             }
             Statement::Assign(stmt) => {
                 collect_decl_from_expr(&stmt.target, decls);

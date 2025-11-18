@@ -188,7 +188,7 @@ pub enum Statement {
 
 #[derive(Clone, Debug)]
 pub struct LetStmt {
-    pub name: String,
+    pub pattern: Pattern,
     pub ty: Option<TypeAnnotation>,
     pub value: Option<Expr>,
     pub mutability: Mutability,

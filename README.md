@@ -188,6 +188,10 @@ while let Some(note) = probe_notes.get(idx) {
   out(note);
   idx = idx + 1;
 }
+
+let Telemetry{ hp: hp_stat, mp: mp_stat, .. } = snapshot;
+let #{ "hp": hp_total, .. } = stats;
+out(hp_stat + mp_stat + hp_total);
 ```
 
 - `match` is exhaustive, supports `Enum::Variant` syntax, and each arm can carry

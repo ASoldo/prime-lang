@@ -424,10 +424,11 @@ fn format_let_statement(out: &mut String, stmt: &LetStmt, indent: usize) -> bool
     } else {
         ""
     };
+    let pattern_text = format_pattern(&stmt.pattern);
     let binding = if let Some(ty) = &stmt.ty {
-        format!("{} {}", format_type(&ty.ty), stmt.name)
+        format!("{} {}", format_type(&ty.ty), pattern_text)
     } else {
-        stmt.name.clone()
+        pattern_text
     };
     if let Some(expr) = &stmt.value {
         if let Expr::StructLiteral { name, fields, .. } = expr {
