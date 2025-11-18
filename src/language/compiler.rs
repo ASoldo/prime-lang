@@ -3095,8 +3095,7 @@ fn main() {
     }
 
     fn compile_entry(entry: &str) -> Result<(), String> {
-        let package =
-            load_package(Path::new(entry)).expect(&format!("load package for {}", entry));
+        let package = load_package(Path::new(entry)).expect(&format!("load package for {}", entry));
         let mut compiler = Compiler::new();
         compiler.compile_program(&package.program)
     }

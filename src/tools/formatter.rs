@@ -431,26 +431,13 @@ fn format_let_statement(out: &mut String, stmt: &LetStmt, indent: usize) -> bool
         pattern_text
     };
     if let Some(expr) = &stmt.value {
-        if let Expr::StructLiteral { name, fields, .. } = expr {
-            write_indent(out, indent);
-            out.push_str(&format!("let {}{} = ", mutability, binding));
-            format_struct_literal_inline(out, indent, name, fields);
-            out.push_str(";\n");
-            return true;
-        } else if let Expr::MapLiteral { entries, .. } = expr {
-            write_indent(out, indent);
-            out.push_str(&format!("let {}{} = ", mutability, binding));
-            format_map_literal_inline(out, indent, entries);
-            out.push_str(";\n");
-            return true;
-        }
         write_indent(out, indent);
-        out.push_str(&format!(
-            "let {}{} = {};\n",
-            mutability,
-            binding,
-            format_expr(expr)
-        ));
+        out.push_str(&format!("let {}{} = ", mutability, binding));
+        if emit_initializer_expression(out, indent, expr) {
+            out.push_str(";\n");
+        } else {
+            out.push_str(&format!("{};\n", format_expr(expr)));
+        }
     } else {
         write_indent(out, indent);
         out.push_str(&format!("let {}{};\n", mutability, binding));
@@ -459,26 +446,47 @@ fn format_let_statement(out: &mut String, stmt: &LetStmt, indent: usize) -> bool
 }
 
 fn format_assign_statement(out: &mut String, stmt: &AssignStmt, indent: usize) -> bool {
-    if let Expr::StructLiteral { name, fields, .. } = &stmt.value {
-        write_indent(out, indent);
-        out.push_str(&format!("{} = ", format_expr(&stmt.target)));
-        format_struct_literal_inline(out, indent, name, fields);
-        out.push_str(";\n");
-        return true;
-    } else if let Expr::MapLiteral { entries, .. } = &stmt.value {
-        write_indent(out, indent);
-        out.push_str(&format!("{} = ", format_expr(&stmt.target)));
-        format_map_literal_inline(out, indent, entries);
-        out.push_str(";\n");
-        return true;
-    }
     write_indent(out, indent);
-    out.push_str(&format!(
-        "{} = {};\n",
-        format_expr(&stmt.target),
-        format_expr(&stmt.value)
-    ));
+    out.push_str(&format!("{} = ", format_expr(&stmt.target)));
+    if emit_initializer_expression(out, indent, &stmt.value) {
+        out.push_str(";\n");
+    } else {
+        out.push_str(&format!("{};\n", format_expr(&stmt.value)));
+    }
     false
+}
+
+fn emit_initializer_expression(out: &mut String, base_indent: usize, expr: &Expr) -> bool {
+    match expr {
+        Expr::StructLiteral { name, fields, .. } => {
+            format_struct_literal_inline(out, base_indent, name, fields);
+            true
+        }
+        Expr::MapLiteral { entries, .. } => {
+            format_map_literal_inline(out, base_indent, entries);
+            true
+        }
+        Expr::If(if_expr) => {
+            emit_if_expression(out, base_indent, if_expr, false);
+            true
+        }
+        Expr::Block(block) => {
+            out.push_str("{\n");
+            format_block(out, block, base_indent + 2);
+            write_indent(out, base_indent);
+            out.push('}');
+            true
+        }
+        Expr::Match(match_expr) => {
+            write_match_expression(out, match_expr, base_indent);
+            true
+        }
+        Expr::Try { block, .. } => {
+            emit_try_expression(out, base_indent, block);
+            true
+        }
+        _ => false,
+    }
 }
 
 fn format_while_statement(out: &mut String, stmt: &WhileStmt, indent: usize) {

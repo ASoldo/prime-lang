@@ -2185,7 +2185,7 @@ mod tests {
     use crate::project::{Package, load_package};
     use std::path::{Path, PathBuf};
 
-fn interpreter_from_source(source: &str) -> Interpreter {
+    fn interpreter_from_source(source: &str) -> Interpreter {
         let module =
             parse_module("tests::runtime", PathBuf::from("test.prime"), source).expect("parse");
         let program = Program {
@@ -2204,7 +2204,7 @@ fn interpreter_from_source(source: &str) -> Interpreter {
     }
 
     #[test]
-fn interpreter_releases_borrows_after_control_flow() {
+    fn interpreter_releases_borrows_after_control_flow() {
         let source = r#"
 module tests::runtime;
 
@@ -2481,8 +2481,7 @@ fn slice_mut() -> string {
     }
 
     fn interpreter_from_entry(entry: &str) -> Interpreter {
-        let package =
-            load_package(Path::new(entry)).expect(&format!("load package for {}", entry));
+        let package = load_package(Path::new(entry)).expect(&format!("load package for {}", entry));
         Interpreter::new(package)
     }
 

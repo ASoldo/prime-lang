@@ -1,9 +1,10 @@
 use crate::{
     language::{
-        ast::Module,
+        ast::{Module, Program},
         errors::SyntaxError,
         lexer::{LexError, lex},
         span::Span,
+        typecheck::{TypeError, check_program},
     },
     project::{
         diagnostics::{
@@ -64,6 +65,7 @@ pub fn collect_parse_and_manifest_diagnostics(
                     .map(|issue| manifest_issue_to_diagnostic(text, issue)),
             );
         }
+        diags.extend(type_diagnostics(text, module));
     }
     drop(tokens);
     (module, diags)
@@ -305,6 +307,37 @@ fn module_mismatch_diagnostic(
     }
 }
 
+fn type_diagnostics(text: &str, module: &Module) -> Vec<Diagnostic> {
+    let module_path = module.path.clone();
+    let program = Program {
+        modules: vec![module.clone()],
+    };
+    match check_program(&program) {
+        Ok(_) => Vec::new(),
+        Err(errors) => errors
+            .into_iter()
+            .filter(|err| err.path == module_path)
+            .map(|err| type_error_to_lsp(text, err))
+            .collect(),
+    }
+}
+
+fn type_error_to_lsp(text: &str, err: TypeError) -> Diagnostic {
+    let span = if err.span.start == err.span.end {
+        let fallback = adjust_zero_length_offset(text, err.span.start);
+        Span::new(fallback, fallback.saturating_add(1).min(text.len()))
+    } else {
+        err.span
+    };
+    Diagnostic {
+        range: span_to_range(text, span),
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some("prime-lang".into()),
+        message: err.message,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::collect_parse_and_manifest_diagnostics;
@@ -382,6 +415,28 @@ fn main() {
         assert!(
             diags.is_empty(),
             "expected mutable destructuring parse to succeed without diagnostics, found {diags:?}"
+        );
+    }
+
+    #[test]
+    fn reports_type_errors_from_checker() {
+        let dir = tempdir().expect("tempdir");
+        let file_path = dir.path().join("main.prime");
+        fs::write(&file_path, "").expect("write file");
+        let uri = Uri::from_file_path(&file_path).expect("uri");
+        let text = r#"
+module test::main;
+
+fn main() {
+  let value: int32 = "oops";
+}
+"#;
+        let (_module, diags) = collect_parse_and_manifest_diagnostics(&uri, text);
+        assert!(
+            diags
+                .iter()
+                .any(|diag| diag.message.contains("expected `int32`")),
+            "expected type error diagnostic, found {diags:?}"
         );
     }
 }

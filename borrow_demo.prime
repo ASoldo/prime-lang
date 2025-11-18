@@ -25,7 +25,6 @@ fn if_and_match_merging(flag: bool) -> int32 {
     let &mut int32 after_if = &mut score;
     *after_if = *after_if + 1;
   }
-
   match flag {
     true => {
       let &mut int32 alias = &mut score;
@@ -47,25 +46,21 @@ fn loop_merging() -> int32 {
     *alias = *alias + idx;
     idx = idx + 1;
   }
-
   idx = 0;
   while let true = idx == 0 {
     let &mut int32 alias = &mut total;
     *alias = *alias + 5;
     idx = idx + 1;
   }
-
   for count in 0..2 {
     let &mut int32 alias = &mut total;
     *alias = *alias + count;
   }
-
   let []int32 entries = [3, 4];
   for entry in entries {
     let &mut int32 alias = &mut total;
     *alias = *alias + entry;
   }
-
   total
 }
 
@@ -90,7 +85,6 @@ fn mutable_destructuring_examples() {
   let mut (left, right) = pair;
   left = left + right;
   out(left);
-
   let Map[string, int32] points = #{
     "hp": 20,
     "mp": 15,
@@ -98,9 +92,10 @@ fn mutable_destructuring_examples() {
   let mut #{ "hp": hp, "mp": mp } = points;
   hp = hp + mp;
   out(hp);
-
-  let Refill refill = Refill{ amount: 30 };
-  let mut Refill{ amount } = refill;
+  let Refill refill = Refill{
+    amount: 30,
+  };
+  let mut Refill{ amount: amount } = refill;
   amount = amount + 5;
   out(amount);
 }
