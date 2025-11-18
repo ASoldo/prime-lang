@@ -130,18 +130,32 @@ return {
 			-- highlights.scm
 			do
 				local highlights = [[
-    ["fn" "let" "import" "struct" "enum" "const" "match" "if" "else" "for" "while" "return" "defer" "module" "pub" "interface"
-  "impl"] @keyword
+    ["fn" "let" "import" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "return" "defer" "module" "pub" "interface" "impl" "try" "move"] @keyword
 
-    (module_declaration name: (module_path) @type)
-    (module_path (identifier) @type)
+    (module_declaration name: (module_path) @namespace)
+    (module_path (identifier) @namespace)
+
+    (function_definition name: (identifier) @function)
+    (struct_definition name: (identifier) @type)
+    (enum_definition name: (identifier) @type)
+    (interface_definition name: (identifier) @type)
+    (impl_definition target: (type_expression) @type)
+    (const_definition name: (identifier) @constant)
+
+    (parameter name: (identifier) @variable.parameter)
     (let_statement name: (identifier) @variable)
+    (let_statement pattern: (identifier) @variable)
+    (pattern (identifier) @variable)
+
     (type_expression (identifier) @type)
+    (type_expression (module_path) @type)
 
     (integer_literal) @number
     (float_literal)   @float
     (string_literal)  @string
+    (format_string_literal) @string.special
     (rune_literal)    @character
+    (boolean_literal) @boolean
     (identifier)      @identifier
     ]]
 				local f = assert(io.open(query_root .. "/highlights.scm", "w"))
@@ -182,6 +196,10 @@ return {
 
     (let_statement
       name: (identifier) @name
+      (#set! "kind" "Variable")) @symbol
+
+    (let_statement
+      pattern: (identifier) @name
       (#set! "kind" "Variable")) @symbol
     ]]
 				local f = assert(io.open(query_root .. "/aerial.scm", "w"))
