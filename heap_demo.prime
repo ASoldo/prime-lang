@@ -6,16 +6,16 @@ fn main() {
   let Box[int32] counter = box_new(0);
   bump_counter(&counter, 5);
   out("box counter:");
-  out(box_get(counter));
+  out(counter.box_get());
   let mut []string explorers = ["Prime Hero", "Sparrow"];
   out("explorer roster:");
   for explorer in explorers {
     out(explorer);
   }
   out("slice len:");
-  out(slice_len(explorers));
+  out(explorers.slice_len());
   out("first explorer:");
-  match slice_get(explorers, 0) {
+  match explorers.slice_get(0) {
     Some(name) => out(name),
     None => out("n/a"),
   }
@@ -25,13 +25,13 @@ fn main() {
   };
 
   out("harbor reward:");
-  match map_get(rewards, "Harbor sweep") {
+  match rewards.map_get("Harbor sweep") {
     Some(value) => out(value),
     None => out("none"),
   }
 }
 
 fn bump_counter(counter: &Box[int32], amount: int32) {
-  let int32 current = box_get(counter);
-  box_set(counter, current + amount);
+  let int32 current = counter.box_get();
+  counter.box_set(current + amount);
 }

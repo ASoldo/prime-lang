@@ -910,6 +910,9 @@ impl Compiler {
                 let mut method_args = Vec::with_capacity(args.len() + 1);
                 method_args.push((**base).clone());
                 method_args.extend(args.iter().cloned());
+                if let Some(result) = self.try_builtin_call(field, &method_args) {
+                    return result;
+                }
                 let results = self.invoke_function(field, type_args, &method_args)?;
                 let value = self.collapse_results(results);
                 Ok(EvalOutcome::Value(value))
@@ -944,29 +947,42 @@ impl Compiler {
         name: &str,
         args: &[Expr],
     ) -> Option<Result<EvalOutcome<Value>, String>> {
-        let mut evaluated = Vec::with_capacity(args.len());
-        for expr in args {
-            match self.emit_expression(expr) {
-                Ok(EvalOutcome::Value(value)) => evaluated.push(value),
-                Ok(EvalOutcome::Flow(flow)) => return Some(Ok(EvalOutcome::Flow(flow))),
-                Err(err) => return Some(Err(err)),
+        match name {
+            "box_new" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_box_new(values)))
             }
+            "box_get" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_box_get(values)))
+            }
+            "box_set" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_box_set(values)))
+            }
+            "box_take" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_box_take(values)))
+            }
+            "slice_new" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_slice_new(values)))
+            }
+            "slice_push" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_slice_push(values)))
+            }
+            "slice_len" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_slice_len(values)))
+            }
+            "slice_get" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_slice_get(values)))
+            }
+            "map_new" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_map_new(values)))
+            }
+            "map_insert" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_map_insert(values)))
+            }
+            "map_get" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_map_get(values)))
+            }
+            _ => None,
         }
-        let result = match name {
-            "box_new" => self.builtin_box_new(evaluated),
-            "box_get" => self.builtin_box_get(evaluated),
-            "box_set" => self.builtin_box_set(evaluated),
-            "box_take" => self.builtin_box_take(evaluated),
-            "slice_new" => self.builtin_slice_new(evaluated),
-            "slice_push" => self.builtin_slice_push(evaluated),
-            "slice_len" => self.builtin_slice_len(evaluated),
-            "slice_get" => self.builtin_slice_get(evaluated),
-            "map_new" => self.builtin_map_new(evaluated),
-            "map_insert" => self.builtin_map_insert(evaluated),
-            "map_get" => self.builtin_map_get(evaluated),
-            _ => return None,
-        };
-        Some(result.map(EvalOutcome::Value))
     }
 
     fn emit_if_expression(&mut self, if_expr: &IfExpr) -> Result<EvalOutcome<Value>, String> {
@@ -998,6 +1014,21 @@ impl Compiler {
         } else {
             Ok(EvalOutcome::Value(Value::Unit))
         }
+    }
+
+    fn invoke_builtin<F>(&mut self, args: &[Expr], mut f: F) -> Result<EvalOutcome<Value>, String>
+    where
+        F: FnMut(&mut Self, Vec<Value>) -> Result<Value, String>,
+    {
+        let mut evaluated = Vec::with_capacity(args.len());
+        for expr in args {
+            match self.emit_expression(expr) {
+                Ok(EvalOutcome::Value(value)) => evaluated.push(value),
+                Ok(EvalOutcome::Flow(flow)) => return Ok(EvalOutcome::Flow(flow)),
+                Err(err) => return Err(err),
+            }
+        }
+        f(self, evaluated).map(EvalOutcome::Value)
     }
 
     fn build_reference(
@@ -1587,6 +1618,12 @@ impl Compiler {
                     let mut method_args = Vec::with_capacity(args.len() + 1);
                     method_args.push((**base).clone());
                     method_args.extend(args.iter().cloned());
+                    if let Some(result) = self.try_builtin_call(field, &method_args) {
+                        return match result? {
+                            EvalOutcome::Value(_) => Ok(None),
+                            EvalOutcome::Flow(flow) => Ok(Some(flow)),
+                        };
+                    }
                     let result = self.invoke_function(field, type_args, &method_args)?;
                     if result.is_empty() {
                         Ok(None)

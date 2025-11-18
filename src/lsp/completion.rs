@@ -380,9 +380,14 @@ pub fn member_completion_items(
         Some(chain.join("."))
     };
     let edit_range = member_completion_edit_range(text, offset, prefix, qualifier.as_deref());
-    if let Some((name, args)) = named_type_with_args(&target_type) {
+    let mut items = builtin_member_completion_items(
+        strip_type_refs(&target_type),
+        qualifier.as_deref(),
+        prefix,
+        &edit_range,
+    );
+    if let Some((name, args)) = named_type_with_args(strip_type_refs(&target_type)) {
         if let Some(info) = struct_info.get(&name) {
-            let mut items = Vec::new();
             for field in &info.fields {
                 if prefix_matches(&field.name, prefix) {
                     let filter_text = qualifier
@@ -434,11 +439,9 @@ pub fn member_completion_items(
                     });
                 }
             }
-            if items.is_empty() { None } else { Some(items) }
         } else if let Some(info) = select_interface_info(interfaces, &name, &module.name) {
             let subst = build_type_subst(&info.type_params, &args);
             let subst_ref = subst.as_ref();
-            let mut items = Vec::new();
             for method in &info.methods {
                 if prefix_matches(&method.name, prefix) {
                     let filter_text = qualifier
@@ -465,13 +468,9 @@ pub fn member_completion_items(
                     });
                 }
             }
-            if items.is_empty() { None } else { Some(items) }
-        } else {
-            None
         }
-    } else {
-        None
     }
+    if items.is_empty() { None } else { Some(items) }
 }
 
 fn member_completion_edit_range(
@@ -496,6 +495,139 @@ pub fn named_type_with_args(ty: &TypeExpr) -> Option<(String, Vec<TypeExpr>)> {
         TypeExpr::Named(name, args) => Some((name.clone(), args.clone())),
         TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => named_type_with_args(ty),
         _ => None,
+    }
+}
+
+fn builtin_member_completion_items(
+    ty: &TypeExpr,
+    qualifier: Option<&str>,
+    prefix: Option<&str>,
+    edit_range: &Range,
+) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    match ty {
+        TypeExpr::Slice(inner) => {
+            let element_ty = inner.as_ref().clone();
+            let option_ty = TypeExpr::Named("Option".into(), vec![element_ty.clone()]);
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "slice_len",
+                "fn slice_len() -> int32".into(),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "slice_get",
+                format!(
+                    "fn slice_get(index: int32) -> {}",
+                    format_type_expr(&option_ty)
+                ),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "slice_push",
+                format!(
+                    "fn slice_push(value: {}) -> ()",
+                    format_type_expr(&element_ty)
+                ),
+            );
+        }
+        TypeExpr::Named(name, args) if name == "Box" && args.len() == 1 => {
+            let inner = args[0].clone();
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "box_get",
+                format!("fn box_get() -> {}", format_type_expr(&inner)),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "box_set",
+                format!("fn box_set(value: {}) -> ()", format_type_expr(&inner)),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "box_take",
+                format!("fn box_take() -> {}", format_type_expr(&inner)),
+            );
+        }
+        TypeExpr::Named(name, args) if name == "Map" && args.len() == 2 => {
+            let value_ty = args[1].clone();
+            let option_ty = TypeExpr::Named("Option".into(), vec![value_ty.clone()]);
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "map_get",
+                format!(
+                    "fn map_get(key: string) -> {}",
+                    format_type_expr(&option_ty)
+                ),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "map_insert",
+                format!(
+                    "fn map_insert(key: string, value: {}) -> ()",
+                    format_type_expr(&value_ty)
+                ),
+            );
+        }
+        _ => {}
+    }
+    items
+}
+
+fn push_builtin_member(
+    items: &mut Vec<CompletionItem>,
+    qualifier: Option<&str>,
+    prefix: Option<&str>,
+    edit_range: &Range,
+    name: &str,
+    detail: String,
+) {
+    if !prefix_matches(name, prefix) {
+        return;
+    }
+    let filter_text = qualifier.map(|qual| format!("{qual}.{name}"));
+    let new_text = filter_text.clone().unwrap_or_else(|| name.to_string());
+    items.push(CompletionItem {
+        label: name.to_string(),
+        kind: Some(CompletionItemKind::METHOD),
+        detail: Some(detail),
+        filter_text,
+        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+            range: edit_range.clone(),
+            new_text,
+        })),
+        ..Default::default()
+    });
+}
+
+fn strip_type_refs<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
+    match ty {
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => strip_type_refs(ty),
+        _ => ty,
     }
 }
 

@@ -238,6 +238,9 @@ running code.
 - `#{ "Harbor sweep": 175, "Ridge scouting": 250 }` constructs a map literal.
   If the literal has at least one entry, Prime now infers `Map[string, T]`
   automatically so you can skip type annotations on the binding.
+- Heap helpers (`slice_len`, `slice_get`, `map_get`, `box_get`, etc.) can be
+  invoked as methods on the value itself: `explorers.slice_get(0)`,
+  `rewards.map_get("Harbor sweep")`, `counter.box_set(10)`.
 
 ### Collection Iteration
 

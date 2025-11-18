@@ -111,6 +111,8 @@ pub fn hover_for_token(
                     "Built-in output function **out(expr)**\n\nPrints the evaluated expression."
                         .to_string(),
                 )
+            } else if let Some(doc) = builtin_function_docs(name) {
+                Some(doc)
             } else if let Some(module) = module {
                 if let Some(field_hover) =
                     hover_for_struct_field_definition(text, span, name, module)
@@ -180,6 +182,49 @@ pub fn hover_for_token(
         _ => None,
     }?;
     Some(markdown_hover(text, span, hover))
+}
+
+fn builtin_function_docs(name: &str) -> Option<String> {
+    match name {
+        "box_new" => Some("Built-in heap helper\n```prime\nfn box_new[T](value: T) -> Box[T]\n```"
+            .into()),
+        "box_get" => Some(
+            "Built-in heap helper\n```prime\nfn box_get[T](value: Box[T]) -> T\n```".into(),
+        ),
+        "box_set" => Some(
+            "Built-in heap helper\n```prime\nfn box_set[T](value: Box[T], new_value: T) -> ()\n```"
+                .into(),
+        ),
+        "box_take" => Some(
+            "Built-in heap helper\n```prime\nfn box_take[T](value: Box[T]) -> T\n```".into(),
+        ),
+        "slice_new" => Some(
+            "Built-in slice helper\n```prime\nfn slice_new[T]() -> []T\n```".into(),
+        ),
+        "slice_push" => Some(
+            "Built-in slice helper\n```prime\nfn slice_push[T](slice: []T, value: T) -> ()\n```"
+                .into(),
+        ),
+        "slice_len" => Some(
+            "Built-in slice helper\n```prime\nfn slice_len[T](slice: []T) -> int32\n```".into(),
+        ),
+        "slice_get" => Some(
+            "Built-in slice helper\n```prime\nfn slice_get[T](slice: []T, index: int32) -> Option[T]\n```"
+                .into(),
+        ),
+        "map_new" => Some(
+            "Built-in map helper\n```prime\nfn map_new[V]() -> Map[string, V]\n```".into(),
+        ),
+        "map_insert" => Some(
+            "Built-in map helper\n```prime\nfn map_insert[V](map: Map[string, V], key: string, value: V) -> ()\n```"
+                .into(),
+        ),
+        "map_get" => Some(
+            "Built-in map helper\n```prime\nfn map_get[V](map: Map[string, V], key: string) -> Option[V]\n```"
+                .into(),
+        ),
+        _ => None,
+    }
 }
 
 fn markdown_var_info(text: &str, span: Span, info: &VarInfo) -> Hover {

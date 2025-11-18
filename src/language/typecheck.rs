@@ -480,13 +480,7 @@ impl Checker {
             Expr::ArrayLiteral(values, span) => match expected {
                 Some(TypeExpr::Slice(inner)) => {
                     for value in values {
-                        self.check_expression(
-                            module,
-                            value,
-                            Some(inner.as_ref()),
-                            returns,
-                            env,
-                        );
+                        self.check_expression(module, value, Some(inner.as_ref()), returns, env);
                     }
                     Some(TypeExpr::Slice(inner.clone()))
                 }
@@ -800,13 +794,21 @@ impl Checker {
                         );
                     }
                 }
-                let receiver = self.check_expression(module, base, None, returns, env)?;
-                if let TypeExpr::Named(name, _) = &receiver {
+                let receiver = match self.check_expression(module, base, None, returns, env) {
+                    Some(ty) => ty,
+                    None => return None,
+                };
+                if let Some(name) = named_type_name(&receiver) {
                     if let Some(sig) = self.lookup_function(field, Some(name)) {
                         return self.check_method_call(
                             module, sig, &receiver, args, type_args, expected, returns, env, span,
                         );
                     }
+                }
+                if let Some(result) = self
+                    .check_builtin_method_call(module, &receiver, field, args, returns, env, span)
+                {
+                    return Some(result);
                 }
                 self.errors.push(TypeError::new(
                     &module.path,
@@ -1124,6 +1126,177 @@ impl Checker {
             self.check_expression(module, expr, Some(&param.ty), returns, env);
         }
         self.select_call_result(module, span, &instantiated.returns, expected)
+    }
+
+    fn check_builtin_method_call(
+        &mut self,
+        module: &Module,
+        receiver: &TypeExpr,
+        method: &str,
+        args: &[Expr],
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        let target = strip_references(receiver);
+        match target {
+            TypeExpr::Slice(inner) => {
+                self.check_slice_method(module, inner.as_ref(), method, args, returns, env, span)
+            }
+            TypeExpr::Named(name, generics) if name == "Box" && generics.len() == 1 => {
+                self.check_box_method(module, &generics[0], method, args, returns, env, span)
+            }
+            TypeExpr::Named(name, _) if name == "Map" => {
+                self.check_map_method(module, target, method, args, returns, env, span)
+            }
+            _ => None,
+        }
+    }
+
+    fn check_box_method(
+        &mut self,
+        module: &Module,
+        inner: &TypeExpr,
+        method: &str,
+        args: &[Expr],
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        match method {
+            "box_get" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`box_get` expects 0 argument(s) after receiver",
+                    ));
+                }
+                Some(inner.clone())
+            }
+            "box_set" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`box_set` expects 1 argument after receiver",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                let value_ty = self.check_expression(module, &args[0], Some(inner), returns, env);
+                self.ensure_type(module, expr_span(&args[0]), inner, value_ty.as_ref());
+                Some(TypeExpr::Unit)
+            }
+            "box_take" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`box_take` expects 0 argument(s) after receiver",
+                    ));
+                }
+                Some(inner.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn check_slice_method(
+        &mut self,
+        module: &Module,
+        inner: &TypeExpr,
+        method: &str,
+        args: &[Expr],
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        match method {
+            "slice_len" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`slice_len` expects 0 argument(s) after receiver",
+                    ));
+                }
+                Some(int_type())
+            }
+            "slice_get" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`slice_get` expects 1 argument after receiver",
+                    ));
+                    return Some(make_option_type(inner.clone()));
+                }
+                self.check_expression(module, &args[0], Some(&int_type()), returns, env);
+                Some(make_option_type(inner.clone()))
+            }
+            "slice_push" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`slice_push` expects 1 argument after receiver",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                let value_ty = self.check_expression(module, &args[0], Some(inner), returns, env);
+                self.ensure_type(module, expr_span(&args[0]), inner, value_ty.as_ref());
+                Some(TypeExpr::Unit)
+            }
+            _ => None,
+        }
+    }
+
+    fn check_map_method(
+        &mut self,
+        module: &Module,
+        map_ty: &TypeExpr,
+        method: &str,
+        args: &[Expr],
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        let (key_ty, value_ty) = self.expect_map_type(module, span, Some(map_ty))?;
+        match method {
+            "map_get" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`map_get` expects 1 argument after receiver",
+                    ));
+                } else {
+                    self.check_expression(module, &args[0], Some(&key_ty), returns, env);
+                }
+                Some(make_option_type(value_ty))
+            }
+            "map_insert" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`map_insert` expects 2 argument(s) after receiver",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                self.check_expression(module, &args[0], Some(&key_ty), returns, env);
+                let value_ty_expr =
+                    self.check_expression(module, &args[1], Some(&value_ty), returns, env);
+                self.ensure_type(
+                    module,
+                    expr_span(&args[1]),
+                    &value_ty,
+                    value_ty_expr.as_ref(),
+                );
+                Some(TypeExpr::Unit)
+            }
+            _ => None,
+        }
     }
 
     fn check_variant_call(
@@ -1817,5 +1990,20 @@ fn pattern_span(pattern: &Pattern) -> Span {
             .first()
             .map(pattern_span)
             .unwrap_or_else(|| Span::new(0, 0)),
+    }
+}
+
+fn strip_references<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
+    match ty {
+        TypeExpr::Reference { ty, .. } => strip_references(ty),
+        _ => ty,
+    }
+}
+
+fn named_type_name<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
+    match ty {
+        TypeExpr::Named(name, _) => Some(name),
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => named_type_name(ty),
+        _ => None,
     }
 }

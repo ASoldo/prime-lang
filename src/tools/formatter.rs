@@ -786,7 +786,11 @@ fn format_map_literal_inline(out: &mut String, indent: usize, entries: &[MapLite
     out.push('\n');
     for entry in entries {
         write_indent(out, indent + 2);
-        out.push_str(&format!("{}: {}", format_expr(&entry.key), format_expr(&entry.value)));
+        out.push_str(&format!(
+            "{}: {}",
+            format_expr(&entry.key),
+            format_expr(&entry.value)
+        ));
         out.push_str(",\n");
     }
     write_indent(out, indent);
