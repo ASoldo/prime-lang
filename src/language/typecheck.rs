@@ -2513,3 +2513,215 @@ fn named_type_name<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::check_program;
+    use crate::language::{ast::Program, parser::parse_module};
+    use std::path::PathBuf;
+
+    fn typecheck_source(source: &str) -> Result<(), Vec<super::TypeError>> {
+        let module =
+            parse_module("tests::module", PathBuf::from("test.prime"), source).expect("parse");
+        let program = Program {
+            modules: vec![module],
+        };
+        check_program(&program)
+    }
+
+    #[test]
+    fn borrows_release_after_control_flow() {
+        let cases = [
+            (
+                "if",
+                r#"
+module tests::borrow_if;
+
+fn release_after_if(flag: bool) {
+  let mut int32 value = 0;
+  if flag {
+    let &mut int32 alias = &mut value;
+    *alias = 1;
+  } else {
+    let &mut int32 alias = &mut value;
+    *alias = 2;
+  }
+  let &mut int32 again = &mut value;
+  *again = 3;
+}
+"#,
+            ),
+            (
+                "match",
+                r#"
+module tests::borrow_match;
+
+fn release_after_match(flag: bool) {
+  let mut int32 value = 0;
+  match flag {
+    true => {
+      let &mut int32 alias = &mut value;
+      *alias = 1;
+    },
+    false => {
+      let &mut int32 alias = &mut value;
+      *alias = 2;
+    },
+  }
+  let &mut int32 next = &mut value;
+  *next = 4;
+}
+"#,
+            ),
+            (
+                "while",
+                r#"
+module tests::borrow_while;
+
+fn release_after_while() {
+  let mut int32 value = 0;
+  let mut int32 idx = 0;
+  while idx < 1 {
+    let &mut int32 alias = &mut value;
+    *alias = idx;
+    idx = idx + 1;
+  }
+  let &mut int32 after = &mut value;
+  *after = 5;
+}
+"#,
+            ),
+            (
+                "while_let",
+                r#"
+module tests::borrow_while_let;
+
+fn release_after_while_let() {
+  let mut int32 value = 0;
+  let mut int32 idx = 0;
+  while let true = idx == 0 {
+    let &mut int32 alias = &mut value;
+    *alias = idx;
+    idx = idx + 1;
+  }
+  let &mut int32 after = &mut value;
+  *after = 6;
+}
+"#,
+            ),
+            (
+                "for_range",
+                r#"
+module tests::borrow_for_range;
+
+fn release_after_for_range() {
+  let mut int32 value = 0;
+  for count in 0..1 {
+    let &mut int32 alias = &mut value;
+    *alias = count;
+  }
+  let &mut int32 after = &mut value;
+  *after = 9;
+}
+"#,
+            ),
+            (
+                "for_collection",
+                r#"
+module tests::borrow_for_collection;
+
+fn release_after_for_collection() {
+  let []int32 entries = [1, 2];
+  let mut int32 value = 0;
+  for entry in entries {
+    let &mut int32 alias = &mut value;
+    *alias = entry;
+  }
+  let &mut int32 after = &mut value;
+  *after = 7;
+}
+"#,
+            ),
+        ];
+
+        for (name, source) in cases {
+            if let Err(errors) = typecheck_source(source) {
+                panic!(
+                    "borrow merging failed for case `{}`: {:?}",
+                    name,
+                    errors
+                        .iter()
+                        .map(|err| format!("{} @{}", err.message, err.span.start))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn borrow_remains_live_without_branching() {
+        let source = r#"
+module tests::borrow;
+
+fn alias_survives_scope() {
+  let mut int32 value = 0;
+  let &mut int32 alias = &mut value;
+  let &mut int32 second = &mut value;
+  *second = 1;
+}
+"#;
+        let errors = typecheck_source(source).expect_err("expected borrow error");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("already mutably borrowed")),
+            "expected active borrow diagnostic, got {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn mutable_destructuring_typechecks() {
+        let source = r#"
+module tests::patterns;
+
+struct Telemetry {
+  hp: int32;
+  mp: int32;
+  notes: []string;
+}
+
+fn mutate_destructuring() {
+  let mut (left, right) = (10, 5);
+  left = left + right;
+
+  let mut #{ "hp": hp_score, "mp": mp_score } = #{
+    "hp": 80,
+    "mp": 40,
+  };
+  hp_score = hp_score + mp_score;
+
+  let mut Telemetry{ hp, mp, .. } = Telemetry{
+    hp: 70,
+    mp: 35,
+    notes: ["alpha"],
+  };
+  hp = hp + mp;
+
+  let mut [first, ..rest] = ["steady", "ready"];
+  first = "start";
+  rest = rest;
+}
+"#;
+        match typecheck_source(source) {
+            Ok(()) => {}
+            Err(errors) => panic!(
+                "expected mutable destructuring patterns to typecheck, got {:?}",
+                errors
+                    .iter()
+                    .map(|err| format!("{} @{}", err.message, err.span.start))
+                    .collect::<Vec<_>>()
+            ),
+        }
+    }
+}

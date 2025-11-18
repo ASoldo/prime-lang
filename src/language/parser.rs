@@ -908,7 +908,11 @@ impl Parser {
     fn type_expr_without_identifier_start(&self) -> bool {
         match self.peek_kind() {
             Some(TokenKind::LParen) => self.tuple_type_followed_by_binding(),
-            Some(TokenKind::LBracket | TokenKind::Star | TokenKind::Ampersand) => true,
+            Some(TokenKind::LBracket) => matches!(
+                self.peek_kind_n(1),
+                Some(TokenKind::RBracket) | Some(TokenKind::Integer(_))
+            ),
+            Some(TokenKind::Star | TokenKind::Ampersand) => true,
             _ => false,
         }
     }
