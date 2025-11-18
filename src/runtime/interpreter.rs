@@ -2182,9 +2182,8 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
 mod tests {
     use super::*;
     use crate::language::{ast::Program, parser::parse_module};
-    use crate::project::Package;
-    use std::fs;
-    use std::path::PathBuf;
+    use crate::project::{Package, load_package};
+    use std::path::{Path, PathBuf};
 
 fn interpreter_from_source(source: &str) -> Interpreter {
         let module =
@@ -2481,23 +2480,28 @@ fn slice_mut() -> string {
         }
     }
 
+    fn interpreter_from_entry(entry: &str) -> Interpreter {
+        let package =
+            load_package(Path::new(entry)).expect(&format!("load package for {}", entry));
+        Interpreter::new(package)
+    }
+
     #[test]
     fn borrow_demo_executes_successfully() {
-        let source =
-            fs::read_to_string("borrow_demo.prime").expect("read borrow demo from workspace");
-        let module = parse_module("demos::borrow", PathBuf::from("borrow_demo.prime"), &source)
-            .expect("parse borrow demo");
-        let program = Program {
-            modules: vec![module],
-        };
-        let mut interpreter = Interpreter::new(Package {
-            program,
-            modules: Vec::new(),
-        });
+        let mut interpreter = interpreter_from_entry("borrow_demo.prime");
         interpreter.bootstrap().expect("bootstrap");
         interpreter
             .call_function("main", None, &[], Vec::new())
             .expect("run borrow demo");
+    }
+
+    #[test]
+    fn pattern_demo_executes_successfully() {
+        let mut interpreter = interpreter_from_entry("pattern_demo.prime");
+        interpreter.bootstrap().expect("bootstrap");
+        interpreter
+            .call_function("main", None, &[], Vec::new())
+            .expect("run pattern demo");
     }
 }
 fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {
