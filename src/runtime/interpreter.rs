@@ -2183,6 +2183,7 @@ mod tests {
     use super::*;
     use crate::language::{ast::Program, parser::parse_module};
     use crate::project::Package;
+    use std::fs;
     use std::path::PathBuf;
 
 fn interpreter_from_source(source: &str) -> Interpreter {
@@ -2478,6 +2479,25 @@ fn slice_mut() -> string {
             [Value::String(text)] => assert_eq!(text, "launch"),
             other => panic!("unexpected slice result: {:?}", other),
         }
+    }
+
+    #[test]
+    fn borrow_demo_executes_successfully() {
+        let source =
+            fs::read_to_string("borrow_demo.prime").expect("read borrow demo from workspace");
+        let module = parse_module("demos::borrow", PathBuf::from("borrow_demo.prime"), &source)
+            .expect("parse borrow demo");
+        let program = Program {
+            modules: vec![module],
+        };
+        let mut interpreter = Interpreter::new(Package {
+            program,
+            modules: Vec::new(),
+        });
+        interpreter.bootstrap().expect("bootstrap");
+        interpreter
+            .call_function("main", None, &[], Vec::new())
+            .expect("run borrow demo");
     }
 }
 fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {

@@ -740,4 +740,36 @@ fn main() {
             _ => panic!("expected markup hover"),
         }
     }
+
+    #[test]
+    fn hover_shows_pattern_for_destructured_binding() {
+        let text = r#"
+module demo::hover;
+
+fn main() {
+  let mut (left, right) = (1, 2);
+  out(left);
+}
+"#;
+        let tokens = lex(text).expect("lex tokens");
+        let module =
+            parse_module("demo::hover", PathBuf::from("demo.prime"), text).expect("parse module");
+        let token = tokens
+            .iter()
+            .filter(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "left"))
+            .nth(1)
+            .expect("usage of left");
+        let hover =
+            hover_for_token(text, token, &[], Some(&module), None).expect("hover result for left");
+        match hover.contents {
+            HoverContents::Markup(content) => {
+                assert!(
+                    content.value.contains("(left, right)"),
+                    "expected destructuring snippet in hover, got {}",
+                    content.value
+                );
+            }
+            _ => panic!("expected markup hover"),
+        }
+    }
 }

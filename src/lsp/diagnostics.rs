@@ -359,4 +359,29 @@ mod tests {
             "expected module header semicolon diagnostic, found {diags:?}"
         );
     }
+
+    #[test]
+    fn allows_mutable_destructuring_without_diagnostics() {
+        let dir = tempdir().expect("tempdir");
+        let file_path = dir.path().join("main.prime");
+        fs::write(&file_path, "").expect("write file");
+        let uri = Uri::from_file_path(&file_path).expect("uri");
+        let text = r#"
+module test::main;
+
+fn main() {
+  let mut (left, right) = (1, 2);
+  let mut #{ "hp": hp, "mp": mp } = #{
+    "hp": 10,
+    "mp": 5,
+  };
+  out(left + right + hp + mp);
+}
+"#;
+        let (_module, diags) = collect_parse_and_manifest_diagnostics(&uri, text);
+        assert!(
+            diags.is_empty(),
+            "expected mutable destructuring parse to succeed without diagnostics, found {diags:?}"
+        );
+    }
 }

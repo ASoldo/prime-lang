@@ -2875,6 +2875,7 @@ fn describe_value(value: &Value) -> &'static str {
 mod tests {
     use super::*;
     use crate::language::{ast::Program, parser::parse_module};
+    use std::fs;
     use std::path::PathBuf;
 
     fn compile_source(source: &str) -> Result<(), String> {
@@ -3091,5 +3092,20 @@ fn main() {
 }
 "#;
         compile_source(source).expect("mutable destructuring should compile");
+    }
+
+    #[test]
+    fn borrow_demo_compiles() {
+        let source =
+            fs::read_to_string("borrow_demo.prime").expect("read borrow demo from workspace");
+        let module = parse_module("demos::borrow", PathBuf::from("borrow_demo.prime"), &source)
+            .expect("parse borrow demo");
+        let program = Program {
+            modules: vec![module],
+        };
+        let mut compiler = Compiler::new();
+        compiler
+            .compile_program(&program)
+            .expect("compile borrow demo in build mode");
     }
 }

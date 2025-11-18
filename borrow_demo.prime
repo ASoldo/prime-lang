@@ -1,11 +1,108 @@
 module demos::borrow;
 
+struct Refill {
+  amount: int32;
+}
+
 fn alias_mut() {
   let mut int32 value = 10;
   let int32 copy = value;
   let &mut int32 first_ref = &mut value;
   *first_ref = copy + 5;
   out(*first_ref);
+}
+
+fn if_and_match_merging(flag: bool) -> int32 {
+  let mut int32 score = 1;
+  if flag {
+    let &mut int32 alias = &mut score;
+    *alias = 2;
+  } else {
+    let &mut int32 alias = &mut score;
+    *alias = 3;
+  }
+  {
+    let &mut int32 after_if = &mut score;
+    *after_if = *after_if + 1;
+  }
+
+  match flag {
+    true => {
+      let &mut int32 alias = &mut score;
+      *alias = *alias + 1;
+    },
+    false => {
+      let &mut int32 alias = &mut score;
+      *alias = *alias + 2;
+    },
+  }
+  score
+}
+
+fn loop_merging() -> int32 {
+  let mut int32 total = 0;
+  let mut int32 idx = 0;
+  while idx < 2 {
+    let &mut int32 alias = &mut total;
+    *alias = *alias + idx;
+    idx = idx + 1;
+  }
+
+  idx = 0;
+  while let true = idx == 0 {
+    let &mut int32 alias = &mut total;
+    *alias = *alias + 5;
+    idx = idx + 1;
+  }
+
+  for count in 0..2 {
+    let &mut int32 alias = &mut total;
+    *alias = *alias + count;
+  }
+
+  let []int32 entries = [3, 4];
+  for entry in entries {
+    let &mut int32 alias = &mut total;
+    *alias = *alias + entry;
+  }
+
+  total
+}
+
+fn nested_scope_and_return(flag: bool) -> int32 {
+  let mut int32 depth = 0;
+  {
+    let &mut int32 alias = &mut depth;
+    *alias = 7;
+  }
+  if flag {
+    let &mut int32 alias = &mut depth;
+    *alias = *alias + 1;
+    return depth;
+  }
+  let &mut int32 final_ref = &mut depth;
+  *final_ref = *final_ref + 2;
+  depth
+}
+
+fn mutable_destructuring_examples() {
+  let mut (int32, int32) pair = (5, 10);
+  let mut (left, right) = pair;
+  left = left + right;
+  out(left);
+
+  let Map[string, int32] points = #{
+    "hp": 20,
+    "mp": 15,
+  };
+  let mut #{ "hp": hp, "mp": mp } = points;
+  hp = hp + mp;
+  out(hp);
+
+  let Refill refill = Refill{ amount: 30 };
+  let mut Refill{ amount } = refill;
+  amount = amount + 5;
+  out(amount);
 }
 
 fn borrow_through_block() {
@@ -26,5 +123,11 @@ fn borrow_through_block() {
 
 fn main() {
   alias_mut();
+  out(if_and_match_merging(true));
+  out(if_and_match_merging(false));
+  out(loop_merging());
+  out(nested_scope_and_return(true));
+  out(nested_scope_and_return(false));
+  mutable_destructuring_examples();
   borrow_through_block();
 }
