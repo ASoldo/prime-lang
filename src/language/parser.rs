@@ -1428,6 +1428,13 @@ impl Parser {
         if self.matches(TokenKind::Identifier("_".into())) {
             return Ok(Pattern::Wildcard);
         }
+        if self.matches(TokenKind::LBracket) {
+            let start = self
+                .previous_span()
+                .map(|s| s.start)
+                .unwrap_or_else(|| self.current_span_start());
+            return self.parse_slice_pattern(start);
+        }
         if self.matches(TokenKind::LParen) {
             let start = self
                 .previous_span()
@@ -1506,6 +1513,10 @@ impl Parser {
                 bindings,
             });
         }
+        if self.matches(TokenKind::LBrace) {
+            let start = ident.span.start;
+            return self.parse_struct_pattern(Some(ident.name), start);
+        }
         if is_pascal_case(&ident.name) {
             return Ok(Pattern::EnumVariant {
                 enum_name: None,
@@ -1570,6 +1581,88 @@ impl Parser {
         }
         let end = self.expect(TokenKind::RBrace)?.span.end;
         Ok(Pattern::Map(entries, Span::new(start, end)))
+    }
+
+    fn parse_struct_pattern(
+        &mut self,
+        struct_name: Option<String>,
+        start: usize,
+    ) -> Result<Pattern, SyntaxError> {
+        let mut fields = Vec::new();
+        let mut has_spread = false;
+        while !self.check(TokenKind::RBrace) && !self.is_eof() {
+            if self.matches(TokenKind::DotDot) {
+                if has_spread {
+                    return Err(self.error_here("`..` already used in struct pattern"));
+                }
+                has_spread = true;
+                if !self.check(TokenKind::Comma) && !self.check(TokenKind::RBrace) {
+                    return Err(self.error_here("`..` cannot bind names in struct patterns yet"));
+                }
+            } else {
+                let field_ident =
+                    self.expect_identifier("Expected field name in struct pattern")?;
+                let pattern = if self.matches(TokenKind::Colon) {
+                    self.parse_pattern()?
+                } else {
+                    Pattern::Identifier(field_ident.name.clone(), field_ident.span)
+                };
+                fields.push(StructPatternField {
+                    name: field_ident.name,
+                    pattern,
+                });
+            }
+            if self.matches(TokenKind::Comma) {
+                continue;
+            }
+            break;
+        }
+        let end = self.expect(TokenKind::RBrace)?.span.end;
+        Ok(Pattern::Struct {
+            struct_name,
+            fields,
+            has_spread,
+            span: Span::new(start, end),
+        })
+    }
+
+    fn parse_slice_pattern(&mut self, start: usize) -> Result<Pattern, SyntaxError> {
+        let mut prefix = Vec::new();
+        let mut suffix = Vec::new();
+        let mut rest: Option<Pattern> = None;
+        let mut rest_seen = false;
+        while !self.check(TokenKind::RBracket) && !self.is_eof() {
+            if !rest_seen && self.matches(TokenKind::DotDot) {
+                if rest.is_some() {
+                    return Err(self.error_here("`..` already used in slice pattern"));
+                }
+                rest_seen = true;
+                if self.check(TokenKind::Comma) || self.check(TokenKind::RBracket) {
+                    rest = Some(Pattern::Wildcard);
+                } else {
+                    let pattern = self.parse_pattern()?;
+                    rest = Some(pattern);
+                }
+            } else {
+                let pattern = self.parse_pattern()?;
+                if rest_seen {
+                    suffix.push(pattern);
+                } else {
+                    prefix.push(pattern);
+                }
+            }
+            if self.matches(TokenKind::Comma) {
+                continue;
+            }
+            break;
+        }
+        let end = self.expect(TokenKind::RBracket)?.span.end;
+        Ok(Pattern::Slice {
+            prefix,
+            rest: rest.map(Box::new),
+            suffix,
+            span: Span::new(start, end),
+        })
     }
 
     fn expect_string(&mut self, msg: &str) -> Result<String, SyntaxError> {

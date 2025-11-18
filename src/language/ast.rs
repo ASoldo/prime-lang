@@ -248,11 +248,29 @@ pub enum Pattern {
     },
     Tuple(Vec<Pattern>, Span),
     Map(Vec<MapPatternEntry>, Span),
+    Struct {
+        struct_name: Option<String>,
+        fields: Vec<StructPatternField>,
+        has_spread: bool,
+        span: Span,
+    },
+    Slice {
+        prefix: Vec<Pattern>,
+        rest: Option<Box<Pattern>>, // captures ..rest
+        suffix: Vec<Pattern>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug)]
 pub struct MapPatternEntry {
     pub key: String,
+    pub pattern: Pattern,
+}
+
+#[derive(Clone, Debug)]
+pub struct StructPatternField {
+    pub name: String,
     pub pattern: Pattern,
 }
 

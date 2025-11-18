@@ -1555,6 +1555,92 @@ impl Checker {
                     self.bind_pattern(module, &entry.pattern, value_ty.as_ref(), env);
                 }
             }
+            Pattern::Struct {
+                struct_name,
+                fields,
+                has_spread: _,
+                span,
+            } => {
+                let mut resolved = struct_name.clone();
+                if let Some(TypeExpr::Named(name, _)) = ty {
+                    if let Some(pattern_name) = struct_name {
+                        if pattern_name != name {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                *span,
+                                format!(
+                                    "struct pattern `{}` does not match value of type `{}`",
+                                    pattern_name, name
+                                ),
+                            ));
+                        }
+                    }
+                    resolved = Some(name.clone());
+                } else if ty.is_some() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        *span,
+                        "struct pattern requires struct type",
+                    ));
+                }
+                let struct_def = resolved
+                    .as_ref()
+                    .and_then(|name| self.registry.structs.get(name).cloned());
+                if resolved.is_some() && struct_def.is_none() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        *span,
+                        "unknown struct in pattern",
+                    ));
+                }
+                for field in fields {
+                    let field_ty = struct_def.as_ref().and_then(|info| {
+                        lookup_struct_field(&self.registry, &info.def, &field.name)
+                    });
+                    if struct_def.is_some() && field_ty.is_none() {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            *span,
+                            format!("unknown field `{}` in struct pattern", field.name),
+                        ));
+                    }
+                    self.bind_pattern(module, &field.pattern, field_ty.as_ref(), env);
+                }
+            }
+            Pattern::Slice {
+                prefix,
+                rest,
+                suffix,
+                span,
+            } => {
+                let element_ty = match ty {
+                    Some(TypeExpr::Slice(inner)) => Some((**inner).clone()),
+                    Some(actual) => {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            *span,
+                            format!(
+                                "slice pattern requires slice type, found `{}`",
+                                actual.canonical_name()
+                            ),
+                        ));
+                        None
+                    }
+                    None => None,
+                };
+                for pat in prefix {
+                    self.bind_pattern(module, pat, element_ty.as_ref(), env);
+                }
+                if let Some(rest_pattern) = rest {
+                    let rest_ty = element_ty
+                        .as_ref()
+                        .map(|inner| TypeExpr::Slice(Box::new(inner.clone())));
+                    self.bind_pattern(module, rest_pattern, rest_ty.as_ref(), env);
+                }
+                for pat in suffix {
+                    self.bind_pattern(module, pat, element_ty.as_ref(), env);
+                }
+            }
         }
     }
 
@@ -2140,6 +2226,8 @@ fn pattern_span(pattern: &Pattern) -> Span {
             .unwrap_or_else(|| Span::new(0, 0)),
         Pattern::Tuple(_, span) => *span,
         Pattern::Map(_, span) => *span,
+        Pattern::Struct { span, .. } => *span,
+        Pattern::Slice { span, .. } => *span,
     }
 }
 

@@ -883,6 +883,47 @@ fn format_pattern(pattern: &Pattern) -> String {
                 .join(", ");
             format!("#{{ {inner} }}")
         }
+        Pattern::Struct {
+            struct_name,
+            fields,
+            has_spread,
+            ..
+        } => {
+            let mut parts = Vec::new();
+            for field in fields {
+                parts.push(format!(
+                    "{}: {}",
+                    field.name,
+                    format_pattern(&field.pattern)
+                ));
+            }
+            if *has_spread {
+                parts.push("..".into());
+            }
+            let inner = parts.join(", ");
+            if let Some(name) = struct_name {
+                format!("{name}{{ {inner} }}")
+            } else {
+                format!("{{ {inner} }}")
+            }
+        }
+        Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+            ..
+        } => {
+            let mut parts: Vec<String> = prefix.iter().map(format_pattern).collect();
+            if let Some(rest_pattern) = rest {
+                if matches!(**rest_pattern, Pattern::Wildcard) {
+                    parts.push("..".into());
+                } else {
+                    parts.push(format!("..{}", format_pattern(rest_pattern)));
+                }
+            }
+            parts.extend(suffix.iter().map(format_pattern));
+            format!("[{}]", parts.join(", "))
+        }
     }
 }
 

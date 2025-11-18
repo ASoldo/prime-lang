@@ -1318,6 +1318,77 @@ impl Compiler {
                     Ok(false)
                 }
             }
+            Pattern::Struct {
+                struct_name,
+                fields,
+                has_spread: _,
+                ..
+            } => {
+                let concrete = match value {
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                if let Value::Struct(instance) = concrete {
+                    if let Some(expected) = struct_name {
+                        if &instance.name != expected {
+                            return Ok(false);
+                        }
+                    }
+                    for field in fields {
+                        let Some(field_value) = instance.get(&field.name) else {
+                            return Ok(false);
+                        };
+                        if !self.match_pattern(&field_value, &field.pattern)? {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Pattern::Slice {
+                prefix,
+                rest,
+                suffix,
+                ..
+            } => {
+                let concrete = match value {
+                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    other => other.clone(),
+                };
+                let elements = match concrete {
+                    Value::Slice(slice) => slice.items.borrow().clone(),
+                    _ => return Ok(false),
+                };
+                if rest.is_none() && elements.len() != prefix.len() + suffix.len() {
+                    return Ok(false);
+                }
+                if prefix.len() + suffix.len() > elements.len() {
+                    return Ok(false);
+                }
+                for (pat, val) in prefix.iter().zip(elements.iter()) {
+                    if !self.match_pattern(val, pat)? {
+                        return Ok(false);
+                    }
+                }
+                for (pat, val) in suffix.iter().rev().zip(elements.iter().rev()) {
+                    if !self.match_pattern(val, pat)? {
+                        return Ok(false);
+                    }
+                }
+                if let Some(rest_pattern) = rest {
+                    let start = prefix.len();
+                    let end = elements.len() - suffix.len();
+                    let slice = SliceValue::from_vec(elements[start..end].to_vec());
+                    if !self.match_pattern(&Value::Slice(slice), rest_pattern)? {
+                        return Ok(false);
+                    }
+                } else if elements.len() != prefix.len() + suffix.len() {
+                    return Ok(false);
+                }
+                Ok(true)
+            }
         }
     }
 

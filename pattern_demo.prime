@@ -2,6 +2,12 @@ module demos::patterns;
 
 import core::types;
 
+struct Telemetry {
+  hp: int32;
+  mp: int32;
+  notes: []string;
+}
+
 fn describe_reading(reading: (string, int32)) {
   match reading {
     ("temp", value) => out(value),
@@ -27,6 +33,24 @@ fn summarize_stats(stats: Map[string, int32]) {
   }
 }
 
+fn inspect_telemetry(data: Telemetry) {
+  match data {
+    Telemetry{ hp, mp, .. } => {
+      out("telemetry summary");
+      out(hp + mp);
+    },
+  };
+
+  match data.notes {
+    [first, ..rest] => {
+      out("first note:");
+      out(first);
+      out(rest.slice_len());
+    },
+    [] => out("no notes"),
+  };
+}
+
 fn main() {
   describe_reading(("temp", 72));
   let Map[string, int32] stats = #{
@@ -35,4 +59,11 @@ fn main() {
   };
 
   summarize_stats(stats);
+
+  let Telemetry snapshot = Telemetry{
+    hp: 95,
+    mp: 45,
+    notes: ["stable", "ready"],
+  };
+  inspect_telemetry(snapshot);
 }

@@ -152,6 +152,15 @@ match reading {
   _ => out("other"),
 };
 
+match player {
+  Player{ Stats{ hp, .. }, name, .. } => out(name),
+};
+
+match queue {
+  [first, ..rest] => out(first),
+  [] => out("empty"),
+};
+
 if hero.hp < 50 {
   out("status: fragile");
 } else if hero.hp > 250 {

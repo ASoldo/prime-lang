@@ -303,6 +303,27 @@ fn collect_pattern_decls(
                 collect_pattern_decls(&entry.pattern, scope, available_from, decls, pattern_span);
             }
         }
+        Pattern::Struct { fields, .. } => {
+            for field in fields {
+                collect_pattern_decls(&field.pattern, scope, available_from, decls, pattern_span);
+            }
+        }
+        Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+            ..
+        } => {
+            for pat in prefix {
+                collect_pattern_decls(pat, scope, available_from, decls, pattern_span);
+            }
+            if let Some(rest_pattern) = rest {
+                collect_pattern_decls(rest_pattern, scope, available_from, decls, pattern_span);
+            }
+            for pat in suffix {
+                collect_pattern_decls(pat, scope, available_from, decls, pattern_span);
+            }
+        }
         _ => {}
     }
 }
@@ -476,6 +497,8 @@ fn pattern_span(pattern: &Pattern) -> Span {
             .unwrap_or_else(|| Span::new(0, 0)),
         Pattern::Tuple(_, span) => *span,
         Pattern::Map(_, span) => *span,
+        Pattern::Struct { span, .. } => *span,
+        Pattern::Slice { span, .. } => *span,
     }
 }
 
