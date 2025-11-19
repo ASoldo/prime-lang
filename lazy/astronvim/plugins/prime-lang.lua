@@ -136,9 +136,9 @@ return {
     (module_path (identifier) @namespace)
 
     (function_definition name: (identifier) @function)
-    (struct_definition name: (identifier) @type)
-    (enum_definition name: (identifier) @type)
-    (interface_definition name: (identifier) @type)
+    (struct_definition name: (type_identifier) @type)
+    (enum_definition name: (type_identifier) @type)
+    (interface_definition name: (type_identifier) @type)
     (impl_definition target: (type_expression) @type)
     (const_definition name: (identifier) @constant)
 
@@ -147,8 +147,10 @@ return {
     (let_statement pattern: (identifier) @variable)
     (pattern (identifier) @variable)
 
-    (type_expression (identifier) @type)
+    (type_expression (type_identifier) @type)
+    (type_expression (type_path (type_identifier)) @type)
     (type_expression (module_path) @type)
+    (type_expression (identifier) @type)
 
     (integer_literal) @number
     (float_literal)   @float
@@ -171,15 +173,15 @@ return {
       (#set! "kind" "Namespace")) @symbol
 
     (struct_definition
-      name: (identifier) @name
+      name: (type_identifier) @name
       (#set! "kind" "Struct")) @symbol
 
     (enum_definition
-      name: (identifier) @name
+      name: (type_identifier) @name
       (#set! "kind" "Enum")) @symbol
 
     (interface_definition
-      name: (identifier) @name
+      name: (type_identifier) @name
       (#set! "kind" "Interface")) @symbol
 
     (impl_definition

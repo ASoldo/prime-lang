@@ -33,7 +33,9 @@ module.exports = grammar({
     [$.statement, $.expression],
     [$.return_type, $.tuple_type],
     [$.pattern, $.enum_pattern],
+    [$.pattern, $.enum_pattern, $.type_expression],
     [$.module_path],
+    [$.type_path, $.type_expression],
   ],
 
   rules: {
@@ -62,6 +64,11 @@ module.exports = grammar({
       repeat(seq('::', field('tail', $.identifier)))
     )),
 
+    type_path: $ => seq(
+      optional(seq($.module_path, '::')),
+      $.type_identifier
+    ),
+
     item: $ => seq(
       optional('pub'),
       choice(
@@ -76,7 +83,7 @@ module.exports = grammar({
 
     struct_definition: $ => seq(
       'struct',
-      field('name', $.identifier),
+      field('name', $.type_identifier),
       optional(field('type_parameters', $.type_parameters)),
       '{',
       repeat($.struct_field),
@@ -98,7 +105,7 @@ module.exports = grammar({
 
     enum_definition: $ => seq(
       'enum',
-      field('name', $.identifier),
+      field('name', $.type_identifier),
       optional(field('type_parameters', $.type_parameters)),
       '{',
       commaSep($.enum_variant),
@@ -116,7 +123,7 @@ module.exports = grammar({
 
     interface_definition: $ => seq(
       'interface',
-      field('name', $.identifier),
+      field('name', $.type_identifier),
       optional(field('type_parameters', $.type_parameters)),
       '{',
       repeat($.interface_method),
@@ -237,7 +244,7 @@ module.exports = grammar({
 
     while_statement: $ => seq(
       'while',
-      field('condition', choice($.expression, $.let_condition)),
+      field('condition', $._condition),
       field('body', $.block)
     ),
 
@@ -305,12 +312,12 @@ module.exports = grammar({
       field('value', $.expression)
     ),
 
-    if_expression: $ => seq(
+    if_expression: $ => prec.right(seq(
       'if',
-      field('condition', choice($.expression, $.let_condition)),
+      field('condition', $._condition),
       field('consequence', $.block),
       optional(field('alternative', $.else_clause))
-    ),
+    )),
 
     else_clause: $ => seq(
       'else',
@@ -321,7 +328,12 @@ module.exports = grammar({
       'let',
       field('pattern', $.pattern),
       '=',
-      field('value', $.expression)
+      field('value', prec.left(PREC.logical_and, $.expression))
+    ),
+
+    _condition: $ => choice(
+      $.let_condition,
+      $.expression
     ),
 
     range_expression: $ => prec.left(PREC.range,
@@ -378,7 +390,7 @@ module.exports = grammar({
     ),
 
     struct_literal: $ => seq(
-      field('type', $.module_path),
+      field('type', $.type_path),
       '{',
       commaSep($.struct_literal_field),
       '}'
@@ -504,6 +516,7 @@ module.exports = grammar({
     string_literal: $ => token(seq('"', repeat(choice(/[^"\\]/, /\\./)), '"')),
     rune_literal: $ => token(seq("'", choice(/[^'\\]/, /\\./), "'")),
 
+    type_identifier: $ => token(prec(1, /[A-Z][A-Za-z0-9_]*/)),
     identifier: $ => token(/[A-Za-z_][A-Za-z0-9_]*/),
 
     type_expression: $ => choice(
@@ -513,7 +526,8 @@ module.exports = grammar({
       $.array_type,
       $.tuple_type,
       $.generic_type,
-      $.module_path,
+      $.type_path,
+      $.type_identifier,
       $.identifier
     ),
 
@@ -523,7 +537,7 @@ module.exports = grammar({
     array_type: $ => seq('[', $.integer_literal, ']', $.type_expression),
     tuple_type: $ => seq('(', commaSep1($.type_expression), ')'),
     generic_type: $ => seq(
-      field('name', $.identifier),
+      field('name', $.type_path),
       '[',
       commaSep1($.type_expression),
       ']'
