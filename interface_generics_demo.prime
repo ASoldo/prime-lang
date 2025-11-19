@@ -12,8 +12,8 @@ struct Drone {
 }
 
 interface Nameable[T] {
-  fn label(self) -> string;
-  fn pair(self, other: T) -> string;
+  fn label(self: T) -> string;
+  fn pair(self: T, other: T) -> string;
 }
 
 impl Nameable[Hero] for Hero {

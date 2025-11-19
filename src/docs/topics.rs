@@ -286,8 +286,8 @@ let pair = duplicate[string]("Prime Hero");"#,
             TopicSection {
                 title: "Interfaces and implementations",
                 snippet: r#"interface Nameable[T] {
-  fn label(self) -> string;
-  fn pair(self, other: T) -> string;
+  fn label(self: T) -> string;
+  fn pair(self: T, other: T) -> string;
 }
 
 impl Nameable[Hero] for Hero {
@@ -311,6 +311,72 @@ let Box[int32] counter = box_new(0);
 bump_counter(&counter, 5);
 out(`box counter -> {}`, counter.box_get());"#,
                 explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and `.get(key)` for safe ownership transfers.",
+            },
+        ],
+    },
+    Topic {
+        key: "lab-demo",
+        title: "Lab Demo: Metrics, Iteration, & Interfaces",
+        category: "Examples",
+        summary: "`lab_demo.prime` is a runnable walkthrough of range loops, map destructuring, mutable references, and a generic interface. It doubles as a regression sample for highlighting and control-flow parsing.",
+        aliases: &[
+            "lab",
+            "labs",
+            "resonance",
+            "metrics",
+            "demo",
+            "collect",
+            "synergy",
+            "for-range",
+            "for-map",
+        ],
+        sections: &[
+            TopicSection {
+                title: "Range + collection loops with &mut aliasing",
+                snippet: r#"fn collect_metrics(baseline: int32, offset: int32, tuning: Map[string, int32], readings: []int32, iteration: int32) -> Map[string, int32] {
+  let mut int32 total = 0;
+  for cycle in 0..ROUND_LIMIT {
+    let &mut int32 alias = &mut total;
+    *alias = *alias + offset + cycle;
+  }
+  for reading in readings {
+    let &mut int32 alias = &mut total;
+    *alias = *alias + reading;
+  }
+  let mut int32 synergy = iteration;
+  match tuning {
+    #{ "stability": stability, "agility": agility } => {
+      synergy = synergy + stability + agility;
+    },
+    #{ "stability": stability } => synergy = synergy + stability,
+    _ => synergy = synergy + baseline,
+  }
+  #{
+    "total": total,
+    "synergy": synergy,
+  }
+}"#,
+                explanation: "`for cycle in 0..ROUND_LIMIT` shows range iteration ending at a constant; tree-sitter now recognizes uppercase constants as expressions. The `let &mut int32 alias = &mut total;` pattern binds a mutable reference for in-place updates without losing the original binding. Map pattern matching refines `synergy` based on available keys.",
+            },
+            TopicSection {
+                title: "Generic summaries over domain structs",
+                snippet: r#"interface Summarizable[T] {
+  fn label(self: T) -> string;
+  fn pair(self: T, other: T) -> string;
+}
+
+impl Summarizable[ExperimentResult] for ExperimentResult {
+  fn label(result: ExperimentResult) -> string {
+    result.name
+  }
+
+  fn pair(result: ExperimentResult, other: ExperimentResult) -> string {
+    let int32 left = result.normalized;
+    let int32 right = other.normalized;
+    `pair::{left}+{right}`
+  }
+}"#,
+                explanation: "Interfaces require typed parameters (`self: T`) so implementations align with the generic contract. The lab demo pairs results, prints summaries, and exercises tuple destructuring when combining readings and tags.",
             },
         ],
     },

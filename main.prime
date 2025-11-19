@@ -5,11 +5,11 @@ import core::types;
 const TRAINING_LIMIT: int32 = 3;
 
 interface Renderable[T] {
-  fn render(self);
+  fn render(self: T);
 }
 
 interface Nameable[T] {
-  fn label(self) -> string;
+  fn label(self: T) -> string;
 }
 
 struct PlayerPanel {

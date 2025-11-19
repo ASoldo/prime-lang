@@ -44,6 +44,21 @@ Build-mode now mirrors the interpreter for control flow (`return`/`break`/`conti
 and for the new `try {}` / `?` sugar, so you can rely on identical semantics in both
 `prime run` and `prime build`.
 
+### Example Programs
+
+- `main.prime` – Feature tour: modules, structs/enums, interfaces, ownership, and UI-ish printing.
+- `pattern_demo.prime` – Match/if/while/for destructuring across tuples, maps, structs, slices.
+- `error_handling_demo.prime` – `Result`, `try {}`, and `?` propagation.
+- `lab_demo.prime` – A runnable “Prime Resonance Lab” that combines range loops, map destructuring, mutable references, and a generic `Summarizable` interface for reporting metrics.
+
+Run any of them directly:
+
+```bash
+prime-lang run lab_demo.prime            # module demos::lab_demo in the manifest
+prime-lang run pattern_demo.prime        # module demos::patterns
+prime-lang run error_handling_demo.prime # module demos::error_handling
+```
+
 ## CLI Overview & Built-in Docs
 
 Every command is defined in `src/main.rs` with clap, so `prime-lang --help` stays
@@ -67,8 +82,10 @@ fresh. Highlights:
 - `prime-lang docs --list` shows topic keys plus their aliases so humans or AI
   agents can discover supported queries.
 - `prime-lang docs --query for,match` (comma-delimited or repeated flags) filters
-  to the topic that owns those aliases—`for`, `if`, and `match` currently map to
-  the `prime-intermediate` section that demos control flow and pattern matching.
+  to the topic that owns those aliases—`for`, `if`, and `match` map to the
+  `prime-intermediate` section that demos control flow and pattern matching.
+- `prime-lang docs --query lab` highlights the new `lab_demo.prime` walkthrough
+  that mixes range loops, map destructuring, mutable references, and interfaces.
 
 All snippets are drawn directly from the compiling demo files (`demos/*.prime`)
 or the real workspace manifest, so you always see runnable examples. The CLI
@@ -422,6 +439,19 @@ Commands:
 | `prime-lang fmt --file main.prime`   | Pretty-print to stdout                        |
 | `prime-lang fmt --file main.prime --write` | Format in place                       |
 | `prime-lang lsp`                     | Start the stdio Language Server               |
+
+## Checking Examples & Regression Safety
+
+Use the bundled script to lint every module registered in `prime.toml` (and
+optionally run them) to catch parser/typecheck regressions early:
+
+```bash
+./scripts/check_examples.sh            # lint all modules
+PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh  # also run them
+```
+
+This script keeps demos like `lab_demo.prime` in sync with the CLI and grammar
+changes so editor highlights and `prime-lang docs` snippets stay reliable.
 
 
 ## LSP Integration (Neovim example)
