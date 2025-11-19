@@ -764,6 +764,11 @@ fn emit_struct_literal(out: &mut String, indent: usize, name: &str, fields: &Str
 
 fn emit_map_literal(out: &mut String, indent: usize, entries: &[MapLiteralEntry]) {
     write_indent(out, indent);
+    emit_map_literal_inline(out, indent, entries);
+}
+
+fn emit_map_literal_inline(out: &mut String, indent: usize, entries: &[MapLiteralEntry]) {
+    // start on the current line to keep `field: #{` compact
     out.push_str("#{");
     if entries.is_empty() {
         out.push('}');
@@ -782,6 +787,11 @@ fn emit_map_literal(out: &mut String, indent: usize, entries: &[MapLiteralEntry]
 
 fn emit_array_literal(out: &mut String, indent: usize, values: &[Expr]) {
     write_indent(out, indent);
+    emit_array_literal_inline(out, indent, values);
+}
+
+fn emit_array_literal_inline(out: &mut String, indent: usize, values: &[Expr]) {
+    // start on the current line to keep `field: [` compact
     out.push('[');
     if values.is_empty() {
         out.push(']');
@@ -830,12 +840,10 @@ fn emit_composite_value(out: &mut String, indent: usize, expr: &Expr) {
             emit_struct_literal(out, indent + 2, name, fields);
         }
         Expr::MapLiteral { entries, .. } => {
-            out.push('\n');
-            emit_map_literal(out, indent + 2, entries);
+            emit_map_literal_inline(out, indent + 2, entries);
         }
         Expr::ArrayLiteral(values, _) => {
-            out.push('\n');
-            emit_array_literal(out, indent + 2, values);
+            emit_array_literal_inline(out, indent + 2, values);
         }
         _ => out.push_str(&format_expr(expr)),
     }

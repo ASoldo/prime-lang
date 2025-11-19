@@ -28,19 +28,16 @@ fn empty_result() -> ExperimentResult {
     name: "empty",
     normalized: 0,
     energy_span: (0, 0),
-    readings: 
-      [
+    readings: [
         0,
       ],
-    metrics: 
-      #{
+    metrics: #{
         "total": 0,
         "synergy": 0,
         "window_low": 0,
         "window_high": 0,
       },
-    tags: 
-      [
+    tags: [
         "empty",
       ],
   }
@@ -123,13 +120,11 @@ fn build_blueprints(seed: int32) -> []ExperimentPlan {
       name: "stability",
       baseline: seed + 12,
       offset: 4,
-      tuning: 
-        #{
+      tuning: #{
           "stability": seed + 2,
           "agility": 3,
         },
-      annotations: 
-        [
+      annotations: [
           "mode",
           "intent",
         ],
@@ -138,13 +133,11 @@ fn build_blueprints(seed: int32) -> []ExperimentPlan {
       name: "surge",
       baseline: seed + 32,
       offset: 6,
-      tuning: 
-        #{
+      tuning: #{
           "stability": seed + 4,
           "agility": 6,
         },
-      annotations: 
-        [
+      annotations: [
           "mode",
           "intent",
           "channel",
@@ -154,13 +147,11 @@ fn build_blueprints(seed: int32) -> []ExperimentPlan {
       name: "calm",
       baseline: seed + 8,
       offset: 2,
-      tuning: 
-        #{
+      tuning: #{
           "stability": seed + 1,
           "agility": 2,
         },
-      annotations: 
-        [
+      annotations: [
           "intent",
         ],
     },
