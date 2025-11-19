@@ -146,6 +146,10 @@
     "named": true,
     "subtypes": [
       {
+        "type": "assign_statement",
+        "named": true
+      },
+      {
         "type": "block",
         "named": true
       },
@@ -170,7 +174,15 @@
         "named": true
       },
       {
+        "type": "if_expression",
+        "named": true
+      },
+      {
         "type": "let_statement",
+        "named": true
+      },
+      {
+        "type": "match_expression",
         "named": true
       },
       {
@@ -272,6 +284,32 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "assign_statement",
+    "named": true,
+    "fields": {
+      "target": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {

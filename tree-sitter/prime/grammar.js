@@ -208,12 +208,15 @@ module.exports = grammar({
 
     statement: $ => choice(
       $.let_statement,
+      $.assign_statement,
       $.return_statement,
       $.while_statement,
       $.for_statement,
       $.defer_statement,
       $.break_statement,
       $.continue_statement,
+      $.match_expression,
+      $.if_expression,
       $.expression_statement,
       $.block
     ),
@@ -223,16 +226,23 @@ module.exports = grammar({
       optional('mut'),
       choice(
         seq(
-          field('type', $.type_expression),
-          field('name', $.identifier),
-          optional(seq('=', field('value', $.expression)))
-        ),
-        seq(
           field('pattern', $.pattern),
           optional(seq(':', field('annotation', $.type_expression))),
           optional(seq('=', field('value', $.expression)))
+        ),
+        seq(
+          field('type', $.type_expression),
+          field('name', $.identifier),
+          optional(seq('=', field('value', $.expression)))
         )
       ),
+      ';'
+    ),
+
+    assign_statement: $ => seq(
+      field('target', $.expression),
+      '=',
+      field('value', $.expression),
       ';'
     ),
 

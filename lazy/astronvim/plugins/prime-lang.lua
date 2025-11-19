@@ -152,6 +152,10 @@ return {
     (type_expression (module_path) @type)
     (type_expression (identifier) @type)
 
+    (assign_statement
+      target: (identifier) @variable
+      value: (identifier) @variable)
+
     (integer_literal) @number
     (float_literal)   @float
     (string_literal)  @string
@@ -202,6 +206,10 @@ return {
 
     (let_statement
       pattern: (identifier) @name
+      (#set! "kind" "Variable")) @symbol
+
+    (assign_statement
+      target: (identifier) @name
       (#set! "kind" "Variable")) @symbol
     ]]
 				local f = assert(io.open(query_root .. "/aerial.scm", "w"))
