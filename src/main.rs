@@ -1,3 +1,4 @@
+mod docs;
 mod language;
 mod lsp;
 mod project;
@@ -87,6 +88,18 @@ enum Commands {
         #[arg(long, value_enum, default_value = "pub")]
         visibility: ModuleVisibilityArg,
     },
+    /// Print reference snippets for Prime language features
+    Docs {
+        #[arg(
+            long,
+            value_name = "TOPIC",
+            value_delimiter = ',',
+            help = "Comma-separated list of topics to show"
+        )]
+        query: Vec<String>,
+        #[arg(long, default_value_t = false, help = "List available topics")]
+        list: bool,
+    },
 }
 
 fn main() {
@@ -133,6 +146,15 @@ fn main() {
         } => {
             if let Err(err) = add_module(&name, path.as_deref(), visibility) {
                 eprintln!("add failed: {err}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Docs { query, list } => {
+            if list {
+                docs::print_topic_list();
+            } else if let Err(err) = docs::print_topics(&query) {
+                eprintln!("{err}");
+                eprintln!("Run `prime-lang docs --list` to see available topics.");
                 std::process::exit(1);
             }
         }

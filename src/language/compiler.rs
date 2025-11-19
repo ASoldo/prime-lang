@@ -985,6 +985,13 @@ impl Compiler {
                 args,
                 ..
             } => self.emit_call_expression(callee, type_args, args),
+            Expr::Unary { op, expr, .. } => {
+                let value = match self.emit_expression(expr)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                self.eval_unary(*op, value).map(EvalOutcome::Value)
+            }
             other => Err(format!(
                 "Expression `{}` not supported in build mode",
                 describe_expr(other)
@@ -1620,7 +1627,37 @@ impl Compiler {
                 let converted = self.int_to_float(&b)?;
                 self.eval_float_binary(op, a, converted)
             }
-            _ => Err("Operation not supported in build mode".into()),
+            (Value::Str(a), Value::Str(b)) if matches!(op, BinaryOp::Eq | BinaryOp::NotEq) => {
+                let cmp = (*a.text == *b.text) == matches!(op, BinaryOp::Eq);
+                Ok(Value::Bool(cmp))
+            }
+            (other_l, other_r) => Err(format!(
+                "Operation `{op:?}` not supported in build mode for {} and {}",
+                describe_value(&other_l),
+                describe_value(&other_r)
+            )),
+        }
+    }
+
+    fn eval_unary(&mut self, op: UnaryOp, value: Value) -> Result<Value, String> {
+        match (op, Self::deref_if_reference(value)) {
+            (UnaryOp::Neg, Value::Int(int_val)) => int_val
+                .constant()
+                .map(|c| Value::Int(self.const_int_value(-c)))
+                .ok_or_else(|| {
+                    "Operation `Neg` not supported in build mode for non-constant integers".into()
+                }),
+            (UnaryOp::Neg, Value::Float(float_val)) => float_val
+                .constant()
+                .map(|c| Value::Float(self.const_float_value(-c)))
+                .ok_or_else(|| {
+                    "Operation `Neg` not supported in build mode for non-constant floats".into()
+                }),
+            (UnaryOp::Not, Value::Bool(flag)) => Ok(Value::Bool(!flag)),
+            (op_variant, other) => Err(format!(
+                "Operation `{op_variant:?}` not supported in build mode for {}",
+                describe_value(&other)
+            )),
         }
     }
 
@@ -1630,7 +1667,11 @@ impl Compiler {
             BinaryOp::Or => Value::Bool(lhs || rhs),
             BinaryOp::Eq => Value::Bool(lhs == rhs),
             BinaryOp::NotEq => Value::Bool(lhs != rhs),
-            _ => return Err("Operation not supported in build mode".into()),
+            _ => {
+                return Err(format!(
+                    "Operation `{op:?}` not supported in build mode for booleans"
+                ));
+            }
         };
         Ok(value)
     }
@@ -1688,7 +1729,11 @@ impl Compiler {
                 .map(|(a, b)| Value::Bool(a != b)),
             _ => None,
         };
-        result.ok_or_else(|| "Operation not supported in build mode".into())
+        result.ok_or_else(|| {
+            format!(
+                "Operation `{op:?}` not supported in build mode for integers (non-constant operands)"
+            )
+        })
     }
 
     fn eval_float_binary(
@@ -1712,14 +1757,21 @@ impl Compiler {
             BinaryOp::NotEq => values.map(|(a, b)| Value::Bool(a != b)),
             _ => None,
         };
-        result.ok_or_else(|| "Operation not supported in build mode".into())
+        result.ok_or_else(|| {
+            format!(
+                "Operation `{op:?}` not supported in build mode for floats (non-constant operands)"
+            )
+        })
     }
 
     fn int_to_float(&self, value: &IntValue) -> Result<FloatValue, String> {
         value
             .constant()
             .map(|constant| self.const_float_value(constant as f64))
-            .ok_or_else(|| "Operation not supported in build mode".into())
+            .ok_or_else(|| {
+                "Operation `IntToFloat` not supported in build mode for non-constant integers"
+                    .into()
+            })
     }
 
     fn deref_if_reference(value: Value) -> Value {

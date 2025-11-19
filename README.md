@@ -44,6 +44,62 @@ Build-mode now mirrors the interpreter for control flow (`return`/`break`/`conti
 and for the new `try {}` / `?` sugar, so you can rely on identical semantics in both
 `prime run` and `prime build`.
 
+## CLI Overview & Built-in Docs
+
+Every command is defined in `src/main.rs` with clap, so `prime-lang --help` stays
+fresh. Highlights:
+
+| Command | Purpose |
+| --- | --- |
+| `prime-lang run <file>` | Interpret a `.prime` entry point after loading its manifest dependencies |
+| `prime-lang build <file> --name demo` | Compile to LLVM IR/object code and write a runnable binary below `./.build.prime/demo` |
+| `prime-lang lint <file> [--watch]` | Single-shot or watch-mode linting with the same parser used by the LSP |
+| `prime-lang fmt <file> [--write]` | Preview or apply the formatter |
+| `prime-lang lsp` | Start the language server over stdio (Neovim/VS Code use this entry point) |
+| `prime-lang init [path]` | Scaffold a fresh workspace with `prime.toml` |
+| `prime-lang add <module> [--path file.prime]` | Append a module entry to the manifest and stub the file with the correct `module ...;` header |
+| `prime-lang docs [--list|--query ...]` | Print the curated reference topics described below |
+
+### `prime-lang docs`
+
+- `prime-lang docs` with no flags prints every topic in one pass (CLI, manifest,
+  syntax, control flow, generics, borrowing, etc.).
+- `prime-lang docs --list` shows topic keys plus their aliases so humans or AI
+  agents can discover supported queries.
+- `prime-lang docs --query for,match` (comma-delimited or repeated flags) filters
+  to the topic that owns those aliases—`for`, `if`, and `match` currently map to
+  the `prime-intermediate` section that demos control flow and pattern matching.
+
+All snippets are drawn directly from the compiling demo files (`demos/*.prime`)
+or the real workspace manifest, so you always see runnable examples. The CLI
+exits with an error code and a hint if a query doesn’t map to any topic.
+
+### `prime.toml` manifest
+
+`prime-lang` workspaces load `prime.toml` through
+`project::manifest::PackageManifest`. The manifest tells the loader which module
+names map to which files and what the entry module is:
+
+```toml
+manifest_version = "2"
+
+[package]
+entry = "app::main"
+kind = "binary"
+name = "prime-lang-playground"
+version = "0.1.0"
+
+[[modules]]
+name = "app::main"
+path = "main.prime"
+visibility = "pub"
+```
+
+`prime-lang add demos::patterns --path pattern_demo.prime` will append another
+`[[modules]]` table and create the stub file automatically. Keeping the manifest
+in sync with each file’s `module ...;` declaration lets the CLI, interpreter,
+compiler, and LSP share the same package graph.
+
 ## Language Basics
 
 Prime keeps the syntax close to systems languages you already know. Key features
