@@ -639,17 +639,19 @@ pub fn find_local_decl(module: &Module, name: &str, offset: usize) -> Option<Dec
         .into_iter()
         .filter(|decl| decl.name == name)
         .collect();
-    let strict = decls
+    decls
         .iter()
         .filter(|decl| scope_contains(decl.scope, offset))
         .filter(|decl| offset >= decl.available_from || offset <= decl.span.end)
         .max_by_key(|decl| decl.span.start)
-        .cloned();
-    strict.or_else(|| decls.into_iter().max_by_key(|decl| decl.span.start))
+        .cloned()
 }
 
 pub fn find_local_definition_span(module: &Module, name: &str, offset: usize) -> Option<Span> {
-    find_local_decl(module, name, offset).map(|decl| decl.span)
+    if let Some(decl) = find_local_decl(module, name, offset) {
+        return Some(decl.span);
+    }
+    find_module_item_span(module, name)
 }
 
 pub fn find_module_item_span(module: &Module, name: &str) -> Option<Span> {
@@ -669,7 +671,7 @@ pub fn find_module_item_span(module: &Module, name: &str) -> Option<Span> {
 
 #[cfg(test)]
 mod tests {
-    use super::unused_variable_diagnostics;
+    use super::{find_local_definition_span, unused_variable_diagnostics};
     use crate::language::parser::parse_module;
     use std::path::PathBuf;
 
@@ -688,6 +690,44 @@ fn main() {
         assert!(
             diags.iter().all(|diag| !diag.message.contains("hp")),
             "expected no unused-variable diagnostic for identifiers referenced in format strings, found {diags:?}"
+        );
+    }
+
+    #[test]
+    fn local_definition_prefers_in_scope_over_earlier_params() {
+        let source = r#"
+module tests::scope;
+
+fn drink_potion(p: Player, heal: int32) -> Player {
+  p
+}
+
+fn heal(player: Player, boost: int32) -> Player {
+  player
+}
+
+fn caller(leveled: Player) -> Player {
+  heal(leveled, 8)
+}
+"#;
+        let module =
+            parse_module("tests::scope", PathBuf::from("scope.prime"), source).expect("parse");
+        let offset = source
+            .find("heal(leveled")
+            .expect("call site should exist");
+        let span = find_local_definition_span(&module, "heal", offset)
+            .expect("definition should resolve");
+        let fn_pos = source.find("fn heal").expect("fn heal should exist");
+        let param_pos = source
+            .find("heal: int32")
+            .expect("param heal should exist");
+        assert!(
+            span.start >= fn_pos && span.end > fn_pos,
+            "expected span to cover function `heal`, got {span:?}"
+        );
+        assert!(
+            span.start >= fn_pos && span.start <= fn_pos + "fn heal".len(),
+            "resolved to unexpected span (likely a param): {span:?}, param at {param_pos}"
         );
     }
 }
