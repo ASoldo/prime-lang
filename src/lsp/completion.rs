@@ -190,8 +190,17 @@ pub struct MethodInfo {
 
 #[derive(Clone)]
 pub struct StructInfo {
+    pub module_name: String,
     pub fields: Vec<StructFieldInfo>,
     pub methods: Vec<MethodInfo>,
+}
+
+pub type StructInfoMap = HashMap<String, Vec<StructInfo>>;
+
+pub struct ChainResolution<'a> {
+    pub ty: TypeExpr,
+    pub last_field: Option<(String, &'a StructFieldInfo)>,
+    pub module_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -208,8 +217,28 @@ struct RawStructInfo {
     methods: Vec<MethodInfo>,
 }
 
-pub fn collect_struct_info(modules: &[Module]) -> HashMap<String, StructInfo> {
-    let mut raw = HashMap::new();
+#[derive(Clone)]
+struct RawStructEntry {
+    module_name: String,
+    info: RawStructInfo,
+}
+
+pub fn select_struct_info<'a>(
+    structs: &'a StructInfoMap,
+    name: &str,
+    module_name: Option<&str>,
+) -> Option<&'a StructInfo> {
+    let list = structs.get(name)?;
+    if let Some(module_name) = module_name {
+        if let Some(info) = list.iter().find(|info| info.module_name == module_name) {
+            return Some(info);
+        }
+    }
+    list.first()
+}
+
+pub fn collect_struct_info(modules: &[Module]) -> StructInfoMap {
+    let mut raw: HashMap<String, Vec<RawStructEntry>> = HashMap::new();
     for module in modules {
         for item in &module.items {
             if let Item::Struct(def) = item {
@@ -228,14 +257,16 @@ pub fn collect_struct_info(modules: &[Module]) -> HashMap<String, StructInfo> {
                         }
                     }
                 }
-                raw.insert(
-                    def.name.clone(),
-                    RawStructInfo {
-                        fields: struct_fields,
-                        embedded,
-                        methods: Vec::new(),
-                    },
-                );
+                raw.entry(def.name.clone())
+                    .or_default()
+                    .push(RawStructEntry {
+                        module_name: module.name.clone(),
+                        info: RawStructInfo {
+                            fields: struct_fields,
+                            embedded,
+                            methods: Vec::new(),
+                        },
+                    });
             }
         }
     }
@@ -244,8 +275,10 @@ pub fn collect_struct_info(modules: &[Module]) -> HashMap<String, StructInfo> {
             if let Item::Function(func) = item {
                 if let Some(first_param) = func.params.first() {
                     if let Some(receiver) = receiver_type_name(&first_param.ty.ty) {
-                        if let Some(entry) = raw.get_mut(&receiver) {
-                            entry.methods.push(MethodInfo {
+                        if let Some(entry) =
+                            select_raw_struct_entry_mut(&mut raw, &receiver, &module.name)
+                        {
+                            entry.info.methods.push(MethodInfo {
                                 name: func.name.clone(),
                                 signature: format_function_signature(func),
                                 declared_in: receiver,
@@ -259,8 +292,10 @@ pub fn collect_struct_info(modules: &[Module]) -> HashMap<String, StructInfo> {
                     if let Some(first_param) = method.params.first() {
                         if let Some(receiver) = receiver_type_name(&first_param.ty.ty) {
                             if receiver == target {
-                                if let Some(entry) = raw.get_mut(&receiver) {
-                                    entry.methods.push(MethodInfo {
+                                if let Some(entry) =
+                                    select_raw_struct_entry_mut(&mut raw, &receiver, &module.name)
+                                {
+                                    entry.info.methods.push(MethodInfo {
                                         name: method.name.clone(),
                                         signature: format_function_signature(method),
                                         declared_in: receiver.clone(),
@@ -273,16 +308,36 @@ pub fn collect_struct_info(modules: &[Module]) -> HashMap<String, StructInfo> {
             }
         }
     }
-    let mut info = HashMap::new();
-    let mut fields_cache = HashMap::new();
-    let mut methods_cache = HashMap::new();
+    let mut info: StructInfoMap = HashMap::new();
+    let mut fields_cache: HashMap<(String, String), Vec<StructFieldInfo>> = HashMap::new();
+    let mut methods_cache: HashMap<(String, String), Vec<MethodInfo>> = HashMap::new();
     let struct_names: Vec<String> = raw.keys().cloned().collect();
     for name in struct_names {
-        let mut field_stack = HashSet::new();
-        let fields = flatten_struct_fields(&name, &raw, &mut fields_cache, &mut field_stack);
-        let mut method_stack = HashSet::new();
-        let methods = flatten_struct_methods(&name, &raw, &mut methods_cache, &mut method_stack);
-        info.insert(name.clone(), StructInfo { fields, methods });
+        if let Some(entries) = raw.get(&name) {
+            for entry in entries {
+                let mut field_stack = HashSet::new();
+                let fields = flatten_struct_fields(
+                    &name,
+                    &entry.module_name,
+                    &raw,
+                    &mut fields_cache,
+                    &mut field_stack,
+                );
+                let mut method_stack = HashSet::new();
+                let methods = flatten_struct_methods(
+                    &name,
+                    &entry.module_name,
+                    &raw,
+                    &mut methods_cache,
+                    &mut method_stack,
+                );
+                info.entry(name.clone()).or_default().push(StructInfo {
+                    module_name: entry.module_name.clone(),
+                    fields,
+                    methods,
+                });
+            }
+        }
     }
     info
 }
@@ -316,64 +371,117 @@ pub fn select_interface_info<'a>(
         .or_else(|| list.first())
 }
 
+fn select_raw_struct_entry<'a>(
+    raw: &'a HashMap<String, Vec<RawStructEntry>>,
+    name: &str,
+    module_name: &str,
+) -> Option<&'a RawStructEntry> {
+    raw.get(name).and_then(|entries| {
+        entries
+            .iter()
+            .find(|entry| entry.module_name == module_name)
+            .or_else(|| entries.first())
+    })
+}
+
+fn select_raw_struct_entry_mut<'a>(
+    raw: &'a mut HashMap<String, Vec<RawStructEntry>>,
+    name: &str,
+    module_name: &str,
+) -> Option<&'a mut RawStructEntry> {
+    let entries = raw.get_mut(name)?;
+    if entries.len() == 1 {
+        return entries.first_mut();
+    }
+    let idx = entries
+        .iter()
+        .position(|entry| entry.module_name == module_name)
+        .unwrap_or(0);
+    entries.get_mut(idx)
+}
+
 fn flatten_struct_fields(
     name: &str,
-    raw: &HashMap<String, RawStructInfo>,
-    cache: &mut HashMap<String, Vec<StructFieldInfo>>,
-    stack: &mut HashSet<String>,
+    module_name: &str,
+    raw: &HashMap<String, Vec<RawStructEntry>>,
+    cache: &mut HashMap<(String, String), Vec<StructFieldInfo>>,
+    stack: &mut HashSet<(String, String)>,
 ) -> Vec<StructFieldInfo> {
-    if let Some(cached) = cache.get(name) {
+    let key = (module_name.to_string(), name.to_string());
+    if let Some(cached) = cache.get(&key) {
         return cached.clone();
     }
-    if !stack.insert(name.to_string()) {
+    if !stack.insert(key.clone()) {
         return Vec::new();
     }
     let mut fields = Vec::new();
-    if let Some(entry) = raw.get(name) {
-        fields.extend(entry.fields.clone());
-        for embedded in &entry.embedded {
-            fields.extend(flatten_struct_fields(embedded, raw, cache, stack));
+    if let Some(entry) = select_raw_struct_entry(raw, name, module_name) {
+        fields.extend(entry.info.fields.clone());
+        for embedded in &entry.info.embedded {
+            if let Some(next_entry) = select_raw_struct_entry(raw, embedded, module_name) {
+                fields.extend(flatten_struct_fields(
+                    embedded,
+                    &next_entry.module_name,
+                    raw,
+                    cache,
+                    stack,
+                ));
+            }
         }
     }
-    stack.remove(name);
-    cache.insert(name.to_string(), fields.clone());
+    stack.remove(&key);
+    cache.insert(key, fields.clone());
     fields
 }
 
 fn flatten_struct_methods(
     name: &str,
-    raw: &HashMap<String, RawStructInfo>,
-    cache: &mut HashMap<String, Vec<MethodInfo>>,
-    stack: &mut HashSet<String>,
+    module_name: &str,
+    raw: &HashMap<String, Vec<RawStructEntry>>,
+    cache: &mut HashMap<(String, String), Vec<MethodInfo>>,
+    stack: &mut HashSet<(String, String)>,
 ) -> Vec<MethodInfo> {
-    if let Some(cached) = cache.get(name) {
+    let key = (module_name.to_string(), name.to_string());
+    if let Some(cached) = cache.get(&key) {
         return cached.clone();
     }
-    if !stack.insert(name.to_string()) {
+    if !stack.insert(key.clone()) {
         return Vec::new();
     }
     let mut methods = Vec::new();
-    if let Some(entry) = raw.get(name) {
-        methods.extend(entry.methods.clone());
-        for embedded in &entry.embedded {
-            methods.extend(flatten_struct_methods(embedded, raw, cache, stack));
+    if let Some(entry) = select_raw_struct_entry(raw, name, module_name) {
+        methods.extend(entry.info.methods.clone());
+        for embedded in &entry.info.embedded {
+            if let Some(next_entry) = select_raw_struct_entry(raw, embedded, module_name) {
+                methods.extend(flatten_struct_methods(
+                    embedded,
+                    &next_entry.module_name,
+                    raw,
+                    cache,
+                    stack,
+                ));
+            }
         }
     }
-    stack.remove(name);
-    cache.insert(name.to_string(), methods.clone());
+    stack.remove(&key);
+    cache.insert(key, methods.clone());
     methods
 }
 
 pub fn member_completion_items(
     text: &str,
     chain: &[String],
-    struct_info: &HashMap<String, StructInfo>,
+    struct_info: &StructInfoMap,
     interfaces: &HashMap<String, Vec<InterfaceInfo>>,
     prefix: Option<&str>,
     module: &Module,
     offset: usize,
 ) -> Option<Vec<CompletionItem>> {
-    let (target_type, _) = resolve_chain_from_scope(chain, module, struct_info, offset)?;
+    let ChainResolution {
+        ty: target_type,
+        module_name: target_module,
+        ..
+    } = resolve_chain_from_scope(chain, module, struct_info, offset)?;
     let qualifier = if chain.is_empty() {
         None
     } else {
@@ -387,7 +495,8 @@ pub fn member_completion_items(
         &edit_range,
     );
     if let Some((name, args)) = named_type_with_args(strip_type_refs(&target_type)) {
-        if let Some(info) = struct_info.get(&name) {
+        let module_hint = target_module.as_deref().or(Some(module.name.as_str()));
+        if let Some(info) = select_struct_info(struct_info, &name, module_hint) {
             for field in &info.fields {
                 if prefix_matches(&field.name, prefix) {
                     let filter_text = qualifier
@@ -1045,37 +1154,48 @@ fn collect_chain_segments(text: &str, mut idx: usize) -> Option<Vec<String>> {
 fn resolve_chain_from_root<'a>(
     chain: &[String],
     root: TypeExpr,
-    structs: &'a HashMap<String, StructInfo>,
-) -> Option<(TypeExpr, Option<(String, &'a StructFieldInfo)>)> {
+    structs: &'a StructInfoMap,
+    preferred_module: Option<&str>,
+) -> Option<ChainResolution<'a>> {
     if chain.is_empty() {
         return None;
     }
     let mut current = root;
     let mut last_field = None;
+    let mut module_hint = preferred_module.map(|name| name.to_string());
     for segment in chain.iter().skip(1) {
         let struct_name = struct_name_from_type(&current)?.to_string();
-        let info = structs.get(&struct_name)?;
+        let info = select_struct_info(structs, &struct_name, module_hint.as_deref())?;
         let field = info.fields.iter().find(|f| f.name == *segment)?;
         current = field.ty.clone();
         last_field = Some((struct_name, field));
+        module_hint = Some(info.module_name.clone());
     }
-    Some((current, last_field))
+    let resolved_module = struct_name_from_type(&current)
+        .and_then(|name| select_struct_info(structs, name, module_hint.as_deref()))
+        .map(|info| info.module_name.clone())
+        .or(module_hint);
+    Some(ChainResolution {
+        ty: current,
+        last_field,
+        module_name: resolved_module,
+    })
 }
 
 pub fn resolve_chain_from_scope<'a>(
     chain: &[String],
     module: &Module,
-    structs: &'a HashMap<String, StructInfo>,
+    structs: &'a StructInfoMap,
     offset: usize,
-) -> Option<(TypeExpr, Option<(String, &'a StructFieldInfo)>)> {
+) -> Option<ChainResolution<'a>> {
     let root = chain.first()?;
     let ty = identifier_type_from_scope(module, structs, root, offset)?;
-    resolve_chain_from_root(chain, ty, structs)
+    resolve_chain_from_root(chain, ty, structs, Some(module.name.as_str()))
 }
 
 fn identifier_type_from_scope(
     module: &Module,
-    structs: &HashMap<String, StructInfo>,
+    structs: &StructInfoMap,
     name: &str,
     offset: usize,
 ) -> Option<TypeExpr> {

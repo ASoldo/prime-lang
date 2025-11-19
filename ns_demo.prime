@@ -9,10 +9,12 @@ struct Bar {
 }
 
 fn label(foo: Foo) -> string {
+  foo.value = 1;
   "foo"
 }
 
 fn label(bar: Bar) -> string {
+  bar.value = 1;
   "bar"
 }
 
@@ -20,11 +22,9 @@ fn main() {
   let Foo a = Foo{
     1,
   };
-
   let Bar b = Bar{
     2,
   };
-
   let string foo_free = label(a);
   let string bar_free = label(b);
   out(`Foo via free function: {foo_free}`);

@@ -1,6 +1,6 @@
 use crate::{
     language::{
-        ast::{Module, Program},
+        ast::{ImportPath, Module, Program},
         errors::SyntaxError,
         lexer::{LexError, lex},
         parser::parse_module,
@@ -17,6 +17,7 @@ use crate::{
 };
 use serde_json::json;
 use std::{
+    collections::{HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
 };
@@ -71,9 +72,7 @@ pub fn collect_parse_and_manifest_diagnostics(
             );
         }
         let manifest_ref = manifest_context.as_ref().map(|(manifest, _)| manifest);
-        let path_ref = manifest_context
-            .as_ref()
-            .map(|(_, path)| path.as_path());
+        let path_ref = manifest_context.as_ref().map(|(_, path)| path.as_path());
         diags.extend(type_diagnostics(text, module, manifest_ref, path_ref));
     }
     drop(tokens);
@@ -362,23 +361,98 @@ fn build_program_for_manifest(
     current_path: Option<&Path>,
 ) -> Program {
     let mut modules = Vec::new();
-    modules.push(current.clone());
-    let current_canonical = current_path.and_then(|path| path.canonicalize().ok());
-    for info in manifest.module_entries() {
-        if current_canonical
-            .as_ref()
-            .map(|path| path.as_path() == info.path.as_path())
-            .unwrap_or(false)
-        {
+    let mut queue = VecDeque::new();
+    let mut scheduled = HashSet::new();
+    let mut visited = HashSet::new();
+    let initial_path = current_path
+        .map(|path| path.to_path_buf())
+        .or_else(|| manifest.module_path(&current.name))
+        .unwrap_or_else(|| current.path.clone());
+    let canonical_initial = canonical_path(&initial_path);
+    queue.push_back((current.clone(), canonical_initial.clone()));
+    scheduled.insert(canonical_initial.clone());
+
+    while let Some((module, module_path)) = queue.pop_front() {
+        if !visited.insert(module_path.clone()) {
             continue;
         }
-        if let Ok(source) = fs::read_to_string(&info.path) {
-            if let Ok(parsed) = parse_module(&info.name, info.path.clone(), &source) {
-                modules.push(parsed);
+        for import in &module.imports {
+            if let Some(resolved) =
+                resolve_import_for_manifest(manifest, &module_path, &import.path)
+            {
+                if visited.contains(&resolved.canonical_path)
+                    || scheduled.contains(&resolved.canonical_path)
+                {
+                    continue;
+                }
+                if let Ok(source) = fs::read_to_string(&resolved.path) {
+                    if let Ok(parsed) = parse_module(
+                        &resolved.module_name,
+                        resolved.canonical_path.clone(),
+                        &source,
+                    ) {
+                        scheduled.insert(resolved.canonical_path.clone());
+                        queue.push_back((parsed, resolved.canonical_path));
+                    }
+                }
             }
         }
+        modules.push(module);
     }
+
     Program { modules }
+}
+
+struct ResolvedImport {
+    module_name: String,
+    path: PathBuf,
+    canonical_path: PathBuf,
+}
+
+fn resolve_import_for_manifest(
+    manifest: &PackageManifest,
+    base_path: &Path,
+    import_path: &ImportPath,
+) -> Option<ResolvedImport> {
+    let module_name = import_path.to_string();
+    if let Some(path) = manifest.module_path(&module_name) {
+        return Some(ResolvedImport {
+            module_name,
+            canonical_path: path.clone(),
+            path,
+        });
+    }
+    let relative = resolve_relative_import_path(base_path, import_path);
+    let canonical = canonical_path(&relative);
+    Some(ResolvedImport {
+        module_name: manifest
+            .module_name_for_path(&canonical)
+            .unwrap_or(module_name),
+        path: relative,
+        canonical_path: canonical,
+    })
+}
+
+fn resolve_relative_import_path(base: &Path, import_path: &ImportPath) -> PathBuf {
+    let mut path = if import_path.segments.is_empty() {
+        PathBuf::new()
+    } else {
+        import_path.to_relative_path()
+    };
+    if path.extension().is_none() {
+        path.set_extension("prime");
+    }
+    if path.is_absolute() {
+        path
+    } else {
+        base.parent()
+            .map(|dir| dir.join(&path))
+            .unwrap_or_else(|| PathBuf::from(".").join(&path))
+    }
+}
+
+fn canonical_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]

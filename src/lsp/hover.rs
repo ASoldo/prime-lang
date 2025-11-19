@@ -4,15 +4,14 @@ use crate::language::{
     token::{Token, TokenKind},
     types::{Mutability, TypeExpr},
 };
-use std::collections::HashMap;
 use tower_lsp_server::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 
 use super::{
     analysis::{DeclInfo, DeclKind, find_local_decl},
     completion::{
-        StructInfo, chain_for_field_token, format_function_signature,
-        format_interface_method_signature, format_type_arguments, format_type_expr,
-        format_type_params, resolve_chain_from_scope,
+        ChainResolution, StructInfo, StructInfoMap, chain_for_field_token,
+        format_function_signature, format_interface_method_signature, format_type_arguments,
+        format_type_expr, format_type_params, resolve_chain_from_scope, select_struct_info,
     },
     text::{extract_text, span_to_range},
 };
@@ -97,13 +96,14 @@ pub fn hover_for_token(
     token: &Token,
     vars: &[VarInfo],
     module: Option<&Module>,
-    struct_info: Option<&HashMap<String, StructInfo>>,
+    struct_info: Option<&StructInfoMap>,
 ) -> Option<Hover> {
     let span = token.span;
     let hover = match &token.kind {
         TokenKind::Identifier(name) => {
             if let Some(struct_info_map) = struct_info {
-                if let Some(info) = struct_info_map.get(name) {
+                let module_hint = module.map(|m| m.name.as_str());
+                if let Some(info) = select_struct_info(struct_info_map, name, module_hint) {
                     return Some(markdown_struct_info(text, span, name, info));
                 }
             }
@@ -344,14 +344,17 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
 fn hover_for_field_usage(
     text: &str,
     span: Span,
-    struct_info: &HashMap<String, StructInfo>,
+    struct_info: &StructInfoMap,
     module: &Module,
     offset: usize,
 ) -> Option<Hover> {
     let chain = chain_for_field_token(text, span)?;
     let name = chain.last()?.clone();
-    if let Some((target_type, field_info)) =
-        resolve_chain_from_scope(&chain, module, struct_info, offset)
+    if let Some(ChainResolution {
+        ty: target_type,
+        last_field: field_info,
+        module_name: target_module,
+    }) = resolve_chain_from_scope(&chain, module, struct_info, offset)
     {
         if let Some((struct_name, field)) = field_info {
             let mut value = String::new();
@@ -361,7 +364,8 @@ fn hover_for_field_usage(
             return Some(markdown_hover(text, span, value));
         }
         if let Some((struct_name, _)) = super::completion::named_type_with_args(&target_type) {
-            if let Some(info) = struct_info.get(&struct_name) {
+            let module_hint = target_module.as_deref().or(Some(module.name.as_str()));
+            if let Some(info) = select_struct_info(struct_info, &struct_name, module_hint) {
                 let mut value = String::new();
                 value.push_str(&format!("Struct `{struct_name}`\n\n"));
                 for method in &info.methods {
@@ -373,7 +377,7 @@ fn hover_for_field_usage(
     }
     if chain.len() >= 2 {
         let base_chain = &chain[..chain.len() - 1];
-        if let Some((base_type, _)) =
+        if let Some(ChainResolution { ty: base_type, .. }) =
             resolve_chain_from_scope(base_chain, module, struct_info, offset)
         {
             if let Some(hover) = hover_for_builtin_method(text, span, &base_type, name.as_str()) {
