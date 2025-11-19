@@ -75,3 +75,9 @@ visibility = "pub"
 name = "demos::patterns"
 path = "pattern_demo.prime"
 visibility = "pub"
+
+[[modules]]
+name = "demos::lab_demo"
+path = "lab_demo.prime"
+visibility = "pub"
+

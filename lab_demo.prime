@@ -1,0 +1,315 @@
+module demos::lab_demo;
+
+const LAB_TITLE: string = "Prime Resonance Lab";
+
+const ROUND_LIMIT: int32 = 3;
+
+const SIGNAL_OFFSET: int32 = 7;
+
+struct ExperimentPlan {
+  name: string;
+  baseline: int32;
+  offset: int32;
+  tuning: Map[string, int32];
+  annotations: []string;
+}
+
+struct ExperimentResult {
+  name: string;
+  normalized: int32;
+  energy_span: (int32, int32);
+  readings: []int32;
+  metrics: Map[string, int32];
+  tags: []string;
+}
+
+fn empty_result() -> ExperimentResult {
+  ExperimentResult{
+    name: "empty",
+    normalized: 0,
+    energy_span: (0, 0),
+    readings: 
+      [
+        0,
+      ],
+    metrics: 
+      #{
+        "total": 0,
+        "synergy": 0,
+        "window_low": 0,
+        "window_high": 0,
+      },
+    tags: 
+      [
+        "empty",
+      ],
+  }
+}
+
+fn next_tag_key(idx: int32) -> (bool, string) {
+  if idx == 0 {
+    return true, "mode";
+  } else if idx == 1 {
+    return true, "intent";
+  } else if idx == 2 {
+    return true, "channel";
+  }
+  return false, "";
+}
+
+fn annotation_bonus(annotations: []string, key: string, idx: int32) -> (bool, int32) {
+  for entry in annotations {
+    if entry == key {
+      return true, idx + 2;
+    }
+  }
+  return false, 0;
+}
+
+fn first_tag(tags: []string) -> (bool, string) {
+  for entry in tags {
+    return true, entry;
+  }
+  return false, "none";
+}
+
+interface Summarizable[T] {
+  fn label(self) -> string;
+  fn pair(self, other: T) -> string;
+}
+
+impl Summarizable[ExperimentResult] for ExperimentResult {
+  fn label(result: ExperimentResult) -> string {
+    result.name
+  }
+
+  fn pair(result: ExperimentResult, other: ExperimentResult) -> string {
+    let int32 left = result.normalized;
+    let int32 right = other.normalized;
+    `pair::{left}+{right}`
+  }
+}
+
+fn duplicate[T](value: T) -> (T, T) {
+  (value, value)
+}
+
+fn describe_metrics(metrics: Map[string, int32]) -> string {
+  match metrics {
+    #{ "total": total, "synergy": synergy } => `metrics total {total} synergy {synergy}`,
+    #{ "total": total } => `metrics total {total} synergy missing`,
+    _ => "metrics incomplete",
+  }
+}
+
+fn highlight_summary(base_label: string, tags: []string) -> string {
+  if let (true, primary) = first_tag(tags) {
+    return `summary {base_label} primary {primary}`;
+  }
+  `summary {base_label} primary none`
+}
+
+fn merge_pair(result: ExperimentResult, partner: ExperimentResult) -> string {
+  result.pair(partner)
+}
+
+fn title() -> string {
+  LAB_TITLE
+}
+
+fn build_blueprints(seed: int32) -> []ExperimentPlan {
+  [
+    ExperimentPlan{
+      name: "stability",
+      baseline: seed + 12,
+      offset: 4,
+      tuning: 
+        #{
+          "stability": seed + 2,
+          "agility": 3,
+        },
+      annotations: 
+        [
+          "mode",
+          "intent",
+        ],
+    },
+    ExperimentPlan{
+      name: "surge",
+      baseline: seed + 32,
+      offset: 6,
+      tuning: 
+        #{
+          "stability": seed + 4,
+          "agility": 6,
+        },
+      annotations: 
+        [
+          "mode",
+          "intent",
+          "channel",
+        ],
+    },
+    ExperimentPlan{
+      name: "calm",
+      baseline: seed + 8,
+      offset: 2,
+      tuning: 
+        #{
+          "stability": seed + 1,
+          "agility": 2,
+        },
+      annotations: 
+        [
+          "intent",
+        ],
+    },
+  ]
+}
+
+fn evaluate_plan(plan: ExperimentPlan, iteration: int32) -> (bool, ExperimentResult, string) {
+  let (guard_ok, safe_iteration, guard_message) = guard_iteration(iteration);
+  if !guard_ok {
+    return false, empty_result(), guard_message;
+  }
+  let (norm_ok, normalized, norm_message) = normalize_target(plan.baseline, plan.offset, safe_iteration);
+  if !norm_ok {
+    return false, empty_result(), norm_message;
+  }
+  let (span_low, span_high) = span_window(normalized);
+  let []int32 readings = reading_window(normalized);
+  let Map[string, int32] metrics = collect_metrics(plan.baseline, plan.offset, plan.tuning, readings, safe_iteration);
+  let (confirmed_name, tags) = derive_tags(plan.name, plan.annotations, normalized, safe_iteration);
+  let Box[int32] gauge = box_new(normalized);
+  let int32 gauge_value = gauge.box_get();
+  return true, ExperimentResult{ name: confirmed_name, normalized: gauge_value, energy_span: (span_low, span_high), readings: readings, metrics: metrics, tags: tags }, "";
+}
+
+fn guard_iteration(iteration: int32) -> (bool, int32, string) {
+  if iteration < 0 {
+    return false, 0, "iteration cannot be negative";
+  }
+  if iteration > 6 {
+    return false, 0, "iteration exceeds lab safety plan";
+  }
+  return true, iteration, "";
+}
+
+fn normalize_target(baseline: int32, offset: int32, iteration: int32) -> (bool, int32, string) {
+  let int32 candidate = baseline + offset - iteration;
+  if candidate < 0 {
+    return false, 0, "baseline forces negative target";
+  } else if candidate > 200 {
+    return false, 0, "baseline pushes past maximum energy";
+  }
+  return true, candidate + SIGNAL_OFFSET, "";
+}
+
+fn span_window(normalized: int32) -> (int32, int32) {
+  if normalized < 60 {
+    return normalized - 6, normalized + 6;
+  } else if normalized > 120 {
+    return normalized - 8, normalized + 8;
+  }
+  let int32 midpoint = normalized / 2;
+  (midpoint - 5, midpoint + 5)
+}
+
+fn reading_window(anchor: int32) -> []int32 {
+  [
+    anchor - 4,
+    anchor,
+    anchor + 4,
+    anchor + SIGNAL_OFFSET,
+  ]
+}
+
+fn collect_metrics(baseline: int32, offset: int32, tuning: Map[string, int32], readings: []int32, iteration: int32) -> Map[string, int32] {
+  let mut int32 total = 0;
+  for cycle in 0..ROUND_LIMIT {
+    let &mut int32 alias = &mut total;
+    *alias = *alias + offset + cycle;
+  }
+  for reading in readings {
+    let &mut int32 alias = &mut total;
+    *alias = *alias + reading;
+  }
+  let mut int32 synergy = iteration;
+  match tuning {
+    #{ "stability": stability, "agility": agility } => {
+      synergy = synergy + stability + agility;
+    },
+    #{ "stability": stability } => {
+      synergy = synergy + stability;
+    },
+    _ => {
+      synergy = synergy + baseline;
+    },
+  }
+  let (low, high) =   match (iteration, baseline) {
+    (turn, level) if turn > 1 => (level - 2, level + 2),
+    (_, level) => (offset, level + SIGNAL_OFFSET),
+  };
+  #{
+    "total": total,
+    "synergy": synergy,
+    "window_low": low,
+    "window_high": high,
+  }
+}
+
+fn derive_tags(name: string, annotations: []string, normalized: int32, iteration: int32) -> (string, []string) {
+  let string tone =   match (name, normalized) {
+    ("surge", value) if value > 90 => "volatile",
+    ("calm", _) => "even",
+    _ => "steady",
+  };
+  let mut int32 idx = 0;
+  let mut int32 detail_score = 0;
+  while let (true, key) = next_tag_key(idx) {
+    if let (true, bonus) = annotation_bonus(annotations, key, idx) {
+      detail_score = detail_score + bonus;
+    } else {
+      detail_score = detail_score + idx;
+    }
+    idx = idx + 1;
+  }
+  let []string tags =   [
+    name,
+    tone,
+    "iteration",
+    "detail",
+  ];
+  (name, tags)
+}
+
+fn main() {
+  let string lab_title = title();
+  out(`== {lab_title} ==`);
+  let plans = build_blueprints(48);
+  let (left_label, right_label) = duplicate[string]("aperture");
+  out(`duplicate markers {left_label} + {right_label}`);
+  let mut int32 turn = 0;
+  let mut bool has_previous = false;
+  let mut ExperimentResult previous_result = empty_result();
+  for plan in plans {
+    let (success, result, message) = evaluate_plan(plan, turn);
+    if success {
+      let int32 normalized_value = result.normalized;
+      out(`plan {turn} normalized {normalized_value}`);
+      let string metrics_line = describe_metrics(result.metrics);
+      out(metrics_line);
+      let string base_label = result.label();
+      let string summary_line = highlight_summary(base_label, result.tags);
+      out(summary_line);
+      if has_previous {
+        out(merge_pair(result, previous_result));
+      }
+      previous_result = result;
+      has_previous = true;
+    } else {
+      out(`plan {turn} failed {message}`);
+    }
+    turn = turn + 1;
+  }
+}
