@@ -6,7 +6,10 @@ fn main() {
   let Box[int32] counter = box_new(0);
   bump_counter(&counter, 5);
   out(`box counter -> {}`, counter.box_get());
-  let mut []string explorers = ["Prime Hero", "Sparrow"];
+  let mut []string explorers =   [
+    "Prime Hero",
+    "Sparrow",
+  ];
   out("explorer roster:");
   for explorer in explorers {
     out(`- {explorer}`);

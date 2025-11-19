@@ -30,7 +30,7 @@ fn log_result(label: string, outcome: Result[int32, string]) {
   match outcome {
     Ok(score) => out(`{label} => success {score}`),
     Err(message) => out(`{label} => error {message}`),
-  };
+  }
 }
 
 fn span_measurements(seed: int32) -> (int32, int32) {

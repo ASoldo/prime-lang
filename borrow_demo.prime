@@ -57,7 +57,10 @@ fn loop_merging() -> int32 {
     let &mut int32 alias = &mut total;
     *alias = *alias + count;
   }
-  let []int32 entries = [3, 4];
+  let []int32 entries =   [
+    3,
+    4,
+  ];
   for entry in entries {
     let &mut int32 alias = &mut total;
     *alias = *alias + entry;

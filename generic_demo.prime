@@ -26,12 +26,8 @@ fn make_pair[T, U](left: T, right: U) -> (T, U) {
 fn main() {
   let int32 hp = identity[int32](120);
   let string codename = first_or[string]("Prime Hero", "Fallback", false);
-  let StatLine stats = identity[StatLine](StatLine{
-    128,
-    72,
-  });
+  let StatLine stats = identity[StatLine](StatLine{ 128, 72 });
   let pair = make_pair[int32, string](18, "bleed");
-
   out("=== generics demo ===");
   out(`hp identity => {hp}`);
   out(`codename => {codename}`);

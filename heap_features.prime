@@ -8,8 +8,9 @@ fn describe_slice(label: string, collection: []string) {
   for i in 0..total {
     match collection.get(i) {
       Some(value) => out(`- {value}`),
-      None => {},
-    };
+      None => {
+      },
+    }
   }
 }
 
@@ -20,7 +21,11 @@ fn move_box_demo() {
 }
 
 fn move_slice_demo() {
-  let []string squad = ["Prime Hero", "Sparrow", "Northwatch"];
+  let []string squad =   [
+    "Prime Hero",
+    "Sparrow",
+    "Northwatch",
+  ];
   let []string redeployed = move squad;
   describe_slice("redeployed squad:", redeployed);
 }

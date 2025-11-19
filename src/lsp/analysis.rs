@@ -38,10 +38,11 @@ pub fn unused_variable_diagnostics(module: &Module, text: &str) -> Vec<Diagnosti
     if decls.is_empty() {
         return Vec::new();
     }
+    let is_ignored = |name: &str| name.starts_with('_');
     let used = collect_used_identifiers(module);
     decls
         .into_iter()
-        .filter(|decl| !used.contains(&decl.name))
+        .filter(|decl| !is_ignored(&decl.name) && !used.contains(&decl.name))
         .map(|decl| Diagnostic {
             range: span_to_range(text, decl.span),
             severity: Some(DiagnosticSeverity::WARNING),
