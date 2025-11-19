@@ -136,10 +136,10 @@ return {
     (module_path (identifier) @namespace)
 
     (function_definition name: (identifier) @function)
-    (struct_definition name: (type_identifier) @type)
-    (enum_definition name: (type_identifier) @type)
-    (interface_definition name: (type_identifier) @type)
-    (impl_definition target: (type_expression) @type)
+    (struct_definition name: (type_identifier) @type.prime)
+    (enum_definition name: (type_identifier) @type.prime)
+    (interface_definition name: (type_identifier) @type.prime)
+    (impl_definition target: (type_expression) @type.prime)
     (const_definition name: (identifier) @constant)
 
     (parameter name: (identifier) @variable.parameter)
@@ -147,14 +147,22 @@ return {
     (let_statement pattern: (identifier) @variable)
     (pattern (identifier) @variable)
 
-    (type_expression (type_identifier) @type)
-    (type_expression (type_path (type_identifier)) @type)
-    (type_expression (module_path) @type)
-    (type_expression (identifier) @type)
+    (type_expression (type_identifier) @type.prime)
+    (type_expression (type_path (type_identifier)) @type.prime)
+    (type_expression (module_path) @type.prime)
+    (type_expression (identifier) @type.prime)
 
     (assign_statement
       target: (identifier) @variable
       value: (identifier) @variable)
+
+    ;; Constructors / enum variants (Ok, Err, etc.)
+    (call_expression
+      function: (identifier) @constructor
+      (#match? @constructor "^[A-Z]"))
+    (enum_pattern
+      variant: (_) @constructor
+      (#match? @constructor "^[A-Z]"))
 
     (integer_literal) @number
     (float_literal)   @float
@@ -162,7 +170,9 @@ return {
     (format_string_literal) @string.special
     (rune_literal)    @character
     (boolean_literal) @boolean
-    (identifier)      @identifier
+    ;; lowercase identifiers; uppercase captured as constructor/type above
+    ((identifier) @identifier
+      (#match? @identifier "^[a-z_]"))
     ]]
 				local f = assert(io.open(query_root .. "/highlights.scm", "w"))
 				f:write(highlights)
