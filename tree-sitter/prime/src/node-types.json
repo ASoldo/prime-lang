@@ -76,6 +76,10 @@
         "named": true
       },
       {
+        "type": "type_path",
+        "named": true
+      },
+      {
         "type": "unary_expression",
         "named": true
       }

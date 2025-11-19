@@ -9,12 +9,10 @@ struct Bar {
 }
 
 fn label(foo: Foo) -> string {
-  foo.value = 1;
   "foo"
 }
 
 fn label(bar: Bar) -> string {
-  bar.value = 1;
   "bar"
 }
 

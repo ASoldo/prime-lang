@@ -1530,6 +1530,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "type_path"
+        },
+        {
+          "type": "SYMBOL",
           "name": "block"
         },
         {
@@ -3815,6 +3819,10 @@
     [
       "type_path",
       "expression"
+    ],
+    [
+      "expression",
+      "struct_literal"
     ],
     [
       "module_path"

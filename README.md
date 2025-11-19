@@ -50,6 +50,7 @@ and for the new `try {}` / `?` sugar, so you can rely on identical semantics in 
 - `pattern_demo.prime` – Match/if/while/for destructuring across tuples, maps, structs, slices.
 - `error_handling_demo.prime` – `Result`, `try {}`, and `?` propagation.
 - `lab_demo.prime` – A runnable “Prime Resonance Lab” that combines range loops, map destructuring, mutable references, and a generic `Summarizable` interface for reporting metrics.
+- Library modules: `types.prime` and `pkg_lib.prime` are libraries only (no `main`). Running them directly reports `Unknown symbol main`; import them from other modules instead.
 
 Run any of them directly:
 
@@ -58,6 +59,19 @@ prime-lang run lab_demo.prime            # module demos::lab_demo in the manifes
 prime-lang run pattern_demo.prime        # module demos::patterns
 prime-lang run error_handling_demo.prime # module demos::error_handling
 ```
+
+Validated outputs (fresh run, current syntax):
+
+- `borrow_demo.prime` — aliasing/borrowing demos; prints loop merges and HP/MP stats.
+- `error_handling_demo.prime` — shows Ok/Err propagation, span calculations.
+- `generic_demo.prime` — identity/promote helpers with typed outputs.
+- `heap_demo.prime` / `heap_features.prime` — box counters, roster prints, redeploy outputs.
+- `interface_demo.prime` / `interface_generics_demo.prime` — method calls and announcements.
+- `lab_demo.prime` — three plan runs with totals/synergy summaries and pairing.
+- `main.prime` — full gameplay log (players, enemies, quests, patrols, defers).
+- `ns_demo.prime` — namespace overloading demo with foo/bar labels.
+- `pattern_demo.prime` — pattern matches over tuples/maps/slices plus mutation demos.
+- `pkg_app.prime` — banner/promotion output.
 
 ## CLI Overview & Built-in Docs
 
