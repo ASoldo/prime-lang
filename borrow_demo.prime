@@ -74,7 +74,7 @@ fn nested_scope_and_return(flag: bool) -> int32 {
   if flag {
     let &mut int32 alias = &mut depth;
     *alias = *alias + 1;
-    return depth;
+    depth
   }
   let &mut int32 final_ref = &mut depth;
   *final_ref = *final_ref + 2;

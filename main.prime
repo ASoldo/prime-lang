@@ -35,59 +35,57 @@ struct QuestPanel {
 }
 
 impl Renderable[PlayerPanel] for PlayerPanel {
-  fn render(self) {
-    out("----- player -----");
-    out(self.label);
-    out(self.position.x);
-    out(self.position.y);
-    out(self.hp);
-    out(self.stamina);
-    if self.hp < 50 {
-      out("status: fragile");
-    } else {
-      out("status: ready");
+  fn render(panel: PlayerPanel) {
+    let mut string status = "ready";
+    if panel.hp < 50 {
+      status = "fragile";
     }
+    out("----- player -----");
+    out(`label: {}`, panel.label);
+    out(`pos: ({}, {})`, panel.position.x, panel.position.y);
+    out(`hp/stamina: {} / {}`, panel.hp, panel.stamina);
+    out(`level: {}`, panel.level);
+    out(`status: {status}`);
   }
 }
 
 impl Nameable[PlayerPanel] for PlayerPanel {
-  fn label(self) -> string {
-    self.label
+  fn label(panel: PlayerPanel) -> string {
+    panel.label
   }
 }
 
 impl Renderable[EnemyPanel] for EnemyPanel {
-  fn render(self) {
+  fn render(panel: EnemyPanel) {
     out("--- enemy ---");
-    out(self.label);
-    out(self.position.x);
-    out(self.position.y);
-    describe_damage(self.attack);
+    out(`label: {}`, panel.label);
+    out(`pos: ({}, {})`, panel.position.x, panel.position.y);
   }
 }
 
 impl Nameable[EnemyPanel] for EnemyPanel {
-  fn label(self) -> string {
-    self.label
+  fn label(panel: EnemyPanel) -> string {
+    panel.label
   }
 }
 
 impl Renderable[QuestPanel] for QuestPanel {
-  fn render(self) {
+  fn render(panel: QuestPanel) {
     out("--- quest ---");
-    out(self.label);
-    out(self.reward);
-    if self.completed {
-      out("state: completed");
+    out(`label: {}`, panel.label);
+    out(`reward: {}`, panel.reward);
+    let string state = if panel.completed {
+      "completed"
     } else {
-      out("state: in progress");
-    }
+      "in progress"
+    };
+    out(`state: {state}`);
   }
 }
 
 impl Nameable[QuestPanel] for QuestPanel {
-  fn label(self) -> string {
-    self.label
+  fn label(panel: QuestPanel) -> string {
+    panel.label
   }
 }
 
@@ -120,13 +118,11 @@ fn quest_panel(q: Quest) -> QuestPanel {
 }
 
 fn calibrate_station(name: string) {
-  out("Calibrating station:");
-  out(name);
+  out(`Calibrating station: {name}`);
   defer out("Station teardown complete");
   let mut int32 probes = 0;
   while probes < 2 {
-    out("probe");
-    out(probes);
+    out(`probe step {probes}`);
     probes = probes + 1;
   }
 }
@@ -138,8 +134,8 @@ fn main() {
   player_panel(hero).render();
   player_panel(scout).render();
   out("Roster labels:");
-  out(player_panel(hero).label());
-  out(player_panel(scout).label());
+  out(`- {}`, player_panel(hero).label());
+  out(`- {}`, player_panel(scout).label());
   let Player relocated = move_player(hero, Vec2{ 2.0, 3.0 });
   out("After repositioning:");
   player_panel(relocated).render();
@@ -162,9 +158,7 @@ fn main() {
     450,
     false,
   };
-
-  out("Quest focus:");
-  out(quest_panel(quest).label());
+  out(`Quest focus: {}`, quest_panel(quest).label());
   quest_panel(quest).render();
   out("Encounter simulation:");
   run_encounter(mission_ready, scout, brute);
@@ -172,61 +166,53 @@ fn main() {
   countdown(TRAINING_LIMIT);
   simulate_patrol("River path", 4);
   let int32 borrowed_hp = peek_hp(&hero);
-  out("Borrowed hero hp:");
-  out(borrowed_hp);
+  out(`Borrowed hero hp: {borrowed_hp}`);
   let bool hero_ready = hero.hp > 100 && hero.stamina >= 50;
   let bool scout_ready = scout.hp > 70 && scout.stamina >= 40;
-  out("Hero battle ready?");
-  out(hero_ready);
-  out("Scout battle ready?");
-  out(scout_ready);
+  out(`Hero battle ready? {hero_ready}`);
+  out(`Scout battle ready? {scout_ready}`);
   let MissionEvent ridge = plan_mission("Prime ascent", true, true);
   let MissionEvent harbor = plan_mission("Harbor sweep", false, true);
   describe_event(ridge);
   describe_event(harbor);
   let string pending = summarize_event(Waiting());
-  out("Mission summary hint:");
-  out(pending);
+  out(`Mission summary hint: {pending}`);
   let Option[int32] slot = find_training_slot(TRAINING_LIMIT);
   match slot {
     Some(value) => {
-      out("Training slot assigned:");
-      out(value);
+      out(`Training slot assigned: {value}`);
     },
     None => {
       out("Training slots unavailable");
     },
-  };
+  }
   let Option[int32] backup_slot = find_training_slot(TRAINING_LIMIT + 1);
   match backup_slot {
     Some(value) => {
-      out("Training slot now available:");
-      out(value);
+      out(`Training slot now available: {value}`);
     },
     None => {
       out("Backup training slots unavailable");
     },
-  };
+  }
   match resolve_attack(mission_ready, brute.attack) {
     Ok(survivor) => {
       out("Hero resisted the heavy blow:");
       player_panel(survivor).render();
     },
     Err(msg) => {
-      out("Hero staggered:");
-      out(msg);
+      out(`Hero staggered: {msg}`);
     },
-  };
+  }
   match resolve_attack(mission_ready, Percent(25)) {
     Ok(survivor) => {
       out("Hero shrugged off the assault:");
       player_panel(survivor).render();
     },
     Err(msg) => {
-      out("Hero staggered under the assault:");
-      out(msg);
+      out(`Hero staggered under the assault: {msg}`);
     },
-  };
+  }
   refill_hp(&mut hero, 12);
   out("Hero after field medic response:");
   player_panel(hero).render();
@@ -234,8 +220,7 @@ fn main() {
   out("Defer order check:");
   test_defer_order();
   let divmod_result = divmod(22, TRAINING_LIMIT);
-  out("divmod(22, TRAINING_LIMIT):");
-  out(divmod_result);
+  out(`divmod(22, TRAINING_LIMIT): {}`, divmod_result);
   announce_session("Session complete");
 }
 
@@ -268,19 +253,6 @@ fn spawn_enemy(kind: string, position: Vec2, attack: Damage) -> Enemy {
     },
     kind,
     attack,
-  }
-}
-
-fn describe_damage(damage: Damage) {
-  match damage {
-    Flat(amount) => {
-      out("attack: flat");
-      out(amount);
-    },
-    Percent(rate) => {
-      out("attack: percent");
-      out(rate);
-    },
   }
 }
 
@@ -372,16 +344,14 @@ fn level_up(p: Player, levels: int32) -> Player {
 }
 
 fn announce_session(message: string) {
-  out("--- session log ---");
-  out(message);
+  out(`--- session log --- {message}`);
 }
 
 fn run_encounter(hero: Player, ally: Player, enemy: Enemy) {
   let mut int32 round = 0;
   let mut Player current = hero;
   while round < 3 {
-    out("round");
-    out(round);
+    out(`round {round}`);
     current = apply_damage(current, enemy.attack);
     round = round + 1;
   }
@@ -394,17 +364,15 @@ fn run_encounter(hero: Player, ally: Player, enemy: Enemy) {
 fn countdown(limit: int32) {
   let mut int32 step = 0;
   while step < limit {
-    out(step);
+    out(`countdown step {step}`);
     step = step + 1;
   }
 }
 
 fn simulate_patrol(name: string, steps: int32) {
-  out("--- patrol start ---");
-  out(name);
+  out(`--- patrol start: {name} ---`);
   for i in 0..steps {
-    out("step");
-    out(i);
+    out(`step {i}`);
   }
   out("--- patrol complete ---");
 }
@@ -418,16 +386,17 @@ fn find_training_slot(day: int32) -> Option[int32] {
 }
 
 fn resolve_attack(hero: Player, damage: Damage) -> Result[Player, string] {
-  match damage {
-    Flat(amount) => Ok(apply_damage(hero, Flat(amount))),
+  let Player updated =   match damage {
+    Flat(amount) => apply_damage(hero, Flat(amount)),
     Percent(percent) => {
       if percent < 20 {
-        Ok(apply_damage(hero, Percent(percent)))
+        apply_damage(hero, Percent(percent))
       } else {
-        Err("impact too high")
+        return Err("impact too high");
       }
     },
-  }
+  };
+  Ok(updated)
 }
 
 fn peek_hp(target: &Player) -> int32 {
@@ -443,7 +412,6 @@ fn refill_hp(target: &mut Player, amount: int32) {
     snapshot.name,
     snapshot.level,
   };
-
   *target = refreshed;
 }
 
@@ -462,16 +430,13 @@ fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
 fn describe_event(event: MissionEvent) {
   match event {
     Completed(stage) if stage == "Prime ascent" => {
-      out("mission completed with honors:");
-      out(stage);
+      out(`mission completed with honors: {stage}`);
     },
     Completed(stage) => {
-      out("mission completed:");
-      out(stage);
+      out(`mission completed: {stage}`);
     },
     Failed(reason) => {
-      out("mission failed:");
-      out(reason);
+      out(`mission failed: {reason}`);
     },
     MissionEvent::Waiting => {
       out("mission awaiting clearance");

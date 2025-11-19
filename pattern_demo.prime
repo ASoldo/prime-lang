@@ -10,28 +10,23 @@ struct Telemetry {
 
 fn describe_reading(reading: (string, int32)) {
   match reading {
-    ("temp", value) => out(value),
-    ("status", code) => out(code),
+    ("temp", value) => out(`temperature reading {value}`),
+    ("status", code) => out(`status code {code}`),
     _ => out("unrecognized reading"),
   }
 }
 
 fn summarize_stats(stats: Map[string, int32]) {
   let #{ "hp": hp_total, "mp": mp_total } = stats;
-  out("direct stats pair:");
-  out(hp_total);
-  out(mp_total);
+  out(`direct stats pair -> hp {hp_total} mp {mp_total}`);
   match stats {
     #{ "hp": hp, "mp": mp } => {
-      out("stats ready");
-      out(hp);
-      out(mp);
+      out(`stats ready hp {hp} mp {mp}`);
     },
     _ => out("missing stats"),
   }
   if let Some(hp) = stats.get("hp") {
-    out("hp present");
-    out(hp);
+    out(`hp present {hp}`);
   } else {
     out("no hp measurement");
   }
@@ -40,22 +35,19 @@ fn summarize_stats(stats: Map[string, int32]) {
 fn inspect_telemetry(data: Telemetry) {
   match data {
     Telemetry{ hp: hp, mp: mp, .. } => {
-      out("telemetry summary");
-      out(hp + mp);
+      out(`telemetry summary total {}`, hp + mp);
     },
   }
   match data.notes {
     [first, ..rest] => {
-      out("first note:");
-      out(first);
-      out(rest.len());
+      let int32 remaining = rest.len();
+      out(`first note {first} (remaining {remaining})`);
     },
     [] => out("no notes"),
   }
   let mut int32 idx = 0;
   while let Some(note) = data.notes.get(idx) {
-    out("note entry:");
-    out(note);
+    out(`note {idx}: {note}`);
     idx = idx + 1;
   }
 }
@@ -63,28 +55,23 @@ fn inspect_telemetry(data: Telemetry) {
 fn mutate_destructured_bindings() {
   let mut (left, right) = (15, 5);
   left = left + right;
-  out("tuple mutation:");
-  out(left);
-
+  out(`tuple mutation -> {}`, left);
   let Map[string, int32] records = #{
     "hp": 80,
     "mp": 40,
   };
   let mut #{ "hp": hp_score, "mp": mp_score } = records;
   hp_score = hp_score + 10;
-  out("map mutation:");
-  out(hp_score + mp_score);
-
+  out(`map mutation => {}`, hp_score + mp_score);
   let Telemetry reading = Telemetry{
     hp: 70,
     mp: 35,
     notes: ["alpha"],
   };
-  let mut Telemetry{ hp, mp, .. } = reading;
+  let mut Telemetry{ hp: hp, mp: mp, .. } = reading;
   hp = hp + 5;
   mp = mp - 5;
-  out("struct mutation:");
-  out(hp + mp);
+  out(`struct mutation total {}`, hp + mp);
 }
 
 fn main() {
@@ -93,7 +80,6 @@ fn main() {
     "hp": 120,
     "mp": 55,
   };
-
   summarize_stats(stats);
   let Telemetry snapshot = Telemetry{
     hp: 95,
@@ -101,9 +87,7 @@ fn main() {
     notes: ["stable", "ready"],
   };
   let Telemetry{ hp: base_hp, mp: base_mp, .. } = snapshot;
-  out("snapshot sums:");
-  out(base_hp + base_mp);
-
+  out(`snapshot sums -> {}`, base_hp + base_mp);
   inspect_telemetry(snapshot);
   mutate_destructured_bindings();
 }

@@ -3,11 +3,11 @@ module demos::heap_features;
 import core::types;
 
 fn describe_slice(label: string, collection: []string) {
-  out(label);
   let int32 total = collection.len();
+  out(`{label} ({total} entries)`);
   for i in 0..total {
     match collection.get(i) {
-      Some(value) => out(value),
+      Some(value) => out(`- {value}`),
       None => {},
     };
   }
@@ -16,8 +16,7 @@ fn describe_slice(label: string, collection: []string) {
 fn move_box_demo() {
   let Box[int32] payload = box_new(72);
   let Box[int32] relocated = move payload;
-  out("moved box value:");
-  out(box_get(relocated));
+  out(`moved box value -> {}`, box_get(relocated));
 }
 
 fn move_slice_demo() {

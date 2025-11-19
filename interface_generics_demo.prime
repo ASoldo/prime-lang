@@ -17,29 +17,23 @@ interface Nameable[T] {
 }
 
 impl Nameable[Hero] for Hero {
-  fn label(self) -> string {
-    self.name
+  fn label(hero: Hero) -> string {
+    hero.name
   }
 
-  fn pair(self, other: Hero) -> string {
+  fn pair(_hero: Hero, other: Hero) -> string {
     other.name
   }
 }
 
 impl Nameable[Drone] for Drone {
-  fn label(self) -> string {
-    self.tag
+  fn label(drone: Drone) -> string {
+    drone.tag
   }
 
-  fn pair(self, other: Drone) -> string {
+  fn pair(_drone: Drone, other: Drone) -> string {
     other.tag
   }
-}
-
-fn announce[T](unit: Nameable[T], partner: T) {
-  out("-- announcement --");
-  out(unit.label());
-  out(unit.pair(partner));
 }
 
 fn duplicate[T](value: T) -> (T, T) {
@@ -65,9 +59,14 @@ fn main() {
     "Relay-5",
   };
 
-  announce[Hero](hero, hero_partner);
-  announce[Drone](scout, scout_partner);
+  let string hero_label = hero.label();
+  let string hero_pair = hero.pair(hero_partner);
+  out(`-- announcement -- {hero_label}`);
+  out(`paired with {hero_pair}`);
+  let string scout_label = scout.label();
+  let string scout_pair = scout.pair(scout_partner);
+  out(`-- announcement -- {scout_label}`);
+  out(`paired with {scout_pair}`);
   let pair = duplicate[string]("Prime Hero");
-  out("duplicated label:");
-  out(pair);
+  out(`duplicated label: {pair}`);
 }

@@ -33,9 +33,8 @@ fn main() {
   let pair = make_pair[int32, string](18, "bleed");
 
   out("=== generics demo ===");
-  out(hp);
-  out(codename);
-  out(stats.hp);
-  out(stats.stamina);
-  out(pair);
+  out(`hp identity => {hp}`);
+  out(`codename => {codename}`);
+  out(`stats hp/stamina => {} / {}`, stats.hp, stats.stamina);
+  out(`pair => {pair}`);
 }

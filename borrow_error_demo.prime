@@ -12,16 +12,16 @@ fn nested_borrow_release() {
       }
     };
     *escaping = snapshot + 5;
-    out(*escaping);
+    out(`escaping alias now {}`, *escaping);
   }
   {
     let &mut int32 scoped = &mut gauge;
     *scoped = *scoped - 2;
-    out(*scoped);
+    out(`scoped adjustment {}`, *scoped);
   }
   let &mut int32 after_scope = &mut gauge;
   *after_scope = *after_scope + 1;
-  out(gauge);
+  out(`gauge stabilized at {gauge}`);
 }
 
 fn main() {

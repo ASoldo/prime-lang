@@ -18,7 +18,7 @@ fn main() {
   let Hero hero = Hero{
     "Prime Hero",
   };
-
-  out(label(hero));
-  out(hero.label());
+  let string method_label = hero.label();
+  out(`Named hero: {method_label}`);
+  out(`Method label: {method_label}`);
 }

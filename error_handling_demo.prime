@@ -28,16 +28,8 @@ fn calibrate_profile(value: int32) -> Result[int32, string] {
 
 fn log_result(label: string, outcome: Result[int32, string]) {
   match outcome {
-    Ok(score) => {
-      out(label);
-      out(" => success");
-      out(score);
-    },
-    Err(message) => {
-      out(label);
-      out(" => error");
-      out(message);
-    },
+    Ok(score) => out(`{label} => success {score}`),
+    Err(message) => out(`{label} => error {message}`),
   };
 }
 
@@ -55,12 +47,10 @@ fn span_measurements(seed: int32) -> (int32, int32) {
 }
 
 fn main() {
-  out("--- error handling demo ---");
+  out("=== error handling demo ===");
   log_result("stable", calibrate_profile(40));
   log_result("odd energy", calibrate_profile(35));
   log_result("overflow", calibrate_profile(140));
-  out("span sample:");
-  out(span_measurements(48));
-  out("clamped span:");
-  out(span_measurements(140));
+  out(`span sample => {}`, span_measurements(48));
+  out(`clamped span => {}`, span_measurements(140));
 }

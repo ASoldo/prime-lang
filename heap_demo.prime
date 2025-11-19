@@ -5,28 +5,25 @@ import core::types;
 fn main() {
   let Box[int32] counter = box_new(0);
   bump_counter(&counter, 5);
-  out("box counter:");
-  out(counter.box_get());
+  out(`box counter -> {}`, counter.box_get());
   let mut []string explorers = ["Prime Hero", "Sparrow"];
   out("explorer roster:");
   for explorer in explorers {
-    out(explorer);
+    out(`- {explorer}`);
   }
-  out("slice len:");
-  out(explorers.len());
+  out(`slice len => {}`, explorers.len());
   out("first explorer:");
   match explorers.get(0) {
-    Some(name) => out(name),
+    Some(name) => out(`first explorer {name}`),
     None => out("n/a"),
   }
   let Map[string, int32] rewards = #{
     "Ridge scouting": 250,
     "Harbor sweep": 175,
   };
-
   out("harbor reward:");
   match rewards.get("Harbor sweep") {
-    Some(value) => out(value),
+    Some(value) => out(`Harbor sweep pays {value}`),
     None => out("none"),
   }
 }
