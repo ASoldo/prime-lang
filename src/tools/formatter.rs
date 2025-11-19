@@ -319,6 +319,10 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
                     emit_struct_literal(out, indent, name, fields);
                     out.push_str(";\n");
                 }
+                Expr::ArrayLiteral(values, _) => {
+                    emit_array_literal(out, indent, values);
+                    out.push_str(";\n");
+                }
                 _ => {
                     write_indent(out, indent);
                     out.push_str(&format!("{};\n", format_expr(&expr.expr)));
@@ -405,6 +409,10 @@ fn format_tail_expression(out: &mut String, expr: &Expr, indent: usize) {
             emit_struct_literal(out, indent, name, fields);
             out.push('\n');
         }
+        Expr::ArrayLiteral(values, _) => {
+            emit_array_literal(out, indent, values);
+            out.push('\n');
+        }
         _ => {
             write_indent(out, indent);
             out.push_str(&format!("{}\n", format_expr(expr)));
@@ -483,6 +491,10 @@ fn emit_initializer_expression(out: &mut String, base_indent: usize, expr: &Expr
         }
         Expr::Try { block, .. } => {
             emit_try_expression(out, base_indent, block);
+            true
+        }
+        Expr::ArrayLiteral(values, _) => {
+            emit_array_literal(out, base_indent, values);
             true
         }
         _ => false,
@@ -768,6 +780,49 @@ fn emit_map_literal(out: &mut String, indent: usize, entries: &[MapLiteralEntry]
     out.push('}');
 }
 
+fn emit_array_literal(out: &mut String, indent: usize, values: &[Expr]) {
+    write_indent(out, indent);
+    out.push('[');
+    if values.is_empty() {
+        out.push(']');
+        return;
+    }
+    out.push('\n');
+    for value in values {
+        emit_array_value(out, indent + 2, value);
+        out.push_str(",\n");
+    }
+    write_indent(out, indent);
+    out.push(']');
+}
+
+fn emit_array_value(out: &mut String, indent: usize, expr: &Expr) {
+    match expr {
+        Expr::StructLiteral { name, fields, .. } => {
+            emit_struct_literal(out, indent, name, fields);
+        }
+        Expr::MapLiteral { entries, .. } => emit_map_literal(out, indent, entries),
+        Expr::ArrayLiteral(values, _) => emit_array_literal(out, indent, values),
+        Expr::If(if_expr) => {
+            emit_if_expression(out, indent, if_expr, true);
+        }
+        Expr::Match(match_expr) => {
+            write_match_expression(out, match_expr, indent);
+        }
+        Expr::Block(block) => {
+            write_indent(out, indent);
+            out.push_str("{\n");
+            format_block(out, block, indent + 2);
+            write_indent(out, indent);
+            out.push('}');
+        }
+        _ => {
+            write_indent(out, indent);
+            out.push_str(&format_expr(expr));
+        }
+    }
+}
+
 fn emit_composite_value(out: &mut String, indent: usize, expr: &Expr) {
     match expr {
         Expr::StructLiteral { name, fields, .. } => {
@@ -777,6 +832,10 @@ fn emit_composite_value(out: &mut String, indent: usize, expr: &Expr) {
         Expr::MapLiteral { entries, .. } => {
             out.push('\n');
             emit_map_literal(out, indent + 2, entries);
+        }
+        Expr::ArrayLiteral(values, _) => {
+            out.push('\n');
+            emit_array_literal(out, indent + 2, values);
         }
         _ => out.push_str(&format_expr(expr)),
     }
