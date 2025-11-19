@@ -3,6 +3,7 @@ use crate::{
         ast::{Module, Program},
         errors::SyntaxError,
         lexer::{LexError, lex},
+        parser::parse_module,
         span::Span,
         typecheck::{TypeError, check_program},
     },
@@ -11,11 +12,14 @@ use crate::{
             CODE_DUPLICATE_IMPORT, CODE_MANIFEST_MISSING_MODULE, CODE_MISSING_MODULE_HEADER,
             CODE_UNKNOWN_IMPORT, ManifestIssue, ManifestIssueKind, analyze_manifest_issues,
         },
-        manifest::ModuleVisibility,
+        manifest::{ModuleVisibility, PackageManifest},
     },
 };
 use serde_json::json;
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tower_lsp_server::{
     UriExt,
     lsp_types::{
@@ -56,8 +60,9 @@ pub fn collect_parse_and_manifest_diagnostics(
             None
         }
     };
+    let manifest_context = manifest_context_for_uri(uri);
     if let Some(module) = &module {
-        if let Some((manifest, file_path)) = manifest_context_for_uri(uri) {
+        if let Some((manifest, file_path)) = &manifest_context {
             let issues = analyze_manifest_issues(module, &file_path, Some(&manifest));
             diags.extend(
                 issues
@@ -65,7 +70,11 @@ pub fn collect_parse_and_manifest_diagnostics(
                     .map(|issue| manifest_issue_to_diagnostic(text, issue)),
             );
         }
-        diags.extend(type_diagnostics(text, module));
+        let manifest_ref = manifest_context.as_ref().map(|(manifest, _)| manifest);
+        let path_ref = manifest_context
+            .as_ref()
+            .map(|(_, path)| path.as_path());
+        diags.extend(type_diagnostics(text, module, manifest_ref, path_ref));
     }
     drop(tokens);
     (module, diags)
@@ -307,10 +316,19 @@ fn module_mismatch_diagnostic(
     }
 }
 
-fn type_diagnostics(text: &str, module: &Module) -> Vec<Diagnostic> {
+fn type_diagnostics(
+    text: &str,
+    module: &Module,
+    manifest: Option<&PackageManifest>,
+    current_path: Option<&Path>,
+) -> Vec<Diagnostic> {
     let module_path = module.path.clone();
-    let program = Program {
-        modules: vec![module.clone()],
+    let program = if let Some(manifest) = manifest {
+        build_program_for_manifest(module, manifest, current_path)
+    } else {
+        Program {
+            modules: vec![module.clone()],
+        }
     };
     match check_program(&program) {
         Ok(_) => Vec::new(),
@@ -336,6 +354,31 @@ fn type_error_to_lsp(text: &str, err: TypeError) -> Diagnostic {
         message: err.message,
         ..Default::default()
     }
+}
+
+fn build_program_for_manifest(
+    current: &Module,
+    manifest: &PackageManifest,
+    current_path: Option<&Path>,
+) -> Program {
+    let mut modules = Vec::new();
+    modules.push(current.clone());
+    let current_canonical = current_path.and_then(|path| path.canonicalize().ok());
+    for info in manifest.module_entries() {
+        if current_canonical
+            .as_ref()
+            .map(|path| path.as_path() == info.path.as_path())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Ok(source) = fs::read_to_string(&info.path) {
+            if let Ok(parsed) = parse_module(&info.name, info.path.clone(), &source) {
+                modules.push(parsed);
+            }
+        }
+    }
+    Program { modules }
 }
 
 #[cfg(test)]
