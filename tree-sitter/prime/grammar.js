@@ -34,6 +34,8 @@ module.exports = grammar({
     [$.return_type, $.tuple_type],
     [$.pattern, $.enum_pattern],
     [$.pattern, $.enum_pattern, $.type_expression],
+    [$.type_path, $.enum_pattern],
+    [$.type_path, $.enum_pattern, $.type_expression],
     [$.module_path],
     [$.type_path, $.type_expression],
   ],
@@ -60,8 +62,8 @@ module.exports = grammar({
     ),
 
     module_path: $ => prec(1, seq(
-      field('head', $.identifier),
-      repeat(seq('::', field('tail', $.identifier)))
+      field('head', choice($.identifier, $.type_identifier)),
+      repeat(seq('::', field('tail', choice($.identifier, $.type_identifier))))
     )),
 
     type_path: $ => seq(
@@ -113,7 +115,7 @@ module.exports = grammar({
     ),
 
     enum_variant: $ => seq(
-      field('name', $.identifier),
+      field('name', choice($.identifier, $.type_identifier)),
       optional(seq(
         '(',
         commaSep1($.type_expression),
@@ -225,16 +227,16 @@ module.exports = grammar({
       'let',
       optional('mut'),
       choice(
-        seq(
+        prec.dynamic(1, seq(
           field('pattern', $.pattern),
           optional(seq(':', field('annotation', $.type_expression))),
           optional(seq('=', field('value', $.expression)))
-        ),
-        seq(
+        )),
+        prec.dynamic(-1, seq(
           field('type', $.type_expression),
           field('name', $.identifier),
           optional(seq('=', field('value', $.expression)))
-        )
+        ))
       ),
       ';'
     ),
@@ -458,7 +460,7 @@ module.exports = grammar({
 
     enum_pattern: $ => seq(
       optional(seq(field('enum', $.module_path), '::')),
-      field('variant', $.identifier),
+      field('variant', choice($.identifier, $.type_identifier)),
       optional(seq('(', commaSep($.pattern), ')'))
     ),
 
