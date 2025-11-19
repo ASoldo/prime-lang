@@ -151,6 +151,16 @@ return {
     (type_expression (type_path (type_identifier)) @type.prime)
     (type_expression (module_path) @type.prime)
     (type_expression (identifier) @type.prime)
+    (reference_type (type_identifier) @type.prime)
+    (reference_type (identifier) @type.prime)
+    (pointer_type (type_identifier) @type.prime)
+    (pointer_type (identifier) @type.prime)
+    (slice_type (type_identifier) @type.prime)
+    (slice_type (identifier) @type.prime)
+    (array_type (type_identifier) @type.prime)
+    (array_type (identifier) @type.prime)
+    (tuple_type (type_identifier) @type.prime)
+    (tuple_type (identifier) @type.prime)
 
     (assign_statement
       target: (identifier) @variable

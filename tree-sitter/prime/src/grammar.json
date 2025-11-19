@@ -1526,6 +1526,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "type_identifier"
+        },
+        {
+          "type": "SYMBOL",
           "name": "block"
         },
         {
@@ -3807,6 +3811,10 @@
       "type_path",
       "enum_pattern",
       "type_expression"
+    ],
+    [
+      "type_path",
+      "expression"
     ],
     [
       "module_path"
