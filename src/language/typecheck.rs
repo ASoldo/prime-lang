@@ -1317,6 +1317,15 @@ impl Checker {
             TypeExpr::Named(name, _) if name == "Map" => {
                 self.check_map_method(module, target, method, args, returns, env, span)
             }
+            TypeExpr::Named(name, _) if name == "string" => {
+                self.check_string_method(module, method, args, returns, env, span)
+            }
+            TypeExpr::Named(name, _) if name.starts_with("int") => {
+                self.check_int_method(module, method, args, returns, env, span)
+            }
+            TypeExpr::Named(name, _) if name.starts_with("float") => {
+                self.check_float_method(module, method, args, returns, env, span)
+            }
             _ => None,
         }
     }
@@ -1816,7 +1825,185 @@ impl Checker {
                 | "map_get"
                 | "assert"
                 | "expect"
+                | "str_len"
+                | "str_contains"
+                | "str_trim"
+                | "str_split"
+                | "min"
+                | "max"
+                | "abs"
         )
+    }
+
+    fn check_string_method(
+        &mut self,
+        module: &Module,
+        method: &str,
+        args: &[Expr],
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        match method {
+            "str_len" => {
+                self.ensure_arguments(module, span, args, 0);
+                let ret = TypeAnnotation {
+                    ty: TypeExpr::Named("int32".into(), Vec::new()),
+                    span,
+                };
+                self.select_call_result(
+                    module,
+                    span,
+                    &[ret],
+                    Some(&TypeExpr::Named("int32".into(), Vec::new())),
+                )
+            }
+            "str_contains" => {
+                self.ensure_arguments(module, span, args, 1);
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("string".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                let ret = TypeAnnotation {
+                    ty: TypeExpr::Named("bool".into(), Vec::new()),
+                    span,
+                };
+                self.select_call_result(
+                    module,
+                    span,
+                    &[ret],
+                    Some(&TypeExpr::Named("bool".into(), Vec::new())),
+                )
+            }
+            "str_trim" => {
+                self.ensure_arguments(module, span, args, 0);
+                let ret = TypeAnnotation {
+                    ty: TypeExpr::Named("string".into(), Vec::new()),
+                    span,
+                };
+                self.select_call_result(
+                    module,
+                    span,
+                    &[ret],
+                    Some(&TypeExpr::Named("string".into(), Vec::new())),
+                )
+            }
+            "str_split" => {
+                self.ensure_arguments(module, span, args, 1);
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("string".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                let ret = TypeAnnotation {
+                    ty: TypeExpr::Slice(Box::new(TypeExpr::Named("string".into(), Vec::new()))),
+                    span,
+                };
+                self.select_call_result(
+                    module,
+                    span,
+                    &[ret],
+                    Some(&TypeExpr::Slice(Box::new(TypeExpr::Named(
+                        "string".into(),
+                        Vec::new(),
+                    )))),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    fn check_int_method(
+        &mut self,
+        module: &Module,
+        method: &str,
+        args: &[Expr],
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        match method {
+            "abs" => {
+                self.ensure_arguments(module, span, args, 0);
+                let ret = TypeAnnotation {
+                    ty: TypeExpr::Named("int32".into(), Vec::new()),
+                    span,
+                };
+                let ret_ty = ret.ty.clone();
+                self.select_call_result(module, span, &[ret.clone()], Some(&ret_ty))
+            }
+            "min" | "max" => {
+                self.ensure_arguments(module, span, args, 1);
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("int32".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                let ret = TypeAnnotation {
+                    ty: TypeExpr::Named("int32".into(), Vec::new()),
+                    span,
+                };
+                let ret_ty = ret.ty.clone();
+                self.select_call_result(module, span, &[ret.clone()], Some(&ret_ty))
+            }
+            _ => None,
+        }
+    }
+
+    fn check_float_method(
+        &mut self,
+        module: &Module,
+        method: &str,
+        args: &[Expr],
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        match method {
+            "abs" => {
+                self.ensure_arguments(module, span, args, 0);
+                let ret = TypeAnnotation {
+                    ty: TypeExpr::Named("float64".into(), Vec::new()),
+                    span,
+                };
+                let ret_ty = ret.ty.clone();
+                self.select_call_result(module, span, &[ret.clone()], Some(&ret_ty))
+            }
+            "min" | "max" => {
+                self.ensure_arguments(module, span, args, 1);
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("float64".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                let ret = TypeAnnotation {
+                    ty: TypeExpr::Named("float64".into(), Vec::new()),
+                    span,
+                };
+                let ret_ty = ret.ty.clone();
+                self.select_call_result(module, span, &[ret.clone()], Some(&ret_ty))
+            }
+            _ => None,
+        }
+    }
+
+    fn ensure_arguments(&mut self, module: &Module, span: Span, args: &[Expr], expected: usize) {
+        if args.len() != expected {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!("method expects {} argument(s) after receiver", expected),
+            ));
+        }
     }
 
     fn expect_box_inner(

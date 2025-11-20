@@ -701,6 +701,66 @@ fn builtin_member_completion_items(
                 "fn len() -> int32".into(),
             );
         }
+        TypeExpr::Named(name, _) if name == "string" => {
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "str_len",
+                "fn str_len() -> int32".into(),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "str_contains",
+                "fn str_contains(needle: string) -> bool".into(),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "str_trim",
+                "fn str_trim() -> string".into(),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "str_split",
+                "fn str_split(delim: string) -> []string".into(),
+            );
+        }
+        TypeExpr::Named(name, _) if name.starts_with("int") || name.starts_with("float") => {
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "abs",
+                "fn abs()".into(),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "min",
+                "fn min(other)".into(),
+            );
+            push_builtin_member(
+                &mut items,
+                qualifier,
+                prefix,
+                edit_range,
+                "max",
+                "fn max(other)".into(),
+            );
+        }
         _ => {}
     }
     items

@@ -731,9 +731,75 @@ impl Interpreter {
             "insert" => self.builtin_insert(args),
             "assert" => self.builtin_assert(args),
             "expect" => self.builtin_expect(args),
+            "str_len" => self.builtin_str_len(args),
+            "str_contains" => self.builtin_str_contains(args),
+            "str_trim" => self.builtin_str_trim(args),
+            "str_split" => self.builtin_str_split(args),
+            "min" => self.builtin_min(args),
+            "max" => self.builtin_max(args),
+            "abs" => self.builtin_abs(args),
             _ => return None,
         };
         Some(result)
+    }
+
+    fn call_builtin_method(
+        &mut self,
+        name: &str,
+        mut args: Vec<Value>,
+    ) -> Option<RuntimeResult<Vec<Value>>> {
+        let receiver = args.remove(0);
+        match (receiver, name) {
+            (Value::String(s), "str_len") => Some(self.builtin_str_len(vec![Value::String(s)])),
+            (Value::String(s), "str_contains") => {
+                args.insert(0, Value::String(s));
+                Some(self.builtin_str_contains(args))
+            }
+            (Value::String(s), "str_trim") => Some(self.builtin_str_trim(vec![Value::String(s)])),
+            (Value::String(s), "str_split") => {
+                args.insert(0, Value::String(s));
+                Some(self.builtin_str_split(args))
+            }
+            (Value::FormatTemplate(template), "str_len") => {
+                Some(self.builtin_str_len(vec![Value::FormatTemplate(template)]))
+            }
+            (Value::FormatTemplate(template), "str_contains") => {
+                args.insert(0, Value::FormatTemplate(template));
+                Some(self.builtin_str_contains(args))
+            }
+            (Value::FormatTemplate(template), "str_trim") => {
+                Some(self.builtin_str_trim(vec![Value::FormatTemplate(template)]))
+            }
+            (Value::FormatTemplate(template), "str_split") => {
+                args.insert(0, Value::FormatTemplate(template));
+                Some(self.builtin_str_split(args))
+            }
+            (Value::Int(v), "abs") => Some(self.builtin_abs(vec![Value::Int(v)])),
+            (Value::Int(v), "min") => {
+                args.insert(0, Value::Int(v));
+                Some(self.builtin_min(args))
+            }
+            (Value::Int(v), "max") => {
+                args.insert(0, Value::Int(v));
+                Some(self.builtin_max(args))
+            }
+            (Value::Float(f), "abs") => Some(self.builtin_abs(vec![Value::Float(f)])),
+            (Value::Float(f), "min") => {
+                args.insert(0, Value::Float(f));
+                Some(self.builtin_min(args))
+            }
+            (Value::Float(f), "max") => {
+                args.insert(0, Value::Float(f));
+                Some(self.builtin_max(args))
+            }
+            (Value::Reference(reference), _) => {
+                let cloned = reference.cell.borrow().clone();
+                let mut all_args = vec![cloned];
+                all_args.extend(args);
+                self.call_builtin_method(name, all_args)
+            }
+            _ => None,
+        }
     }
 
     fn is_builtin_name(&self, name: &str) -> bool {
@@ -756,6 +822,13 @@ impl Interpreter {
                 | "insert"
                 | "assert"
                 | "expect"
+                | "str_len"
+                | "str_contains"
+                | "str_trim"
+                | "str_split"
+                | "min"
+                | "max"
+                | "abs"
         )
     }
 
@@ -920,6 +993,29 @@ impl Interpreter {
         }
     }
 
+    fn expect_string_or_format(&self, name: &str, value: Value) -> RuntimeResult<String> {
+        match value {
+            Value::String(s) => Ok(s),
+            Value::FormatTemplate(template) => {
+                let mut buf = String::new();
+                for segment in template.segments {
+                    match segment {
+                        FormatRuntimeSegment::Literal(lit) => buf.push_str(&lit),
+                        _ => {}
+                    }
+                }
+                Ok(buf)
+            }
+            Value::Reference(reference) => {
+                let cloned = reference.cell.borrow().clone();
+                self.expect_string_or_format(name, cloned)
+            }
+            _ => Err(RuntimeError::TypeMismatch {
+                message: format!("{name} expects string"),
+            }),
+        }
+    }
+
     fn expect_bool(&self, name: &str, value: Value) -> RuntimeResult<bool> {
         match value {
             Value::Bool(flag) => Ok(flag),
@@ -998,6 +1094,73 @@ impl Interpreter {
             return Err(RuntimeError::Panic { message: msg });
         }
         Ok(Vec::new())
+    }
+
+    fn builtin_str_len(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("str_len", &args, 1)?;
+        let s = self.expect_string_or_format("str_len", args.remove(0))?;
+        Ok(vec![Value::Int(s.len() as i128)])
+    }
+
+    fn builtin_str_contains(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("str_contains", &args, 2)?;
+        let haystack = self.expect_string_or_format("str_contains", args.remove(0))?;
+        let needle = self.expect_string_or_format("str_contains", args.remove(0))?;
+        Ok(vec![Value::Bool(haystack.contains(&needle))])
+    }
+
+    fn builtin_str_trim(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("str_trim", &args, 1)?;
+        let s = self.expect_string_or_format("str_trim", args.remove(0))?;
+        Ok(vec![Value::String(s.trim().to_string())])
+    }
+
+    fn builtin_str_split(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("str_split", &args, 2)?;
+        let input = self.expect_string_or_format("str_split", args.remove(0))?;
+        let delim = self.expect_string_or_format("str_split", args.remove(0))?;
+        let mut items = Vec::new();
+        for part in input.split(&delim) {
+            items.push(Value::String(part.to_string()));
+        }
+        Ok(vec![Value::Slice(SliceValue::from_vec(items))])
+    }
+
+    fn builtin_min(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("min", &args, 2)?;
+        match (args.remove(0), args.remove(0)) {
+            (Value::Int(a), Value::Int(b)) => Ok(vec![Value::Int(a.min(b))]),
+            (Value::Float(a), Value::Float(b)) => Ok(vec![Value::Float(a.min(b))]),
+            _ => Err(RuntimeError::TypeMismatch {
+                message: "`min` expects numbers of the same type".into(),
+            }),
+        }
+    }
+
+    fn builtin_max(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("max", &args, 2)?;
+        match (args.remove(0), args.remove(0)) {
+            (Value::Int(a), Value::Int(b)) => Ok(vec![Value::Int(a.max(b))]),
+            (Value::Float(a), Value::Float(b)) => Ok(vec![Value::Float(a.max(b))]),
+            _ => Err(RuntimeError::TypeMismatch {
+                message: "`max` expects numbers of the same type".into(),
+            }),
+        }
+    }
+
+    fn builtin_abs(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("abs", &args, 1)?;
+        match args.remove(0) {
+            Value::Int(v) => Ok(vec![Value::Int(v.abs())]),
+            Value::Float(v) => Ok(vec![Value::Float(v.abs())]),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.builtin_abs(vec![inner])
+            }
+            _ => Err(RuntimeError::TypeMismatch {
+                message: "`abs` expects int or float".into(),
+            }),
+        }
     }
 
     fn builtin_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
@@ -1477,6 +1640,15 @@ impl Interpreter {
                         EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                     };
                     method_args.insert(0, receiver);
+                    if let Some(result) = self.call_builtin_method(field, method_args.clone()) {
+                        let values = result?;
+                        let value = match values.len() {
+                            0 => Value::Unit,
+                            1 => values.into_iter().next().unwrap(),
+                            _ => Value::Tuple(values),
+                        };
+                        return Ok(EvalOutcome::Value(value));
+                    }
                     let results =
                         self.call_function(field, receiver_type, type_args, method_args)?;
                     let value = match results.len() {

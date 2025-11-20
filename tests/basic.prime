@@ -19,5 +19,10 @@ fn validates_imported_identity() -> bool {
 fn uses_asserts() -> bool {
   assert(true);
   expect(true, "expect should not panic");
-  true
+  let string sentence = `one two three`;
+  let int32 chars = sentence.str_len();
+  let bool has_two = sentence.str_contains("two");
+  let string trimmed = ` padded `.str_trim();
+  let []string parts = sentence.str_split(" ");
+  return chars == 13 && has_two && trimmed == "padded" && parts.len() == 3;
 }

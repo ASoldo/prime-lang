@@ -240,6 +240,13 @@ fn builtin_function_docs(name: &str) -> Option<String> {
         ),
         "assert" => Some("Built-in test helper\n```prime\nfn assert(cond: bool) -> ()\n```\nPanics if `cond` is false.".into()),
         "expect" => Some("Built-in test helper\n```prime\nfn expect(cond: bool, message: string) -> ()\n```\nPanics with `message` if `cond` is false.".into()),
+        "str_len" => Some("Built-in string helper\n```prime\nfn str_len(input: string) -> int32\n```".into()),
+        "str_contains" => Some("Built-in string helper\n```prime\nfn str_contains(haystack: string, needle: string) -> bool\n```".into()),
+        "str_trim" => Some("Built-in string helper\n```prime\nfn str_trim(input: string) -> string\n```".into()),
+        "str_split" => Some("Built-in string helper\n```prime\nfn str_split(input: string, delim: string) -> []string\n```".into()),
+        "min" => Some("Built-in math helper\n```prime\nfn min(a: int32, b: int32) -> int32\n```\nWorks on integer values.".into()),
+        "max" => Some("Built-in math helper\n```prime\nfn max(a: int32, b: int32) -> int32\n```\nWorks on integer values.".into()),
+        "abs" => Some("Built-in math helper\n```prime\nfn abs(value: int32) -> int32\n```".into()),
         _ => None,
     }
 }
@@ -504,6 +511,27 @@ fn builtin_method_signature(ty: &TypeExpr, method: &str) -> Option<(&'static str
                     "slice method",
                     format!("fn push(value: {}) -> ()", format_type_expr(&element_ty)),
                 )),
+                _ => None,
+            }
+        }
+        TypeExpr::Named(name, _) if name == "string" => match method {
+            "str_len" => Some(("string method", "fn str_len() -> int32".into())),
+            "str_contains" => Some((
+                "string method",
+                "fn str_contains(needle: string) -> bool".into(),
+            )),
+            "str_trim" => Some(("string method", "fn str_trim() -> string".into())),
+            "str_split" => Some((
+                "string method",
+                "fn str_split(delim: string) -> []string".into(),
+            )),
+            _ => None,
+        },
+        TypeExpr::Named(name, _) if name.starts_with("int") || name.starts_with("float") => {
+            match method {
+                "abs" => Some(("number method", "fn abs()".into())),
+                "min" => Some(("number method", "fn min(other)".into())),
+                "max" => Some(("number method", "fn max(other)".into())),
                 _ => None,
             }
         }
