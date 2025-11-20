@@ -1,9 +1,17 @@
 test tests::basic;
 
+import pkg::lib;
+
 fn adds_numbers() -> (int32, int32) {
   (1, 4)
 }
 
 fn adds_two_numbers(a: int32, b: int32) -> bool {
   a + b == 5
+}
+
+fn validates_imported_identity() -> bool {
+  let Banner b = promote("task", true);
+  let string status = describe(b);
+  status == "highlighted"
 }
