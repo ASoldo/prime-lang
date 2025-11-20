@@ -15,3 +15,9 @@ fn validates_imported_identity() -> bool {
   let string status = describe(b);
   status == "highlighted"
 }
+
+fn uses_asserts() -> bool {
+  assert(true);
+  expect(true, "expect should not panic");
+  true
+}

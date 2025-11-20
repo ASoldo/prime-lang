@@ -140,6 +140,7 @@ discovered by `prime-lang test`.
 - Targets can be files or module names (`prime-lang test tests::basic,other.test`);
   no target runs all discovered test headers.
 - `prime-lang run/build` refuse to execute/compile `test ...;` targets.
+- Built-in helpers for tests: `assert(cond: bool)` and `expect(cond: bool, message: string)`.
 
 `prime-lang add demos::patterns --path pattern_demo.prime` will append another
 `[[modules]]` table and create the stub file automatically. Keeping the manifest

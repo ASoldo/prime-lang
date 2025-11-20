@@ -1814,6 +1814,8 @@ impl Checker {
                 | "map_new"
                 | "map_insert"
                 | "map_get"
+                | "assert"
+                | "expect"
         )
     }
 

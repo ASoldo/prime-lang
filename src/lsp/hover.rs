@@ -238,6 +238,8 @@ fn builtin_function_docs(name: &str) -> Option<String> {
             "Built-in map helper\n```prime\nfn map_get[V](map: Map[string, V], key: string) -> Option[V]\n```\nEquivalent available via `map.get(key)`"
                 .into(),
         ),
+        "assert" => Some("Built-in test helper\n```prime\nfn assert(cond: bool) -> ()\n```\nPanics if `cond` is false.".into()),
+        "expect" => Some("Built-in test helper\n```prime\nfn expect(cond: bool, message: string) -> ()\n```\nPanics with `message` if `cond` is false.".into()),
         _ => None,
     }
 }

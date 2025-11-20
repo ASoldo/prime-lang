@@ -729,6 +729,8 @@ impl Interpreter {
             "get" => self.builtin_get(args),
             "push" => self.builtin_push(args),
             "insert" => self.builtin_insert(args),
+            "assert" => self.builtin_assert(args),
+            "expect" => self.builtin_expect(args),
             _ => return None,
         };
         Some(result)
@@ -752,6 +754,8 @@ impl Interpreter {
                 | "get"
                 | "push"
                 | "insert"
+                | "assert"
+                | "expect"
         )
     }
 
@@ -916,6 +920,19 @@ impl Interpreter {
         }
     }
 
+    fn expect_bool(&self, name: &str, value: Value) -> RuntimeResult<bool> {
+        match value {
+            Value::Bool(flag) => Ok(flag),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.borrow().clone();
+                self.expect_bool(name, cloned)
+            }
+            _ => Err(RuntimeError::TypeMismatch {
+                message: format!("{name} expects bool"),
+            }),
+        }
+    }
+
     fn builtin_map_insert(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.warn_deprecated("map_insert");
         if args.len() != 3 {
@@ -960,6 +977,27 @@ impl Interpreter {
                 message: format!("`len` not supported for {}", self.describe_value(&other)),
             }),
         }
+    }
+
+    fn builtin_assert(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("assert", &args, 1)?;
+        let cond = self.expect_bool("assert", args.remove(0))?;
+        if !cond {
+            return Err(RuntimeError::Panic {
+                message: "assertion failed".into(),
+            });
+        }
+        Ok(Vec::new())
+    }
+
+    fn builtin_expect(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("expect", &args, 2)?;
+        let cond = self.expect_bool("expect", args.remove(0))?;
+        let msg = self.expect_string("expect", args.remove(0))?;
+        if !cond {
+            return Err(RuntimeError::Panic { message: msg });
+        }
+        Ok(Vec::new())
     }
 
     fn builtin_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
