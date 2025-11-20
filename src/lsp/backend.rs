@@ -747,9 +747,14 @@ impl LanguageServer for Backend {
         let vars = collect_var_infos(&text, &tokens);
         let offset = position_to_offset(&text, position);
         if let Some(token) = token_at(&tokens, offset) {
-            if let Some(hover) =
-                hover_for_token(&text, token, &vars, module.as_ref(), struct_info.as_ref())
-            {
+            if let Some(hover) = hover_for_token(
+                &text,
+                token,
+                &vars,
+                module.as_ref(),
+                struct_info.as_ref(),
+                Some(&struct_modules),
+            ) {
                 return Ok(Some(hover));
             }
         }

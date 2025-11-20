@@ -1,5 +1,5 @@
 use crate::language::{
-    ast::{ConstDef, EnumDef, EnumVariant, InterfaceDef, Item, Module, StructDef},
+    ast::{ConstDef, EnumDef, EnumVariant, InterfaceDef, Item, Module, StructDef, Visibility},
     span::Span,
     token::{Token, TokenKind},
     types::{Mutability, TypeExpr},
@@ -97,6 +97,7 @@ pub fn hover_for_token(
     vars: &[VarInfo],
     module: Option<&Module>,
     struct_info: Option<&StructInfoMap>,
+    modules: Option<&[Module]>,
 ) -> Option<Hover> {
     let span = token.span;
     let hover = match &token.kind {
@@ -124,6 +125,11 @@ pub fn hover_for_token(
                     hover_for_interface_method_definition(text, span, name, module)
                 {
                     return Some(method_hover);
+                }
+                if let Some(mods) = modules {
+                    if let Some(hover) = hover_for_imported_symbol(text, span, name, module, mods) {
+                        return Some(hover);
+                    }
                 }
                 if let Some(struct_info) = struct_info {
                     if let Some(hover) =
@@ -327,6 +333,50 @@ fn hover_for_module_symbol(
                 }
             }
             _ => {}
+        }
+    }
+    None
+}
+
+fn hover_for_imported_symbol(
+    text: &str,
+    usage_span: Span,
+    name: &str,
+    module: &Module,
+    modules: &[Module],
+) -> Option<Hover> {
+    for import in &module.imports {
+        let import_name = import.path.to_string();
+        let imported = modules.iter().find(|m| m.name == import_name)?;
+        for item in &imported.items {
+            match item {
+                Item::Function(func)
+                    if func.visibility == Visibility::Public && func.name == name =>
+                {
+                    let signature = format_function_signature(func);
+                    let value = format!("```prime\n{}\n```", signature);
+                    return Some(markdown_hover(text, usage_span, value));
+                }
+                Item::Struct(def) if def.visibility == Visibility::Public && def.name == name => {
+                    let snippet = format_struct_hover(def);
+                    return Some(markdown_hover(text, usage_span, snippet));
+                }
+                Item::Enum(def) if def.visibility == Visibility::Public && def.name == name => {
+                    let snippet = format_enum_hover(def);
+                    return Some(markdown_hover(text, usage_span, snippet));
+                }
+                Item::Interface(def)
+                    if def.visibility == Visibility::Public && def.name == name =>
+                {
+                    let snippet = format_interface_hover(def);
+                    return Some(markdown_hover(text, usage_span, snippet));
+                }
+                Item::Const(def) if def.visibility == Visibility::Public && def.name == name => {
+                    let snippet = format_const_snippet(text, def);
+                    return Some(markdown_hover(text, usage_span, snippet));
+                }
+                _ => {}
+            }
         }
     }
     None
@@ -786,8 +836,15 @@ fn main() {
             .filter(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "Player"))
             .nth(1)
             .expect("second Player token");
-        let hover = hover_for_token(text, player_usage, &[], Some(&module), Some(&structs))
-            .expect("hover result");
+        let hover = hover_for_token(
+            text,
+            player_usage,
+            &[],
+            Some(&module),
+            Some(&structs),
+            Some(&[module.clone()]),
+        )
+        .expect("hover result");
         match hover.contents {
             HoverContents::Markup(content) => {
                 assert!(content.value.contains("struct Player"));
@@ -806,7 +863,7 @@ fn main() {
             .iter()
             .find(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "score"))
             .expect("score token");
-        let hover = hover_for_token(text, token, &vars, None, None).expect("hover result");
+        let hover = hover_for_token(text, token, &vars, None, None, None).expect("hover result");
         match hover.contents {
             HoverContents::Markup(content) => {
                 assert!(content.value.contains("let score: int32 = 10;"));
@@ -834,8 +891,15 @@ fn main() {
             .filter(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "left"))
             .nth(1)
             .expect("usage of left");
-        let hover =
-            hover_for_token(text, token, &[], Some(&module), None).expect("hover result for left");
+        let hover = hover_for_token(
+            text,
+            token,
+            &[],
+            Some(&module),
+            None,
+            Some(&[module.clone()]),
+        )
+        .expect("hover result for left");
         match hover.contents {
             HoverContents::Markup(content) => {
                 assert!(
@@ -875,8 +939,15 @@ fn main() {
             .filter(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "sample"))
             .nth(1)
             .expect("usage of sample");
-        let hover = hover_for_token(text, token, &[], Some(&module), Some(&structs))
-            .expect("hover result for sample");
+        let hover = hover_for_token(
+            text,
+            token,
+            &[],
+            Some(&module),
+            Some(&structs),
+            Some(&[module.clone()]),
+        )
+        .expect("hover result for sample");
         match hover.contents {
             HoverContents::Markup(content) => {
                 assert!(
