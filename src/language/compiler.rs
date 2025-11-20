@@ -1141,6 +1141,23 @@ impl Compiler {
             "get" => Some(self.invoke_builtin(args, |this, values| this.builtin_get(values))),
             "push" => Some(self.invoke_builtin(args, |this, values| this.builtin_push(values))),
             "insert" => Some(self.invoke_builtin(args, |this, values| this.builtin_insert(values))),
+            "assert" => Some(self.invoke_builtin(args, |this, values| this.builtin_assert(values))),
+            "expect" => Some(self.invoke_builtin(args, |this, values| this.builtin_expect(values))),
+            "str_len" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_str_len(values)))
+            }
+            "str_contains" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_str_contains(values)))
+            }
+            "str_trim" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_str_trim(values)))
+            }
+            "str_split" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_str_split(values)))
+            }
+            "min" => Some(self.invoke_builtin(args, |this, values| this.builtin_min(values))),
+            "max" => Some(self.invoke_builtin(args, |this, values| this.builtin_max(values))),
+            "abs" => Some(self.invoke_builtin(args, |this, values| this.builtin_abs(values))),
             _ => None,
         }
     }
@@ -1790,6 +1807,20 @@ impl Compiler {
             }
             other => Err(format!(
                 "Expected integer value in build mode, got {}",
+                describe_value(&other)
+            )),
+        }
+    }
+
+    fn expect_float(&self, value: Value) -> Result<FloatValue, String> {
+        match value {
+            Value::Float(v) => Ok(v),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.expect_float(inner)
+            }
+            other => Err(format!(
+                "Expected float value in build mode, got {}",
                 describe_value(&other)
             )),
         }
@@ -2726,6 +2757,148 @@ impl Compiler {
         let map = self.expect_map_value(args.pop().unwrap(), "insert")?;
         map.insert(key, value);
         Ok(Value::Unit)
+    }
+
+    fn builtin_assert(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("assert expects 1 argument".into());
+        }
+        let cond = self.value_to_bool(args.pop().unwrap())?;
+        if !cond {
+            return Err("assertion failed".into());
+        }
+        Ok(Value::Unit)
+    }
+
+    fn builtin_expect(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("expect expects 2 arguments".into());
+        }
+        let cond = self.value_to_bool(args.remove(0))?;
+        let msg = self.expect_string_value(args.remove(0), "expect")?;
+        if !cond {
+            return Err(msg);
+        }
+        Ok(Value::Unit)
+    }
+
+    fn builtin_str_len(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("str_len expects 1 argument".into());
+        }
+        let text = self.expect_string_value(args.pop().unwrap(), "str_len")?;
+        Ok(Value::Int(self.const_int_value(text.len() as i128)))
+    }
+
+    fn builtin_str_contains(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("str_contains expects receiver and needle".into());
+        }
+        let needle = self.expect_string_value(args.pop().unwrap(), "str_contains")?;
+        let haystack = self.expect_string_value(args.pop().unwrap(), "str_contains")?;
+        Ok(Value::Bool(haystack.contains(&needle)))
+    }
+
+    fn builtin_str_trim(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("str_trim expects 1 argument".into());
+        }
+        let text = self.expect_string_value(args.pop().unwrap(), "str_trim")?;
+        let trimmed = text.trim().to_string();
+        self.make_string_value(&trimmed)
+    }
+
+    fn builtin_str_split(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("str_split expects receiver and delimiter".into());
+        }
+        let delim = self.expect_string_value(args.pop().unwrap(), "str_split")?;
+        let text = self.expect_string_value(args.pop().unwrap(), "str_split")?;
+        let mut parts = Vec::new();
+        for segment in text.split(&delim) {
+            parts.push(self.make_string_value(segment)?);
+        }
+        Ok(Value::Slice(SliceValue::from_vec(parts)))
+    }
+
+    fn builtin_min(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("min expects 2 arguments".into());
+        }
+        let rhs = args.pop().unwrap();
+        let lhs = args.pop().unwrap();
+        if let (Ok(a), Ok(b)) = (self.expect_int(lhs.clone()), self.expect_int(rhs.clone())) {
+            let a_const = a
+                .constant()
+                .ok_or_else(|| "min expects constant integers in build mode".to_string())?;
+            let b_const = b
+                .constant()
+                .ok_or_else(|| "min expects constant integers in build mode".to_string())?;
+            return Ok(Value::Int(self.const_int_value(a_const.min(b_const))));
+        }
+        if let (Ok(a), Ok(b)) = (
+            self.expect_float(lhs.clone()),
+            self.expect_float(rhs.clone()),
+        ) {
+            let a_const = a
+                .constant()
+                .ok_or_else(|| "min expects constant floats in build mode".to_string())?;
+            let b_const = b
+                .constant()
+                .ok_or_else(|| "min expects constant floats in build mode".to_string())?;
+            return Ok(Value::Float(self.const_float_value(a_const.min(b_const))));
+        }
+        Err("`min` expects numbers of the same type in build mode".into())
+    }
+
+    fn builtin_max(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("max expects 2 arguments".into());
+        }
+        let rhs = args.pop().unwrap();
+        let lhs = args.pop().unwrap();
+        if let (Ok(a), Ok(b)) = (self.expect_int(lhs.clone()), self.expect_int(rhs.clone())) {
+            let a_const = a
+                .constant()
+                .ok_or_else(|| "max expects constant integers in build mode".to_string())?;
+            let b_const = b
+                .constant()
+                .ok_or_else(|| "max expects constant integers in build mode".to_string())?;
+            return Ok(Value::Int(self.const_int_value(a_const.max(b_const))));
+        }
+        if let (Ok(a), Ok(b)) = (
+            self.expect_float(lhs.clone()),
+            self.expect_float(rhs.clone()),
+        ) {
+            let a_const = a
+                .constant()
+                .ok_or_else(|| "max expects constant floats in build mode".to_string())?;
+            let b_const = b
+                .constant()
+                .ok_or_else(|| "max expects constant floats in build mode".to_string())?;
+            return Ok(Value::Float(self.const_float_value(a_const.max(b_const))));
+        }
+        Err("`max` expects numbers of the same type in build mode".into())
+    }
+
+    fn builtin_abs(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("abs expects 1 argument".into());
+        }
+        let value = args.pop().unwrap();
+        if let Ok(int_value) = self.expect_int(value.clone()) {
+            let constant = int_value
+                .constant()
+                .ok_or_else(|| "abs expects constant integer in build mode".to_string())?;
+            return Ok(Value::Int(self.const_int_value(constant.abs())));
+        }
+        if let Ok(float_value) = self.expect_float(value.clone()) {
+            let constant = float_value
+                .constant()
+                .ok_or_else(|| "abs expects constant float in build mode".to_string())?;
+            return Ok(Value::Float(self.const_float_value(constant.abs())));
+        }
+        Err("`abs` expects int or float in build mode".into())
     }
 
     fn execute_block_contents(&mut self, block: &Block) -> Result<BlockEval, String> {

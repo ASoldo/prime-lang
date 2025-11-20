@@ -1288,7 +1288,23 @@ fn collect_chain_segments(text: &str, mut idx: usize) -> Option<Vec<String>> {
             }
         }
         if start == end {
-            return None;
+            let ch = bytes.get(end.wrapping_sub(1)).copied();
+            if ch == Some(b'`') || ch == Some(b'"') {
+                let quote = ch.unwrap();
+                start = end.saturating_sub(1);
+                while start > 0 {
+                    if bytes[start - 1] == quote && bytes.get(start - 2) != Some(&b'\\') {
+                        start -= 1;
+                        break;
+                    }
+                    start -= 1;
+                }
+                if bytes.get(start) != Some(&quote) {
+                    return None;
+                }
+            } else {
+                return None;
+            }
         }
         segments.push(text[start..end].to_string());
         idx = start;
@@ -1354,6 +1370,9 @@ fn identifier_type_from_scope(
     name: &str,
     offset: usize,
 ) -> Option<TypeExpr> {
+    if let Some(literal_ty) = literal_type(name) {
+        return Some(literal_ty);
+    }
     if let Some(decl) = find_local_decl(module, name, offset) {
         if let Some(ty) = decl.ty {
             return Some(ty);
@@ -1361,6 +1380,15 @@ fn identifier_type_from_scope(
     }
     if structs.contains_key(name) {
         return Some(TypeExpr::Named(name.to_string(), Vec::new()));
+    }
+    None
+}
+
+fn literal_type(name: &str) -> Option<TypeExpr> {
+    if (name.starts_with('`') && name.ends_with('`'))
+        || (name.starts_with('"') && name.ends_with('"'))
+    {
+        return Some(TypeExpr::named("string"));
     }
     None
 }
