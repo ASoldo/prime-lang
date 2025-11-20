@@ -134,37 +134,63 @@ return {
 
     (module_declaration name: (module_path) @namespace)
     (module_path (identifier) @namespace)
+    (import_declaration path: (module_path) @namespace)
+    (import_declaration path: (string_literal) @namespace)
 
-    (function_definition name: (identifier) @function)
-    (struct_definition name: (type_identifier) @type.prime)
-    (enum_definition name: (type_identifier) @type.prime)
-    (interface_definition name: (type_identifier) @type.prime)
-    (impl_definition target: (type_expression) @type.prime)
+    (function_definition
+      name: (identifier) @function
+      (#set! "priority" 110))
+    (parameter
+      (identifier) @variable.parameter
+      (#set! "priority" 110))
+    (parameter type: (type_expression) @type)
+    (call_expression
+      function: (identifier) @function.call)
+    (call_expression
+      function: (field_expression field: (identifier) @function.call))
+    (call_expression
+      arguments: (argument_list _ @variable))
+
+    (struct_definition name: (type_identifier) @type)
+    (enum_definition name: (type_identifier) @type)
+    (interface_definition name: (type_identifier) @type)
+    (impl_definition target: (type_expression) @type)
     (const_definition name: (identifier) @constant)
 
     (parameter name: (identifier) @variable.parameter)
+    (parameter type: (type_expression) @type)
     (let_statement name: (identifier) @variable)
     (let_statement pattern: (identifier) @variable)
+    (let_statement annotation: (type_expression) @type)
     (pattern (identifier) @variable)
+    (pattern (tuple_pattern (identifier) @variable))
 
-    (type_expression (type_identifier) @type.prime)
-    (type_expression (type_path (type_identifier)) @type.prime)
-    (type_expression (module_path) @type.prime)
-    (type_expression (identifier) @type.prime)
-    (reference_type (type_identifier) @type.prime)
-    (reference_type (identifier) @type.prime)
-    (pointer_type (type_identifier) @type.prime)
-    (pointer_type (identifier) @type.prime)
-    (slice_type (type_identifier) @type.prime)
-    (slice_type (identifier) @type.prime)
-    (array_type (type_identifier) @type.prime)
-    (array_type (identifier) @type.prime)
-    (tuple_type (type_identifier) @type.prime)
-    (tuple_type (identifier) @type.prime)
+    (type_expression (type_identifier) @type)
+    (type_expression (type_path (type_identifier)) @type)
+    (type_expression (module_path) @type)
+    (type_expression (identifier) @type)
+    (reference_type (type_identifier) @type)
+    (reference_type (identifier) @type)
+    (pointer_type (type_identifier) @type)
+    (pointer_type (identifier) @type)
+    (slice_type (type_identifier) @type)
+    (slice_type (identifier) @type)
+    (array_type (type_identifier) @type)
+    (array_type (identifier) @type)
+    (tuple_type (type_identifier) @type)
+    (tuple_type (identifier) @type)
+    ((identifier) @type.builtin
+      (#match? @type.builtin "^(int|uint)(8|16|32|64)$|^u?size$|^float(32|64)$|^bool$|^string$|^rune$"))
+
+    (struct_literal_field name: (identifier) @field)
+    (map_entry key: (identifier) @field)
+    (map_entry key: (string_literal) @string)
+    (field_expression field: (identifier) @field)
 
     (assign_statement
-      target: (identifier) @variable
-      value: (identifier) @variable)
+      target: (identifier) @variable)
+    (assign_statement
+      target: (unary_expression (identifier) @variable))
 
     ;; Constructors / enum variants (Ok, Err, etc.)
     (call_expression
@@ -180,9 +206,7 @@ return {
     (format_string_literal) @string.special
     (rune_literal)    @character
     (boolean_literal) @boolean
-    ;; lowercase identifiers; uppercase captured as constructor/type above
-    ((identifier) @identifier
-      (#match? @identifier "^[a-z_]"))
+    ;; identifiers are covered above (params, lets, calls, types, constructors); no catch-all to avoid overriding those
     ]]
 				local f = assert(io.open(query_root .. "/highlights.scm", "w"))
 				f:write(highlights)

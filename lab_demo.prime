@@ -237,7 +237,7 @@ fn collect_metrics(baseline: int32, offset: int32, tuning: Map[string, int32], r
       synergy = synergy + baseline;
     },
   }
-  let (low, high) =   match (iteration, baseline) {
+  let (low, high) = match (iteration, baseline) {
     (turn, level) if turn > 1 => (level - 2, level + 2),
     (_, level) => (offset, level + SIGNAL_OFFSET),
   };
@@ -250,7 +250,7 @@ fn collect_metrics(baseline: int32, offset: int32, tuning: Map[string, int32], r
 }
 
 fn derive_tags(name: string, annotations: []string, normalized: int32, iteration: int32) -> (string, []string) {
-  let string tone =   match (name, normalized) {
+  let string tone = match (name, normalized) {
     ("surge", value) if value > 90 => "volatile",
     ("calm", _) => "even",
     _ => "steady",

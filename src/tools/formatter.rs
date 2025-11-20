@@ -300,7 +300,7 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
         Statement::Expr(expr) => {
             match &expr.expr {
                 Expr::Match(match_expr) => {
-                    write_match_expression(out, match_expr, indent);
+                    write_match_expression(out, match_expr, indent, true);
                     out.push('\n');
                 }
                 Expr::If(if_expr) => {
@@ -390,7 +390,7 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
 fn format_tail_expression(out: &mut String, expr: &Expr, indent: usize) {
     match expr {
         Expr::Match(match_expr) => {
-            write_match_expression(out, match_expr, indent);
+            write_match_expression(out, match_expr, indent, true);
             out.push('\n');
         }
         Expr::MapLiteral { entries, .. } => {
@@ -486,7 +486,7 @@ fn emit_initializer_expression(out: &mut String, base_indent: usize, expr: &Expr
             true
         }
         Expr::Match(match_expr) => {
-            write_match_expression(out, match_expr, base_indent);
+            write_match_expression(out, match_expr, base_indent, false);
             true
         }
         Expr::Try { block, .. } => {
@@ -532,8 +532,15 @@ fn format_for_statement(out: &mut String, stmt: &ForStmt, indent: usize) {
     out.push_str("}\n");
 }
 
-fn write_match_expression(out: &mut String, expr: &MatchExpr, indent: usize) {
-    write_indent(out, indent);
+fn write_match_expression(
+    out: &mut String,
+    expr: &MatchExpr,
+    indent: usize,
+    indent_first_line: bool,
+) {
+    if indent_first_line {
+        write_indent(out, indent);
+    }
     out.push_str(&format!("match {} {{\n", format_expr(&expr.expr)));
     for arm in &expr.arms {
         write_indent(out, indent + 2);
@@ -678,7 +685,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         Expr::If(if_expr) => format_if_expression(if_expr),
         Expr::Match(match_expr) => {
             let mut buf = String::new();
-            write_match_expression(&mut buf, match_expr, 0);
+            write_match_expression(&mut buf, match_expr, 0, true);
             buf
         }
     }
@@ -837,7 +844,7 @@ fn emit_array_value(out: &mut String, indent: usize, expr: &Expr) {
             emit_if_expression(out, indent, if_expr, true);
         }
         Expr::Match(match_expr) => {
-            write_match_expression(out, match_expr, indent);
+            write_match_expression(out, match_expr, indent, true);
         }
         Expr::Block(block) => {
             write_indent(out, indent);
