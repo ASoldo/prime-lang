@@ -1221,8 +1221,10 @@ fn struct_name_from_type<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::language::parser::parse_module;
     use crate::project::manifest::PackageManifest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::tempdir;
     use tower_lsp_server::lsp_types::CompletionTriggerKind;
 
@@ -1320,5 +1322,53 @@ entry = "demo::main"
         };
         let prefix = completion_prefix("a", 0, Some(&ctx)).expect("prefix");
         assert_eq!(prefix, "a");
+    }
+
+    #[test]
+    fn member_completion_uses_destructured_tuple_types() {
+        let source = r#"
+module demo::lab;
+
+struct Result {
+  normalized: int32;
+}
+
+fn make() -> (bool, Result) {
+  return true, Result{ normalized: 3 };
+}
+
+fn main() {
+  let (ok, res) = make();
+  res.normalized;
+}
+"#;
+        let module =
+            parse_module("demo::lab", PathBuf::from("lab.prime"), source).expect("parse module");
+        let structs = collect_struct_info(&[module.clone()]);
+        let interfaces = collect_interface_info(&[module.clone()]);
+        let offset = source
+            .find("res.normalized")
+            .map(|idx| idx + "res.".len())
+            .expect("find member access");
+        let chain =
+            expression_chain_before_dot(source, offset).expect("expression chain before dot");
+        let items = member_completion_items(
+            source,
+            &chain,
+            &structs,
+            &interfaces,
+            None,
+            &module,
+            offset,
+        )
+        .expect("completion items for res");
+        assert!(
+            items.iter().any(|item| item.label == "normalized"),
+            "expected normalized field in completion items, got {:?}",
+            items
+                .iter()
+                .map(|item| item.label.clone())
+                .collect::<Vec<_>>()
+        );
     }
 }

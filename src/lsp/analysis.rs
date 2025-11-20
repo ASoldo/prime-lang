@@ -5,7 +5,7 @@ use crate::language::{
         Statement, StructLiteralKind, WhileCondition,
     },
     span::Span,
-    types::{Mutability, TypeExpr},
+    types::{Mutability, TypeAnnotation, TypeExpr},
 };
 use std::collections::HashSet;
 use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
@@ -57,11 +57,11 @@ pub fn collect_decl_spans(module: &Module) -> Vec<DeclInfo> {
     let mut decls = Vec::new();
     for item in &module.items {
         match item {
-            Item::Function(func) => collect_decl_from_function(func, None, &mut decls),
+            Item::Function(func) => collect_decl_from_function(func, module, None, &mut decls),
             Item::Impl(block) => {
                 let target_ty = Some(TypeExpr::named(block.target.clone()));
                 for func in &block.methods {
-                    collect_decl_from_function(func, target_ty.clone(), &mut decls);
+                    collect_decl_from_function(func, module, target_ty.clone(), &mut decls);
                 }
             }
             _ => {}
@@ -72,6 +72,7 @@ pub fn collect_decl_spans(module: &Module) -> Vec<DeclInfo> {
 
 fn collect_decl_from_function(
     func: &FunctionDef,
+    module: &Module,
     receiver_override: Option<TypeExpr>,
     decls: &mut Vec<DeclInfo>,
 ) {
@@ -101,21 +102,28 @@ fn collect_decl_from_function(
         });
     }
     if let FunctionBody::Block(block) = &func.body {
-        collect_decl_from_block(block, decls);
+        collect_decl_from_block(block, module, decls);
     }
 }
 
-fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
+fn collect_decl_from_block(block: &Block, module: &Module, decls: &mut Vec<DeclInfo>) {
     let scope = block.span;
     for statement in &block.statements {
         match statement {
             Statement::Let(stmt) => {
                 if let Some(value) = &stmt.value {
-                    collect_decl_from_expr(value, decls);
+                    collect_decl_from_expr(value, module, decls);
                 }
+                let inferred_value_ty = stmt
+                    .value
+                    .as_ref()
+                    .and_then(|value| infer_expr_type(value, module));
                 let mut ty = stmt.ty.as_ref().map(|annotation| annotation.ty.clone());
                 if ty.is_none() {
                     ty = infer_type_from_let_value(stmt);
+                }
+                if ty.is_none() {
+                    ty = inferred_value_ty.clone();
                 }
                 if let Pattern::Identifier(name, _span) = &stmt.pattern {
                     decls.push(DeclInfo {
@@ -135,28 +143,29 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                         stmt.span.end,
                         decls,
                         pattern_span(&stmt.pattern),
-                        ty,
+                        ty.as_ref(),
+                        module,
                     );
                 }
             }
             Statement::Assign(stmt) => {
-                collect_decl_from_expr(&stmt.target, decls);
-                collect_decl_from_expr(&stmt.value, decls);
+                collect_decl_from_expr(&stmt.target, module, decls);
+                collect_decl_from_expr(&stmt.value, module, decls);
             }
-            Statement::Expr(expr_stmt) => collect_decl_from_expr(&expr_stmt.expr, decls),
+            Statement::Expr(expr_stmt) => collect_decl_from_expr(&expr_stmt.expr, module, decls),
             Statement::Return(ret) => {
                 for value in &ret.values {
-                    collect_decl_from_expr(value, decls);
+                    collect_decl_from_expr(value, module, decls);
                 }
             }
             Statement::While(while_stmt) => {
-                collect_decl_from_while_condition(&while_stmt.condition, decls);
-                collect_decl_from_block(&while_stmt.body, decls);
+                collect_decl_from_while_condition(&while_stmt.condition, module, decls);
+                collect_decl_from_block(&while_stmt.body, module, decls);
             }
             Statement::For(for_stmt) => {
                 match &for_stmt.target {
-                    ForTarget::Range(range) => collect_decl_from_range(range, decls),
-                    ForTarget::Collection(expr) => collect_decl_from_expr(expr, decls),
+                    ForTarget::Range(range) => collect_decl_from_range(range, module, decls),
+                    ForTarget::Collection(expr) => collect_decl_from_expr(expr, module, decls),
                 }
                 let body_span = for_stmt.body.span;
                 decls.push(DeclInfo {
@@ -169,57 +178,57 @@ fn collect_decl_from_block(block: &Block, decls: &mut Vec<DeclInfo>) {
                     mutability: Mutability::Immutable,
                     kind: DeclKind::ForBinding,
                 });
-                collect_decl_from_block(&for_stmt.body, decls);
+                collect_decl_from_block(&for_stmt.body, module, decls);
             }
-            Statement::Defer(defer_stmt) => collect_decl_from_expr(&defer_stmt.expr, decls),
-            Statement::Block(inner) => collect_decl_from_block(inner, decls),
+            Statement::Defer(defer_stmt) => collect_decl_from_expr(&defer_stmt.expr, module, decls),
+            Statement::Block(inner) => collect_decl_from_block(inner, module, decls),
             Statement::Break | Statement::Continue => {}
         }
     }
     if let Some(tail) = &block.tail {
-        collect_decl_from_expr(tail, decls);
+        collect_decl_from_expr(tail, module, decls);
     }
 }
 
-fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
+fn collect_decl_from_expr(expr: &Expr, module: &Module, decls: &mut Vec<DeclInfo>) {
     match expr {
         Expr::Identifier(_) | Expr::Literal(_) | Expr::FormatString(_) => {}
-        Expr::Try { block, .. } => collect_decl_from_block(block, decls),
-        Expr::TryPropagate { expr: inner, .. } => collect_decl_from_expr(inner, decls),
+        Expr::Try { block, .. } => collect_decl_from_block(block, module, decls),
+        Expr::TryPropagate { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
         Expr::Binary { left, right, .. } => {
-            collect_decl_from_expr(left, decls);
-            collect_decl_from_expr(right, decls);
+            collect_decl_from_expr(left, module, decls);
+            collect_decl_from_expr(right, module, decls);
         }
-        Expr::Unary { expr: inner, .. } => collect_decl_from_expr(inner, decls),
+        Expr::Unary { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
         Expr::Call { callee, args, .. } => {
-            collect_decl_from_expr(callee, decls);
+            collect_decl_from_expr(callee, module, decls);
             for arg in args {
-                collect_decl_from_expr(arg, decls);
+                collect_decl_from_expr(arg, module, decls);
             }
         }
-        Expr::FieldAccess { base, .. } => collect_decl_from_expr(base, decls),
+        Expr::FieldAccess { base, .. } => collect_decl_from_expr(base, module, decls),
         Expr::StructLiteral { fields, .. } => match fields {
             StructLiteralKind::Named(named) => {
                 for field in named {
-                    collect_decl_from_expr(&field.value, decls);
+                    collect_decl_from_expr(&field.value, module, decls);
                 }
             }
             StructLiteralKind::Positional(values) => {
                 for value in values {
-                    collect_decl_from_expr(value, decls);
+                    collect_decl_from_expr(value, module, decls);
                 }
             }
         },
         Expr::MapLiteral { entries, .. } => {
             for entry in entries {
-                collect_decl_from_expr(&entry.key, decls);
-                collect_decl_from_expr(&entry.value, decls);
+                collect_decl_from_expr(&entry.key, module, decls);
+                collect_decl_from_expr(&entry.value, module, decls);
             }
         }
-        Expr::Block(block) => collect_decl_from_block(block, decls),
-        Expr::If(if_expr) => collect_decl_from_if_expr(if_expr, decls),
+        Expr::Block(block) => collect_decl_from_block(block, module, decls),
+        Expr::If(if_expr) => collect_decl_from_if_expr(if_expr, module, decls),
         Expr::Match(match_expr) => {
-            collect_decl_from_expr(&match_expr.expr, decls);
+            collect_decl_from_expr(&match_expr.expr, module, decls);
             for arm in &match_expr.arms {
                 let value_span = expr_span(&arm.value);
                 let pat_span = pattern_span(&arm.pattern);
@@ -230,30 +239,31 @@ fn collect_decl_from_expr(expr: &Expr, decls: &mut Vec<DeclInfo>) {
                     decls,
                     pat_span,
                     None,
+                    module,
                 );
                 if let Some(guard) = &arm.guard {
-                    collect_decl_from_expr(guard, decls);
+                    collect_decl_from_expr(guard, module, decls);
                 }
-                collect_decl_from_expr(&arm.value, decls);
+                collect_decl_from_expr(&arm.value, module, decls);
             }
         }
         Expr::Tuple(values, _) | Expr::ArrayLiteral(values, _) => {
             for value in values {
-                collect_decl_from_expr(value, decls);
+                collect_decl_from_expr(value, module, decls);
             }
         }
-        Expr::Range(range) => collect_decl_from_range(range, decls),
-        Expr::Reference { expr: inner, .. } => collect_decl_from_expr(inner, decls),
-        Expr::Deref { expr: inner, .. } => collect_decl_from_expr(inner, decls),
-        Expr::Move { expr: inner, .. } => collect_decl_from_expr(inner, decls),
+        Expr::Range(range) => collect_decl_from_range(range, module, decls),
+        Expr::Reference { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
+        Expr::Deref { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
+        Expr::Move { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
     }
 }
 
-fn collect_decl_from_if_expr(if_expr: &IfExpr, decls: &mut Vec<DeclInfo>) {
+fn collect_decl_from_if_expr(if_expr: &IfExpr, module: &Module, decls: &mut Vec<DeclInfo>) {
     match &if_expr.condition {
-        IfCondition::Expr(expr) => collect_decl_from_expr(expr, decls),
+        IfCondition::Expr(expr) => collect_decl_from_expr(expr, module, decls),
         IfCondition::Let { pattern, value, .. } => {
-            collect_decl_from_expr(value, decls);
+            collect_decl_from_expr(value, module, decls);
             let pat_span = pattern_span(pattern);
             collect_pattern_decls(
                 pattern,
@@ -261,27 +271,32 @@ fn collect_decl_from_if_expr(if_expr: &IfExpr, decls: &mut Vec<DeclInfo>) {
                 if_expr.then_branch.span.start,
                 decls,
                 pat_span,
-                None,
+                infer_expr_type(value, module).as_ref(),
+                module,
             );
         }
     }
-    collect_decl_from_block(&if_expr.then_branch, decls);
+    collect_decl_from_block(&if_expr.then_branch, module, decls);
     if let Some(else_branch) = &if_expr.else_branch {
-        collect_decl_from_else_branch(else_branch, decls);
+        collect_decl_from_else_branch(else_branch, module, decls);
     }
 }
 
-fn collect_decl_from_while_condition(condition: &WhileCondition, decls: &mut Vec<DeclInfo>) {
+fn collect_decl_from_while_condition(
+    condition: &WhileCondition,
+    module: &Module,
+    decls: &mut Vec<DeclInfo>,
+) {
     match condition {
-        WhileCondition::Expr(expr) => collect_decl_from_expr(expr, decls),
-        WhileCondition::Let { value, .. } => collect_decl_from_expr(value, decls),
+        WhileCondition::Expr(expr) => collect_decl_from_expr(expr, module, decls),
+        WhileCondition::Let { value, .. } => collect_decl_from_expr(value, module, decls),
     }
 }
 
-fn collect_decl_from_else_branch(branch: &ElseBranch, decls: &mut Vec<DeclInfo>) {
+fn collect_decl_from_else_branch(branch: &ElseBranch, module: &Module, decls: &mut Vec<DeclInfo>) {
     match branch {
-        ElseBranch::Block(block) => collect_decl_from_block(block, decls),
-        ElseBranch::ElseIf(if_expr) => collect_decl_from_if_expr(if_expr, decls),
+        ElseBranch::Block(block) => collect_decl_from_block(block, module, decls),
+        ElseBranch::ElseIf(if_expr) => collect_decl_from_if_expr(if_expr, module, decls),
     }
 }
 
@@ -293,9 +308,9 @@ fn infer_type_from_let_value(stmt: &LetStmt) -> Option<TypeExpr> {
     None
 }
 
-fn collect_decl_from_range(range: &RangeExpr, decls: &mut Vec<DeclInfo>) {
-    collect_decl_from_expr(&range.start, decls);
-    collect_decl_from_expr(&range.end, decls);
+fn collect_decl_from_range(range: &RangeExpr, module: &Module, decls: &mut Vec<DeclInfo>) {
+    collect_decl_from_expr(&range.start, module, decls);
+    collect_decl_from_expr(&range.end, module, decls);
 }
 
 fn collect_pattern_decls(
@@ -304,7 +319,8 @@ fn collect_pattern_decls(
     available_from: usize,
     decls: &mut Vec<DeclInfo>,
     pattern_span: Span,
-    inferred_type: Option<TypeExpr>,
+    inferred_type: Option<&TypeExpr>,
+    module: &Module,
 ) {
     match pattern {
         Pattern::Identifier(name, span) => decls.push(DeclInfo {
@@ -312,19 +328,40 @@ fn collect_pattern_decls(
             span: *span,
             scope,
             available_from,
-            ty: inferred_type.clone(),
+            ty: inferred_type.cloned(),
             value_span: Some(pattern_span),
             mutability: Mutability::Immutable,
             kind: DeclKind::Pattern,
         }),
         Pattern::EnumVariant { bindings, .. } => {
             for binding in bindings {
-                collect_pattern_decls(binding, scope, available_from, decls, pattern_span, None);
+                collect_pattern_decls(
+                    binding,
+                    scope,
+                    available_from,
+                    decls,
+                    pattern_span,
+                    None,
+                    module,
+                );
             }
         }
         Pattern::Tuple(elements, _) => {
-            for element in elements {
-                collect_pattern_decls(element, scope, available_from, decls, pattern_span, None);
+            let tuple_types: Vec<Option<&TypeExpr>> = match inferred_type {
+                Some(TypeExpr::Tuple(types)) => types.iter().map(Some).collect(),
+                _ => Vec::new(),
+            };
+            for (idx, element) in elements.iter().enumerate() {
+                let element_type = tuple_types.get(idx).copied().flatten();
+                collect_pattern_decls(
+                    element,
+                    scope,
+                    available_from,
+                    decls,
+                    pattern_span,
+                    element_type,
+                    module,
+                );
             }
         }
         Pattern::Map(entries, _) => {
@@ -336,18 +373,31 @@ fn collect_pattern_decls(
                     decls,
                     pattern_span,
                     None,
+                    module,
                 );
             }
         }
-        Pattern::Struct { fields, .. } => {
+        Pattern::Struct {
+            struct_name,
+            fields,
+            ..
+        } => {
             for field in fields {
+                let field_type = inferred_type
+                    .and_then(|ty| struct_field_type(module, ty, &field.name))
+                    .or_else(|| {
+                        struct_name
+                            .as_ref()
+                            .and_then(|name| struct_field_type_by_name(module, name, &field.name))
+                    });
                 collect_pattern_decls(
                     &field.pattern,
                     scope,
                     available_from,
                     decls,
                     pattern_span,
-                    None,
+                    field_type.as_ref(),
+                    module,
                 );
             }
         }
@@ -358,23 +408,164 @@ fn collect_pattern_decls(
             ..
         } => {
             for pat in prefix {
-                collect_pattern_decls(pat, scope, available_from, decls, pattern_span, None);
+                let element_hint = inferred_type.and_then(slice_element_type);
+                let element_type = element_hint.as_ref();
+                collect_pattern_decls(
+                    pat,
+                    scope,
+                    available_from,
+                    decls,
+                    pattern_span,
+                    element_type,
+                    module,
+                );
             }
             if let Some(rest_pattern) = rest {
+                let rest_type = inferred_type.map(|ty| match ty {
+                    TypeExpr::Slice(inner) => TypeExpr::Slice(inner.clone()),
+                    _ => TypeExpr::Slice(Box::new(TypeExpr::Unit)),
+                });
                 collect_pattern_decls(
                     rest_pattern,
                     scope,
                     available_from,
                     decls,
                     pattern_span,
-                    Some(TypeExpr::Slice(Box::new(TypeExpr::Unit))),
+                    rest_type.as_ref(),
+                    module,
                 );
             }
             for pat in suffix {
-                collect_pattern_decls(pat, scope, available_from, decls, pattern_span, None);
+                let element_hint = inferred_type.and_then(slice_element_type);
+                let element_type = element_hint.as_ref();
+                collect_pattern_decls(
+                    pat,
+                    scope,
+                    available_from,
+                    decls,
+                    pattern_span,
+                    element_type,
+                    module,
+                );
             }
         }
         _ => {}
+    }
+}
+
+fn slice_element_type(ty: &TypeExpr) -> Option<TypeExpr> {
+    match ty {
+        TypeExpr::Slice(inner) => Some((**inner).clone()),
+        _ => None,
+    }
+}
+
+fn struct_field_type(module: &Module, ty: &TypeExpr, field_name: &str) -> Option<TypeExpr> {
+    let struct_name = match ty {
+        TypeExpr::Named(name, _) => Some(name.as_str()),
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
+            match ty.as_ref() {
+                TypeExpr::Named(name, _) => Some(name.as_str()),
+                other => return struct_field_type(module, other, field_name),
+            }
+        }
+        _ => None,
+    }?;
+    struct_field_type_by_name(module, struct_name, field_name)
+}
+
+fn struct_field_type_by_name(
+    module: &Module,
+    struct_name: &str,
+    field_name: &str,
+) -> Option<TypeExpr> {
+    for item in &module.items {
+        if let Item::Struct(def) = item {
+            if def.name == struct_name {
+                for field in &def.fields {
+                    if let Some(name) = &field.name {
+                        if name == field_name {
+                            return Some(field.ty.ty.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn returns_to_type(returns: &[TypeAnnotation]) -> TypeExpr {
+    match returns.len() {
+        0 => TypeExpr::Unit,
+        1 => returns[0].ty.clone(),
+        _ => TypeExpr::Tuple(returns.iter().map(|ret| ret.ty.clone()).collect()),
+    }
+}
+
+fn function_return_type(module: &Module, name: &str) -> Option<TypeExpr> {
+    for item in &module.items {
+        match item {
+            Item::Function(func) if func.name == name => return Some(returns_to_type(&func.returns)),
+            Item::Impl(block) => {
+                for method in &block.methods {
+                    if method.name == name {
+                        return Some(returns_to_type(&method.returns));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn infer_expr_type(expr: &Expr, module: &Module) -> Option<TypeExpr> {
+    match expr {
+        Expr::StructLiteral { name, .. } => Some(TypeExpr::Named(name.clone(), Vec::new())),
+        Expr::Call { callee, .. } => match &**callee {
+            Expr::Identifier(ident) => function_return_type(module, &ident.name),
+            _ => None,
+        },
+        Expr::Tuple(values, _) => {
+            let mut types = Vec::new();
+            for value in values {
+                types.push(infer_expr_type(value, module)?);
+            }
+            Some(TypeExpr::Tuple(types))
+        }
+        Expr::ArrayLiteral(values, _) => {
+            if values.is_empty() {
+                None
+            } else {
+                let element_ty = infer_expr_type(&values[0], module)?;
+                Some(TypeExpr::Array {
+                    size: values.len(),
+                    ty: Box::new(element_ty),
+                })
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            let value_ty = entries
+                .first()
+                .and_then(|entry| infer_expr_type(&entry.value, module))?;
+            Some(TypeExpr::Named(
+                "Map".into(),
+                vec![TypeExpr::Named("string".into(), Vec::new()), value_ty],
+            ))
+        }
+        Expr::Reference {
+            mutable,
+            expr: inner,
+            ..
+        } => {
+            let inner_ty = infer_expr_type(inner, module)?;
+            Some(TypeExpr::Reference {
+                mutable: *mutable,
+                ty: Box::new(inner_ty),
+            })
+        }
+        _ => None,
     }
 }
 

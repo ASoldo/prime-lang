@@ -776,4 +776,45 @@ fn main() {
             _ => panic!("expected markup hover"),
         }
     }
+
+    #[test]
+    fn hover_shows_type_for_tuple_destructuring() {
+        let text = r#"
+module demo::lab;
+
+struct Sample {
+  value: int32;
+}
+
+fn build() -> (bool, Sample, string) {
+  return true, Sample{ value: 5 }, "ok";
+}
+
+fn main() {
+  let (ok, sample, message) = build();
+  out(sample.value);
+}
+"#;
+        let tokens = lex(text).expect("lex tokens");
+        let module =
+            parse_module("demo::lab", PathBuf::from("lab.prime"), text).expect("parse module");
+        let structs = collect_struct_info(&[module.clone()]);
+        let token = tokens
+            .iter()
+            .filter(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "sample"))
+            .nth(1)
+            .expect("usage of sample");
+        let hover = hover_for_token(text, token, &[], Some(&module), Some(&structs))
+            .expect("hover result for sample");
+        match hover.contents {
+            HoverContents::Markup(content) => {
+                assert!(
+                    content.value.contains("Type: `Sample`"),
+                    "expected hover to include type, got {}",
+                    content.value
+                );
+            }
+            _ => panic!("expected markup hover"),
+        }
+    }
 }
