@@ -582,7 +582,7 @@ tree-sitter init   # if ABI warnings appear"#,
         key: "recent-updates",
         title: "Recent Updates & Release Notes",
         category: "Meta",
-        summary: "Release callouts from the README so `prime-lang docs` can surface the latest behavior changes.",
+        summary: "Release callouts from the README so `prime-lang docs` can surface the latest behavior changes (tests, headers, module separators).",
         aliases: &[
             "updates",
             "release",

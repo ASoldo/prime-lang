@@ -134,8 +134,11 @@ discovered by `prime-lang test`.
 - Write test files with a `test my.module;` header. They can import other modules
   and define any number of functions; no `main` is required.
 - `prime-lang test` runs every zero-arg function in the test module (bool return
-  is treated as pass/fail). If a function returns a value, it is passed to the
-  next single-arg function, allowing simple chaining.
+  is treated as pass/fail). The full return list is passed to the next function
+  when arity matches (supports multi-value chaining) or to a single-arg function
+  when there is exactly one return; otherwise the function is skipped with a note.
+- Targets can be files or module names (`prime-lang test tests::basic,other.test`);
+  no target runs all discovered test headers.
 - `prime-lang run/build` refuse to execute/compile `test ...;` targets.
 
 `prime-lang add demos::patterns --path pattern_demo.prime` will append another
