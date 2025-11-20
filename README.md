@@ -1,4 +1,4 @@
-<img width="948" height="515" alt="image" src="https://github.com/user-attachments/assets/303940a2-5537-41f1-a3ab-e46b67500921" />
+<img width="1924" height="1053" alt="image" src="https://github.com/user-attachments/assets/80256d3b-018a-46f4-95a9-6134645e3817" />
 
 # Prime Language
 
