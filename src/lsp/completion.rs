@@ -1352,16 +1352,9 @@ fn main() {
             .expect("find member access");
         let chain =
             expression_chain_before_dot(source, offset).expect("expression chain before dot");
-        let items = member_completion_items(
-            source,
-            &chain,
-            &structs,
-            &interfaces,
-            None,
-            &module,
-            offset,
-        )
-        .expect("completion items for res");
+        let items =
+            member_completion_items(source, &chain, &structs, &interfaces, None, &module, offset)
+                .expect("completion items for res");
         assert!(
             items.iter().any(|item| item.label == "normalized"),
             "expected normalized field in completion items, got {:?}",

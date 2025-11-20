@@ -163,9 +163,18 @@ fn collect_decl_from_block(block: &Block, module: &Module, decls: &mut Vec<DeclI
                 collect_decl_from_block(&while_stmt.body, module, decls);
             }
             Statement::For(for_stmt) => {
+                let mut binding_ty = None;
                 match &for_stmt.target {
-                    ForTarget::Range(range) => collect_decl_from_range(range, module, decls),
-                    ForTarget::Collection(expr) => collect_decl_from_expr(expr, module, decls),
+                    ForTarget::Range(range) => {
+                        collect_decl_from_range(range, module, decls);
+                        binding_ty = Some(TypeExpr::Named("int32".into(), Vec::new()));
+                    }
+                    ForTarget::Collection(expr) => {
+                        collect_decl_from_expr(expr, module, decls);
+                        if let Some(TypeExpr::Slice(inner)) = infer_expr_type(expr, module) {
+                            binding_ty = Some(*inner);
+                        }
+                    }
                 }
                 let body_span = for_stmt.body.span;
                 decls.push(DeclInfo {
@@ -173,7 +182,7 @@ fn collect_decl_from_block(block: &Block, module: &Module, decls: &mut Vec<DeclI
                     span: for_stmt.span,
                     scope: body_span,
                     available_from: body_span.start,
-                    ty: None,
+                    ty: binding_ty,
                     value_span: None,
                     mutability: Mutability::Immutable,
                     kind: DeclKind::ForBinding,
@@ -463,12 +472,10 @@ fn slice_element_type(ty: &TypeExpr) -> Option<TypeExpr> {
 fn struct_field_type(module: &Module, ty: &TypeExpr, field_name: &str) -> Option<TypeExpr> {
     let struct_name = match ty {
         TypeExpr::Named(name, _) => Some(name.as_str()),
-        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
-            match ty.as_ref() {
-                TypeExpr::Named(name, _) => Some(name.as_str()),
-                other => return struct_field_type(module, other, field_name),
-            }
-        }
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => match ty.as_ref() {
+            TypeExpr::Named(name, _) => Some(name.as_str()),
+            other => return struct_field_type(module, other, field_name),
+        },
         _ => None,
     }?;
     struct_field_type_by_name(module, struct_name, field_name)
@@ -506,7 +513,9 @@ fn returns_to_type(returns: &[TypeAnnotation]) -> TypeExpr {
 fn function_return_type(module: &Module, name: &str) -> Option<TypeExpr> {
     for item in &module.items {
         match item {
-            Item::Function(func) if func.name == name => return Some(returns_to_type(&func.returns)),
+            Item::Function(func) if func.name == name => {
+                return Some(returns_to_type(&func.returns));
+            }
             Item::Impl(block) => {
                 for method in &block.methods {
                     if method.name == name {

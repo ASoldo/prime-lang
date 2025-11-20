@@ -237,23 +237,36 @@ fn builtin_function_docs(name: &str) -> Option<String> {
 }
 
 fn markdown_var_info(text: &str, span: Span, info: &VarInfo) -> Hover {
-    let mut snippet = String::from("```prime\nlet ");
-    snippet.push_str(&info.name);
+    let mut value = String::from("```prime\nlet ");
+    value.push_str(&info.name);
     if let Some(ty) = &info.ty {
-        snippet.push_str(": ");
-        snippet.push_str(ty);
+        value.push_str(": ");
+        value.push_str(ty);
     }
     if let Some(expr) = &info.expr_text {
-        snippet.push_str(" = ");
-        snippet.push_str(expr);
+        value.push_str(" = ");
+        value.push_str(expr);
     }
-    snippet.push_str(";\n```\n");
-    if let Some(ty) = &info.ty {
-        snippet.push_str(&format!("Type: `{ty}`"));
-    } else {
-        snippet.push_str("Type: inferred");
+    value.push_str(";\n```\n");
+    value.push_str("```md\n");
+    value.push_str("Kind: local binding\n");
+    match &info.ty {
+        Some(ty) => {
+            value.push_str("Type: ");
+            value.push_str(ty);
+            value.push('\n');
+        }
+        None => value.push_str("Type: inferred\n"),
     }
-    markdown_hover(text, span, snippet)
+    if let Some(expr) = &info.expr_text {
+        if is_simple_literal(expr) {
+            value.push_str("Init Value: ");
+            value.push_str(expr.trim());
+            value.push('\n');
+        }
+    }
+    value.push_str("```\n");
+    markdown_hover(text, span, value)
 }
 
 fn hover_for_module_symbol(
@@ -324,13 +337,29 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
     value.push_str("```prime\n");
     value.push_str(&extract_text(text, decl.span.start, decl.span.end));
     value.push_str("\n```\n");
-    value.push_str(&format!("Kind: {}", format_decl_kind(decl.kind)));
+    value.push_str("```md\n");
+    value.push_str("Kind: ");
+    value.push_str(format_decl_kind(decl.kind));
+    value.push('\n');
     if let Some(ty) = &decl.ty {
-        value.push_str(&format!("\nType: `{}`", format_type_expr(ty)));
+        value.push_str("Type: ");
+        value.push_str(&format_type_expr(ty));
+        value.push('\n');
     }
     if decl.mutability.is_mutable() {
-        value.push_str("\nMutable binding");
+        value.push_str("Mutability: mut\n");
     }
+    if decl.kind != DeclKind::Pattern {
+        if let Some(span) = decl.value_span {
+            let snippet = extract_text(text, span.start, span.end);
+            if is_simple_literal(&snippet) {
+                value.push_str("Init Value: ");
+                value.push_str(snippet.trim());
+                value.push('\n');
+            }
+        }
+    }
+    value.push_str("```\n");
     if decl.kind == DeclKind::Pattern {
         if let Some(span) = decl.value_span {
             value.push_str("\nPattern:\n```prime\n");
@@ -338,7 +367,7 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
             value.push_str("\n```");
         }
     }
-    markdown_hover(text, usage_span, value)
+    markdown_hover(text, usage_span, value.trim_end().to_string())
 }
 
 fn hover_for_field_usage(
@@ -359,8 +388,14 @@ fn hover_for_field_usage(
         if let Some((struct_name, field)) = field_info {
             let mut value = String::new();
             value.push_str(&format!("Field `{name}`\n\n"));
-            value.push_str(&format!("Type: `{}`", format_type_expr(&field.ty)));
-            value.push_str(&format!("\nStruct: `{struct_name}`"));
+            value.push_str("```md\n");
+            value.push_str("Type: ");
+            value.push_str(&format_type_expr(&field.ty));
+            value.push('\n');
+            value.push_str("Struct: ");
+            value.push_str(&struct_name);
+            value.push('\n');
+            value.push_str("```\n");
             return Some(markdown_hover(text, span, value));
         }
         if let Some((struct_name, _)) = super::completion::named_type_with_args(&target_type) {
@@ -497,11 +532,17 @@ fn hover_for_struct_field_definition(
                     if field_name == name && span_contains(field.span, usage_span.start) {
                         let mut value = String::new();
                         value.push_str(&format!("Field `{name}`\n\n"));
-                        value.push_str(&format!("Type: `{}`", format_type_expr(&field.ty.ty)));
-                        value.push_str(&format!("\nStruct: `{}`", def.name));
+                        value.push_str("```md\n");
+                        value.push_str("Type: ");
+                        value.push_str(&format_type_expr(&field.ty.ty));
+                        value.push('\n');
+                        value.push_str("Struct: ");
+                        value.push_str(&def.name);
+                        value.push('\n');
                         if field.embedded {
-                            value.push_str("\nEmbedded field");
+                            value.push_str("Embedded: true\n");
                         }
+                        value.push_str("```\n");
                         return Some(markdown_hover(text, usage_span, value));
                     }
                 }
@@ -651,11 +692,41 @@ fn span_contains(span: Span, offset: usize) -> bool {
 }
 
 fn identifier_hover(name: &str, ty: Option<&TypeExpr>) -> String {
-    let mut content = format!("Identifier `{}`", name);
+    let mut content = String::from("```prime\n");
+    content.push_str(name);
+    content.push_str("\n```\n");
+    content.push_str("```md\n");
+    content.push_str("Kind: identifier\n");
     if let Some(ty) = ty {
-        content.push_str(&format!("\nType: `{}`", format_type_expr(ty)));
+        content.push_str("Type: ");
+        content.push_str(&format_type_expr(ty));
+        content.push('\n');
     }
+    content.push_str("```\n");
     content
+}
+
+fn is_simple_literal(snippet: &str) -> bool {
+    let text = snippet.trim();
+    if text.is_empty() {
+        return false;
+    }
+    match text {
+        "true" | "false" => return true,
+        _ => {}
+    }
+    if (text.starts_with('"') && text.ends_with('"'))
+        || (text.starts_with('\'') && text.ends_with('\''))
+    {
+        return true;
+    }
+    if let Ok(_) = text.parse::<i128>() {
+        return true;
+    }
+    if let Ok(_) = text.parse::<f64>() {
+        return true;
+    }
+    false
 }
 
 fn find_decl_for_identifier<'a>(module: &'a Module, name: &str, offset: usize) -> DeclInfo {
@@ -739,7 +810,7 @@ fn main() {
         match hover.contents {
             HoverContents::Markup(content) => {
                 assert!(content.value.contains("let score: int32 = 10;"));
-                assert!(content.value.contains("Type: `int32`"));
+                assert!(content.value.contains("Type: int32"));
             }
             _ => panic!("expected markup hover"),
         }
@@ -809,7 +880,7 @@ fn main() {
         match hover.contents {
             HoverContents::Markup(content) => {
                 assert!(
-                    content.value.contains("Type: `Sample`"),
+                    content.value.contains("Type: Sample"),
                     "expected hover to include type, got {}",
                     content.value
                 );
