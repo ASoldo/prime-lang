@@ -396,22 +396,26 @@ fn main() {
 
 ### Methods & Calls
 
-Functions whose first parameter is a struct act like methods. You can call them
-via `structInstance.method(args...)` and the compiler rewrites it to a regular
-function call behind the scenes:
+Interfaces/impls provide the “method” surface. A function declared inside an
+`impl Interface[Type] for Type` block can be called with dot syntax, and the
+compiler rewrites it to the underlying function:
 
 ```prime
-fn heal(mut player: Player, boost: int32) -> Player {
-  player.hp = player.hp + boost;
-  player
+interface Renderable[T] { fn render(self: T); }
+
+impl Renderable[PlayerPanel] for PlayerPanel {
+  fn render(panel: PlayerPanel) {
+    out(panel.label);
+  }
 }
 
-let Player leveled = hero.heal(24);
+let PlayerPanel panel = build_panel();
+panel.render();  // rewrites to Renderable::render(panel)
 ```
 
-- Methods can take ownership, `&Player`, or `&mut Player` depending on how you
-  declare the first parameter.
-- There is no trait/impl syntax yet; everything lives as free functions.
+- The first parameter type controls ownership: plain `T`, `&T`, or `&mut T`.
+- Interfaces act like traits; implementations live in `impl` blocks. You still
+  write free functions as needed; dot-call is sugar over the impl methods.
 
 ### Types & Memory Model
 
