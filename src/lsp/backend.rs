@@ -943,7 +943,8 @@ impl LanguageServer for Backend {
                 }
             }
 
-            let general_items = general_completion_items(&module, Some(offset), prefix_ref);
+            let general_items =
+                general_completion_items(&module, &struct_modules, Some(offset), prefix_ref);
             Ok(Some(CompletionResponse::Array(general_items)))
         } else {
             let keywords = keyword_completion_items(prefix_ref);

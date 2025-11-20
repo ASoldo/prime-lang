@@ -1,6 +1,6 @@
 use crate::{
     language::{
-        ast::{FunctionDef, FunctionParam, InterfaceMethod, Item, Module},
+        ast::{FunctionDef, FunctionParam, Import, InterfaceMethod, Item, Module, Visibility},
         span::Span,
         types::TypeExpr,
     },
@@ -752,12 +752,17 @@ fn build_type_subst(params: &[String], args: &[TypeExpr]) -> Option<HashMap<Stri
 
 pub fn general_completion_items(
     module: &Module,
+    all_modules: &[Module],
     offset: Option<usize>,
     prefix: Option<&str>,
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     if let Some(offset) = offset {
         for decl in visible_locals(module, offset) {
+            if !seen.insert(decl.name.clone()) {
+                continue;
+            }
             items.push(CompletionItem {
                 label: decl.name.clone(),
                 kind: Some(CompletionItemKind::VARIABLE),
@@ -771,6 +776,9 @@ pub fn general_completion_items(
         match item {
             Item::Function(func) => {
                 if func.name == "main" {
+                    continue;
+                }
+                if !seen.insert(func.name.clone()) {
                     continue;
                 }
                 items.push(CompletionItem {
@@ -790,16 +798,21 @@ pub fn general_completion_items(
                 )),
                 ..Default::default()
             }),
-            Item::Enum(def) => items.push(CompletionItem {
-                label: def.name.clone(),
-                kind: Some(CompletionItemKind::ENUM),
-                detail: Some(format!(
-                    "enum {}{}",
-                    def.name,
-                    format_type_params(&def.type_params)
-                )),
-                ..Default::default()
-            }),
+            Item::Enum(def) => {
+                if !seen.insert(def.name.clone()) {
+                    continue;
+                }
+                items.push(CompletionItem {
+                    label: def.name.clone(),
+                    kind: Some(CompletionItemKind::ENUM),
+                    detail: Some(format!(
+                        "enum {}{}",
+                        def.name,
+                        format_type_params(&def.type_params)
+                    )),
+                    ..Default::default()
+                })
+            }
             Item::Interface(def) => items.push(CompletionItem {
                 label: def.name.clone(),
                 kind: Some(CompletionItemKind::INTERFACE),
@@ -824,12 +837,94 @@ pub fn general_completion_items(
         }
     }
 
+    for import in &module.imports {
+        if let Some(imported) = import_module_from_snapshot(all_modules, import) {
+            for item in &imported.items {
+                match item {
+                    Item::Function(func) => {
+                        if func.visibility != Visibility::Public || func.name == "main" {
+                            continue;
+                        }
+                        if !seen.insert(func.name.clone()) {
+                            continue;
+                        }
+                        items.push(CompletionItem {
+                            label: func.name.clone(),
+                            kind: Some(CompletionItemKind::FUNCTION),
+                            detail: Some(format_function_signature(func)),
+                            ..Default::default()
+                        });
+                    }
+                    Item::Struct(def) => {
+                        if def.visibility != Visibility::Public || !seen.insert(def.name.clone()) {
+                            continue;
+                        }
+                        items.push(CompletionItem {
+                            label: def.name.clone(),
+                            kind: Some(CompletionItemKind::STRUCT),
+                            detail: Some(format!(
+                                "struct {}{}",
+                                def.name,
+                                format_type_params(&def.type_params)
+                            )),
+                            ..Default::default()
+                        });
+                    }
+                    Item::Enum(def) => {
+                        if def.visibility != Visibility::Public || !seen.insert(def.name.clone()) {
+                            continue;
+                        }
+                        items.push(CompletionItem {
+                            label: def.name.clone(),
+                            kind: Some(CompletionItemKind::ENUM),
+                            detail: Some(format!(
+                                "enum {}{}",
+                                def.name,
+                                format_type_params(&def.type_params)
+                            )),
+                            ..Default::default()
+                        });
+                    }
+                    Item::Interface(def) => items.push(CompletionItem {
+                        label: def.name.clone(),
+                        kind: Some(CompletionItemKind::INTERFACE),
+                        detail: Some(format!(
+                            "interface {}{}",
+                            def.name,
+                            format_type_params(&def.type_params)
+                        )),
+                        ..Default::default()
+                    }),
+                    Item::Const(def) => items.push(CompletionItem {
+                        label: def.name.clone(),
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        detail: def
+                            .ty
+                            .as_ref()
+                            .map(|ty| format_type_expr(&ty.ty))
+                            .or(Some("const".into())),
+                        ..Default::default()
+                    }),
+                    Item::Impl(_) => {}
+                }
+            }
+        }
+    }
+
     items.extend(keyword_completion_items(prefix));
 
     items
         .into_iter()
         .filter(|item| prefix_matches(&item.label, prefix))
         .collect()
+}
+
+fn import_module_from_snapshot<'a>(
+    all_modules: &'a [Module],
+    import: &Import,
+) -> Option<&'a Module> {
+    let name = import.path.to_string();
+    all_modules.iter().find(|m| m.name == name)
 }
 
 pub fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
