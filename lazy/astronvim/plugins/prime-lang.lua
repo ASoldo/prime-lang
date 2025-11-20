@@ -137,19 +137,15 @@ return {
     (import_declaration path: (module_path) @namespace)
     (import_declaration path: (string_literal) @namespace)
 
-    (function_definition
-      name: (identifier) @function
-      (#set! "priority" 110))
-    (parameter
-      (identifier) @variable.parameter
-      (#set! "priority" 110))
+    (function_definition name: (identifier) @function)
+    (parameter (identifier) @variable.parameter)
     (parameter type: (type_expression) @type)
     (call_expression
       function: (identifier) @function.call)
     (call_expression
       function: (field_expression field: (identifier) @function.call))
     (call_expression
-      arguments: (argument_list _ @variable))
+      arguments: (argument_list (identifier) @variable))
 
     (struct_definition name: (type_identifier) @type)
     (enum_definition name: (type_identifier) @type)
@@ -157,8 +153,6 @@ return {
     (impl_definition target: (type_expression) @type)
     (const_definition name: (identifier) @constant)
 
-    (parameter name: (identifier) @variable.parameter)
-    (parameter type: (type_expression) @type)
     (let_statement name: (identifier) @variable)
     (let_statement pattern: (identifier) @variable)
     (let_statement annotation: (type_expression) @type)
@@ -187,10 +181,9 @@ return {
     (map_entry key: (string_literal) @string)
     (field_expression field: (identifier) @field)
 
-    (assign_statement
-      target: (identifier) @variable)
-    (assign_statement
-      target: (unary_expression (identifier) @variable))
+    (assign_statement target: (identifier) @variable)
+    (assign_statement target: (unary_expression (identifier) @variable))
+    (assign_statement value: (identifier) @variable)
 
     ;; Constructors / enum variants (Ok, Err, etc.)
     (call_expression
@@ -206,7 +199,10 @@ return {
     (format_string_literal) @string.special
     (rune_literal)    @character
     (boolean_literal) @boolean
-    ;; identifiers are covered above (params, lets, calls, types, constructors); no catch-all to avoid overriding those
+    ;; catch-all variables
+    ((identifier) @variable
+      (#match? @variable "^[a-z_]")
+      (#not-match? @variable "^(int|uint)(8|16|32|64)$|^u?size$|^float(32|64)$|^bool$|^string$|^rune$"))
     ]]
 				local f = assert(io.open(query_root .. "/highlights.scm", "w"))
 				f:write(highlights)
