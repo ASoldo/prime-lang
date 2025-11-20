@@ -50,7 +50,7 @@ module.exports = grammar({
     ),
 
     module_declaration: $ => seq(
-      'module',
+      choice('module', 'test'),
       field('name', $.module_path),
       ';'
     ),
@@ -65,7 +65,7 @@ module.exports = grammar({
 
     module_path: $ => prec(1, seq(
       field('head', choice($.identifier, $.type_identifier)),
-      repeat(seq('::', field('tail', choice($.identifier, $.type_identifier))))
+      repeat(seq(choice('::', '.'), field('tail', choice($.identifier, $.type_identifier))))
     )),
 
     type_path: $ => seq(

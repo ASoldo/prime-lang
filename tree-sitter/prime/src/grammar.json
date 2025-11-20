@@ -37,8 +37,17 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "STRING",
-          "value": "module"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "module"
+            },
+            {
+              "type": "STRING",
+              "value": "test"
+            }
+          ]
         },
         {
           "type": "FIELD",
@@ -150,8 +159,17 @@
               "type": "SEQ",
               "members": [
                 {
-                  "type": "STRING",
-                  "value": "::"
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "::"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "."
+                    }
+                  ]
                 },
                 {
                   "type": "FIELD",

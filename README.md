@@ -87,6 +87,7 @@ fresh. Highlights:
 | `prime-lang lsp` | Start the language server over stdio (Neovim/VS Code use this entry point) |
 | `prime-lang init [path]` | Scaffold a fresh workspace with `prime.toml` |
 | `prime-lang add <module> [--path file.prime]` | Append a module entry to the manifest and stub the file with the correct `module ...;` header |
+| `prime-lang test [target,...]` | Run test modules (header `test ...;`) by name or file; discovers tests when no target is provided |
 | `prime-lang docs [--list|--query ...]` | Print the curated reference topics described below |
 
 ### `prime-lang docs`
@@ -122,6 +123,20 @@ name = "app::main"
 path = "main.prime"
 visibility = "pub"
 ```
+
+Module names can use either `::` or `.` separators; `core.types` and `core::types`
+resolve to the same module internally. Tests can be listed with `[[tests]]` blocks
+if you want manifest metadata; otherwise any file that starts with `test ...;` is
+discovered by `prime-lang test`.
+
+### Tests
+
+- Write test files with a `test my.module;` header. They can import other modules
+  and define any number of functions; no `main` is required.
+- `prime-lang test` runs every zero-arg function in the test module (bool return
+  is treated as pass/fail). If a function returns a value, it is passed to the
+  next single-arg function, allowing simple chaining.
+- `prime-lang run/build` refuse to execute/compile `test ...;` targets.
 
 `prime-lang add demos::patterns --path pattern_demo.prime` will append another
 `[[modules]]` table and create the stub file automatically. Keeping the manifest

@@ -26,6 +26,7 @@ pub struct Interpreter {
     consts: Vec<(String, ConstDef)>,
     deprecated_warnings: HashSet<String>,
     module_stack: Vec<String>,
+    bootstrapped: bool,
 }
 
 #[derive(Clone)]
@@ -99,6 +100,7 @@ impl Interpreter {
             consts: Vec::new(),
             deprecated_warnings: HashSet::new(),
             module_stack: Vec::new(),
+            bootstrapped: false,
         }
     }
 
@@ -108,7 +110,25 @@ impl Interpreter {
         Ok(())
     }
 
-    fn bootstrap(&mut self) -> RuntimeResult<()> {
+    #[allow(dead_code)]
+    pub fn run_function(&mut self, name: &str) -> RuntimeResult<Vec<Value>> {
+        self.bootstrap()?;
+        self.call_function(name, None, &[], Vec::new())
+    }
+
+    pub fn run_function_with_args(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+    ) -> RuntimeResult<Vec<Value>> {
+        self.bootstrap()?;
+        self.call_function(name, None, &[], args)
+    }
+
+    pub fn bootstrap(&mut self) -> RuntimeResult<()> {
+        if self.bootstrapped {
+            return Ok(());
+        }
         for module in self.package.program.modules.clone() {
             for item in &module.items {
                 match item {
@@ -185,6 +205,7 @@ impl Interpreter {
                 .declare(&const_def.name, value, false)
                 .map_err(|err| err)?;
         }
+        self.bootstrapped = true;
         Ok(())
     }
 
@@ -197,10 +218,17 @@ impl Interpreter {
         };
         if self.functions.contains_key(&base_key) {
             return Err(RuntimeError::Panic {
-                message: format!(
-                    "Duplicate function `{}` for receiver `{:?}`",
-                    def.name, receiver
-                ),
+                message: if let Some(existing) = self.functions.get(&base_key) {
+                    format!(
+                        "Duplicate function `{}` for receiver `{:?}` (existing in module `{}`, new in module `{}`)",
+                        def.name, receiver, existing.module, module
+                    )
+                } else {
+                    format!(
+                        "Duplicate function `{}` for receiver `{:?}`",
+                        def.name, receiver
+                    )
+                },
             });
         }
         let info = FunctionInfo {

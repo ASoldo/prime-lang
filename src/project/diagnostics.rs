@@ -1,4 +1,4 @@
-use super::manifest::{ModuleVisibility, PackageManifest};
+use super::manifest::{ModuleVisibility, PackageManifest, canonical_module_name};
 use crate::language::{
     ast::{ImportPath, Module},
     span::Span,
@@ -94,6 +94,9 @@ pub fn analyze_manifest_issues(
 ) -> Vec<ManifestIssue> {
     let mut issues = Vec::new();
     if let Some(manifest) = manifest {
+        if module.is_test {
+            return issues;
+        }
         issues.extend(module_declaration_issues(module, file_path, manifest));
         issues.extend(import_issues(module, file_path, manifest));
     }
@@ -107,8 +110,8 @@ fn module_declaration_issues(
 ) -> Vec<ManifestIssue> {
     let mut issues = Vec::new();
     let expected = manifest.module_name_for_path(file_path);
-    let declared = module.declared_name.as_deref();
-    match (expected.as_deref(), declared) {
+    let declared = module.declared_name.as_deref().map(canonical_module_name);
+    match (expected.as_deref(), declared.as_deref()) {
         (Some(expected), Some(actual)) if expected != actual => issues.push(ManifestIssue {
             span: module.declared_span,
             kind: ManifestIssueKind::ModuleNameMismatch {

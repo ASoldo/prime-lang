@@ -116,9 +116,8 @@ return {
 			---@diagnostic disable-next-line: inject-field
 			parser_config.prime = {
 				install_info = {
-					url = "https://github.com/asoldo/prime_lang_treesitter.git",
+					url = vim.fs.normalize(vim.fn.getcwd() .. "/tree-sitter/prime"),
 					files = { "src/parser.c" },
-					branch = "main",
 				},
 				filetype = "prime",
 			}
@@ -130,7 +129,7 @@ return {
 			-- highlights.scm
 			do
 				local highlights = [[
-    ["fn" "let" "import" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "return" "defer" "module" "pub" "interface" "impl" "try" "move"] @keyword
+    ["fn" "let" "import" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "return" "defer" "module" "test" "pub" "interface" "impl" "try" "move"] @keyword
 
     (module_declaration name: (module_path) @namespace)
     (module_path (identifier) @namespace)

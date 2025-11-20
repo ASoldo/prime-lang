@@ -81,3 +81,7 @@ name = "demos::lab_demo"
 path = "lab_demo.prime"
 visibility = "pub"
 
+[[tests]]
+name = "tests::basic"
+path = "tests/basic.prime"
+visibility = "pub"

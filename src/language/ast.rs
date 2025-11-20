@@ -12,6 +12,7 @@ pub struct Program {
 #[derive(Clone, Debug)]
 pub struct Module {
     pub name: String,
+    pub is_test: bool,
     pub path: PathBuf,
     pub declared_name: Option<String>,
     pub declared_span: Option<Span>,

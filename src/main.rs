@@ -79,6 +79,15 @@ enum Commands {
         #[arg(value_name = "DIR", default_value = ".")]
         path: PathBuf,
     },
+    /// Run Prime tests discovered in the workspace
+    Test {
+        #[arg(
+            value_name = "TARGET",
+            value_delimiter = ',',
+            help = "Optional comma-separated list of test files or module names (defaults to discovering test headers)"
+        )]
+        targets: Vec<String>,
+    },
     /// Add a module entry and stub file
     Add {
         #[arg(value_name = "MODULE")]
@@ -139,6 +148,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Test { targets } => {
+            if let Err(errors) = tools::tester::run_tests(&targets) {
+                eprintln!("{errors}");
+                std::process::exit(1);
+            }
+        }
         Commands::Add {
             name,
             path,
@@ -162,6 +177,10 @@ fn main() {
 }
 fn run_entry(path: &Path) {
     ensure_prime_file(path);
+    if is_test_file(path) {
+        eprintln!("`prime-lang run` cannot execute test targets; use `prime-lang test`");
+        std::process::exit(1);
+    }
     warn_manifest_drift(path);
     match load_package(path) {
         Ok(package) => {
@@ -192,6 +211,10 @@ fn run_entry(path: &Path) {
 
 fn build_entry(path: &Path, name: &str) {
     ensure_prime_file(path);
+    if is_test_file(path) {
+        eprintln!("`prime-lang build` cannot compile test targets; use `prime-lang test`");
+        std::process::exit(1);
+    }
     warn_manifest_drift(path);
     match load_package(path) {
         Ok(package) => {
@@ -328,6 +351,19 @@ fn ensure_prime_file(path: &Path) {
         eprintln!("{} is not a .prime file", path.display());
         std::process::exit(1);
     }
+}
+
+fn is_test_file(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .map(|content| {
+            let trimmed = content.trim_start();
+            trimmed.starts_with("test ")
+                || trimmed.starts_with("test\t")
+                || trimmed.starts_with("test::")
+                || trimmed.starts_with("test.")
+        })
+        .unwrap_or(false)
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

@@ -38,6 +38,7 @@ struct Parser {
     block_context_stack: Vec<usize>,
     paren_depth: usize,
     last_span: Option<Range<usize>>,
+    is_test: bool,
 }
 
 #[derive(Debug)]
@@ -58,6 +59,7 @@ impl Parser {
             block_context_stack: Vec::new(),
             paren_depth: 0,
             last_span: None,
+            is_test: false,
         }
     }
 
@@ -68,12 +70,13 @@ impl Parser {
         let mut declared_span = None;
         let mut redundant_module_spans = Vec::new();
 
-        if self.check(TokenKind::ModuleKw) {
+        if self.check(TokenKind::ModuleKw) || self.check(TokenKind::TestKw) {
             match self.parse_module_declaration() {
-                Ok((name, span)) => {
+                Ok((name, span, is_test)) => {
                     declared_name = Some(name.clone());
                     declared_span = Some(span);
                     self.module_name = name;
+                    self.is_test = is_test;
                 }
                 Err(err) => self.report(err),
             }
@@ -84,7 +87,7 @@ impl Parser {
                 continue;
             }
 
-            if self.check(TokenKind::ModuleKw) {
+            if self.check(TokenKind::ModuleKw) || self.check(TokenKind::TestKw) {
                 match self.parse_redundant_module_decl() {
                     Ok(span) => redundant_module_spans.push(span),
                     Err(err) => self.report(err),
@@ -92,7 +95,7 @@ impl Parser {
                 continue;
             }
 
-            if self.check(TokenKind::ModuleKw) {
+            if self.check(TokenKind::ModuleKw) || self.check(TokenKind::TestKw) {
                 let start = self.current_span_start();
                 self.advance();
                 while !self.check(TokenKind::Semi) && !self.is_eof() {
@@ -138,6 +141,7 @@ impl Parser {
         if self.errors.is_empty() {
             Ok(Module {
                 name: self.module_name,
+                is_test: self.is_test,
                 path: self.path,
                 declared_name,
                 declared_span,
@@ -150,15 +154,21 @@ impl Parser {
         }
     }
 
-    fn parse_module_declaration(&mut self) -> Result<(String, Span), SyntaxError> {
-        let start = self.expect(TokenKind::ModuleKw)?.span.start;
-        let path = self.parse_module_path("Expected module path after `module`")?;
+    fn parse_module_declaration(&mut self) -> Result<(String, Span, bool), SyntaxError> {
+        let (start, is_test) = if self.check(TokenKind::TestKw) {
+            let span = self.expect(TokenKind::TestKw)?.span.start;
+            (span, true)
+        } else {
+            let span = self.expect(TokenKind::ModuleKw)?.span.start;
+            (span, false)
+        };
+        let path = self.parse_module_path("Expected module path after `module` or `test`")?;
         if path.is_empty() {
             return Err(self.error_here("Module path cannot be empty"));
         }
         self.expect(TokenKind::Semi)?;
         let end = self.last_span_end(start);
-        Ok((path.to_string(), Span::new(start, end)))
+        Ok((path.to_string(), Span::new(start, end), is_test))
     }
 
     fn parse_import_with_visibility(
@@ -196,15 +206,23 @@ impl Parser {
         let mut segments = Vec::new();
         let first = self.expect_identifier(msg)?;
         segments.push(first.name);
-        while self.matches(TokenKind::ColonColon) {
-            let ident = self.expect_identifier("Expected segment after `::`")?;
-            segments.push(ident.name);
+        loop {
+            if self.matches(TokenKind::ColonColon) || self.matches(TokenKind::Dot) {
+                let ident = self.expect_identifier("Expected segment after separator")?;
+                segments.push(ident.name);
+            } else {
+                break;
+            }
         }
         Ok(ImportPath { segments })
     }
 
     fn parse_redundant_module_decl(&mut self) -> Result<Span, SyntaxError> {
-        let start = self.expect(TokenKind::ModuleKw)?.span.start;
+        let start = if self.check(TokenKind::TestKw) {
+            self.expect(TokenKind::TestKw)?.span.start
+        } else {
+            self.expect(TokenKind::ModuleKw)?.span.start
+        };
         let _ = self.parse_module_path("Expected module path after `module`")?;
         self.expect(TokenKind::Semi)?;
         let end = self.last_span_end(start);
@@ -2018,6 +2036,13 @@ impl Parser {
                 let span = self.advance().span;
                 Ok(Identifier { name, span })
             }
+            Some(TokenKind::TestKw) => {
+                let span = self.advance().span;
+                Ok(Identifier {
+                    name: "test".into(),
+                    span,
+                })
+            }
             _ => Err(self.error_here(msg)),
         }
     }
@@ -2171,7 +2196,7 @@ impl Parser {
 
 fn legacy_import_segments(input: &str) -> Vec<String> {
     let without_ext = input.strip_suffix(".prime").unwrap_or(input);
-    let normalized = without_ext.replace("::", "/");
+    let normalized = without_ext.replace("::", "/").replace('.', "/");
     normalized
         .split('/')
         .filter(|segment| !segment.is_empty())
