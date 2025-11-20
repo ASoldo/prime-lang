@@ -712,15 +712,11 @@ fn caller(leveled: Player) -> Player {
 "#;
         let module =
             parse_module("tests::scope", PathBuf::from("scope.prime"), source).expect("parse");
-        let offset = source
-            .find("heal(leveled")
-            .expect("call site should exist");
-        let span = find_local_definition_span(&module, "heal", offset)
-            .expect("definition should resolve");
+        let offset = source.find("heal(leveled").expect("call site should exist");
+        let span =
+            find_local_definition_span(&module, "heal", offset).expect("definition should resolve");
         let fn_pos = source.find("fn heal").expect("fn heal should exist");
-        let param_pos = source
-            .find("heal: int32")
-            .expect("param heal should exist");
+        let param_pos = source.find("heal: int32").expect("param heal should exist");
         assert!(
             span.start >= fn_pos && span.end > fn_pos,
             "expected span to cover function `heal`, got {span:?}"

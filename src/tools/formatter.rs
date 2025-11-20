@@ -811,7 +811,7 @@ fn emit_array_literal_inline_noindent(out: &mut String, indent: usize, values: &
 }
 
 fn emit_array_literal_inline(out: &mut String, indent: usize, values: &[Expr]) {
-  // start on the current line to keep `field: [` compact
+    // start on the current line to keep `field: [` compact
     out.push('[');
     if values.is_empty() {
         out.push(']');
