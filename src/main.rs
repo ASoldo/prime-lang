@@ -96,6 +96,12 @@ enum Commands {
         path: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "pub")]
         visibility: ModuleVisibilityArg,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Add a test entry instead of a module"
+        )]
+        test: bool,
     },
     /// Print reference snippets for Prime language features
     Docs {
@@ -158,8 +164,9 @@ fn main() {
             name,
             path,
             visibility,
+            test,
         } => {
-            if let Err(err) = add_module(&name, path.as_deref(), visibility) {
+            if let Err(err) = add_module(&name, path.as_deref(), visibility, test) {
                 eprintln!("add failed: {err}");
                 std::process::exit(1);
             }
@@ -413,7 +420,7 @@ visibility = "pub"
     );
     fs::write(&manifest_path, manifest)?;
     let main_path = dir.join("main.prime");
-    write_module_file(&main_path, "app::main", true)?;
+    write_module_file(&main_path, "app::main", true, false)?;
     Ok(())
 }
 
@@ -421,6 +428,7 @@ fn add_module(
     module_name: &str,
     explicit_path: Option<&Path>,
     visibility: ModuleVisibilityArg,
+    is_test: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let segments = parse_module_segments(module_name)?;
     let cwd = env::current_dir()?;
@@ -457,9 +465,8 @@ fn add_module(
         None => default_module_path(&segments),
     };
     let manifest_path_string = manifest_path_string(&rel_path);
-    let modules_value = table
-        .entry("modules")
-        .or_insert_with(|| Value::Array(Vec::new()));
+    let key = if is_test { "tests" } else { "modules" };
+    let modules_value = table.entry(key).or_insert_with(|| Value::Array(Vec::new()));
     let modules = modules_value
         .as_array_mut()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "`modules` must be an array"))?;
@@ -482,10 +489,10 @@ fn add_module(
         Value::String(visibility.as_manifest_str().to_string()),
     );
     modules.push(Value::Table(entry));
-    let manifest_pretty = toml::to_string_pretty(&doc)?;
+    let manifest_pretty = render_manifest(&doc)?;
     fs::write(&manifest_path, manifest_pretty)?;
     let module_abs_path = manifest_dir.join(&rel_path);
-    write_module_file(&module_abs_path, module_name, false)?;
+    write_module_file(&module_abs_path, module_name, false, is_test)?;
     Ok(())
 }
 
@@ -524,7 +531,10 @@ fn parse_module_segments(name: &str) -> Result<Vec<String>, Box<dyn std::error::
             io::Error::new(io::ErrorKind::InvalidInput, "module name cannot be empty").into(),
         );
     }
-    let parts: Vec<_> = name.split("::").collect();
+    let parts: Vec<_> = name
+        .split(|ch| ch == ':' || ch == '.')
+        .filter(|s| !s.is_empty() && *s != ":")
+        .collect();
     if parts.iter().any(|segment| segment.trim().is_empty()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -556,6 +566,60 @@ fn default_module_path(segments: &[String]) -> PathBuf {
     }
     path.set_extension("prime");
     path
+}
+
+fn render_manifest(doc: &Value) -> Result<String, Box<dyn std::error::Error>> {
+    let table = doc
+        .as_table()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "manifest not a table"))?;
+    let mut out = String::new();
+    if let Some(Value::String(version)) = table.get("manifest_version") {
+        out.push_str(&format!("manifest_version = \"{}\"\n", version));
+    }
+    if let Some(Value::Table(pkg)) = table.get("package") {
+        out.push_str("\n[package]\n");
+        for (k, v) in pkg {
+            out.push_str(&format!("{} = {}\n", k, toml::to_string(v)?));
+        }
+    }
+    if let Some(Value::Array(mods)) = table.get("modules") {
+        if !mods.is_empty() {
+            out.push('\n');
+        }
+        for entry in mods {
+            if let Value::Table(t) = entry {
+                out.push_str("[[modules]]\n");
+                for (k, v) in t {
+                    out.push_str(&format!("{} = {}\n", k, toml::to_string(v)?));
+                }
+                out.push('\n');
+            }
+        }
+    }
+    if let Some(Value::Array(tests)) = table.get("tests") {
+        if !tests.is_empty() {
+            out.push('\n');
+        }
+        for entry in tests {
+            if let Value::Table(t) = entry {
+                out.push_str("[[tests]]\n");
+                for (k, v) in t {
+                    out.push_str(&format!("{} = {}\n", k, toml::to_string(v)?));
+                }
+                out.push('\n');
+            }
+        }
+    }
+    // append any other keys in stable order
+    for (k, v) in table {
+        if k == "manifest_version" || k == "package" || k == "modules" || k == "tests" {
+            continue;
+        }
+        out.push_str(&format!("\n[{k}]\n"));
+        out.push_str(&toml::to_string(v)?);
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 fn normalize_relative_path(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -592,6 +656,7 @@ fn write_module_file(
     path: &Path,
     module_name: &str,
     include_example: bool,
+    is_test: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if path.exists() {
         ensure_module_header(path, module_name)?;
@@ -600,10 +665,11 @@ fn write_module_file(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let header = if is_test { "test" } else { "module" };
     let body = if include_example {
-        format!("module {module_name};\n\nfn main() {{\n  out(\"Hello from Prime!\");\n}}\n")
+        format!("{header} {module_name};\n\nfn main() {{\n  out(\"Hello from Prime!\");\n}}\n")
     } else {
-        format!("module {module_name};\n\n")
+        format!("{header} {module_name};\n\n")
     };
     fs::write(path, body)?;
     Ok(())
@@ -612,7 +678,7 @@ fn write_module_file(
 fn ensure_module_header(path: &Path, module_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let contents = fs::read_to_string(path)?;
     let trimmed = contents.trim_start();
-    if trimmed.starts_with("module ") {
+    if trimmed.starts_with("module ") || trimmed.starts_with("test ") {
         return Ok(());
     }
     let mut updated = format!("module {module_name};\n\n");

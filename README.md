@@ -86,7 +86,7 @@ fresh. Highlights:
 | `prime-lang fmt <file> [--write]` | Preview or apply the formatter |
 | `prime-lang lsp` | Start the language server over stdio (Neovim/VS Code use this entry point) |
 | `prime-lang init [path]` | Scaffold a fresh workspace with `prime.toml` |
-| `prime-lang add <module> [--path file.prime]` | Append a module entry to the manifest and stub the file with the correct `module ...;` header |
+| `prime-lang add <module> [--path file.prime] [--test]` | Append a module or test entry to the manifest and stub the file with the correct header |
 | `prime-lang test [target,...]` | Run test modules (header `test ...;`) by name or file; discovers tests when no target is provided |
 | `prime-lang docs [--list|--query ...]` | Print the curated reference topics described below |
 
