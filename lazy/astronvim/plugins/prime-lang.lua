@@ -143,6 +143,8 @@ return {
     (call_expression
       function: (identifier) @function.call)
     (call_expression
+      function: (type_path) @function.call)
+    (call_expression
       function: (field_expression field: (identifier) @function.call))
     (call_expression
       arguments: (argument_list (identifier) @variable))
@@ -199,10 +201,11 @@ return {
     (format_string_literal) @string.special
     (rune_literal)    @character
     (boolean_literal) @boolean
-    ;; catch-all variables
+    ;; catch-all variables (lower priority so specific captures win)
     ((identifier) @variable
       (#match? @variable "^[a-z_]")
-      (#not-match? @variable "^(int|uint)(8|16|32|64)$|^u?size$|^float(32|64)$|^bool$|^string$|^rune$"))
+      (#not-match? @variable "^(int|uint)(8|16|32|64)$|^u?size$|^float(32|64)$|^bool$|^string$|^rune$")
+      (#set! "priority" 90))
     ]]
 				local f = assert(io.open(query_root .. "/highlights.scm", "w"))
 				f:write(highlights)
