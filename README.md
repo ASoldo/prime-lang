@@ -49,7 +49,7 @@ and for the new `try {}` / `?` sugar, so you can rely on identical semantics in 
 - `main.prime` – Feature tour: modules, structs/enums, interfaces, ownership, and UI-ish printing.
 - `pattern_demo.prime` – Match/if/while/for destructuring across tuples, maps, structs, slices.
 - `error_handling_demo.prime` – `Result`, `try {}`, and `?` propagation.
-- `lab_demo.prime` – A runnable “Prime Resonance Lab” that combines range loops, map destructuring, mutable references, and a generic `Summarizable` interface for reporting metrics.
+- `lab_demo.prime` – A syntax-rich lab scenario (range loops, map destructuring, mutable refs, generic interface) used as an internal example; not exposed via `prime-lang docs`.
 - Library modules: `types.prime` and `pkg_lib.prime` are libraries only (no `main`). Running them directly reports `Unknown symbol main`; import them from other modules instead.
 
 Run any of them directly:
@@ -98,9 +98,6 @@ fresh. Highlights:
 - `prime-lang docs --query for,match` (comma-delimited or repeated flags) filters
   to the topic that owns those aliases—`for`, `if`, and `match` map to the
   `prime-intermediate` section that demos control flow and pattern matching.
-- `prime-lang docs --query lab` highlights the new `lab_demo.prime` walkthrough
-  that mixes range loops, map destructuring, mutable references, and interfaces.
-
 All snippets are drawn directly from the compiling demo files (`demos/*.prime`)
 or the real workspace manifest, so you always see runnable examples. The CLI
 exits with an error code and a hint if a query doesn’t map to any topic.
