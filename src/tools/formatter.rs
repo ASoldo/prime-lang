@@ -494,7 +494,7 @@ fn emit_initializer_expression(out: &mut String, base_indent: usize, expr: &Expr
             true
         }
         Expr::ArrayLiteral(values, _) => {
-            emit_array_literal(out, base_indent, values);
+            emit_array_literal_inline_noindent(out, base_indent, values);
             true
         }
         _ => false,
@@ -790,8 +790,28 @@ fn emit_array_literal(out: &mut String, indent: usize, values: &[Expr]) {
     emit_array_literal_inline(out, indent, values);
 }
 
+fn emit_array_literal_inline_noindent(out: &mut String, indent: usize, values: &[Expr]) {
+    // ensure only one space precedes the literal when used after `= `
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out.push(' ');
+    out.push('[');
+    if values.is_empty() {
+        out.push(']');
+        return;
+    }
+    out.push('\n');
+    for value in values {
+        emit_array_value(out, indent + 2, value);
+        out.push_str(",\n");
+    }
+    write_indent(out, indent);
+    out.push(']');
+}
+
 fn emit_array_literal_inline(out: &mut String, indent: usize, values: &[Expr]) {
-    // start on the current line to keep `field: [` compact
+  // start on the current line to keep `field: [` compact
     out.push('[');
     if values.is_empty() {
         out.push(']');
@@ -840,10 +860,10 @@ fn emit_composite_value(out: &mut String, indent: usize, expr: &Expr) {
             emit_struct_literal(out, indent + 2, name, fields);
         }
         Expr::MapLiteral { entries, .. } => {
-            emit_map_literal_inline(out, indent + 2, entries);
+            emit_map_literal_inline(out, indent, entries);
         }
         Expr::ArrayLiteral(values, _) => {
-            emit_array_literal_inline(out, indent + 2, values);
+            emit_array_literal_inline(out, indent, values);
         }
         _ => out.push_str(&format_expr(expr)),
     }

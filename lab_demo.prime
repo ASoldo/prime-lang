@@ -29,17 +29,17 @@ fn empty_result() -> ExperimentResult {
     normalized: 0,
     energy_span: (0, 0),
     readings: [
-        0,
-      ],
+      0,
+    ],
     metrics: #{
-        "total": 0,
-        "synergy": 0,
-        "window_low": 0,
-        "window_high": 0,
-      },
+      "total": 0,
+      "synergy": 0,
+      "window_low": 0,
+      "window_high": 0,
+    },
     tags: [
-        "empty",
-      ],
+      "empty",
+    ],
   }
 }
 
@@ -121,39 +121,39 @@ fn build_blueprints(seed: int32) -> []ExperimentPlan {
       baseline: seed + 12,
       offset: 4,
       tuning: #{
-          "stability": seed + 2,
-          "agility": 3,
-        },
+        "stability": seed + 2,
+        "agility": 3,
+      },
       annotations: [
-          "mode",
-          "intent",
-        ],
+        "mode",
+        "intent",
+      ],
     },
     ExperimentPlan{
       name: "surge",
       baseline: seed + 32,
       offset: 6,
       tuning: #{
-          "stability": seed + 4,
-          "agility": 6,
-        },
+        "stability": seed + 4,
+        "agility": 6,
+      },
       annotations: [
-          "mode",
-          "intent",
-          "channel",
-        ],
+        "mode",
+        "intent",
+        "channel",
+      ],
     },
     ExperimentPlan{
       name: "calm",
       baseline: seed + 8,
       offset: 2,
       tuning: #{
-          "stability": seed + 1,
-          "agility": 2,
-        },
+        "stability": seed + 1,
+        "agility": 2,
+      },
       annotations: [
-          "intent",
-        ],
+        "intent",
+      ],
     },
   ]
 }
@@ -265,7 +265,7 @@ fn derive_tags(name: string, annotations: []string, normalized: int32, iteration
     }
     idx = idx + 1;
   }
-  let []string tags =   [
+  let []string tags = [
     name,
     tone,
     "iteration",

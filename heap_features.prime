@@ -21,7 +21,7 @@ fn move_box_demo() {
 }
 
 fn move_slice_demo() {
-  let []string squad =   [
+  let []string squad = [
     "Prime Hero",
     "Sparrow",
     "Northwatch",
