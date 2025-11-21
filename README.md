@@ -404,7 +404,7 @@ See `demos/error_handling_demo.prime` for a full example that mixes `try {}`,
 
 ### Static Type Checking
 
-Before interpreting or compiling, Prime now runs a lightweight checker that
+Before interpreting or compiling, Prime runs a lightweight checker that
 verifies:
 
 - `let` bindings and function returns honor their declared types.
@@ -412,6 +412,8 @@ verifies:
 - `match` expressions cover every enum variant unless a wildcard arm is present.
 - Mutable borrows (`&mut foo`) are checked so only one active reference to a
   binding exists at a time; shadowing or leaving a scope releases the borrow.
+- Interface conformance is enforced at runtime (the interpreter rejects missing
+  impls); static checking for interfaces is not implemented yet.
 
 Type errors are reported with file/line spans, so you can fix mistakes before
 running code.
@@ -486,17 +488,16 @@ panel.render();  // rewrites to Renderable::render(panel)
 
 - Numbers: `int8`…`int64`, `uint8`…`uint64`, `isize`/`usize`, `float32`,
   `float64`, plus `bool`, `rune`, and `string`.
-- Structs/enums are value types; assignment copies the fields.
+- Structs/enums are value types; assignment copies the fields. Heap helpers
+  include `Box[T]`, slices (`[]T`), and maps (`Map[string, T]`) with literals,
+  methods (+/- borrow checks), and iteration support.
 - References (`&T`) wrap the value in an `Rc<RefCell<_>>`, so borrowing a value
-  moves it to the heap until all references drop. Raw pointers (`*T`) exist for
-  unsafe interop, but there is no manual `alloc/free`.
-- Dynamic containers (growable slices, maps) are not implemented yet. Programs
-  stick to fixed-size structs and module-defined helpers—the next milestone is
-  a richer standard library plus explicit ownership rules.
+  moves it to the heap until all references drop. Raw pointers aren’t supported
+  yet; there is no manual `alloc/free`.
 
 With these primitives you can already compose larger programs (see
-`main.prime`/`types.prime`) while keeping the roadmap—better containers and
-memory management—in mind.
+`main.prime`/`types.prime`) while keeping the future roadmap—better memory
+controls—in mind.
 
 
 ## CLI Usage
@@ -649,8 +650,9 @@ lspconfig.primelang.setup {
 
 ### Treesitter Highlighting & Symbols
 
-Use the `prime_lang_treesitter` grammar repo plus a small Lazy spec to wire up
-syntax highlighting, locals view, and outline panes:
+Use the bundled grammar under `tree-sitter/prime` (or the upstream
+`prime_lang_treesitter` repo) plus a small Lazy spec to wire up syntax
+highlighting, locals view, and outline panes:
 
 ```lua
 return {
@@ -682,9 +684,9 @@ return {
       ---@diagnostic disable-next-line: inject-field
       parser_config.prime = {
         install_info = {
-          url = "https://github.com/asoldo/prime_lang_treesitter.git",
+          -- use the vendored grammar in this repo
+          url = vim.fs.normalize(vim.fn.getcwd() .. "/tree-sitter/prime"),
           files = { "src/parser.c" },
-          branch = "main",
         },
         filetype = "prime",
       }
