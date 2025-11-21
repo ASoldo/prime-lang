@@ -86,11 +86,7 @@ impl ChannelReceiver {
         if let Some(v) = self.queue.borrow_mut().pop_front() {
             return Some(v);
         }
-        if *self.closed.borrow() {
-            None
-        } else {
-            None
-        }
+        if *self.closed.borrow() { None } else { None }
     }
 
     pub fn close(&self) {
@@ -105,7 +101,9 @@ pub struct JoinHandleValue {
 
 impl JoinHandleValue {
     pub fn new(value: Value) -> Self {
-        Self { result: Some(value) }
+        Self {
+            result: Some(value),
+        }
     }
 
     pub fn join(&mut self) -> Result<Value, String> {

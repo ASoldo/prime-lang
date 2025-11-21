@@ -1204,7 +1204,10 @@ impl Interpreter {
                 self.expect_sender(name, cloned)
             }
             other => Err(RuntimeError::TypeMismatch {
-                message: format!("`{name}` expects Sender, found {}", self.describe_value(&other)),
+                message: format!(
+                    "`{name}` expects Sender, found {}",
+                    self.describe_value(&other)
+                ),
             }),
         }
     }
@@ -1217,7 +1220,10 @@ impl Interpreter {
                 self.expect_receiver(name, cloned)
             }
             other => Err(RuntimeError::TypeMismatch {
-                message: format!("`{name}` expects Receiver, found {}", self.describe_value(&other)),
+                message: format!(
+                    "`{name}` expects Receiver, found {}",
+                    self.describe_value(&other)
+                ),
             }),
         }
     }
@@ -1269,7 +1275,10 @@ impl Interpreter {
                 self.builtin_close(vec![cloned])
             }
             other => Err(RuntimeError::TypeMismatch {
-                message: format!("`close` expects channel endpoint, found {}", self.describe_value(&other)),
+                message: format!(
+                    "`close` expects channel endpoint, found {}",
+                    self.describe_value(&other)
+                ),
             }),
         }
     }
@@ -1278,7 +1287,9 @@ impl Interpreter {
         self.expect_arity("join", &args, 1)?;
         match args.remove(0) {
             Value::JoinHandle(mut handle) => {
-                let value = handle.join().map_err(|msg| RuntimeError::Panic { message: msg })?;
+                let value = handle
+                    .join()
+                    .map_err(|msg| RuntimeError::Panic { message: msg })?;
                 Ok(vec![value])
             }
             Value::Reference(reference) => {
@@ -1286,7 +1297,10 @@ impl Interpreter {
                 self.builtin_join(vec![cloned])
             }
             other => Err(RuntimeError::TypeMismatch {
-                message: format!("`join` expects JoinHandle, found {}", self.describe_value(&other)),
+                message: format!(
+                    "`join` expects JoinHandle, found {}",
+                    self.describe_value(&other)
+                ),
             }),
         }
     }
@@ -1897,11 +1911,9 @@ impl Interpreter {
             Expr::ArrayLiteral(values, _) => self.eval_array_literal(values),
             Expr::Move { expr, .. } => self.eval_move_expression(expr).map(EvalOutcome::Value),
             Expr::Spawn { expr, .. } => match self.eval_expression(expr)? {
-                EvalOutcome::Value(value) => {
-                    Ok(EvalOutcome::Value(Value::JoinHandle(Box::new(
-                        JoinHandleValue::new(value),
-                    ))))
-                }
+                EvalOutcome::Value(value) => Ok(EvalOutcome::Value(Value::JoinHandle(Box::new(
+                    JoinHandleValue::new(value),
+                )))),
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
         }
@@ -2636,7 +2648,7 @@ impl Interpreter {
                         EvalOutcome::Flow(_) => {
                             return Err(RuntimeError::Panic {
                                 message: "control flow not allowed inside format string".into(),
-                            })
+                            });
                         }
                     };
                     segments.push(FormatRuntimeSegment::Named(value));

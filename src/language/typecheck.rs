@@ -123,9 +123,7 @@ pub fn check_program(program: &Program) -> Result<(), Vec<TypeError>> {
         registry,
         errors: Vec::new(),
     };
-    checker
-        .errors
-        .extend(checker.registry.errors.drain(..));
+    checker.errors.extend(checker.registry.errors.drain(..));
     checker.validate_impls();
     checker.check_program(program);
     if checker.errors.is_empty() {
@@ -345,12 +343,7 @@ impl Checker {
             let expected_params: Vec<TypeAnnotation> = iface_method
                 .params
                 .iter()
-                .map(|param| {
-                    param
-                        .ty
-                        .substitute(&type_arg_map)
-                        .replace_self(&self_ty)
-                })
+                .map(|param| param.ty.substitute(&type_arg_map).replace_self(&self_ty))
                 .collect();
             let expected_returns: Vec<TypeAnnotation> = iface_method
                 .returns
@@ -1993,14 +1986,18 @@ impl Checker {
                 TypeExpr::Reference {
                     mutable: other_mutable,
                     ty: inner_actual,
-                } if mutable == other_mutable => return self.interface_compatible(ty, inner_actual),
+                } if mutable == other_mutable => {
+                    return self.interface_compatible(ty, inner_actual);
+                }
                 _ => return false,
             },
             TypeExpr::Pointer { mutable, ty } => match actual {
                 TypeExpr::Pointer {
                     mutable: other_mutable,
                     ty: inner_actual,
-                } if mutable == other_mutable => return self.interface_compatible(ty, inner_actual),
+                } if mutable == other_mutable => {
+                    return self.interface_compatible(ty, inner_actual);
+                }
                 _ => return false,
             },
             TypeExpr::Named(name, args) if self.registry.interfaces.contains_key(name) => {
@@ -3254,11 +3251,9 @@ fn expression_borrow_targets_with_context(
             mutable: true,
             expr,
             ..
-        } => {
-            borrow_target_from_expression(expr, env, context)
-                .into_iter()
-                .collect()
-        }
+        } => borrow_target_from_expression(expr, env, context)
+            .into_iter()
+            .collect(),
         Expr::Identifier(ident) => context.get(&ident.name).cloned().into_iter().collect(),
         Expr::Block(block) => block_borrow_targets(block, env, context),
         _ => Vec::new(),
@@ -3333,7 +3328,7 @@ fn reference_may_dangle(expr: &Expr) -> bool {
         | Expr::Try { .. }
         | Expr::TryPropagate { .. }
         | Expr::Range(_) => true,
-        | Expr::Spawn { .. } => true,
+        Expr::Spawn { .. } => true,
     }
 }
 
@@ -3553,9 +3548,7 @@ fn move_then_use() {
 "#;
         let errors = typecheck_source(source).expect_err("expected move error");
         assert!(
-            errors
-                .iter()
-                .any(|err| err.message.contains("was moved")),
+            errors.iter().any(|err| err.message.contains("was moved")),
             "expected move diagnostic, got {:?}",
             errors
         );

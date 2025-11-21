@@ -194,11 +194,7 @@ impl ChannelReceiver {
         if let Some(v) = self.queue.borrow_mut().pop() {
             return Some(v);
         }
-        if *self.closed.borrow() {
-            None
-        } else {
-            None
-        }
+        if *self.closed.borrow() { None } else { None }
     }
 
     fn close(&self) {
@@ -476,8 +472,7 @@ impl Compiler {
                     let value = match self.emit_expression(expr)? {
                         EvalOutcome::Value(value) => value,
                         EvalOutcome::Flow(_) => {
-                            return Err("control flow not allowed inside format placeholders"
-                                .into())
+                            return Err("control flow not allowed inside format placeholders".into());
                         }
                     };
                     segments.push(FormatRuntimeSegment::Named(value));
@@ -1323,12 +1318,16 @@ impl Compiler {
             "min" => Some(self.invoke_builtin(args, |this, values| this.builtin_min(values))),
             "max" => Some(self.invoke_builtin(args, |this, values| this.builtin_max(values))),
             "abs" => Some(self.invoke_builtin(args, |this, values| this.builtin_abs(values))),
-            "channel" => Some(self.invoke_builtin(args, |this, values| this.builtin_channel(values))),
+            "channel" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_channel(values)))
+            }
             "send" => Some(self.invoke_builtin(args, |this, values| this.builtin_send(values))),
             "recv" => Some(self.invoke_builtin(args, |this, values| this.builtin_recv(values))),
             "close" => Some(self.invoke_builtin(args, |this, values| this.builtin_close(values))),
             "join" => Some(self.invoke_builtin(args, |this, values| this.builtin_join(values))),
-            "ptr" => Some(self.invoke_builtin(args, |this, values| this.builtin_ptr(values, false))),
+            "ptr" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_ptr(values, false)))
+            }
             "ptr_mut" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_ptr(values, true)))
             }
@@ -3164,7 +3163,10 @@ impl Compiler {
                 let inner = reference.cell.borrow().clone();
                 self.builtin_close(vec![inner])
             }
-            other => Err(format!("close expects channel endpoint, found {}", describe_value(&other))),
+            other => Err(format!(
+                "close expects channel endpoint, found {}",
+                describe_value(&other)
+            )),
         }
     }
 
@@ -3178,7 +3180,10 @@ impl Compiler {
                 let inner = reference.cell.borrow().clone();
                 self.builtin_join(vec![inner])
             }
-            other => Err(format!("join expects join handle, found {}", describe_value(&other))),
+            other => Err(format!(
+                "join expects join handle, found {}",
+                describe_value(&other)
+            )),
         }
     }
 

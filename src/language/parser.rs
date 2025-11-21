@@ -22,10 +22,7 @@ pub fn parse_module(name: &str, path: PathBuf, source: &str) -> Result<Module, S
     Parser::new(name, path, tokens).parse()
 }
 
-pub fn parse_expression_snippet(
-    path: PathBuf,
-    source: &str,
-) -> Result<Expr, SyntaxErrors> {
+pub fn parse_expression_snippet(path: PathBuf, source: &str) -> Result<Expr, SyntaxErrors> {
     let tokens = match lex(source) {
         Ok(tokens) => tokens,
         Err(errors) => {
@@ -37,7 +34,9 @@ pub fn parse_expression_snippet(
         }
     };
     let mut parser = Parser::new("format", path, tokens);
-    let expr = parser.parse_expression().map_err(|err| SyntaxErrors::new(vec![err]))?;
+    let expr = parser
+        .parse_expression()
+        .map_err(|err| SyntaxErrors::new(vec![err]))?;
     if !parser.is_eof() {
         return Err(SyntaxErrors::new(vec![SyntaxError::new(
             "Unexpected tokens after expression",

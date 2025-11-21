@@ -6,10 +6,10 @@ mod runtime;
 mod tools;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use language::ast::ModuleKind;
 use language::{compiler::Compiler, parser::parse_module, typecheck};
 use miette::NamedSource;
 use project::diagnostics::analyze_manifest_issues;
-use language::ast::ModuleKind;
 use project::{
     FileErrors, PackageError, apply_manifest_header_with_manifest, find_manifest, load_package,
     manifest::PackageManifest, warn_manifest_drift,
@@ -409,9 +409,7 @@ fn is_library_file(path: &Path) -> bool {
 fn reject_library_entry(path: &Path) {
     if let Some(manifest_path) = find_manifest(path) {
         if let Ok(manifest) = PackageManifest::load(&manifest_path) {
-            let canonical = path
-                .canonicalize()
-                .unwrap_or_else(|_| path.to_path_buf());
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
             if let Some(name) = manifest.module_name_for_path(&canonical) {
                 if let Some(kind) = manifest.module_kind(&name) {
                     if kind != ModuleKind::Module {
@@ -743,7 +741,10 @@ fn write_module_file(
 fn ensure_module_header(path: &Path, module_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let contents = fs::read_to_string(path)?;
     let trimmed = contents.trim_start();
-    if trimmed.starts_with("module ") || trimmed.starts_with("test ") || trimmed.starts_with("library ") {
+    if trimmed.starts_with("module ")
+        || trimmed.starts_with("test ")
+        || trimmed.starts_with("library ")
+    {
         return Ok(());
     }
     let mut updated = format!("module {module_name};\n\n");

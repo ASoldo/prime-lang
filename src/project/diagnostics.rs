@@ -84,14 +84,14 @@ impl ManifestIssueKind {
                 "Module `{module}` exists at `{module_path}` but is not listed in prime.toml ({})",
                 manifest_path.display()
             ),
-        ManifestIssueKind::UnknownImport { module } => {
-            format!("Cannot resolve import `{module}` — no manifest entry or file found")
+            ManifestIssueKind::UnknownImport { module } => {
+                format!("Cannot resolve import `{module}` — no manifest entry or file found")
+            }
+            ManifestIssueKind::ModuleKindMismatch { expected, actual } => {
+                format!("Header declares `{actual}` but manifest lists this entry as `{expected}`")
+            }
         }
-        ManifestIssueKind::ModuleKindMismatch { expected, actual } => format!(
-            "Header declares `{actual}` but manifest lists this entry as `{expected}`"
-        ),
     }
-}
 }
 
 pub fn analyze_manifest_issues(

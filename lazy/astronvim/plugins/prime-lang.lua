@@ -198,6 +198,8 @@ return {
     (float_literal)   @float
     (string_literal)  @string
     (format_string_literal) @string.special
+    (format_placeholder "{" @punctuation.special)
+    (format_placeholder "}" @punctuation.special)
     (rune_literal)    @character
     (boolean_literal) @boolean
     ;; catch-all variables (lower priority so specific captures win)

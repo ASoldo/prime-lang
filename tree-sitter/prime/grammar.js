@@ -452,9 +452,27 @@ module.exports = grammar({
       ')'
     ),
 
-    format_string_literal: $ => token(
-      seq('`', repeat(choice(/[^\\`]/, /\\./)), '`')
+    format_string_literal: $ => seq(
+      '`',
+      repeat(choice(
+        $.format_placeholder,
+        $.format_literal
+      )),
+      '`'
     ),
+
+    format_placeholder: $ => seq(
+      '{',
+      optional($.expression),
+      '}'
+    ),
+
+    format_literal: $ => token.immediate(repeat1(choice(
+      /[^\\`{}]+/,
+      /\\./,
+      "{{",
+      "}}"
+    ))),
 
     parenthesized_expression: $ => seq('(', $.expression, ')'),
 

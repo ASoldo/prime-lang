@@ -44,7 +44,8 @@ use std::{
 use tokio::sync::RwLock;
 use tower_lsp_server::jsonrpc::Result as RpcResult;
 use tower_lsp_server::lsp_types::request::{
-    GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams, GotoTypeDefinitionParams,
+    GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams,
+    GotoTypeDefinitionParams,
 };
 use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
@@ -329,10 +330,9 @@ fn select_symbol_location<'a>(
             return Some(loc);
         }
     }
-    if let Some(loc) = candidates
-        .iter()
-        .find(|loc| matches!(loc.module_kind, ModuleKind::Module) && loc.visibility == Visibility::Public)
-    {
+    if let Some(loc) = candidates.iter().find(|loc| {
+        matches!(loc.module_kind, ModuleKind::Module) && loc.visibility == Visibility::Public
+    }) {
         return Some(loc);
     }
     if let Some(loc) = candidates
@@ -697,17 +697,17 @@ impl Backend {
                 continue;
             };
             let target_text = fs::read_to_string(&path).ok()?;
-            let target_module =
-                self.parse_cached_module(&target_uri, &target_text).await.unwrap_or_else(|| {
-                    parse_module(&target, path.clone(), &target_text).unwrap_or_else(|_| module.clone())
+            let target_module = self
+                .parse_cached_module(&target_uri, &target_text)
+                .await
+                .unwrap_or_else(|| {
+                    parse_module(&target, path.clone(), &target_text)
+                        .unwrap_or_else(|_| module.clone())
                 });
             let span = target_module
                 .declared_span
                 .unwrap_or_else(|| Span::new(0, target_text.len().min(1)));
-            return Some(Location::new(
-                target_uri,
-                span_to_range(&target_text, span),
-            ));
+            return Some(Location::new(target_uri, span_to_range(&target_text, span)));
         }
         None
     }
@@ -743,7 +743,10 @@ impl Backend {
                     _ => continue,
                 };
                 let def_text = self.text_for_uri(&other_uri).await?;
-                return Some(Location::new(other_uri.clone(), span_to_range(&def_text, span)));
+                return Some(Location::new(
+                    other_uri.clone(),
+                    span_to_range(&def_text, span),
+                ));
             }
         }
         None

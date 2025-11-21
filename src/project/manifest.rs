@@ -1,5 +1,5 @@
-use serde::Deserialize;
 use crate::language::ast::ModuleKind;
+use serde::Deserialize;
 use std::{
     collections::HashMap,
     fs,
@@ -292,7 +292,10 @@ fn parse_module_kind(kind: Option<&str>) -> Result<ModuleKind, String> {
         Some("module") => Ok(ModuleKind::Module),
         Some("library") => Ok(ModuleKind::Library),
         Some("test") => Ok(ModuleKind::Test),
-        Some(other) => Err(format!("invalid kind `{}` (expected module|library|test)", other)),
+        Some(other) => Err(format!(
+            "invalid kind `{}` (expected module|library|test)",
+            other
+        )),
     }
 }
 
