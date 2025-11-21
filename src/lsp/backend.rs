@@ -43,21 +43,23 @@ use std::{
 };
 use tokio::sync::RwLock;
 use tower_lsp_server::jsonrpc::Result as RpcResult;
-use tower_lsp_server::lsp_types::request::{GotoDeclarationParams, GotoDeclarationResponse};
+use tower_lsp_server::lsp_types::request::{
+    GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams, GotoTypeDefinitionParams,
+};
 use tower_lsp_server::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams,
     Command, CompletionOptions, CompletionParams, CompletionResponse, DeclarationCapability,
-    Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
-    DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, Location, MessageType, OneOf, ParameterInformation,
-    ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
-    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
-    SignatureInformation, SymbolInformation, SymbolKind, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
-    WorkspaceSymbol, WorkspaceSymbolParams,
+    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
+    DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability,
+    ImplementationProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+    Location, MessageType, OneOf, ParameterInformation, ParameterLabel, Position,
+    PrepareRenameResponse, Range, ReferenceParams, RenameParams, ServerCapabilities, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    TypeDefinitionProviderCapability, Uri, WorkspaceEdit, WorkspaceSymbol, WorkspaceSymbolParams,
 };
 use tower_lsp_server::{Client, LanguageServer, UriExt};
 
@@ -157,6 +159,24 @@ impl SymbolIndex {
             .filter(|(name, _)| name.to_lowercase().contains(&needle))
             .flat_map(|(name, locs)| locs.iter().cloned().map(move |loc| (name.clone(), loc)))
             .collect()
+    }
+
+    async fn duplicates_for_uri(&self, uri: &Uri) -> Vec<(String, Span, Vec<Uri>)> {
+        let map = self.inner.read().await;
+        let mut results = Vec::new();
+        for (name, locs) in map.iter() {
+            if locs.len() < 2 {
+                continue;
+            }
+            let others: Vec<Uri> = locs.iter().filter(|loc| &loc.uri != uri).map(|loc| loc.uri.clone()).collect();
+            if others.is_empty() {
+                continue;
+            }
+            for loc in locs.iter().filter(|loc| &loc.uri == uri) {
+                results.push((name.clone(), loc.span, others.clone()));
+            }
+        }
+        results
     }
 }
 
@@ -392,6 +412,20 @@ impl Backend {
         let (module, mut diagnostics) = collect_parse_and_manifest_diagnostics(uri, &text);
         if let Some(module) = module {
             diagnostics.extend(unused_variable_diagnostics(&module, &text));
+            for (name, span, others) in self.symbols.duplicates_for_uri(uri).await {
+                let elsewhere = others
+                    .iter()
+                    .filter_map(|u| url_to_path(u).map(|p| p.display().to_string()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                diagnostics.push(Diagnostic {
+                    range: span_to_range(&text, span),
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    source: Some("prime-lang".into()),
+                    message: format!("`{}` is defined in multiple files: {}", name, elsewhere),
+                    ..Default::default()
+                });
+            }
         }
         self.client
             .publish_diagnostics(uri.clone(), diagnostics, None)
@@ -612,6 +646,80 @@ impl Backend {
         };
         Some(Location::new(symbol.uri.clone(), range))
     }
+
+    async fn resolve_type_location(&self, uri: &Uri, position: Position) -> Option<Location> {
+        let text = self.docs.get(uri).await?;
+        let tokens = lex(&text).ok()?;
+        let module = self.parse_cached_module(uri, &text).await?;
+        let offset = position_to_offset(&text, position);
+        let (name, _) = identifier_at(&tokens, offset)?;
+        // prefer local type defs (struct/enum/interface)
+        for item in &module.items {
+            match item {
+                Item::Struct(def) if def.name == name => {
+                    return Some(Location::new(uri.clone(), span_to_range(&text, def.span)));
+                }
+                Item::Enum(def) if def.name == name => {
+                    return Some(Location::new(uri.clone(), span_to_range(&text, def.span)));
+                }
+                Item::Interface(def) if def.name == name => {
+                    return Some(Location::new(uri.clone(), span_to_range(&text, def.span)));
+                }
+                _ => {}
+            }
+        }
+        self.preload_for_navigation(uri).await;
+        for (other_uri, other_module) in self.modules.snapshot().await {
+            for item in &other_module.items {
+                let span = match item {
+                    Item::Struct(def) if def.name == name => def.span,
+                    Item::Enum(def) if def.name == name => def.span,
+                    Item::Interface(def) if def.name == name => def.span,
+                    _ => continue,
+                };
+                let def_text = self.text_for_uri(&other_uri).await?;
+                return Some(Location::new(other_uri.clone(), span_to_range(&def_text, span)));
+            }
+        }
+        None
+    }
+
+    async fn resolve_impl_location(&self, uri: &Uri, position: Position) -> Option<Location> {
+        let text = self.docs.get(uri).await?;
+        let tokens = lex(&text).ok()?;
+        let module = self.parse_cached_module(uri, &text).await?;
+        let offset = position_to_offset(&text, position);
+        let (name, _) = identifier_at(&tokens, offset)?;
+        for item in &module.items {
+            if let Item::Impl(block) = item {
+                if block.target == name {
+                    if let Some(method) = block.methods.first() {
+                        return Some(Location::new(
+                            uri.clone(),
+                            span_to_range(&text, method.span),
+                        ));
+                    }
+                }
+            }
+        }
+        self.preload_for_navigation(uri).await;
+        for (other_uri, other_module) in self.modules.snapshot().await {
+            for item in &other_module.items {
+                if let Item::Impl(block) = item {
+                    if block.target == name {
+                        if let Some(method) = block.methods.first() {
+                            let def_text = self.text_for_uri(&other_uri).await?;
+                            return Some(Location::new(
+                                other_uri.clone(),
+                                span_to_range(&def_text, method.span),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 impl LanguageServer for Backend {
@@ -636,6 +744,8 @@ impl LanguageServer for Backend {
                 rename_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
+                type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Options(
                     CodeActionOptions {
                         code_action_kinds: Some(vec![
@@ -781,6 +891,30 @@ impl LanguageServer for Backend {
         let position = params.text_document_position_params.position;
         if let Some(location) = self.resolve_symbol_location(&uri, position).await {
             return Ok(Some(GotoDeclarationResponse::Scalar(location)));
+        }
+        Ok(None)
+    }
+
+    async fn goto_type_definition(
+        &self,
+        params: GotoTypeDefinitionParams,
+    ) -> RpcResult<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        if let Some(location) = self.resolve_type_location(&uri, position).await {
+            return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+        }
+        Ok(None)
+    }
+
+    async fn goto_implementation(
+        &self,
+        params: GotoImplementationParams,
+    ) -> RpcResult<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        if let Some(location) = self.resolve_impl_location(&uri, position).await {
+            return Ok(Some(GotoDefinitionResponse::Scalar(location)));
         }
         Ok(None)
     }
@@ -1203,13 +1337,24 @@ fn collect_symbols(uri: &Uri, text: &str, module: &Module) -> Vec<SymbolInformat
                 SymbolKind::ENUM,
                 def.span,
             )),
-            Item::Interface(def) => symbols.push(make_symbol(
-                uri,
-                text,
-                &def.name,
-                SymbolKind::INTERFACE,
-                def.span,
-            )),
+            Item::Interface(def) => {
+                symbols.push(make_symbol(
+                    uri,
+                    text,
+                    &def.name,
+                    SymbolKind::INTERFACE,
+                    def.span,
+                ));
+                for method in &def.methods {
+                    symbols.push(make_symbol(
+                        uri,
+                        text,
+                        &format!("{}::{}", def.name, method.name),
+                        SymbolKind::METHOD,
+                        method.span,
+                    ));
+                }
+            }
             Item::Const(def) => symbols.push(make_symbol(
                 uri,
                 text,
@@ -1217,7 +1362,26 @@ fn collect_symbols(uri: &Uri, text: &str, module: &Module) -> Vec<SymbolInformat
                 SymbolKind::CONSTANT,
                 def.span,
             )),
-            Item::Impl(_) => {}
+            Item::Impl(block) => {
+                if let Some(first) = block.methods.first() {
+                    symbols.push(make_symbol(
+                        uri,
+                        text,
+                        &format!("impl {} for {}", block.interface, block.target),
+                        SymbolKind::INTERFACE,
+                        first.span,
+                    ));
+                }
+                for method in &block.methods {
+                    symbols.push(make_symbol(
+                        uri,
+                        text,
+                        &format!("{}::{}", block.target, method.name),
+                        SymbolKind::METHOD,
+                        method.span,
+                    ));
+                }
+            }
         }
     }
     symbols
