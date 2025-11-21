@@ -80,13 +80,13 @@ fresh. Highlights:
 
 | Command | Purpose |
 | --- | --- |
-| `prime-lang run <file>` | Interpret a `.prime` entry point after loading its manifest dependencies |
-| `prime-lang build <file> --name demo` | Compile to LLVM IR/object code and write a runnable binary below `./.build.prime/demo` |
+| `prime-lang run <file>` | Interpret a `.prime` entry point after loading its manifest dependencies (modules only; libraries are rejected) |
+| `prime-lang build <file> --name demo` | Compile to LLVM IR/object code and write a runnable binary below `./.build.prime/demo` (modules only) |
 | `prime-lang lint <file> [--watch]` | Single-shot or watch-mode linting with the same parser used by the LSP |
 | `prime-lang fmt <file> [--write]` | Preview or apply the formatter |
 | `prime-lang lsp` | Start the language server over stdio (Neovim/VS Code use this entry point) |
 | `prime-lang init [path]` | Scaffold a fresh workspace with `prime.toml` |
-| `prime-lang add <module> [--path file.prime] [--test]` | Append a module or test entry to the manifest and stub the file with the correct header |
+| `prime-lang add <module> [--path file.prime] [--test|--library]` | Append a module, test, or library entry to the manifest and stub the file with the correct header |
 | `prime-lang test [target,...]` | Run test modules (header `test ...;`) by name or file; discovers tests when no target is provided |
 | `prime-lang docs [--list|--query ...]` | Print the curated reference topics described below |
 
@@ -122,6 +122,13 @@ version = "0.1.0"
 name = "app::main"
 path = "main.prime"
 visibility = "pub"
+kind = "module"
+
+[[modules]]
+name = "core::types"
+path = "types.prime"
+visibility = "pub"
+kind = "library"
 ```
 
 Module names can use either `::` or `.` separators; `core.types` and `core::types`
@@ -152,7 +159,7 @@ compiler, and LSP share the same package graph.
 Prime keeps the syntax close to systems languages you already know. Key features
 in `main.prime` and `types.prime` demonstrate the core semantics:
 
-### Modules & Imports
+### Modules, Libraries & Imports
 
 ```prime
 module app::main;
@@ -165,6 +172,8 @@ import math::random;          // relative paths become math/random.prime
 Headers distinguish entrypoints (`module` with `main`), shared code (`library`
 without `main`), and `test` files. Imports use the same symbolic paths, so the
 formatter/LSP can offer completions and go-to-def across modules and libraries.
+`prime-lang run/build` only accept module headers; libraries that define `main`
+produce an error.
 
 ### Constants & Mutability
 

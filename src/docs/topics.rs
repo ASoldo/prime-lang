@@ -188,11 +188,12 @@ visibility = "pub""#,
                 explanation: "`project::manifest::PackageManifest` reads `prime.toml`, mapping module names to canonical file paths. Entries must match each file's `module ...;` header so `load_package` can pull the correct dependencies before typechecking or interpretation.",
             },
             TopicSection {
-                title: "Module discovery & add",
+                title: "Module & library discovery",
                 snippet: r#"$ prime-lang add demos::patterns --path pattern_demo.prime --visibility pub
-# creates the manifest entry and stubs a module with `module demos::patterns;`
+$ prime-lang add core::types --path types.prime --library
+# stubs `module demos::patterns;` or `library core::types;` and records it in prime.toml
 "#,
-                explanation: "`prime-lang add` edits the manifest and writes a stub file, ensuring new modules stay in sync with the manifest graph. This keeps the CLI, interpreter, compiler, and LSP aligned about available modules.",
+                explanation: "`prime-lang add` edits the manifest and writes a stub file, keeping the graph in sync. Modules are runnable (with `main`), libraries are import-only (no `main`), and tests use `test ...;` headers. The manifest `kind` reflects the header so the loader/LSP apply the right rules.",
             },
             TopicSection {
                 title: "Checking examples & regression safety",
