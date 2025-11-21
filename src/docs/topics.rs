@@ -235,7 +235,8 @@ PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh"#,
                 snippet: r#"- main.prime – modules, structs/enums, interfaces, ownership, UI-ish printing
 - pattern_demo.prime – matches/destructuring over tuples, maps, structs, slices
 - error_handling_demo.prime – Result, try { }, and ? propagation
-- lab_demo.prime – range loops, map destructuring, mutable refs, generic interface"#,
+- lab_demo.prime – range loops, map destructuring, mutable refs, generic interface
+- pointer_demo.prime – raw pointers derived from references plus stored ranges"#,
                 explanation: "Each entry is runnable via `prime-lang run <file>` and mapped in the manifest under `demos::...`. They demonstrate the syntax shown throughout the README so `prime-lang docs` can quote real code.",
             },
             TopicSection {
@@ -276,6 +277,7 @@ PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh"#,
             "while let",
             "destructure",
             "guard",
+            "range",
         ],
         sections: &[
             TopicSection {
@@ -339,6 +341,14 @@ fn summarize_stats(stats: Map[string, int32]) {
                 explanation: "Range loops (`start..end`) and slice iteration move values directly into the loop binding. `while let` keeps looping as long as a pattern binds successfully, and `loop { ... }` is an infinite loop that exits with `break`. Borrow checking (see advanced topic) guarantees each body finishes before the next borrow.",
             },
             TopicSection {
+                title: "Ranges as values",
+                snippet: r#"fn store_range() -> Range[int32] {
+  let Range[int32] span = 2..=5;
+  span
+}"#,
+                explanation: "Range expressions produce `Range[int32]` values you can store or pass, not just loop over. Printing yields `start..end` or `start..=end` formats.",
+            },
+            TopicSection {
                 title: "Collection literals & map/slice iteration",
                 snippet: r#"let []string squad = ["Prime Hero", "Sparrow"];
 for hero in squad {
@@ -398,6 +408,8 @@ fn main() {
             "slice",
             "map",
             "defer",
+            "pointer",
+            "pointers",
             "cleanup",
             "memory",
             "type-check",
@@ -459,7 +471,20 @@ fn calibrate_station(name: string) {
   out(`Calibrating {name}`);
   defer out("Station teardown complete");
 }"#,
-                explanation: "`&T` shares read-only access, `&mut T` grants unique mutation, and explicit `*` deref copies values out of heap-backed cells. `defer` schedules cleanup at scope exit—mirroring the README's maintenance example.",
+                explanation: "`&T` shares read-only access, `&mut T` grants unique mutation, and explicit `*` deref copies values out of heap-backed cells. `ptr` / `ptr_mut` produce raw pointers from existing references when you need to sidestep borrow checks, and `defer` schedules cleanup at scope exit—mirroring the README's maintenance example.",
+            },
+            TopicSection {
+                title: "Raw pointers from references",
+                snippet: r#"fn boost_hp(target: &mut Player, delta: int32) {
+  let ptr = ptr_mut(&mut target.hp);
+  *ptr = *ptr + delta;
+}
+
+fn read_hp(target: &Player) -> int32 {
+  let ptr = ptr(&target.hp);
+  *ptr
+}"#,
+                explanation: "Use `ptr`/`ptr_mut` to create raw pointers from existing references when you need to reuse the same storage outside borrow-checking contexts. Dereference with `*ptr` just like references—use sparingly.",
             },
             TopicSection {
                 title: "Error propagation and heap helpers",

@@ -22,6 +22,7 @@ pub enum Value {
     Sender(ChannelSender),
     Receiver(ChannelReceiver),
     JoinHandle(Box<JoinHandleValue>),
+    Pointer(PointerValue),
     Moved,
 }
 
@@ -39,6 +40,7 @@ impl Value {
             Value::Map(map) => !map.entries.borrow().is_empty(),
             Value::FormatTemplate(_) => true,
             Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => true,
+            Value::Pointer(_) => true,
             Value::Unit => false,
             Value::Moved => panic!("attempted to read moved value"),
         }
@@ -113,6 +115,12 @@ impl JoinHandleValue {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct PointerValue {
+    pub cell: Rc<RefCell<Value>>,
+    pub mutable: bool,
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -168,6 +176,12 @@ impl fmt::Display for Value {
             Value::Sender(_) => write!(f, "Sender"),
             Value::Receiver(_) => write!(f, "Receiver"),
             Value::JoinHandle(_) => write!(f, "JoinHandle"),
+            Value::Pointer(ptr) => write!(
+                f,
+                "{}Pointer->{}",
+                if ptr.mutable { "mut " } else { "" },
+                ptr.cell.borrow()
+            ),
             Value::Moved => write!(f, "<moved>"),
         }
     }

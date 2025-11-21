@@ -82,6 +82,7 @@ enum Value {
     Sender(ChannelSender),
     Receiver(ChannelReceiver),
     JoinHandle(Box<JoinHandleValue>),
+    Pointer(PointerValue),
     Moved,
 }
 
@@ -112,6 +113,12 @@ struct ReferenceValue {
     cell: Rc<RefCell<Value>>,
     mutable: bool,
     origin: Option<String>,
+}
+
+#[derive(Clone)]
+struct PointerValue {
+    cell: Rc<RefCell<Value>>,
+    mutable: bool,
 }
 
 #[derive(Clone)]
@@ -456,6 +463,17 @@ impl Compiler {
                         .ok_or_else(|| format!("Unknown symbol `{}`", name))?;
                     segments.push(FormatRuntimeSegment::Named(value));
                 }
+                FormatSegment::Expr { expr, .. } => {
+                    has_placeholders = true;
+                    let value = match self.emit_expression(expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(_) => {
+                            return Err("control flow not allowed inside format placeholders"
+                                .into())
+                        }
+                    };
+                    segments.push(FormatRuntimeSegment::Named(value));
+                }
                 FormatSegment::Implicit(_) => {
                     has_placeholders = true;
                     implicit += 1;
@@ -703,6 +721,15 @@ impl Compiler {
                     Ok(())
                 }
             }
+            Value::Pointer(pointer) => {
+                if pointer.mutable {
+                    self.emit_printf_call("mut Pointer->", &mut []);
+                } else {
+                    self.emit_printf_call("Pointer->", &mut []);
+                }
+                let inner = pointer.cell.borrow().clone();
+                self.print_value(inner)
+            }
             Value::Struct(_) => Err("Cannot print struct value in build mode".into()),
             Value::Unit => {
                 self.emit_printf_call("()", &mut []);
@@ -806,6 +833,16 @@ impl Compiler {
                                 EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                             };
                             *reference.cell.borrow_mut() = value;
+                        }
+                        Value::Pointer(pointer) => {
+                            if !pointer.mutable {
+                                return Err("Cannot assign through immutable reference".into());
+                            }
+                            let value = match self.emit_expression(&stmt.value)? {
+                                EvalOutcome::Value(value) => value,
+                                EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                            };
+                            *pointer.cell.borrow_mut() = value;
                         }
                         _ => {
                             return Err(
@@ -1044,6 +1081,7 @@ impl Compiler {
                             return Ok(EvalOutcome::Value(value));
                         }
                         Value::Reference(reference) => reference.cell.borrow().clone(),
+                        Value::Pointer(pointer) => pointer.cell.borrow().clone(),
                         Value::Int(_) => {
                             return Err("Cannot access field on integer value".into());
                         }
@@ -1264,6 +1302,10 @@ impl Compiler {
             "recv" => Some(self.invoke_builtin(args, |this, values| this.builtin_recv(values))),
             "close" => Some(self.invoke_builtin(args, |this, values| this.builtin_close(values))),
             "join" => Some(self.invoke_builtin(args, |this, values| this.builtin_join(values))),
+            "ptr" => Some(self.invoke_builtin(args, |this, values| this.builtin_ptr(values, false))),
+            "ptr_mut" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_ptr(values, true)))
+            }
             _ => None,
         }
     }
@@ -1462,6 +1504,7 @@ impl Compiler {
     fn deref_value(&self, value: Value) -> Result<Value, String> {
         match value {
             Value::Reference(reference) => Ok(reference.cell.borrow().clone()),
+            Value::Pointer(pointer) => Ok(pointer.cell.borrow().clone()),
             _ => Err("Cannot dereference non-reference value in build mode".into()),
         }
     }
@@ -2534,6 +2577,10 @@ impl Compiler {
                 let inner = reference.cell.borrow();
                 self.value_struct_name(&inner)
             }
+            Value::Pointer(pointer) => {
+                let inner = pointer.cell.borrow();
+                self.value_struct_name(&inner)
+            }
             Value::Boxed(inner) => {
                 let value = inner.cell.borrow();
                 self.value_struct_name(&value)
@@ -3098,6 +3145,27 @@ impl Compiler {
         }
     }
 
+    fn builtin_ptr(&mut self, mut args: Vec<Value>, mutable: bool) -> Result<Value, String> {
+        let name = if mutable { "ptr_mut" } else { "ptr" };
+        if args.len() != 1 {
+            return Err(format!("{name} expects 1 argument"));
+        }
+        match args.pop().unwrap() {
+            Value::Reference(reference) => Ok(Value::Pointer(PointerValue {
+                cell: reference.cell,
+                mutable,
+            })),
+            Value::Pointer(ptr) => Ok(Value::Pointer(PointerValue {
+                cell: ptr.cell,
+                mutable: ptr.mutable || mutable,
+            })),
+            other => Err(format!(
+                "{name} expects reference or pointer, found {}",
+                describe_value(&other)
+            )),
+        }
+    }
+
     fn execute_block_contents(&mut self, block: &Block) -> Result<BlockEval, String> {
         for statement in &block.statements {
             if let Some(flow) = self.emit_statement(statement)? {
@@ -3136,6 +3204,7 @@ impl Compiler {
     fn value_to_bool(&self, value: Value) -> Result<bool, String> {
         let concrete = match value {
             Value::Reference(reference) => reference.cell.borrow().clone(),
+            Value::Pointer(pointer) => pointer.cell.borrow().clone(),
             other => other,
         };
         match concrete {
@@ -3300,6 +3369,10 @@ impl Compiler {
                 let inner = reference.cell.borrow().clone();
                 self.collect_iterable_values(inner)
             }
+            Value::Pointer(pointer) => {
+                let inner = pointer.cell.borrow().clone();
+                self.collect_iterable_values(inner)
+            }
             other => Err(format!(
                 "`for ... in` only supports slices or maps (found {})",
                 self.describe_value(&other)
@@ -3323,6 +3396,7 @@ impl Compiler {
             Value::FormatTemplate(_) => "format string",
             Value::Sender(_) => "channel sender",
             Value::Receiver(_) => "channel receiver",
+            Value::Pointer(_) => "pointer",
             Value::JoinHandle(_) => "join handle",
             Value::Unit => "unit",
             Value::Moved => "moved value",
@@ -3425,6 +3499,7 @@ fn describe_value(value: &Value) -> &'static str {
         Value::FormatTemplate(_) => "format string",
         Value::Sender(_) => "channel sender",
         Value::Receiver(_) => "channel receiver",
+        Value::Pointer(_) => "pointer",
         Value::JoinHandle(_) => "join handle",
         Value::Moved => "moved",
     }

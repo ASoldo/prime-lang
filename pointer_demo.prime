@@ -1,0 +1,49 @@
+module demos::pointer_demo;
+
+import core::types;
+
+fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
+  Player{
+    Transform{
+      position,
+      Vec2{
+        0.0,
+        0.0,
+      },
+    },
+    Stats{
+      hp,
+      hp / 2,
+    },
+    name,
+    1,
+  }
+}
+
+fn heal_with_pointer(player: &mut Player, delta: int32) -> int32 {
+  let mut Player local = *player;
+  let ptr = ptr_mut(&mut local.hp);
+  *ptr = *ptr + delta;
+  *player = local;
+  *ptr
+}
+
+fn freeze_hp(player: &Player) -> int32 {
+  let ptr = ptr(&player.hp);
+  *ptr
+}
+
+fn range_sample() -> Range[int32] {
+  let Range[int32] span = 2..=5;
+  span
+}
+
+fn main() {
+  let mut Player hero = spawn_player("Pointer Hero", Vec2{ 0.0, 0.0 }, 50);
+  out(`initial hp {hero.hp}`);
+  let int32 boosted = heal_with_pointer(&mut hero, 12);
+  out(`boosted hp {boosted}`);
+  out(`frozen hp {freeze_hp(&hero)}`);
+  let Range[int32] span = range_sample();
+  out(`range stored: {span}`);
+}

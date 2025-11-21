@@ -28,13 +28,32 @@ impl TypeError {
     }
 }
 
-#[derive(Default)]
 struct TypeRegistry {
     structs: HashMap<String, StructInfo>,
     enums: HashMap<String, EnumInfo>,
     enum_variants: HashMap<String, EnumVariantInfo>,
     functions: HashMap<FunctionKey, FunctionSignature>,
     consts: HashMap<String, ConstInfo>,
+    interfaces: HashMap<String, InterfaceInfo>,
+    impls: HashSet<ImplKey>,
+    pending_impls: Vec<ImplCandidate>,
+    errors: Vec<TypeError>,
+}
+
+impl Default for TypeRegistry {
+    fn default() -> Self {
+        Self {
+            structs: HashMap::new(),
+            enums: HashMap::new(),
+            enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            consts: HashMap::new(),
+            interfaces: HashMap::new(),
+            impls: HashSet::new(),
+            pending_impls: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -75,6 +94,26 @@ struct FunctionKey {
     receiver: Option<String>,
 }
 
+#[derive(Clone)]
+struct InterfaceInfo {
+    def: InterfaceDef,
+    module: String,
+    span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ImplKey {
+    interface: String,
+    type_args: Vec<String>,
+    target: String,
+}
+
+#[derive(Clone)]
+struct ImplCandidate {
+    module_path: PathBuf,
+    block: ImplBlock,
+}
+
 pub fn check_program(program: &Program) -> Result<(), Vec<TypeError>> {
     let mut registry = TypeRegistry::default();
     for module in &program.modules {
@@ -84,6 +123,10 @@ pub fn check_program(program: &Program) -> Result<(), Vec<TypeError>> {
         registry,
         errors: Vec::new(),
     };
+    checker
+        .errors
+        .extend(checker.registry.errors.drain(..));
+    checker.validate_impls();
     checker.check_program(program);
     if checker.errors.is_empty() {
         Ok(())
@@ -138,8 +181,29 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
                         Some(block.target.clone()),
                     );
                 }
+                registry.pending_impls.push(ImplCandidate {
+                    module_path: module.path.clone(),
+                    block: block.clone(),
+                });
             }
-            Item::Interface(_) => {}
+            Item::Interface(def) => {
+                if registry.interfaces.contains_key(&def.name) {
+                    registry.errors.push(TypeError::new(
+                        &module.path,
+                        def.span,
+                        format!("duplicate interface `{}`", def.name),
+                    ));
+                } else {
+                    registry.interfaces.insert(
+                        def.name.clone(),
+                        InterfaceInfo {
+                            def: def.clone(),
+                            module: module.name.clone(),
+                            span: def.span,
+                        },
+                    );
+                }
+            }
         }
     }
 }
@@ -197,6 +261,174 @@ struct Checker {
 }
 
 impl Checker {
+    fn validate_impls(&mut self) {
+        for candidate in self.registry.pending_impls.clone() {
+            let block = candidate.block.clone();
+            let span = block
+                .methods
+                .first()
+                .map(|m| m.span)
+                .unwrap_or_else(|| Span::new(0, 0));
+            let Some(iface) = self.registry.interfaces.get(&block.interface).cloned() else {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    span,
+                    format!("unknown interface `{}`", block.interface),
+                ));
+                continue;
+            };
+            if !self.registry.structs.contains_key(&block.target) {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    span,
+                    format!("unknown target type `{}`", block.target),
+                ));
+                continue;
+            }
+            if iface.def.type_params.len() != block.type_args.len() {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    span,
+                    format!(
+                        "`{}` expects {} type argument(s), got {}",
+                        iface.def.name,
+                        iface.def.type_params.len(),
+                        block.type_args.len()
+                    ),
+                ));
+                continue;
+            }
+            let key = ImplKey {
+                interface: block.interface.clone(),
+                type_args: block
+                    .type_args
+                    .iter()
+                    .map(|ty| ty.canonical_name())
+                    .collect(),
+                target: block.target.clone(),
+            };
+            if self.registry.impls.contains(&key) {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    span,
+                    format!(
+                        "`{}` is already implemented for `{}` with these type arguments",
+                        block.interface, block.target
+                    ),
+                ));
+                continue;
+            }
+            self.validate_impl_methods(&candidate, &iface, &block);
+            self.registry.impls.insert(key);
+        }
+    }
+
+    fn validate_impl_methods(
+        &mut self,
+        candidate: &ImplCandidate,
+        iface: &InterfaceInfo,
+        block: &ImplBlock,
+    ) {
+        let mut provided: HashMap<String, &FunctionDef> = HashMap::new();
+        for method in &block.methods {
+            provided.insert(method.name.clone(), method);
+        }
+        let type_arg_map: HashMap<String, TypeExpr> = iface
+            .def
+            .type_params
+            .iter()
+            .cloned()
+            .zip(block.type_args.iter().cloned())
+            .collect();
+        let self_ty = TypeExpr::named(&block.target);
+        for iface_method in &iface.def.methods {
+            let expected_params: Vec<TypeAnnotation> = iface_method
+                .params
+                .iter()
+                .map(|param| {
+                    param
+                        .ty
+                        .substitute(&type_arg_map)
+                        .replace_self(&self_ty)
+                })
+                .collect();
+            let expected_returns: Vec<TypeAnnotation> = iface_method
+                .returns
+                .iter()
+                .map(|ret| ret.substitute(&type_arg_map).replace_self(&self_ty))
+                .collect();
+            let Some(impl_method) = provided.get(&iface_method.name) else {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    iface_method.span,
+                    format!(
+                        "`{}` missing method `{}` required by interface `{}`",
+                        block.target, iface_method.name, iface.def.name
+                    ),
+                ));
+                continue;
+            };
+            if impl_method.params.len() != expected_params.len() {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    impl_method.span,
+                    format!(
+                        "`{}` expects {} parameter(s) in `{}` (found {})",
+                        iface.def.name,
+                        expected_params.len(),
+                        iface_method.name,
+                        impl_method.params.len()
+                    ),
+                ));
+                continue;
+            }
+            if impl_method.returns.len() != expected_returns.len() {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    impl_method.span,
+                    format!(
+                        "`{}` expects {} return value(s) in `{}` (found {})",
+                        iface.def.name,
+                        expected_returns.len(),
+                        iface_method.name,
+                        impl_method.returns.len()
+                    ),
+                ));
+                continue;
+            }
+            for (param, expected) in impl_method.params.iter().zip(expected_params.iter()) {
+                if param.ty.ty != expected.ty {
+                    self.errors.push(TypeError::new(
+                        &candidate.module_path,
+                        param.span,
+                        format!(
+                            "parameter `{}` in `{}` should be `{}` to match interface `{}`",
+                            param.name,
+                            iface_method.name,
+                            expected.ty.canonical_name(),
+                            iface.def.name
+                        ),
+                    ));
+                }
+            }
+            for (ret, expected) in impl_method.returns.iter().zip(expected_returns.iter()) {
+                if ret.ty != expected.ty {
+                    self.errors.push(TypeError::new(
+                        &candidate.module_path,
+                        ret.span,
+                        format!(
+                            "return type `{}` in `{}` should be `{}` to match interface `{}`",
+                            ret.ty.canonical_name(),
+                            iface_method.name,
+                            expected.ty.canonical_name(),
+                            iface.def.name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     fn check_program(&mut self, program: &Program) {
         for module in &program.modules {
             self.check_module(module);
@@ -218,6 +450,8 @@ impl Checker {
                         format!("unknown identifier `{}` in format string", name),
                     ));
                 }
+            } else if let FormatSegment::Expr { expr, .. } = segment {
+                self.check_expression(module, expr, None, &[], env);
             }
         }
     }
@@ -587,6 +821,11 @@ impl Checker {
                 }
                 None => None,
             },
+            Expr::Range(range) => {
+                self.check_expression(module, &range.start, Some(&int_type()), returns, env);
+                self.check_expression(module, &range.end, Some(&int_type()), returns, env);
+                Some(TypeExpr::Named("Range".into(), vec![int_type()]))
+            }
             Expr::Reference {
                 mutable,
                 expr,
@@ -613,17 +852,20 @@ impl Checker {
             }
             Expr::Deref { expr, span } => {
                 let ty = self.check_expression(module, expr, None, returns, env);
-                if let Some(TypeExpr::Reference { ty, .. }) = ty {
-                    Some(*ty)
-                } else {
-                    if let Some(actual) = ty {
-                        self.errors.push(TypeError::new(
-                            &module.path,
-                            *span,
-                            format!("cannot dereference `{}`", actual.canonical_name()),
-                        ));
+                match ty {
+                    Some(TypeExpr::Reference { ty, .. }) | Some(TypeExpr::Pointer { ty, .. }) => {
+                        Some(*ty)
                     }
-                    None
+                    other => {
+                        if let Some(actual) = other {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                *span,
+                                format!("cannot dereference `{}`", actual.canonical_name()),
+                            ));
+                        }
+                        None
+                    }
                 }
             }
             Expr::Try { block, span } => {
@@ -695,7 +937,6 @@ impl Checker {
                 }
                 Some(handle_ty)
             }
-            Expr::Range(_) => None,
         }
     }
 
@@ -816,16 +1057,26 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
-        let base_ty = self.check_expression(module, base, None, returns, env)?;
-        if let TypeExpr::Named(name, _) = &base_ty {
-            if let Some(struct_info) = self.registry.structs.get(name) {
+        let Some(mut inner_ty) = self.check_expression(module, base, None, returns, env) else {
+            return None;
+        };
+        loop {
+            match inner_ty {
+                TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
+                    inner_ty = *ty;
+                }
+                _ => break,
+            }
+        }
+        if let TypeExpr::Named(name, _) = &inner_ty {
+            if let Some(struct_info) = self.registry.structs.get(&name.to_string()) {
                 return lookup_struct_field(&self.registry, &struct_info.def, field);
             }
         }
         self.errors.push(TypeError::new(
             &module.path,
             span,
-            format!("`{}` has no field `{}`", base_ty.canonical_name(), field),
+            format!("`{}` has no field `{}`", inner_ty.canonical_name(), field),
         ));
         None
     }
@@ -1344,6 +1595,35 @@ impl Checker {
                 }
                 Some(TypeExpr::Unit)
             }
+            "ptr" | "ptr_mut" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`{}` expects 1 argument", name),
+                    ));
+                    return None;
+                }
+                let arg_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some(TypeExpr::Reference { mutable, ty }) = arg_ty {
+                    Some(TypeExpr::Pointer {
+                        mutable: name == "ptr_mut" || mutable,
+                        ty,
+                    })
+                } else if let Some(TypeExpr::Pointer { mutable, ty }) = arg_ty {
+                    Some(TypeExpr::Pointer {
+                        mutable: name == "ptr_mut" || mutable,
+                        ty,
+                    })
+                } else {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`{}` requires a reference or pointer argument", name),
+                    ));
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -1689,18 +1969,57 @@ impl Checker {
         actual: Option<&TypeExpr>,
     ) {
         if let Some(actual) = actual {
-            if expected != actual {
-                self.errors.push(TypeError::new(
-                    &module.path,
-                    span,
-                    format!(
-                        "expected `{}`, found `{}`",
-                        expected.canonical_name(),
-                        actual.canonical_name()
-                    ),
-                ));
+            if expected == actual {
+                return;
             }
+            if self.interface_compatible(expected, actual) {
+                return;
+            }
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!(
+                    "expected `{}`, found `{}`",
+                    expected.canonical_name(),
+                    actual.canonical_name()
+                ),
+            ));
         }
+    }
+
+    fn interface_compatible(&self, expected: &TypeExpr, actual: &TypeExpr) -> bool {
+        let expected_iface = match expected {
+            TypeExpr::Reference { mutable, ty } => match actual {
+                TypeExpr::Reference {
+                    mutable: other_mutable,
+                    ty: inner_actual,
+                } if mutable == other_mutable => return self.interface_compatible(ty, inner_actual),
+                _ => return false,
+            },
+            TypeExpr::Pointer { mutable, ty } => match actual {
+                TypeExpr::Pointer {
+                    mutable: other_mutable,
+                    ty: inner_actual,
+                } if mutable == other_mutable => return self.interface_compatible(ty, inner_actual),
+                _ => return false,
+            },
+            TypeExpr::Named(name, args) if self.registry.interfaces.contains_key(name) => {
+                Some((name, args))
+            }
+            _ => None,
+        };
+        let Some((iface, args)) = expected_iface else {
+            return false;
+        };
+        let Some(target) = named_type_name(actual) else {
+            return false;
+        };
+        let key = ImplKey {
+            interface: iface.clone(),
+            type_args: args.iter().map(|ty| ty.canonical_name()).collect(),
+            target: target.to_string(),
+        };
+        self.registry.impls.contains(&key)
     }
 
     fn lookup_function(&self, name: &str, receiver: Option<&str>) -> Option<FunctionSignature> {
@@ -1931,7 +2250,9 @@ impl Checker {
             TypeExpr::Named(name, args) if name == "Map" && args.len() == 2 => {
                 Some(TypeExpr::Tuple(vec![args[0].clone(), args[1].clone()]))
             }
-            TypeExpr::Reference { ty: inner, .. } => self.collection_element_type(inner.as_ref()),
+            TypeExpr::Reference { ty: inner, .. } | TypeExpr::Pointer { ty: inner, .. } => {
+                self.collection_element_type(inner.as_ref())
+            }
             _ => None,
         }
     }
@@ -1965,6 +2286,8 @@ impl Checker {
                 | "recv"
                 | "close"
                 | "join"
+                | "ptr"
+                | "ptr_mut"
         )
     }
 

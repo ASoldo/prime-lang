@@ -88,6 +88,11 @@ name = "demos::channel_demo"
 path = "channel_demo.prime"
 visibility = "pub"
 
+[[modules]]
+name = "demos::pointer_demo"
+path = "pointer_demo.prime"
+visibility = "pub"
+
 [[tests]]
 name = "tests::basic"
 path = "tests/basic.prime"

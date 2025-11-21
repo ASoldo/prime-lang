@@ -1092,6 +1092,11 @@ fn format_format_string(literal: &FormatStringLiteral) -> String {
                 buf.push('}');
             }
             FormatSegment::Implicit(_) => buf.push_str("{}"),
+            FormatSegment::Expr { expr, .. } => {
+                buf.push('{');
+                buf.push_str(&format_expr(expr));
+                buf.push('}');
+            }
         }
     }
     buf.push('`');

@@ -267,6 +267,12 @@ fn builtin_function_docs(name: &str) -> Option<String> {
         "join" => Some(
             "Built-in concurrency helper\n```prime\nfn join[T](handle: JoinHandle[T]) -> T\n```\nWaits for `spawn` to finish and produces its value.".into(),
         ),
+        "ptr" => Some(
+            "Built-in pointer helper\n```prime\nfn ptr[T](value: &T) -> *T\n```\nCreates a raw pointer from an existing reference without changing ownership.".into(),
+        ),
+        "ptr_mut" => Some(
+            "Built-in pointer helper\n```prime\nfn ptr_mut[T](value: &mut T) -> *mut T\n```\nCreates a mutable raw pointer from an existing mutable reference.".into(),
+        ),
         _ => None,
     }
 }

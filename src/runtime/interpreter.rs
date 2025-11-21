@@ -8,8 +8,8 @@ use crate::runtime::{
     error::{RuntimeError, RuntimeResult},
     value::{
         BoxValue, ChannelReceiver, ChannelSender, EnumValue, FormatRuntimeSegment,
-        FormatTemplateValue, JoinHandleValue, MapValue, RangeValue, ReferenceValue, SliceValue,
-        StructInstance, Value,
+        FormatTemplateValue, JoinHandleValue, MapValue, PointerValue, RangeValue, ReferenceValue,
+        SliceValue, StructInstance, Value,
     },
 };
 use std::cell::RefCell;
@@ -745,6 +745,8 @@ impl Interpreter {
             "recv" => self.builtin_recv(args),
             "close" => self.builtin_close(args),
             "join" => self.builtin_join(args),
+            "ptr" => self.builtin_ptr(args, false),
+            "ptr_mut" => self.builtin_ptr(args, true),
             _ => return None,
         };
         Some(result)
@@ -802,6 +804,12 @@ impl Interpreter {
             (Value::JoinHandle(handle), "join") => {
                 args.insert(0, Value::JoinHandle(handle));
                 Some(self.builtin_join(args))
+            }
+            (Value::Pointer(pointer), _) => {
+                let cloned = pointer.cell.borrow().clone();
+                let mut all_args = vec![cloned];
+                all_args.extend(args);
+                self.call_builtin_method(name, all_args)
             }
             (Value::Reference(reference), _) => {
                 let cloned = reference.cell.borrow().clone();
@@ -1283,6 +1291,28 @@ impl Interpreter {
         }
     }
 
+    fn builtin_ptr(&mut self, mut args: Vec<Value>, mutable: bool) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity(if mutable { "ptr_mut" } else { "ptr" }, &args, 1)?;
+        let value = args.remove(0);
+        match value {
+            Value::Reference(reference) => Ok(vec![Value::Pointer(PointerValue {
+                cell: reference.cell,
+                mutable,
+            })]),
+            Value::Pointer(ptr) => Ok(vec![Value::Pointer(PointerValue {
+                cell: ptr.cell,
+                mutable: ptr.mutable || mutable,
+            })]),
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!(
+                    "`{}` expects a reference or pointer, found {}",
+                    if mutable { "ptr_mut" } else { "ptr" },
+                    self.describe_value(&other)
+                ),
+            }),
+        }
+    }
+
     fn builtin_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("get", &args, 2)?;
         let receiver = args.remove(0);
@@ -1400,6 +1430,18 @@ impl Interpreter {
                                     EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                                 };
                                 *reference.cell.borrow_mut() = value;
+                            }
+                            Value::Pointer(pointer) => {
+                                if !pointer.mutable {
+                                    return Err(RuntimeError::Panic {
+                                        message: "Cannot assign through immutable reference".into(),
+                                    });
+                                }
+                                let value = match self.eval_expression(&stmt.value)? {
+                                    EvalOutcome::Value(value) => value,
+                                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                                };
+                                *pointer.cell.borrow_mut() = value;
                             }
                             _ => {
                                 return Err(RuntimeError::TypeMismatch {
@@ -1638,6 +1680,7 @@ impl Interpreter {
         match value {
             Value::Struct(instance) => Some(instance.name.clone()),
             Value::Reference(reference) => self.value_struct_name(&reference.cell.borrow()),
+            Value::Pointer(pointer) => self.value_struct_name(&pointer.cell.borrow()),
             Value::Boxed(inner) => self.value_struct_name(&inner.cell.borrow()),
             _ => None,
         }
@@ -1842,6 +1885,9 @@ impl Interpreter {
             Expr::Deref { expr, .. } => match self.eval_expression(expr)? {
                 EvalOutcome::Value(Value::Reference(reference)) => {
                     Ok(EvalOutcome::Value(reference.cell.borrow().clone()))
+                }
+                EvalOutcome::Value(Value::Pointer(pointer)) => {
+                    Ok(EvalOutcome::Value(pointer.cell.borrow().clone()))
                 }
                 EvalOutcome::Value(_) => Err(RuntimeError::TypeMismatch {
                     message: "Cannot dereference non-reference value".into(),
@@ -2551,6 +2597,10 @@ impl Interpreter {
                 let inner = reference.cell.borrow().clone();
                 self.collect_iterable_values(inner)
             }
+            Value::Pointer(pointer) => {
+                let inner = pointer.cell.borrow().clone();
+                self.collect_iterable_values(inner)
+            }
             other => Err(RuntimeError::TypeMismatch {
                 message: format!(
                     "`for ... in` only supports slices or maps; found {}",
@@ -2577,6 +2627,18 @@ impl Interpreter {
                         .env
                         .get(name)
                         .ok_or_else(|| RuntimeError::UnknownSymbol { name: name.clone() })?;
+                    segments.push(FormatRuntimeSegment::Named(value));
+                }
+                FormatSegment::Expr { expr, .. } => {
+                    has_placeholders = true;
+                    let value = match self.eval_expression(expr)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(_) => {
+                            return Err(RuntimeError::Panic {
+                                message: "control flow not allowed inside format string".into(),
+                            })
+                        }
+                    };
                     segments.push(FormatRuntimeSegment::Named(value));
                 }
                 FormatSegment::Implicit(_) => {
@@ -2639,6 +2701,7 @@ impl Interpreter {
             Value::FormatTemplate(_) => "format string",
             Value::Sender(_) => "channel sender",
             Value::Receiver(_) => "channel receiver",
+            Value::Pointer(_) => "pointer",
             Value::JoinHandle(_) => "join handle",
             Value::Unit => "unit",
             Value::Moved => "moved value",

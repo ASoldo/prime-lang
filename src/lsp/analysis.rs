@@ -729,8 +729,12 @@ fn collect_range_expr(range: &RangeExpr, used: &mut HashSet<String>) {
 
 fn collect_format_string_idents(literal: &FormatStringLiteral, used: &mut HashSet<String>) {
     for segment in &literal.segments {
-        if let FormatSegment::Named { name, .. } = segment {
-            used.insert(name.clone());
+        match segment {
+            FormatSegment::Named { name, .. } => {
+                used.insert(name.clone());
+            }
+            FormatSegment::Expr { expr, .. } => collect_expr_idents(expr, used),
+            FormatSegment::Literal(_) | FormatSegment::Implicit(_) => {}
         }
     }
 }

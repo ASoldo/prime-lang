@@ -22,6 +22,31 @@ pub fn parse_module(name: &str, path: PathBuf, source: &str) -> Result<Module, S
     Parser::new(name, path, tokens).parse()
 }
 
+pub fn parse_expression_snippet(
+    path: PathBuf,
+    source: &str,
+) -> Result<Expr, SyntaxErrors> {
+    let tokens = match lex(source) {
+        Ok(tokens) => tokens,
+        Err(errors) => {
+            let errs = errors
+                .into_iter()
+                .map(|err| SyntaxError::new(err.message, err.span))
+                .collect();
+            return Err(SyntaxErrors::new(errs));
+        }
+    };
+    let mut parser = Parser::new("format", path, tokens);
+    let expr = parser.parse_expression().map_err(|err| SyntaxErrors::new(vec![err]))?;
+    if !parser.is_eof() {
+        return Err(SyntaxErrors::new(vec![SyntaxError::new(
+            "Unexpected tokens after expression",
+            Span::new(0, 0),
+        )]));
+    }
+    Ok(expr)
+}
+
 fn is_pascal_case(name: &str) -> bool {
     name.chars()
         .next()
@@ -1863,54 +1888,49 @@ impl Parser {
                         segments.push(FormatSegment::Literal(std::mem::take(&mut literal)));
                     }
                     let placeholder_start = content_start + idx;
-                    match iter.peek() {
-                        Some((close_idx, '}')) => {
-                            let close_abs = content_start + *close_idx + 1;
-                            iter.next();
-                            segments.push(FormatSegment::Implicit(Span::new(
-                                placeholder_start,
-                                close_abs,
-                            )));
-                            continue;
-                        }
-                        Some((_, next_ch)) if Self::is_identifier_start(*next_ch) => {}
-                        _ => {
-                            return Err(self.error_at(
-                                Span::new(placeholder_start, placeholder_start + 1),
-                                "Invalid format placeholder",
-                            ));
-                        }
+                    if let Some((close_idx, '}')) = iter.peek() {
+                        let close_abs = content_start + *close_idx + 1;
+                        iter.next();
+                        segments.push(FormatSegment::Implicit(Span::new(
+                            placeholder_start,
+                            close_abs,
+                        )));
+                        continue;
                     }
-                    let (_, first_char) = iter.next().unwrap();
-                    let mut name = String::new();
-                    name.push(first_char);
-                    while let Some((_, peek_ch)) = iter.peek() {
-                        if Self::is_identifier_part(*peek_ch) {
-                            name.push(*peek_ch);
-                            iter.next();
-                        } else {
-                            break;
+                    let expr_start = content_start + idx + 1;
+                    let mut placeholder = String::new();
+                    let close_info = loop {
+                        match iter.next() {
+                            Some((close_idx, '}')) => break Some(close_idx),
+                            Some((_, ch)) => placeholder.push(ch),
+                            None => break None,
                         }
+                    };
+                    let Some(close_idx) = close_info else {
+                        return Err(self.error_at(
+                            Span::new(placeholder_start, span.end),
+                            "Unterminated format placeholder",
+                        ));
+                    };
+                    let close_abs = content_start + close_idx + 1;
+                    let trimmed = placeholder.trim();
+                    if trimmed.is_empty() {
+                        return Err(self.error_at(
+                            Span::new(placeholder_start, close_abs),
+                            "Invalid format placeholder",
+                        ));
                     }
-                    match iter.next() {
-                        Some((close_idx, '}')) => {
-                            let close_abs = content_start + close_idx + 1;
-                            segments.push(FormatSegment::Named {
-                                name,
+                    match parse_expression_snippet(self.path.clone(), trimmed) {
+                        Ok(expr) => {
+                            segments.push(FormatSegment::Expr {
+                                expr,
                                 span: Span::new(placeholder_start, close_abs),
                             });
                         }
-                        Some((close_idx, _)) => {
-                            let err_span =
-                                Span::new(content_start + close_idx, content_start + close_idx + 1);
-                            return Err(
-                                self.error_at(err_span, "Expected `}` in format placeholder")
-                            );
-                        }
-                        None => {
+                        Err(_) => {
                             return Err(self.error_at(
-                                Span::new(placeholder_start, span.end),
-                                "Unterminated format placeholder",
+                                Span::new(expr_start, close_abs),
+                                "Expected `}` in format placeholder",
                             ));
                         }
                     }

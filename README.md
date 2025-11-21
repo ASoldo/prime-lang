@@ -50,6 +50,7 @@ and for the new `try {}` / `?` sugar, so you can rely on identical semantics in 
 - `pattern_demo.prime` – Match/if/while/for destructuring across tuples, maps, structs, slices.
 - `error_handling_demo.prime` – `Result`, `try {}`, and `?` propagation.
 - `lab_demo.prime` – A syntax-rich lab scenario (range loops, map destructuring, mutable refs, generic interface) used as an internal example; not exposed via `prime-lang docs`.
+- `pointer_demo.prime` – Raw pointers derived from references plus first-class ranges.
 - Library modules: `types.prime` and `pkg_lib.prime` are libraries only (no `main`). Running them directly reports `Unknown symbol main`; import them from other modules instead.
 
 Run any of them directly:
@@ -72,6 +73,7 @@ Validated outputs (fresh run, current syntax):
 - `ns_demo.prime` — namespace overloading demo with foo/bar labels.
 - `pattern_demo.prime` — pattern matches over tuples/maps/slices plus mutation demos.
 - `pkg_app.prime` — banner/promotion output.
+- `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
 
 ## CLI Overview & Built-in Docs
 
@@ -352,6 +354,9 @@ fn calibrate_station(name: string) {
 
 - `&T` is a reference. You must dereference explicitly (`*target`) when copying.
 - `&mut T` gates mutation.
+- Raw pointers use `ptr(&value)` / `ptr_mut(&mut value)` and dereference with
+  `*pointer`; they bypass borrow checks but share the same storage as the
+  originating reference.
 - `defer` schedules work to run when the current scope exits—ideal for cleanup.
 
 ### Ownership & Borrowing Rules
@@ -492,8 +497,9 @@ panel.render();  // rewrites to Renderable::render(panel)
   include `Box[T]`, slices (`[]T`), and maps (`Map[string, T]`) with literals,
   methods (+/- borrow checks), and iteration support.
 - References (`&T`) wrap the value in an `Rc<RefCell<_>>`, so borrowing a value
-  moves it to the heap until all references drop. Raw pointers aren’t supported
-  yet; there is no manual `alloc/free`.
+  moves it to the heap until all references drop. Raw pointers (`*T` / `*mut T`)
+  are available via `ptr` / `ptr_mut` over existing references and dereference
+  with `*`; there is no manual `alloc/free`.
 
 With these primitives you can already compose larger programs (see
 `main.prime`/`types.prime`) while keeping the future roadmap—better memory
