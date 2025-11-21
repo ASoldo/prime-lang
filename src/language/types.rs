@@ -56,6 +56,9 @@ impl TypeExpr {
     pub fn replace_self(&self, concrete: &TypeExpr) -> TypeExpr {
         match self {
             TypeExpr::SelfType => concrete.clone(),
+            TypeExpr::Named(name, args) if name == "Self" && args.is_empty() => {
+                concrete.clone()
+            }
             TypeExpr::Slice(inner) => TypeExpr::Slice(Box::new(inner.replace_self(concrete))),
             TypeExpr::Array { size, ty } => TypeExpr::Array {
                 size: *size,

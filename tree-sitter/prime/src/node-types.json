@@ -48,6 +48,10 @@
         "named": true
       },
       {
+        "type": "method_call_expression",
+        "named": true
+      },
+      {
         "type": "parenthesized_expression",
         "named": true
       },
@@ -57,6 +61,14 @@
       },
       {
         "type": "range_expression",
+        "named": true
+      },
+      {
+        "type": "simple_field_expression",
+        "named": true
+      },
+      {
+        "type": "simple_method_call",
         "named": true
       },
       {
@@ -689,6 +701,40 @@
     }
   },
   {
+    "type": "format_placeholder",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "format_string_literal",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "format_literal",
+          "named": true
+        },
+        {
+          "type": "format_placeholder",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "function_definition",
     "named": true,
     "fields": {
@@ -1230,6 +1276,52 @@
     }
   },
   {
+    "type": "method_call_expression",
+    "named": true,
+    "fields": {
+      "arguments": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "argument_list",
+            "named": true
+          }
+        ]
+      },
+      "method": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type_arguments": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type_arguments",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "module_declaration",
     "named": true,
     "fields": {
@@ -1473,6 +1565,78 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "simple_field_expression",
+    "named": true,
+    "fields": {
+      "field": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "simple_method_call",
+    "named": true,
+    "fields": {
+      "arguments": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "argument_list",
+            "named": true
+          }
+        ]
+      },
+      "method": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type_arguments": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type_arguments",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -1984,6 +2148,10 @@
     "named": false
   },
   {
+    "type": "`",
+    "named": false
+  },
+  {
     "type": "as",
     "named": false
   },
@@ -2033,7 +2201,7 @@
     "named": false
   },
   {
-    "type": "format_string_literal",
+    "type": "format_literal",
     "named": true
   },
   {

@@ -292,6 +292,9 @@ module.exports = grammar({
       $.match_expression,
       $.if_expression,
       $.range_expression,
+      $.simple_field_expression,
+      $.simple_method_call,
+      $.method_call_expression,
       $.binary_expression,
       $.unary_expression,
       $.call_expression,
@@ -363,6 +366,34 @@ module.exports = grammar({
         field('start', $.expression),
         field('operator', choice('..', '..=')),
         field('end', $.expression)
+      )
+    ),
+
+    method_call_expression: $ => prec.left(PREC.call,
+      seq(
+        field('value', $.expression),
+        '.',
+        field('method', $.identifier),
+        optional(field('type_arguments', $.type_arguments)),
+        field('arguments', $.argument_list)
+      )
+    ),
+
+    simple_method_call: $ => prec.left(PREC.call,
+      seq(
+        field('value', $.identifier),
+        '.',
+        field('method', $.identifier),
+        optional(field('type_arguments', $.type_arguments)),
+        field('arguments', $.argument_list)
+      )
+    ),
+
+    simple_field_expression: $ => prec.left(PREC.call,
+      seq(
+        field('value', $.identifier),
+        '.',
+        field('field', $.identifier)
       )
     ),
 
