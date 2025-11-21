@@ -677,6 +677,10 @@ impl Parser {
             let stmt = self.parse_while()?;
             return Ok(StatementOrTail::Statement(Statement::While(stmt)));
         }
+        if self.matches(TokenKind::Loop) {
+            let stmt = self.parse_loop()?;
+            return Ok(StatementOrTail::Statement(Statement::Loop(stmt)));
+        }
         if self.matches(TokenKind::For) {
             let stmt = self.parse_for_statement()?;
             return Ok(StatementOrTail::Statement(Statement::For(stmt)));
@@ -755,6 +759,7 @@ impl Parser {
                     | TokenKind::Return
                     | TokenKind::If
                     | TokenKind::While
+                    | TokenKind::Loop
                     | TokenKind::For
                     | TokenKind::Match
                     | TokenKind::Break
@@ -941,6 +946,13 @@ impl Parser {
         Ok(WhileStmt { condition, body })
     }
 
+    fn parse_loop(&mut self) -> Result<LoopStmt, SyntaxError> {
+        let start = self.previous_span().map(|s| s.start).unwrap_or(0);
+        let body = self.parse_block()?;
+        let span = Span::new(start, body.span.end);
+        Ok(LoopStmt { body, span })
+    }
+
     fn type_expr_without_identifier_start(&self) -> bool {
         match self.peek_kind() {
             Some(TokenKind::LParen) => self.tuple_type_followed_by_binding(),
@@ -1116,6 +1128,18 @@ impl Parser {
             let expr = self.parse_unary()?;
             let span = Span::new(start, expr_span(&expr).end);
             return Ok(Expr::Move {
+                expr: Box::new(expr),
+                span,
+            });
+        }
+        if self.matches(TokenKind::Spawn) {
+            let start = self
+                .previous_span()
+                .map(|s| s.start)
+                .unwrap_or_else(|| self.current_span_start());
+            let expr = self.parse_unary()?;
+            let span = Span::new(start, expr_span(&expr).end);
+            return Ok(Expr::Spawn {
                 expr: Box::new(expr),
                 span,
             });
@@ -2248,5 +2272,6 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Deref { span, .. } => *span,
         Expr::Move { span, .. } => *span,
         Expr::FormatString(literal) => literal.span,
+        Expr::Spawn { span, .. } => *span,
     }
 }

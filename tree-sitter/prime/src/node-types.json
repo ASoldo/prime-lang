@@ -190,6 +190,10 @@
         "named": true
       },
       {
+        "type": "loop_statement",
+        "named": true
+      },
+      {
         "type": "match_expression",
         "named": true
       },
@@ -1059,6 +1063,22 @@
         "types": [
           {
             "type": "expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "loop_statement",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
             "named": true
           }
         ]
@@ -2053,6 +2073,10 @@
     "named": false
   },
   {
+    "type": "loop",
+    "named": false
+  },
+  {
     "type": "match",
     "named": false
   },
@@ -2079,6 +2103,10 @@
   {
     "type": "rune_literal",
     "named": true
+  },
+  {
+    "type": "spawn",
+    "named": false
   },
   {
     "type": "string_literal",

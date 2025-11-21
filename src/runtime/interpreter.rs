@@ -7,12 +7,13 @@ use crate::runtime::{
     environment::Environment,
     error::{RuntimeError, RuntimeResult},
     value::{
-        BoxValue, EnumValue, FormatRuntimeSegment, FormatTemplateValue, MapValue, RangeValue,
-        ReferenceValue, SliceValue, StructInstance, Value,
+        BoxValue, ChannelReceiver, ChannelSender, EnumValue, FormatRuntimeSegment,
+        FormatTemplateValue, JoinHandleValue, MapValue, RangeValue, ReferenceValue, SliceValue,
+        StructInstance, Value,
     },
 };
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 pub struct Interpreter {
@@ -360,7 +361,8 @@ impl Interpreter {
             }
             return self.call_out(args);
         }
-        if !type_args.is_empty() && self.is_builtin_name(name) {
+        let allows_type_args = name == "channel";
+        if !allows_type_args && !type_args.is_empty() && self.is_builtin_name(name) {
             return Err(RuntimeError::Unsupported {
                 message: format!("`{}` does not accept type arguments", name),
             });
@@ -738,6 +740,11 @@ impl Interpreter {
             "min" => self.builtin_min(args),
             "max" => self.builtin_max(args),
             "abs" => self.builtin_abs(args),
+            "channel" => self.builtin_channel(args),
+            "send" => self.builtin_send(args),
+            "recv" => self.builtin_recv(args),
+            "close" => self.builtin_close(args),
+            "join" => self.builtin_join(args),
             _ => return None,
         };
         Some(result)
@@ -792,6 +799,10 @@ impl Interpreter {
                 args.insert(0, Value::Float(f));
                 Some(self.builtin_max(args))
             }
+            (Value::JoinHandle(handle), "join") => {
+                args.insert(0, Value::JoinHandle(handle));
+                Some(self.builtin_join(args))
+            }
             (Value::Reference(reference), _) => {
                 let cloned = reference.cell.borrow().clone();
                 let mut all_args = vec![cloned];
@@ -829,6 +840,11 @@ impl Interpreter {
                 | "min"
                 | "max"
                 | "abs"
+                | "channel"
+                | "send"
+                | "recv"
+                | "close"
+                | "join"
         )
     }
 
@@ -1163,6 +1179,110 @@ impl Interpreter {
         }
     }
 
+    fn builtin_channel(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("channel", &args, 0)?;
+        let queue = Rc::new(RefCell::new(VecDeque::new()));
+        let closed = Rc::new(RefCell::new(false));
+        let sender = Value::Sender(ChannelSender::new(queue.clone(), closed.clone()));
+        let receiver = Value::Receiver(ChannelReceiver::new(queue, closed));
+        Ok(vec![sender, receiver])
+    }
+
+    fn expect_sender(&self, name: &str, value: Value) -> RuntimeResult<ChannelSender> {
+        match value {
+            Value::Sender(tx) => Ok(tx),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.borrow().clone();
+                self.expect_sender(name, cloned)
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!("`{name}` expects Sender, found {}", self.describe_value(&other)),
+            }),
+        }
+    }
+
+    fn expect_receiver(&self, name: &str, value: Value) -> RuntimeResult<ChannelReceiver> {
+        match value {
+            Value::Receiver(rx) => Ok(rx),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.borrow().clone();
+                self.expect_receiver(name, cloned)
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!("`{name}` expects Receiver, found {}", self.describe_value(&other)),
+            }),
+        }
+    }
+
+    fn builtin_send(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("send", &args, 2)?;
+        let value = args.remove(1);
+        let sender = self.expect_sender("send", args.remove(0))?;
+        match sender.send(value) {
+            Ok(()) => {
+                let ok = self.instantiate_enum("Result", "Ok", vec![Value::Unit])?;
+                Ok(vec![ok])
+            }
+            Err(msg) => {
+                let err = self.instantiate_enum("Result", "Err", vec![Value::String(msg)])?;
+                Ok(vec![err])
+            }
+        }
+    }
+
+    fn builtin_recv(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("recv", &args, 1)?;
+        let receiver = self.expect_receiver("recv", args.remove(0))?;
+        match receiver.recv() {
+            Some(value) => {
+                let some = self.instantiate_enum("Option", "Some", vec![value])?;
+                Ok(vec![some])
+            }
+            None => {
+                let none = self.instantiate_enum("Option", "None", Vec::new())?;
+                Ok(vec![none])
+            }
+        }
+    }
+
+    fn builtin_close(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("close", &args, 1)?;
+        match args.remove(0) {
+            Value::Sender(tx) => {
+                tx.close();
+                Ok(vec![Value::Unit])
+            }
+            Value::Receiver(rx) => {
+                rx.close();
+                Ok(vec![Value::Unit])
+            }
+            Value::Reference(reference) => {
+                let cloned = reference.cell.borrow().clone();
+                self.builtin_close(vec![cloned])
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!("`close` expects channel endpoint, found {}", self.describe_value(&other)),
+            }),
+        }
+    }
+
+    fn builtin_join(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("join", &args, 1)?;
+        match args.remove(0) {
+            Value::JoinHandle(mut handle) => {
+                let value = handle.join().map_err(|msg| RuntimeError::Panic { message: msg })?;
+                Ok(vec![value])
+            }
+            Value::Reference(reference) => {
+                let cloned = reference.cell.borrow().clone();
+                self.builtin_join(vec![cloned])
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!("`join` expects JoinHandle, found {}", self.describe_value(&other)),
+            }),
+        }
+    }
+
     fn builtin_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("get", &args, 2)?;
         let receiver = args.remove(0);
@@ -1365,6 +1485,19 @@ impl Interpreter {
                     Ok(None)
                 }
             },
+            Statement::Loop(loop_stmt) => {
+                loop {
+                    let result = self.eval_block(&loop_stmt.body)?;
+                    match result {
+                        BlockEval::Value(_) => {}
+                        BlockEval::Flow(FlowSignal::Continue) => continue,
+                        BlockEval::Flow(FlowSignal::Break) => break,
+                        BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
+                    }
+                }
+                Ok(None)
+            }
             Statement::For(stmt) => match &stmt.target {
                 ForTarget::Range(range_expr) => {
                     let range = match self.eval_range_expr(range_expr)? {
@@ -1717,6 +1850,14 @@ impl Interpreter {
             },
             Expr::ArrayLiteral(values, _) => self.eval_array_literal(values),
             Expr::Move { expr, .. } => self.eval_move_expression(expr).map(EvalOutcome::Value),
+            Expr::Spawn { expr, .. } => match self.eval_expression(expr)? {
+                EvalOutcome::Value(value) => {
+                    Ok(EvalOutcome::Value(Value::JoinHandle(Box::new(
+                        JoinHandleValue::new(value),
+                    ))))
+                }
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
         }
     }
 
@@ -1746,13 +1887,18 @@ impl Interpreter {
                 })))
             }
             _ => match self.eval_expression(expr)? {
-                EvalOutcome::Value(value) => {
-                    Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
-                        cell: Rc::new(RefCell::new(value)),
+                EvalOutcome::Value(value) => match value {
+                    Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => {
+                        Err(RuntimeError::TypeMismatch {
+                            message: "Cannot take reference to channel or join handle".into(),
+                        })
+                    }
+                    other => Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
+                        cell: Rc::new(RefCell::new(other)),
                         mutable,
                         origin: None,
-                    })))
-                }
+                    }))),
+                },
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
         }
@@ -2491,6 +2637,9 @@ impl Interpreter {
             Value::Float(_) => "float",
             Value::Range(_) => "range",
             Value::FormatTemplate(_) => "format string",
+            Value::Sender(_) => "channel sender",
+            Value::Receiver(_) => "channel receiver",
+            Value::JoinHandle(_) => "join handle",
             Value::Unit => "unit",
             Value::Moved => "moved value",
         }

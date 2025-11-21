@@ -83,6 +83,11 @@ name = "demos::lab_demo"
 path = "lab_demo.prime"
 visibility = "pub"
 
+[[modules]]
+name = "demos::channel_demo"
+path = "channel_demo.prime"
+visibility = "pub"
+
 [[tests]]
 name = "tests::basic"
 path = "tests/basic.prime"

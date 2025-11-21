@@ -196,6 +196,14 @@ $ prime-lang add core::types --path types.prime --library
                 explanation: "`prime-lang add` edits the manifest and writes a stub file, keeping the graph in sync. Modules are runnable (with `main`), libraries are import-only (no `main`), and tests use `test ...;` headers. The manifest `kind` reflects the header so the loader/LSP apply the right rules.",
             },
             TopicSection {
+                title: "Interpreter concurrency (beta)",
+                snippet: r#"let (tx, rx) = channel[int32]();
+let handle = spawn (send(tx, 1));
+let Option[int32] first = recv(rx);
+join(handle);"#,
+                explanation: "`spawn` returns `JoinHandle[T]`; `channel[T]()` yields `(Sender[T], Receiver[T])`. `send`/`recv`/`close`/`join` work in both interpreter and build modes (synchronous scheduling; no async yet).",
+            },
+            TopicSection {
                 title: "Checking examples & regression safety",
                 snippet: r#"./scripts/check_examples.sh
 PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh"#,
@@ -323,9 +331,12 @@ fn summarize_stats(stats: Map[string, int32]) {
     out(`note {idx}: {note}`);
     idx = idx + 1;
   }
+  loop {
+    break;
+  }
   total
 }"#,
-                explanation: "Range loops (`start..end`) and slice iteration move values directly into the loop binding. `while let` keeps looping as long as a pattern binds successfully. Borrow checking (see advanced topic) guarantees each body finishes before the next borrow.",
+                explanation: "Range loops (`start..end`) and slice iteration move values directly into the loop binding. `while let` keeps looping as long as a pattern binds successfully, and `loop { ... }` is an infinite loop that exits with `break`. Borrow checking (see advanced topic) guarantees each body finishes before the next borrow.",
             },
             TopicSection {
                 title: "Collection literals & map/slice iteration",

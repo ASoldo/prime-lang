@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::rc::Rc;
 
@@ -19,6 +19,9 @@ pub enum Value {
     Slice(SliceValue),
     Map(MapValue),
     FormatTemplate(FormatTemplateValue),
+    Sender(ChannelSender),
+    Receiver(ChannelReceiver),
+    JoinHandle(Box<JoinHandleValue>),
     Moved,
 }
 
@@ -35,9 +38,78 @@ impl Value {
             Value::Slice(slice) => !slice.items.borrow().is_empty(),
             Value::Map(map) => !map.entries.borrow().is_empty(),
             Value::FormatTemplate(_) => true,
+            Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => true,
             Value::Unit => false,
             Value::Moved => panic!("attempted to read moved value"),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ChannelSender {
+    pub(crate) queue: Rc<RefCell<VecDeque<Value>>>,
+    pub(crate) closed: Rc<RefCell<bool>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChannelReceiver {
+    pub(crate) queue: Rc<RefCell<VecDeque<Value>>>,
+    pub(crate) closed: Rc<RefCell<bool>>,
+}
+
+impl ChannelSender {
+    pub fn new(queue: Rc<RefCell<VecDeque<Value>>>, closed: Rc<RefCell<bool>>) -> Self {
+        Self { queue, closed }
+    }
+
+    pub fn send(&self, value: Value) -> Result<(), String> {
+        if *self.closed.borrow() {
+            return Err("channel closed".into());
+        }
+        self.queue.borrow_mut().push_back(value);
+        Ok(())
+    }
+
+    pub fn close(&self) {
+        *self.closed.borrow_mut() = true;
+    }
+}
+
+impl ChannelReceiver {
+    pub fn new(queue: Rc<RefCell<VecDeque<Value>>>, closed: Rc<RefCell<bool>>) -> Self {
+        Self { queue, closed }
+    }
+
+    pub fn recv(&self) -> Option<Value> {
+        if let Some(v) = self.queue.borrow_mut().pop_front() {
+            return Some(v);
+        }
+        if *self.closed.borrow() {
+            None
+        } else {
+            None
+        }
+    }
+
+    pub fn close(&self) {
+        *self.closed.borrow_mut() = true;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct JoinHandleValue {
+    result: Option<Value>,
+}
+
+impl JoinHandleValue {
+    pub fn new(value: Value) -> Self {
+        Self { result: Some(value) }
+    }
+
+    pub fn join(&mut self) -> Result<Value, String> {
+        self.result
+            .take()
+            .ok_or_else(|| "join handle already used".into())
     }
 }
 
@@ -93,6 +165,9 @@ impl fmt::Display for Value {
                 write!(f, "}}")
             }
             Value::FormatTemplate(_) => write!(f, "<format string>"),
+            Value::Sender(_) => write!(f, "Sender"),
+            Value::Receiver(_) => write!(f, "Receiver"),
+            Value::JoinHandle(_) => write!(f, "JoinHandle"),
             Value::Moved => write!(f, "<moved>"),
         }
     }

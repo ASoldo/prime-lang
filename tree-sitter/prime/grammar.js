@@ -214,6 +214,7 @@ module.exports = grammar({
       $.let_statement,
       $.assign_statement,
       $.return_statement,
+      $.loop_statement,
       $.while_statement,
       $.for_statement,
       $.defer_statement,
@@ -254,6 +255,11 @@ module.exports = grammar({
       'return',
       optional(commaSep1($.expression)),
       ';'
+    ),
+
+    loop_statement: $ => seq(
+      'loop',
+      field('body', $.block)
     ),
 
     while_statement: $ => seq(
@@ -377,7 +383,8 @@ module.exports = grammar({
       seq('!', $.expression),
       seq('&', optional('mut'), $.expression),
       seq('*', $.expression),
-      seq('move', $.expression)
+      seq('move', $.expression),
+      seq('spawn', $.expression)
     )),
 
     call_expression: $ => prec.left(PREC.call,

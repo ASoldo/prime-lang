@@ -162,6 +162,9 @@ fn collect_decl_from_block(block: &Block, module: &Module, decls: &mut Vec<DeclI
                 collect_decl_from_while_condition(&while_stmt.condition, module, decls);
                 collect_decl_from_block(&while_stmt.body, module, decls);
             }
+            Statement::Loop(loop_stmt) => {
+                collect_decl_from_block(&loop_stmt.body, module, decls);
+            }
             Statement::For(for_stmt) => {
                 let mut binding_ty = None;
                 match &for_stmt.target {
@@ -265,6 +268,7 @@ fn collect_decl_from_expr(expr: &Expr, module: &Module, decls: &mut Vec<DeclInfo
         Expr::Reference { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
         Expr::Deref { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
         Expr::Move { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
+        Expr::Spawn { expr, .. } => collect_decl_from_expr(expr, module, decls),
     }
 }
 
@@ -636,6 +640,9 @@ fn collect_used_in_statement(statement: &Statement, used: &mut HashSet<String>) 
             collect_expr_idents_from_while_condition(&while_stmt.condition, used);
             collect_used_in_block(&while_stmt.body, used);
         }
+        Statement::Loop(loop_stmt) => {
+            collect_used_in_block(&loop_stmt.body, used);
+        }
         Statement::For(for_stmt) => {
             match &for_stmt.target {
                 ForTarget::Range(range) => {
@@ -711,6 +718,7 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
         Expr::Deref { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Move { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::FormatString(literal) => collect_format_string_idents(literal, used),
+        Expr::Spawn { .. } => {}
     }
 }
 
@@ -827,6 +835,7 @@ pub fn expr_span(expr: &Expr) -> Span {
         Expr::Deref { span, .. } => *span,
         Expr::Move { span, .. } => *span,
         Expr::FormatString(literal) => literal.span,
+        Expr::Spawn { span, .. } => *span,
     }
 }
 

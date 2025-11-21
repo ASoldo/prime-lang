@@ -187,6 +187,7 @@ pub enum Statement {
     Expr(ExprStmt),
     Return(ReturnStmt),
     While(WhileStmt),
+    Loop(LoopStmt),
     For(ForStmt),
     Defer(DeferStmt),
     Break,
@@ -223,6 +224,12 @@ pub struct ReturnStmt {
 pub struct WhileStmt {
     pub condition: WhileCondition,
     pub body: Block,
+}
+
+#[derive(Clone, Debug)]
+pub struct LoopStmt {
+    pub body: Block,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -348,6 +355,10 @@ pub enum Expr {
         span: Span,
     },
     Move {
+        expr: Box<Expr>,
+        span: Span,
+    },
+    Spawn {
         expr: Box<Expr>,
         span: Span,
     },

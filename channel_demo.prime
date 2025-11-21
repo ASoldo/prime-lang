@@ -1,0 +1,37 @@
+module demos::channel_demo;
+
+import core::types;
+
+fn worker(tx: Sender[int32], values: []int32) -> () {
+  for v in values {
+    send(tx, v);
+  }
+  close(tx);
+}
+
+fn collect(rx: Receiver[int32]) -> int32 {
+  let mut int32 total = 0;
+  loop {
+    match recv(rx) {
+      Some(value) => {
+        total = total + value;
+      },
+      None => {
+        break;
+      },
+    }
+  }
+  return total;
+}
+
+fn run_channels() -> int32 {
+  let (tx, rx) = channel[int32]();
+  let handle = spawn (worker(tx, [1, 2, 3]));
+  let int32 sum = collect(rx);
+  join(handle);
+  return sum;
+}
+
+fn main() {
+  out(run_channels());
+}

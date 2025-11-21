@@ -361,6 +361,12 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
             format_while_statement(out, while_stmt, indent);
             false
         }
+        Statement::Loop(loop_stmt) => {
+            write_indent(out, indent);
+            out.push_str("loop ");
+            format_block(out, &loop_stmt.body, indent);
+            false
+        }
         Statement::For(for_stmt) => {
             format_for_statement(out, for_stmt, indent);
             false
@@ -670,6 +676,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         }
         Expr::FormatString(literal) => format_format_string(literal),
         Expr::Move { expr, .. } => format!("move {}", format_expr_prec(expr, 100)),
+        Expr::Spawn { expr, .. } => format!("spawn {}", format_expr_prec(expr, 100)),
         Expr::Range(range) => format_range(range),
         Expr::Reference { mutable, expr, .. } => {
             if *mutable {

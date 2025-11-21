@@ -433,6 +433,13 @@ impl Checker {
                     env.merge_branch_borrows(&[entry_state, body_state]);
                 }
             },
+            Statement::Loop(loop_stmt) => {
+                let entry_state = env.snapshot_borrows();
+                let (_, body_state) = env.run_branch(|env| {
+                    self.check_block(module, &loop_stmt.body, returns, env);
+                });
+                env.merge_branch_borrows(&[entry_state, body_state]);
+            }
             Statement::For(for_stmt) => match &for_stmt.target {
                 ForTarget::Range(range) => {
                     self.check_expression(module, &range.start, Some(&int_type()), returns, env);
@@ -672,6 +679,21 @@ impl Checker {
                     }
                 }
                 ty
+            }
+            Expr::Spawn { expr, span } => {
+                let inner = self.check_expression(module, expr, None, returns, env);
+                let handle_ty = TypeExpr::Named(
+                    "JoinHandle".into(),
+                    vec![inner.clone().unwrap_or(TypeExpr::Unit)],
+                );
+                if inner.is_none() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        *span,
+                        "`spawn` requires an expression",
+                    ));
+                }
+                Some(handle_ty)
             }
             Expr::Range(_) => None,
         }
@@ -981,7 +1003,8 @@ impl Checker {
         env: &mut FnEnv,
         span: Span,
     ) -> Option<TypeExpr> {
-        if !type_args.is_empty() {
+        let allows_type_args = matches!(name, "channel");
+        if !allows_type_args && !type_args.is_empty() {
             self.errors.push(TypeError::new(
                 &module.path,
                 span,
@@ -1229,6 +1252,97 @@ impl Checker {
                     return Some(make_option_type(value_ty));
                 }
                 None
+            }
+            "channel" => {
+                if args.len() != 0 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`channel` expects 0 arguments",
+                    ));
+                }
+                let element_ty = type_args.first().cloned().unwrap_or(TypeExpr::Unit);
+                Some(TypeExpr::Tuple(vec![
+                    TypeExpr::Named("Sender".into(), vec![element_ty.clone()]),
+                    TypeExpr::Named("Receiver".into(), vec![element_ty]),
+                ]))
+            }
+            "send" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`send` expects 2 arguments",
+                    ));
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![TypeExpr::Unit, string_type()],
+                    ));
+                }
+                let sender_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some(TypeExpr::Named(name, params)) = sender_ty {
+                    if name != "Sender" || params.len() != 1 {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            span,
+                            "`send` expects Sender[T] as first argument",
+                        ));
+                    } else {
+                        self.check_expression(module, &args[1], Some(&params[0]), returns, env);
+                    }
+                } else {
+                    self.check_expression(module, &args[1], None, returns, env);
+                }
+                Some(TypeExpr::Named(
+                    "Result".into(),
+                    vec![TypeExpr::Unit, string_type()],
+                ))
+            }
+            "recv" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`recv` expects 1 argument",
+                    ));
+                    return None;
+                }
+                let receiver_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some(TypeExpr::Named(name, params)) = receiver_ty {
+                    if name == "Receiver" && params.len() == 1 {
+                        return Some(make_option_type(params[0].clone()));
+                    }
+                }
+                Some(TypeExpr::Named("Option".into(), vec![TypeExpr::Unit]))
+            }
+            "close" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`close` expects 1 argument",
+                    ));
+                } else {
+                    self.check_expression(module, &args[0], None, returns, env);
+                }
+                Some(TypeExpr::Unit)
+            }
+            "join" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`join` expects 1 argument",
+                    ));
+                    return None;
+                }
+                let handle_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some(TypeExpr::Named(name, params)) = handle_ty {
+                    if name == "JoinHandle" && params.len() == 1 {
+                        return Some(params[0].clone());
+                    }
+                }
+                Some(TypeExpr::Unit)
             }
             _ => None,
         }
@@ -1846,6 +1960,11 @@ impl Checker {
                 | "min"
                 | "max"
                 | "abs"
+                | "channel"
+                | "send"
+                | "recv"
+                | "close"
+                | "join"
         )
     }
 
@@ -2720,6 +2839,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Try { span, .. } => *span,
         Expr::TryPropagate { span, .. } => *span,
         Expr::Move { span, .. } => *span,
+        Expr::Spawn { span, .. } => *span,
     }
 }
 
@@ -2730,6 +2850,7 @@ fn stmt_span(statement: &Statement) -> Span {
         Statement::Expr(expr) => expr_span(&expr.expr),
         Statement::Return(_) => Span::new(0, 0),
         Statement::While(while_stmt) => while_stmt.body.span,
+        Statement::Loop(stmt) => stmt.span,
         Statement::For(stmt) => stmt.span,
         Statement::Defer(_) => Span::new(0, 0),
         Statement::Break | Statement::Continue => Span::new(0, 0),
@@ -2889,6 +3010,7 @@ fn reference_may_dangle(expr: &Expr) -> bool {
         | Expr::Try { .. }
         | Expr::TryPropagate { .. }
         | Expr::Range(_) => true,
+        | Expr::Spawn { .. } => true,
     }
 }
 

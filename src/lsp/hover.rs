@@ -180,9 +180,14 @@ pub fn hover_for_token(
         TokenKind::While => {
             Some("Keyword **while**\n\nLoop while the condition holds.".to_string())
         }
+        TokenKind::Loop => Some("Keyword **loop**\n\nInfinite loop until `break` is reached.".to_string()),
         TokenKind::For => Some("Keyword **for**\n\nRange-based loop.".to_string()),
         TokenKind::Match => Some("Keyword **match**\n\nPattern matching expression.".to_string()),
         TokenKind::Defer => Some("Keyword **defer**\n\nRun code when leaving scope.".to_string()),
+        TokenKind::Spawn => Some(
+            "Keyword **spawn**\n\nEvaluates an expression concurrently and returns `JoinHandle[T]`."
+                .to_string(),
+        ),
         TokenKind::Import => {
             Some("Keyword **import**\n\nBring another module into scope.".to_string())
         }
@@ -247,6 +252,21 @@ fn builtin_function_docs(name: &str) -> Option<String> {
         "min" => Some("Built-in math helper\n```prime\nfn min(a: int32, b: int32) -> int32\n```\nWorks on integer values.".into()),
         "max" => Some("Built-in math helper\n```prime\nfn max(a: int32, b: int32) -> int32\n```\nWorks on integer values.".into()),
         "abs" => Some("Built-in math helper\n```prime\nfn abs(value: int32) -> int32\n```".into()),
+        "channel" => Some(
+            "Built-in concurrency helper\n```prime\nfn channel[T]() -> (Sender[T], Receiver[T])\n```\nCreates a paired sender/receiver.".into(),
+        ),
+        "send" => Some(
+            "Built-in concurrency helper\n```prime\nfn send[T](tx: Sender[T], value: T) -> Result[(), string]\n```\nReturns `Err` when the channel is closed.".into(),
+        ),
+        "recv" => Some(
+            "Built-in concurrency helper\n```prime\nfn recv[T](rx: Receiver[T]) -> Option[T]\n```\nReturns `None` after the channel closes and drains.".into(),
+        ),
+        "close" => Some(
+            "Built-in concurrency helper\n```prime\nfn close[T](tx: Sender[T]) -> ()\n```\nCompletes the sender; receivers will observe `None` once drained.".into(),
+        ),
+        "join" => Some(
+            "Built-in concurrency helper\n```prime\nfn join[T](handle: JoinHandle[T]) -> T\n```\nWaits for `spawn` to finish and produces its value.".into(),
+        ),
         _ => None,
     }
 }

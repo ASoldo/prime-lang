@@ -79,6 +79,9 @@ enum Value {
     Slice(SliceValue),
     Map(MapValue),
     FormatTemplate(FormatTemplateValue),
+    Sender(ChannelSender),
+    Receiver(ChannelReceiver),
+    JoinHandle(Box<JoinHandleValue>),
     Moved,
 }
 
@@ -130,6 +133,77 @@ struct SliceValue {
 #[derive(Clone)]
 struct MapValue {
     entries: Rc<RefCell<BTreeMap<String, Value>>>,
+}
+
+#[derive(Clone)]
+struct ChannelSender {
+    queue: Rc<RefCell<Vec<Value>>>,
+    closed: Rc<RefCell<bool>>,
+}
+
+#[derive(Clone)]
+struct ChannelReceiver {
+    queue: Rc<RefCell<Vec<Value>>>,
+    closed: Rc<RefCell<bool>>,
+}
+
+#[derive(Clone)]
+struct JoinHandleValue {
+    result: Rc<RefCell<Option<Value>>>,
+}
+
+impl ChannelSender {
+    fn new(queue: Rc<RefCell<Vec<Value>>>, closed: Rc<RefCell<bool>>) -> Self {
+        Self { queue, closed }
+    }
+
+    fn send(&self, value: Value) -> Result<(), String> {
+        if *self.closed.borrow() {
+            return Err("channel closed".into());
+        }
+        self.queue.borrow_mut().push(value);
+        Ok(())
+    }
+
+    fn close(&self) {
+        *self.closed.borrow_mut() = true;
+    }
+}
+
+impl ChannelReceiver {
+    fn new(queue: Rc<RefCell<Vec<Value>>>, closed: Rc<RefCell<bool>>) -> Self {
+        Self { queue, closed }
+    }
+
+    fn recv(&self) -> Option<Value> {
+        if let Some(v) = self.queue.borrow_mut().pop() {
+            return Some(v);
+        }
+        if *self.closed.borrow() {
+            None
+        } else {
+            None
+        }
+    }
+
+    fn close(&self) {
+        *self.closed.borrow_mut() = true;
+    }
+}
+
+impl JoinHandleValue {
+    fn new(value: Value) -> Self {
+        Self {
+            result: Rc::new(RefCell::new(Some(value))),
+        }
+    }
+
+    fn join(&self) -> Result<Value, String> {
+        self.result
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| "join handle already consumed".into())
+    }
 }
 
 #[derive(Clone)]
@@ -643,6 +717,9 @@ impl Compiler {
                 Err("Cannot print heap value in build mode".into())
             }
             Value::FormatTemplate(_) => Err("Format string must be printed via out()".into()),
+            Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => {
+                Err("Cannot print concurrency values in build mode".into())
+            }
             Value::Moved => Err("Cannot print moved value in build mode".into()),
         }
     }
@@ -786,6 +863,21 @@ impl Compiler {
                     }
                 },
             },
+            Statement::Loop(loop_stmt) => {
+                loop {
+                    self.push_scope();
+                    let result = self.execute_block_contents(&loop_stmt.body)?;
+                    self.exit_scope()?;
+                    match result {
+                        BlockEval::Value(_) => {}
+                        BlockEval::Flow(FlowSignal::Continue) => continue,
+                        BlockEval::Flow(FlowSignal::Break) => break,
+                        BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
+                    }
+                }
+                return Ok(None);
+            }
             Statement::For(stmt) => match &stmt.target {
                 ForTarget::Range(range_expr) => {
                     let (start, end, inclusive) = match self.evaluate_range(range_expr)? {
@@ -931,6 +1023,12 @@ impl Compiler {
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
+            Expr::Spawn { expr, .. } => match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => Ok(EvalOutcome::Value(Value::JoinHandle(Box::new(
+                    JoinHandleValue::new(value),
+                )))),
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = match self.emit_expression(base)? {
                     EvalOutcome::Value(value) => value,
@@ -966,6 +1064,9 @@ impl Compiler {
                         }
                         Value::FormatTemplate(_) => {
                             return Err("Cannot access field on format string value".into());
+                        }
+                        Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => {
+                            return Err("Cannot access field on concurrency value".into());
                         }
                         Value::Unit => {
                             return Err("Cannot access field on unit value".into());
@@ -1158,6 +1259,11 @@ impl Compiler {
             "min" => Some(self.invoke_builtin(args, |this, values| this.builtin_min(values))),
             "max" => Some(self.invoke_builtin(args, |this, values| this.builtin_max(values))),
             "abs" => Some(self.invoke_builtin(args, |this, values| this.builtin_abs(values))),
+            "channel" => Some(self.invoke_builtin(args, |this, values| this.builtin_channel(values))),
+            "send" => Some(self.invoke_builtin(args, |this, values| this.builtin_send(values))),
+            "recv" => Some(self.invoke_builtin(args, |this, values| this.builtin_recv(values))),
+            "close" => Some(self.invoke_builtin(args, |this, values| this.builtin_close(values))),
+            "join" => Some(self.invoke_builtin(args, |this, values| this.builtin_join(values))),
             _ => None,
         }
     }
@@ -2545,6 +2651,28 @@ impl Compiler {
         }
     }
 
+    fn expect_sender(&self, value: Value, ctx: &str) -> Result<ChannelSender, String> {
+        match value {
+            Value::Sender(tx) => Ok(tx),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.expect_sender(inner, ctx)
+            }
+            _ => Err(format!("{ctx} expects Sender value")),
+        }
+    }
+
+    fn expect_receiver(&self, value: Value, ctx: &str) -> Result<ChannelReceiver, String> {
+        match value {
+            Value::Receiver(rx) => Ok(rx),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.expect_receiver(inner, ctx)
+            }
+            _ => Err(format!("{ctx} expects Receiver value")),
+        }
+    }
+
     fn expect_string_value(&self, value: Value, ctx: &str) -> Result<String, String> {
         match value {
             Value::Str(s) => Ok((*s.text).clone()),
@@ -2901,6 +3029,75 @@ impl Compiler {
         Err("`abs` expects int or float in build mode".into())
     }
 
+    fn builtin_channel(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        if !args.is_empty() {
+            return Err("channel expects 0 arguments".into());
+        }
+        let queue = Rc::new(RefCell::new(Vec::new()));
+        let closed = Rc::new(RefCell::new(false));
+        let sender = Value::Sender(ChannelSender::new(queue.clone(), closed.clone()));
+        let receiver = Value::Receiver(ChannelReceiver::new(queue, closed));
+        Ok(Value::Tuple(vec![sender, receiver]))
+    }
+
+    fn builtin_send(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("send expects 2 arguments".into());
+        }
+        let value = args.pop().unwrap();
+        let sender = self.expect_sender(args.pop().unwrap(), "send")?;
+        match sender.send(value) {
+            Ok(()) => Ok(Value::Unit),
+            Err(msg) => Err(msg),
+        }
+    }
+
+    fn builtin_recv(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("recv expects 1 argument".into());
+        }
+        let receiver = self.expect_receiver(args.pop().unwrap(), "recv")?;
+        match receiver.recv() {
+            Some(value) => self.instantiate_enum_variant("Some", vec![value]),
+            None => self.instantiate_enum_variant("None", Vec::new()),
+        }
+    }
+
+    fn builtin_close(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("close expects 1 argument".into());
+        }
+        match args.pop().unwrap() {
+            Value::Sender(tx) => {
+                tx.close();
+                Ok(Value::Unit)
+            }
+            Value::Receiver(rx) => {
+                rx.close();
+                Ok(Value::Unit)
+            }
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.builtin_close(vec![inner])
+            }
+            other => Err(format!("close expects channel endpoint, found {}", describe_value(&other))),
+        }
+    }
+
+    fn builtin_join(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("join expects 1 argument".into());
+        }
+        match args.pop().unwrap() {
+            Value::JoinHandle(handle) => handle.join(),
+            Value::Reference(reference) => {
+                let inner = reference.cell.borrow().clone();
+                self.builtin_join(vec![inner])
+            }
+            other => Err(format!("join expects join handle, found {}", describe_value(&other))),
+        }
+    }
+
     fn execute_block_contents(&mut self, block: &Block) -> Result<BlockEval, String> {
         for statement in &block.statements {
             if let Some(flow) = self.emit_statement(statement)? {
@@ -3124,6 +3321,9 @@ impl Compiler {
             Value::Int(_) => "int",
             Value::Float(_) => "float",
             Value::FormatTemplate(_) => "format string",
+            Value::Sender(_) => "channel sender",
+            Value::Receiver(_) => "channel receiver",
+            Value::JoinHandle(_) => "join handle",
             Value::Unit => "unit",
             Value::Moved => "moved value",
         }
@@ -3204,6 +3404,7 @@ fn describe_expr(expr: &Expr) -> &'static str {
         Expr::Reference { .. } => "reference",
         Expr::Deref { .. } => "deref",
         Expr::FormatString(_) => "format string",
+        Expr::Spawn { .. } => "spawn expression",
     }
 }
 
@@ -3222,6 +3423,9 @@ fn describe_value(value: &Value) -> &'static str {
         Value::Slice(_) => "slice",
         Value::Map(_) => "map",
         Value::FormatTemplate(_) => "format string",
+        Value::Sender(_) => "channel sender",
+        Value::Receiver(_) => "channel receiver",
+        Value::JoinHandle(_) => "join handle",
         Value::Moved => "moved",
     }
 }
