@@ -26,6 +26,7 @@ pub enum TokenKind {
     Import,
     Using,
     ModuleKw,
+    LibraryKw,
     TestKw,
     Return,
     If,

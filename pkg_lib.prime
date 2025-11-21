@@ -1,4 +1,4 @@
-module pkg::lib;
+library pkg::lib;
 
 pub struct Banner {
   message: string;

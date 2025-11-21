@@ -9,10 +9,17 @@ pub struct Program {
     pub modules: Vec<Module>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModuleKind {
+    Module,
+    Library,
+    Test,
+}
+
 #[derive(Clone, Debug)]
 pub struct Module {
     pub name: String,
-    pub is_test: bool,
+    pub kind: ModuleKind,
     pub path: PathBuf,
     pub declared_name: Option<String>,
     pub declared_span: Option<Span>,

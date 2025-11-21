@@ -153,6 +153,7 @@ impl<'a> Lexer<'a> {
             "false" => TokenKind::False,
             "as" => TokenKind::As,
             "module" => TokenKind::ModuleKw,
+            "library" => TokenKind::LibraryKw,
             "test" => TokenKind::TestKw,
             _ => TokenKind::Identifier(slice.to_string()),
         };

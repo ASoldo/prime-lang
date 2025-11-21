@@ -38,7 +38,7 @@ struct Parser {
     block_context_stack: Vec<usize>,
     paren_depth: usize,
     last_span: Option<Range<usize>>,
-    is_test: bool,
+    kind: ModuleKind,
 }
 
 #[derive(Debug)]
@@ -59,7 +59,7 @@ impl Parser {
             block_context_stack: Vec::new(),
             paren_depth: 0,
             last_span: None,
-            is_test: false,
+            kind: ModuleKind::Module,
         }
     }
 
@@ -70,13 +70,16 @@ impl Parser {
         let mut declared_span = None;
         let mut redundant_module_spans = Vec::new();
 
-        if self.check(TokenKind::ModuleKw) || self.check(TokenKind::TestKw) {
+        if matches!(
+            self.peek_kind(),
+            Some(TokenKind::ModuleKw | TokenKind::LibraryKw | TokenKind::TestKw)
+        ) {
             match self.parse_module_declaration() {
-                Ok((name, span, is_test)) => {
+                Ok((name, span, kind)) => {
                     declared_name = Some(name.clone());
                     declared_span = Some(span);
                     self.module_name = name;
-                    self.is_test = is_test;
+                    self.kind = kind;
                 }
                 Err(err) => self.report(err),
             }
@@ -87,7 +90,10 @@ impl Parser {
                 continue;
             }
 
-            if self.check(TokenKind::ModuleKw) || self.check(TokenKind::TestKw) {
+            if matches!(
+                self.peek_kind(),
+                Some(TokenKind::ModuleKw | TokenKind::LibraryKw | TokenKind::TestKw)
+            ) {
                 match self.parse_redundant_module_decl() {
                     Ok(span) => redundant_module_spans.push(span),
                     Err(err) => self.report(err),
@@ -95,7 +101,10 @@ impl Parser {
                 continue;
             }
 
-            if self.check(TokenKind::ModuleKw) || self.check(TokenKind::TestKw) {
+            if matches!(
+                self.peek_kind(),
+                Some(TokenKind::ModuleKw | TokenKind::LibraryKw | TokenKind::TestKw)
+            ) {
                 let start = self.current_span_start();
                 self.advance();
                 while !self.check(TokenKind::Semi) && !self.is_eof() {
@@ -141,7 +150,7 @@ impl Parser {
         if self.errors.is_empty() {
             Ok(Module {
                 name: self.module_name,
-                is_test: self.is_test,
+                kind: self.kind,
                 path: self.path,
                 declared_name,
                 declared_span,
@@ -154,21 +163,29 @@ impl Parser {
         }
     }
 
-    fn parse_module_declaration(&mut self) -> Result<(String, Span, bool), SyntaxError> {
-        let (start, is_test) = if self.check(TokenKind::TestKw) {
-            let span = self.expect(TokenKind::TestKw)?.span.start;
-            (span, true)
-        } else {
-            let span = self.expect(TokenKind::ModuleKw)?.span.start;
-            (span, false)
+    fn parse_module_declaration(&mut self) -> Result<(String, Span, ModuleKind), SyntaxError> {
+        let (start, kind) = match self.peek_kind() {
+            Some(TokenKind::TestKw) => {
+                let span = self.expect(TokenKind::TestKw)?.span.start;
+                (span, ModuleKind::Test)
+            }
+            Some(TokenKind::ModuleKw) => {
+                let span = self.expect(TokenKind::ModuleKw)?.span.start;
+                (span, ModuleKind::Module)
+            }
+            Some(TokenKind::LibraryKw) => {
+                let span = self.expect(TokenKind::LibraryKw)?.span.start;
+                (span, ModuleKind::Library)
+            }
+            _ => return Err(self.error_here("Expected module, library, or test header")),
         };
-        let path = self.parse_module_path("Expected module path after `module` or `test`")?;
+        let path = self.parse_module_path("Expected module path after header")?;
         if path.is_empty() {
             return Err(self.error_here("Module path cannot be empty"));
         }
         self.expect(TokenKind::Semi)?;
         let end = self.last_span_end(start);
-        Ok((path.to_string(), Span::new(start, end), is_test))
+        Ok((path.to_string(), Span::new(start, end), kind))
     }
 
     fn parse_import_with_visibility(
@@ -218,10 +235,11 @@ impl Parser {
     }
 
     fn parse_redundant_module_decl(&mut self) -> Result<Span, SyntaxError> {
-        let start = if self.check(TokenKind::TestKw) {
-            self.expect(TokenKind::TestKw)?.span.start
-        } else {
-            self.expect(TokenKind::ModuleKw)?.span.start
+        let start = match self.peek_kind() {
+            Some(TokenKind::TestKw) => self.expect(TokenKind::TestKw)?.span.start,
+            Some(TokenKind::ModuleKw) => self.expect(TokenKind::ModuleKw)?.span.start,
+            Some(TokenKind::LibraryKw) => self.expect(TokenKind::LibraryKw)?.span.start,
+            _ => self.current_span_start(),
         };
         let _ = self.parse_module_path("Expected module path after `module`")?;
         self.expect(TokenKind::Semi)?;

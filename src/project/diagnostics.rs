@@ -1,6 +1,6 @@
 use super::manifest::{ModuleVisibility, PackageManifest, canonical_module_name};
 use crate::language::{
-    ast::{ImportPath, Module},
+    ast::{ImportPath, Module, ModuleKind},
     span::Span,
 };
 use std::{
@@ -94,7 +94,7 @@ pub fn analyze_manifest_issues(
 ) -> Vec<ManifestIssue> {
     let mut issues = Vec::new();
     if let Some(manifest) = manifest {
-        if module.is_test {
+        if module.kind == ModuleKind::Test {
             return issues;
         }
         issues.extend(module_declaration_issues(module, file_path, manifest));

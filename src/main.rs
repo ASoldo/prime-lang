@@ -99,9 +99,17 @@ enum Commands {
         #[arg(
             long,
             default_value_t = false,
-            help = "Add a test entry instead of a module"
+            help = "Add a test entry instead of a module",
+            conflicts_with = "library"
         )]
         test: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Add a library entry (importable, no `main`)",
+            conflicts_with = "test"
+        )]
+        library: bool,
     },
     /// Print reference snippets for Prime language features
     Docs {
@@ -165,8 +173,9 @@ fn main() {
             path,
             visibility,
             test,
+            library,
         } => {
-            if let Err(err) = add_module(&name, path.as_deref(), visibility, test) {
+            if let Err(err) = add_module(&name, path.as_deref(), visibility, test, library) {
                 eprintln!("add failed: {err}");
                 std::process::exit(1);
             }
@@ -420,7 +429,7 @@ visibility = "pub"
     );
     fs::write(&manifest_path, manifest)?;
     let main_path = dir.join("main.prime");
-    write_module_file(&main_path, "app::main", true, false)?;
+    write_module_file(&main_path, "app::main", true, false, false)?;
     Ok(())
 }
 
@@ -429,6 +438,7 @@ fn add_module(
     explicit_path: Option<&Path>,
     visibility: ModuleVisibilityArg,
     is_test: bool,
+    is_library: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let segments = parse_module_segments(module_name)?;
     let cwd = env::current_dir()?;
@@ -488,11 +498,14 @@ fn add_module(
         "visibility".into(),
         Value::String(visibility.as_manifest_str().to_string()),
     );
+    if is_library {
+        entry.insert("kind".into(), Value::String("library".into()));
+    }
     modules.push(Value::Table(entry));
     let manifest_pretty = render_manifest(&doc)?;
     fs::write(&manifest_path, manifest_pretty)?;
     let module_abs_path = manifest_dir.join(&rel_path);
-    write_module_file(&module_abs_path, module_name, false, is_test)?;
+    write_module_file(&module_abs_path, module_name, false, is_test, is_library)?;
     Ok(())
 }
 
@@ -657,6 +670,7 @@ fn write_module_file(
     module_name: &str,
     include_example: bool,
     is_test: bool,
+    is_library: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if path.exists() {
         ensure_module_header(path, module_name)?;
@@ -665,7 +679,13 @@ fn write_module_file(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let header = if is_test { "test" } else { "module" };
+    let header = if is_test {
+        "test"
+    } else if is_library {
+        "library"
+    } else {
+        "module"
+    };
     let body = if include_example {
         format!("{header} {module_name};\n\nfn main() {{\n  out(\"Hello from Prime!\");\n}}\n")
     } else {
@@ -678,7 +698,7 @@ fn write_module_file(
 fn ensure_module_header(path: &Path, module_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let contents = fs::read_to_string(path)?;
     let trimmed = contents.trim_start();
-    if trimmed.starts_with("module ") || trimmed.starts_with("test ") {
+    if trimmed.starts_with("module ") || trimmed.starts_with("test ") || trimmed.starts_with("library ") {
         return Ok(());
     }
     let mut updated = format!("module {module_name};\n\n");

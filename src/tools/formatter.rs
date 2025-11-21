@@ -3,7 +3,11 @@ use crate::language::{ast::*, types::TypeExpr};
 pub fn format_module(module: &Module) -> String {
     let mut out = String::new();
     if let Some(name) = module.declared_name.as_ref() {
-        let header = if module.is_test { "test" } else { "module" };
+        let header = match module.kind {
+            ModuleKind::Module => "module",
+            ModuleKind::Library => "library",
+            ModuleKind::Test => "test",
+        };
         out.push_str(&format!("{header} {};\n\n", name));
     }
     for import in &module.imports {

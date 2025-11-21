@@ -129,7 +129,7 @@ return {
 			-- highlights.scm
 			do
 				local highlights = [[
-    ["fn" "let" "import" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "return" "defer" "module" "test" "pub" "interface" "impl" "try" "move"] @keyword
+    ["fn" "let" "import" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "return" "defer" "module" "test" "library" "pub" "interface" "impl" "try" "move"] @keyword
 
     (module_declaration name: (module_path) @namespace)
     (module_path (identifier) @namespace)

@@ -26,7 +26,7 @@ use crate::project::{
 };
 use crate::{
     language::{
-        ast::{Item, Module, Visibility},
+        ast::{Item, Module, ModuleKind, Visibility},
         lexer::lex,
         parser::parse_module,
         span::Span,
@@ -114,6 +114,7 @@ struct SymbolLocation {
     span: Span,
     kind: SymbolKind,
     module_name: String,
+    module_kind: ModuleKind,
     visibility: Visibility,
 }
 
@@ -129,12 +130,13 @@ impl SymbolIndex {
             locations.retain(|loc| &loc.uri != uri);
         }
         map.retain(|_, locations| !locations.is_empty());
-        for (name, span, kind, visibility) in module_symbol_definitions(module) {
+        for (name, span, kind, visibility, module_kind) in module_symbol_definitions(module) {
             map.entry(name).or_default().push(SymbolLocation {
                 uri: uri.clone(),
                 span,
                 kind,
                 module_name: module.name.clone(),
+                module_kind,
                 visibility,
             });
         }
@@ -168,11 +170,18 @@ impl SymbolIndex {
             if locs.len() < 2 {
                 continue;
             }
-            let others: Vec<Uri> = locs.iter().filter(|loc| &loc.uri != uri).map(|loc| loc.uri.clone()).collect();
+            let others: Vec<Uri> = locs
+                .iter()
+                .filter(|loc| loc.module_kind == ModuleKind::Library && &loc.uri != uri)
+                .map(|loc| loc.uri.clone())
+                .collect();
             if others.is_empty() {
                 continue;
             }
-            for loc in locs.iter().filter(|loc| &loc.uri == uri) {
+            for loc in locs
+                .iter()
+                .filter(|loc| loc.module_kind == ModuleKind::Library && &loc.uri == uri)
+            {
                 results.push((name.clone(), loc.span, others.clone()));
             }
         }
@@ -180,7 +189,9 @@ impl SymbolIndex {
     }
 }
 
-fn module_symbol_definitions(module: &Module) -> Vec<(String, Span, SymbolKind, Visibility)> {
+fn module_symbol_definitions(
+    module: &Module,
+) -> Vec<(String, Span, SymbolKind, Visibility, ModuleKind)> {
     let mut defs = Vec::new();
     for item in &module.items {
         match item {
@@ -189,21 +200,30 @@ fn module_symbol_definitions(module: &Module) -> Vec<(String, Span, SymbolKind, 
                 func.span,
                 SymbolKind::FUNCTION,
                 func.visibility,
+                module.kind,
             )),
             Item::Struct(def) => defs.push((
                 def.name.clone(),
                 def.span,
                 SymbolKind::STRUCT,
                 def.visibility,
+                module.kind,
             )),
             Item::Enum(def) => {
-                defs.push((def.name.clone(), def.span, SymbolKind::ENUM, def.visibility));
+                defs.push((
+                    def.name.clone(),
+                    def.span,
+                    SymbolKind::ENUM,
+                    def.visibility,
+                    module.kind,
+                ));
                 for variant in &def.variants {
                     defs.push((
                         variant.name.clone(),
                         variant.span,
                         SymbolKind::ENUM_MEMBER,
                         def.visibility,
+                        module.kind,
                     ));
                 }
             }
@@ -213,6 +233,7 @@ fn module_symbol_definitions(module: &Module) -> Vec<(String, Span, SymbolKind, 
                     def.span,
                     SymbolKind::INTERFACE,
                     def.visibility,
+                    module.kind,
                 ));
             }
             Item::Const(def) => defs.push((
@@ -220,6 +241,7 @@ fn module_symbol_definitions(module: &Module) -> Vec<(String, Span, SymbolKind, 
                 def.span,
                 SymbolKind::CONSTANT,
                 def.visibility,
+                module.kind,
             )),
             Item::Impl(_) => {}
         }

@@ -50,7 +50,7 @@ module.exports = grammar({
     ),
 
     module_declaration: $ => seq(
-      choice('module', 'test'),
+      choice('module', 'library', 'test'),
       field('name', $.module_path),
       ';'
     ),
