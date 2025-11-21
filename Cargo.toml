@@ -18,3 +18,4 @@ toml = "0.9.8"
 
 [dev-dependencies]
 tempfile = "3.23.0"
+insta = { version = "1.39.0", features = ["glob"] }

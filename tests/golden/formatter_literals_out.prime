@@ -1,0 +1,21 @@
+test tests::formatter_literals;
+
+fn arrays_and_maps() {
+  let []int32 numbers = [
+    1,
+    2,
+  ];
+  let stats = #{
+    "hp": 10,
+    "mp": 5,
+  };
+  let [a, b] = [
+    1,
+    2,
+  ];
+  let #{ "hp": hp, "mp": mp } = stats;
+}
+
+interface Renderable[T] {
+  fn render(self: T);
+}

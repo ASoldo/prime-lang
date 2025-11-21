@@ -1,4 +1,5 @@
 use crate::language::{ast::*, types::TypeExpr};
+#[cfg(test)]
 
 pub fn format_module(module: &Module) -> String {
     let mut out = String::new();
@@ -1207,5 +1208,41 @@ fn format_op(op: BinaryOp) -> &'static str {
         BinaryOp::LtEq => "<=",
         BinaryOp::Gt => ">",
         BinaryOp::GtEq => ">=",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn format_fixture(input: &str) -> String {
+        let module = crate::language::parser::parse_module(
+            "tests::fixture",
+            std::path::PathBuf::from("fixture.prime"),
+            input,
+        )
+        .expect("parse");
+        format_module(&module)
+    }
+
+    #[test]
+    fn formatter_literals_and_maps() {
+        let input =
+            fs::read_to_string("tests/golden/formatter_literals_in.prime").expect("fixture input");
+        let output =
+            fs::read_to_string("tests/golden/formatter_literals_out.prime").expect("fixture out");
+        let formatted = format_fixture(&input);
+        assert_eq!(formatted, output);
+    }
+
+    #[test]
+    fn formatter_interface_self() {
+        let input = fs::read_to_string("tests/golden/formatter_interface_self_in.prime")
+            .expect("fixture input");
+        let output = fs::read_to_string("tests/golden/formatter_interface_self_out.prime")
+            .expect("fixture out");
+        let formatted = format_fixture(&input);
+        assert_eq!(formatted, output);
     }
 }
