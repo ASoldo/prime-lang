@@ -83,6 +83,7 @@ enum Value {
     Receiver(ChannelReceiver),
     JoinHandle(Box<JoinHandleValue>),
     Pointer(PointerValue),
+    Range(RangeValue),
     Moved,
 }
 
@@ -125,6 +126,13 @@ struct PointerValue {
 struct StringValue {
     llvm: LLVMValueRef,
     text: Rc<String>,
+}
+
+#[derive(Clone)]
+struct RangeValue {
+    start: IntValue,
+    end: IntValue,
+    inclusive: bool,
 }
 
 #[derive(Clone)]
@@ -721,6 +729,12 @@ impl Compiler {
                     Ok(())
                 }
             }
+            Value::Range(range) => {
+                self.emit_printf_call("%d", &mut [range.start.llvm()]);
+                self.emit_printf_call(if range.inclusive { "..=" } else { ".." }, &mut []);
+                self.emit_printf_call("%d", &mut [range.end.llvm()]);
+                Ok(())
+            }
             Value::Pointer(pointer) => {
                 if pointer.mutable {
                     self.emit_printf_call("mut Pointer->", &mut []);
@@ -1044,6 +1058,15 @@ impl Compiler {
                 Ok(EvalOutcome::Value(Value::Tuple(items)))
             }
             Expr::ArrayLiteral(values, _) => self.emit_array_literal(values),
+            Expr::Range(range) => {
+                let start = self.expect_int_value_from_expr(&range.start)?;
+                let end = self.expect_int_value_from_expr(&range.end)?;
+                Ok(EvalOutcome::Value(Value::Range(RangeValue {
+                    start,
+                    end,
+                    inclusive: range.inclusive,
+                })))
+            }
             Expr::Block(block) => {
                 self.push_scope();
                 let result = self.execute_block_contents(block)?;
@@ -1082,6 +1105,9 @@ impl Compiler {
                         }
                         Value::Reference(reference) => reference.cell.borrow().clone(),
                         Value::Pointer(pointer) => pointer.cell.borrow().clone(),
+                        Value::Range(_) => {
+                            return Err("Cannot access field on range value".into());
+                        }
                         Value::Int(_) => {
                             return Err("Cannot access field on integer value".into());
                         }
@@ -1954,10 +1980,21 @@ impl Compiler {
                 let inner = reference.cell.borrow().clone();
                 self.expect_int(inner)
             }
+            Value::Pointer(pointer) => {
+                let inner = pointer.cell.borrow().clone();
+                self.expect_int(inner)
+            }
             other => Err(format!(
                 "Expected integer value in build mode, got {}",
                 describe_value(&other)
             )),
+        }
+    }
+
+    fn expect_int_value_from_expr(&mut self, expr: &Expr) -> Result<IntValue, String> {
+        match self.emit_expression(expr)? {
+            EvalOutcome::Value(value) => self.expect_int(value),
+            EvalOutcome::Flow(_) => Err("control flow not allowed here".into()),
         }
     }
 
@@ -3223,16 +3260,14 @@ impl Compiler {
         &mut self,
         range: &RangeExpr,
     ) -> Result<EvalOutcome<(i128, i128, bool)>, String> {
-        let start_expr = match self.emit_expression(&range.start)? {
-            EvalOutcome::Value(value) => value,
+        let start_value = match self.emit_expression(&range.start)? {
+            EvalOutcome::Value(value) => self.expect_int(value)?,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
         };
-        let start_value = self.expect_int(start_expr)?;
-        let end_expr = match self.emit_expression(&range.end)? {
-            EvalOutcome::Value(value) => value,
+        let end_value = match self.emit_expression(&range.end)? {
+            EvalOutcome::Value(value) => self.expect_int(value)?,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
         };
-        let end_value = self.expect_int(end_expr)?;
         let start_const = start_value
             .constant()
             .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
@@ -3397,6 +3432,7 @@ impl Compiler {
             Value::Sender(_) => "channel sender",
             Value::Receiver(_) => "channel receiver",
             Value::Pointer(_) => "pointer",
+            Value::Range(_) => "range",
             Value::JoinHandle(_) => "join handle",
             Value::Unit => "unit",
             Value::Moved => "moved value",
@@ -3499,6 +3535,7 @@ fn describe_value(value: &Value) -> &'static str {
         Value::FormatTemplate(_) => "format string",
         Value::Sender(_) => "channel sender",
         Value::Receiver(_) => "channel receiver",
+        Value::Range(_) => "range",
         Value::Pointer(_) => "pointer",
         Value::JoinHandle(_) => "join handle",
         Value::Moved => "moved",
