@@ -1,6 +1,4 @@
 use crate::language::{ast::*, types::TypeExpr};
-#[cfg(test)]
-
 pub fn format_module(module: &Module) -> String {
     let mut out = String::new();
     if let Some(name) = module.declared_name.as_ref() {
