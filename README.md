@@ -326,6 +326,24 @@ fn calibrate_station(name: string) {
 - `&mut T` gates mutation.
 - `defer` schedules work to run when the current scope exits—ideal for cleanup.
 
+### Ownership & Borrowing Rules
+
+```prime
+let []string squad = ["alpha", "bravo"];
+let []string redeployed = move squad;    // `squad` is consumed
+
+let mut int32 hp = 10;
+let &mut int32 first = &mut hp;
+let &mut int32 second = &mut *first;     // error: `hp` already mutably borrowed
+
+fn measure() -> int32 { 4 }
+let &int32 bad = &measure();             // error: temporary would dangle
+```
+
+- `move` transfers ownership of heap-backed values (Box, slices, maps). Reads or method calls on the moved binding surface a `was moved` diagnostic, even after branching.
+- Only one active `&mut` to a binding is allowed at a time; re-borrows through aliases/dereferences are traced and produce actionable errors.
+- Borrowing a temporary (call result, inline literal, block expression) is rejected so references do not outlive the value. Bind the value first, then borrow.
+
 ### Error Handling (`Result`, `try`, `?`)
 
 ```prime

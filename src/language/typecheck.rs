@@ -323,7 +323,7 @@ impl Checker {
                             } else if let Some(actual) = ty {
                                 env.infer(name, Some(actual));
                             }
-                            pending_borrows = expression_borrow_targets(value);
+                            pending_borrows = expression_borrow_targets(value, env);
                         }
                         env.declare(name, expected, stmt.span, &mut self.errors);
                         for target in pending_borrows {
@@ -353,6 +353,7 @@ impl Checker {
             Statement::Assign(assign) => {
                 if let Expr::Identifier(ident) = &assign.target {
                     env.clear_binding_borrows(&ident.name);
+                    env.reset_moved(&ident.name);
                     let expected_type = env.lookup(&ident.name).and_then(|info| info.ty.clone());
                     if let Some(expected) = expected_type {
                         let ty = self.check_expression(
@@ -363,12 +364,12 @@ impl Checker {
                             env,
                         );
                         self.ensure_type(module, ident.span, &expected, ty.as_ref());
-                        for target in expression_borrow_targets(&assign.value) {
+                        for target in expression_borrow_targets(&assign.value, env) {
                             env.register_binding_borrow(&ident.name, target);
                         }
                     } else {
                         self.check_expression(module, &assign.value, None, returns, env);
-                        for target in expression_borrow_targets(&assign.value) {
+                        for target in expression_borrow_targets(&assign.value, env) {
                             env.register_binding_borrow(&ident.name, target);
                         }
                     }
@@ -499,6 +500,7 @@ impl Checker {
         match expr {
             Expr::Identifier(ident) => {
                 if let Some(entry) = env.lookup(&ident.name) {
+                    env.ensure_not_moved(module, ident.span, &ident.name, &mut self.errors);
                     return entry.ty.clone();
                 }
                 if let Some(const_info) = self.registry.consts.get(&ident.name) {
@@ -584,9 +586,17 @@ impl Checker {
                 span,
             } => {
                 if *mutable {
-                    if let Expr::Identifier(ident) = expr.as_ref() {
-                        env.ensure_mut_borrow_allowed(module, *span, &ident.name, &mut self.errors);
+                    let context = HashMap::new();
+                    if let Some(target) = borrow_target_from_expression(expr, env, &context) {
+                        env.ensure_mut_borrow_allowed(module, *span, &target, &mut self.errors);
                     }
+                }
+                if reference_may_dangle(expr) {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        *span,
+                        "cannot take a reference to a temporary value; assign it to a binding first",
+                    ));
                 }
                 self.check_expression(module, expr, None, returns, env)
                     .map(|inner| TypeExpr::Reference {
@@ -648,6 +658,10 @@ impl Checker {
                     ));
                 }
                 let ty = self.check_expression(module, expr, None, returns, env);
+                if let Expr::Identifier(ident) = expr.as_ref() {
+                    env.ensure_not_moved(module, *span, &ident.name, &mut self.errors);
+                    env.mark_moved(&ident.name);
+                }
                 if let Some(actual) = ty.as_ref() {
                     if !is_heap_type(actual) {
                         self.errors.push(TypeError::new(
@@ -2233,6 +2247,7 @@ impl Checker {
 struct BindingInfo {
     ty: Option<TypeExpr>,
     mut_borrows: Vec<String>,
+    moved: bool,
 }
 
 impl BindingInfo {
@@ -2240,6 +2255,7 @@ impl BindingInfo {
         Self {
             ty,
             mut_borrows: Vec::new(),
+            moved: false,
         }
     }
 }
@@ -2255,6 +2271,7 @@ struct FnEnv {
 struct BorrowState {
     active_mut_borrows: HashMap<String, usize>,
     scope_borrows: Vec<HashMap<String, HashMap<String, usize>>>,
+    moved_scopes: Vec<HashSet<String>>,
 }
 
 impl FnEnv {
@@ -2269,22 +2286,30 @@ impl FnEnv {
 
     fn snapshot_borrows(&self) -> BorrowState {
         let mut scope_borrows = Vec::new();
+        let mut moved_scopes = Vec::new();
         for scope in &self.scopes {
             let mut binding_map = HashMap::new();
+            let mut moved = HashSet::new();
             for (name, info) in scope {
                 binding_map.insert(name.clone(), Self::borrow_counts(&info.mut_borrows));
+                if info.moved {
+                    moved.insert(name.clone());
+                }
             }
             scope_borrows.push(binding_map);
+            moved_scopes.push(moved);
         }
         BorrowState {
             active_mut_borrows: self.active_mut_borrows.clone(),
             scope_borrows,
+            moved_scopes,
         }
     }
 
     fn restore_borrow_state(&mut self, state: &BorrowState) {
         self.active_mut_borrows = state.active_mut_borrows.clone();
         self.apply_scope_borrows(&state.scope_borrows);
+        self.apply_scope_moves(&state.moved_scopes);
     }
 
     fn run_branch<T, F>(&mut self, branch: F) -> (T, BorrowState)
@@ -2318,9 +2343,15 @@ impl FnEnv {
                     scope.clear();
                 }
             }
+            for (idx, moved) in merged.moved_scopes.iter_mut().enumerate() {
+                if let Some(other_moved) = state.moved_scopes.get(idx) {
+                    moved.extend(other_moved.iter().cloned());
+                }
+            }
         }
         self.active_mut_borrows = merged.active_mut_borrows;
         self.apply_scope_borrows(&merged.scope_borrows);
+        self.apply_scope_moves(&merged.moved_scopes);
     }
 
     fn intersect_counts(counts: &mut HashMap<String, usize>, other: &HashMap<String, usize>) {
@@ -2366,6 +2397,20 @@ impl FnEnv {
         }
     }
 
+    fn apply_scope_moves(&mut self, moved_scopes: &[HashSet<String>]) {
+        for (idx, scope) in self.scopes.iter_mut().enumerate() {
+            if let Some(saved_scope) = moved_scopes.get(idx) {
+                for (name, info) in scope.iter_mut() {
+                    info.moved = saved_scope.contains(name);
+                }
+            } else {
+                for info in scope.values_mut() {
+                    info.moved = false;
+                }
+            }
+        }
+    }
+
     fn borrow_counts(borrows: &[String]) -> HashMap<String, usize> {
         let mut counts = HashMap::new();
         for target in borrows {
@@ -2382,6 +2427,54 @@ impl FnEnv {
             }
         }
         borrows
+    }
+
+    fn binding_borrow_target(&self, name: &str) -> Option<String> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(info) = scope.get(name) {
+                return info.mut_borrows.first().cloned();
+            }
+        }
+        None
+    }
+
+    fn ensure_not_moved(
+        &self,
+        module: &Module,
+        span: Span,
+        name: &str,
+        errors: &mut Vec<TypeError>,
+    ) {
+        for scope in self.scopes.iter().rev() {
+            if let Some(info) = scope.get(name) {
+                if info.moved {
+                    errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`{}` was moved and can no longer be used here", name),
+                    ));
+                }
+                return;
+            }
+        }
+    }
+
+    fn mark_moved(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(info) = scope.get_mut(name) {
+                info.moved = true;
+                return;
+            }
+        }
+    }
+
+    fn reset_moved(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(info) = scope.get_mut(name) {
+                info.moved = false;
+                return;
+            }
+        }
     }
 
     fn push_scope(&mut self) {
@@ -2688,9 +2781,9 @@ fn pattern_span(pattern: &Pattern) -> Span {
     }
 }
 
-fn expression_borrow_targets(expr: &Expr) -> Vec<String> {
+fn expression_borrow_targets(expr: &Expr, env: &FnEnv) -> Vec<String> {
     let context = HashMap::new();
-    expression_borrow_targets_with_context(expr, &context)
+    expression_borrow_targets_with_context(expr, env, &context)
 }
 
 fn mutable_reference_target(expr: &Expr) -> Option<String> {
@@ -2709,6 +2802,7 @@ fn mutable_reference_target(expr: &Expr) -> Option<String> {
 
 fn expression_borrow_targets_with_context(
     expr: &Expr,
+    env: &FnEnv,
     context: &HashMap<String, String>,
 ) -> Vec<String> {
     match expr {
@@ -2717,25 +2811,46 @@ fn expression_borrow_targets_with_context(
             expr,
             ..
         } => {
-            if let Expr::Identifier(ident) = expr.as_ref() {
-                vec![ident.name.clone()]
-            } else {
-                Vec::new()
-            }
+            borrow_target_from_expression(expr, env, context)
+                .into_iter()
+                .collect()
         }
         Expr::Identifier(ident) => context.get(&ident.name).cloned().into_iter().collect(),
-        Expr::Block(block) => block_borrow_targets(block, context),
+        Expr::Block(block) => block_borrow_targets(block, env, context),
         _ => Vec::new(),
     }
 }
 
-fn block_borrow_targets(block: &Block, parent: &HashMap<String, String>) -> Vec<String> {
+fn borrow_target_from_expression(
+    expr: &Expr,
+    env: &FnEnv,
+    context: &HashMap<String, String>,
+) -> Option<String> {
+    match expr {
+        Expr::Identifier(ident) => context
+            .get(&ident.name)
+            .cloned()
+            .or_else(|| env.binding_borrow_target(&ident.name))
+            .or_else(|| Some(ident.name.clone())),
+        Expr::Deref { expr, .. } | Expr::Reference { expr, .. } => {
+            borrow_target_from_expression(expr, env, context)
+        }
+        Expr::FieldAccess { base, .. } => borrow_target_from_expression(base, env, context),
+        _ => None,
+    }
+}
+
+fn block_borrow_targets(
+    block: &Block,
+    env: &FnEnv,
+    parent: &HashMap<String, String>,
+) -> Vec<String> {
     let mut map = parent.clone();
     for statement in &block.statements {
         if let Statement::Let(stmt) = statement {
             if let Some(value) = &stmt.value {
                 if let Pattern::Identifier(name, _) = &stmt.pattern {
-                    if let Some(target) = expression_borrow_targets_with_context(value, &map)
+                    if let Some(target) = expression_borrow_targets_with_context(value, env, &map)
                         .into_iter()
                         .next()
                     {
@@ -2746,9 +2861,34 @@ fn block_borrow_targets(block: &Block, parent: &HashMap<String, String>) -> Vec<
         }
     }
     if let Some(tail) = &block.tail {
-        expression_borrow_targets_with_context(tail, &map)
+        expression_borrow_targets_with_context(tail, env, &map)
     } else {
         Vec::new()
+    }
+}
+
+fn reference_may_dangle(expr: &Expr) -> bool {
+    match expr {
+        Expr::Identifier(_) => false,
+        Expr::Literal(_) | Expr::FormatString(_) => false,
+        Expr::FieldAccess { base, .. } | Expr::Deref { expr: base, .. } => {
+            reference_may_dangle(base)
+        }
+        Expr::Reference { expr, .. } => reference_may_dangle(expr),
+        Expr::Block(_)
+        | Expr::If(_)
+        | Expr::Match(_)
+        | Expr::Call { .. }
+        | Expr::StructLiteral { .. }
+        | Expr::MapLiteral { .. }
+        | Expr::ArrayLiteral { .. }
+        | Expr::Tuple(..)
+        | Expr::Move { .. }
+        | Expr::Unary { .. }
+        | Expr::Binary { .. }
+        | Expr::Try { .. }
+        | Expr::TryPropagate { .. }
+        | Expr::Range(_) => true,
     }
 }
 
@@ -2929,6 +3069,70 @@ fn alias_survives_scope() {
                 .iter()
                 .any(|err| err.message.contains("already mutably borrowed")),
             "expected active borrow diagnostic, got {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn reborrow_through_alias_is_rejected() {
+        let source = r#"
+module tests::reborrow;
+
+fn reject_reborrow() {
+  let mut int32 value = 0;
+  let &mut int32 first = &mut value;
+  let &mut int32 second = &mut *first;
+  *second = 1;
+}
+"#;
+        let errors = typecheck_source(source).expect_err("expected reborrow error");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("already mutably borrowed")),
+            "expected reborrow diagnostic, got {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn moved_bindings_cannot_be_reused() {
+        let source = r#"
+module tests::moves;
+
+fn move_then_use() {
+  let []string squad = ["alpha"];
+  let []string redeployed = move squad;
+  let int32 leftover = squad.len();
+}
+"#;
+        let errors = typecheck_source(source).expect_err("expected move error");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("was moved")),
+            "expected move diagnostic, got {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn dangling_reference_to_temporary_is_flagged() {
+        let source = r#"
+module tests::dangling;
+
+fn compute() -> int32 { 4 }
+
+fn borrow_temporary() {
+  let &int32 alias = &compute();
+}
+"#;
+        let errors = typecheck_source(source).expect_err("expected dangling reference error");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains("temporary value")),
+            "expected dangling diagnostic, got {:?}",
             errors
         );
     }

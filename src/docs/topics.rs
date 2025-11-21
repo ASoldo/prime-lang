@@ -579,6 +579,47 @@ tree-sitter init   # if ABI warnings appear"#,
         ],
     },
     Topic {
+        key: "ownership",
+        title: "Ownership, Moves, and Borrows",
+        category: "Type System",
+        summary: "Prime enforces a single active mutable borrow per binding, detects use-after-move for heap values, and blocks references to temporaries that would dangle.",
+        aliases: &[
+            "ownership",
+            "borrow",
+            "borrowing",
+            "move",
+            "moves",
+            "reborrow",
+            "dangling",
+            "aliasing",
+        ],
+        sections: &[
+            TopicSection {
+                title: "Moves consume heap bindings",
+                snippet: r#"let []string squad = ["alpha", "bravo"];
+let []string redeployed = move squad;
+// `squad` is now moved; using it afterwards reports \"was moved\""#,
+                explanation: "The `move` expression transfers ownership of heap-backed values (Box, slices, maps). The typechecker remembers the move across branches, so later reads or method calls on the moved binding surface a \"was moved\" diagnostic.",
+            },
+            TopicSection {
+                title: "Mutable borrows avoid aliasing",
+                snippet: r#"let mut int32 value = 0;
+let &mut int32 first = &mut value;
+let &mut int32 second = &mut *first; // error: `value` is already mutably borrowed"#,
+                explanation: "Only one `&mut` to a binding may be live at a time, even through aliases. The checker follows re-borrows through dereferences so nested `&mut` chains still honor exclusivity and produce actionable hover/diagnostic messages.",
+            },
+            TopicSection {
+                title: "No dangling references to temporaries",
+                snippet: r#"fn compute() -> int32 { 4 }
+
+fn bad() {
+  let &int32 alias = &compute(); // rejected: temporary would dangle
+}"#,
+                explanation: "Taking a reference to a temporary (call result, inline literal, or block expression) is rejected to prevent dangling pointers. Persist the value into a binding before borrowing so its lifetime is clear.",
+            },
+        ],
+    },
+    Topic {
         key: "recent-updates",
         title: "Recent Updates & Release Notes",
         category: "Meta",
