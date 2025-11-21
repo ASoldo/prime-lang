@@ -10,6 +10,10 @@ pub enum Result[T, E] {
   Err(E),
 }
 
+pub interface Iterable[T] {
+  fn iter(self: Self) -> []T;
+}
+
 pub struct Vec2 {
   x: float32;
   y: float32;

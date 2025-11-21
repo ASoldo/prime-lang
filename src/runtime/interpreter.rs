@@ -12,9 +12,10 @@ use crate::runtime::{
         SliceValue, StructInstance, Value,
     },
 };
-use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::rc::Rc;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::sync::mpsc;
 
 pub struct Interpreter {
     package: Package,
@@ -588,6 +589,22 @@ impl Interpreter {
         Ok(())
     }
 
+    fn clone_for_spawn(&self) -> Interpreter {
+        Interpreter {
+            package: self.package.clone(),
+            env: self.env.clone(),
+            structs: self.structs.clone(),
+            enum_variants: self.enum_variants.clone(),
+            functions: self.functions.clone(),
+            interfaces: self.interfaces.clone(),
+            impls: self.impls.clone(),
+            consts: self.consts.clone(),
+            deprecated_warnings: HashSet::new(),
+            module_stack: Vec::new(),
+            bootstrapped: true,
+        }
+    }
+
     fn interface_name_from_type(&self, ty: &TypeExpr) -> Option<(String, Vec<TypeExpr>)> {
         match ty {
             TypeExpr::Named(name, args) => self
@@ -806,13 +823,13 @@ impl Interpreter {
                 Some(self.builtin_join(args))
             }
             (Value::Pointer(pointer), _) => {
-                let cloned = pointer.cell.borrow().clone();
+                let cloned = pointer.cell.lock().unwrap().clone();
                 let mut all_args = vec![cloned];
                 all_args.extend(args);
                 self.call_builtin_method(name, all_args)
             }
             (Value::Reference(reference), _) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 let mut all_args = vec![cloned];
                 all_args.extend(args);
                 self.call_builtin_method(name, all_args)
@@ -878,7 +895,7 @@ impl Interpreter {
         match value {
             Value::Boxed(b) => Ok(b),
             Value::Reference(reference) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 self.expect_box(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
@@ -890,7 +907,7 @@ impl Interpreter {
     fn builtin_box_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("box_get", &args, 1)?;
         let boxed = self.expect_box("box_get", args.remove(0))?;
-        Ok(vec![boxed.cell.borrow().clone()])
+        Ok(vec![boxed.cell.lock().unwrap().clone()])
     }
 
     fn builtin_box_set(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
@@ -917,7 +934,7 @@ impl Interpreter {
         match value {
             Value::Slice(slice) => Ok(slice),
             Value::Reference(reference) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 self.expect_slice(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
@@ -985,7 +1002,7 @@ impl Interpreter {
         match value {
             Value::Map(map) => Ok(map),
             Value::Reference(reference) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 self.expect_map(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
@@ -998,7 +1015,7 @@ impl Interpreter {
         match value {
             Value::Int(i) => Ok(i),
             Value::Reference(reference) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 self.expect_int_value(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
@@ -1031,7 +1048,7 @@ impl Interpreter {
                 Ok(buf)
             }
             Value::Reference(reference) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 self.expect_string_or_format(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
@@ -1044,7 +1061,7 @@ impl Interpreter {
         match value {
             Value::Bool(flag) => Ok(flag),
             Value::Reference(reference) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 self.expect_bool(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
@@ -1090,7 +1107,7 @@ impl Interpreter {
             Value::Slice(slice) => Ok(vec![Value::Int(slice.len() as i128)]),
             Value::Map(map) => Ok(vec![Value::Int(map.len() as i128)]),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.builtin_len(vec![inner])
             }
             other => Err(RuntimeError::TypeMismatch {
@@ -1178,7 +1195,7 @@ impl Interpreter {
             Value::Int(v) => Ok(vec![Value::Int(v.abs())]),
             Value::Float(v) => Ok(vec![Value::Float(v.abs())]),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.builtin_abs(vec![inner])
             }
             _ => Err(RuntimeError::TypeMismatch {
@@ -1189,10 +1206,11 @@ impl Interpreter {
 
     fn builtin_channel(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("channel", &args, 0)?;
-        let queue = Rc::new(RefCell::new(VecDeque::new()));
-        let closed = Rc::new(RefCell::new(false));
-        let sender = Value::Sender(ChannelSender::new(queue.clone(), closed.clone()));
-        let receiver = Value::Receiver(ChannelReceiver::new(queue, closed));
+        let (tx, rx) = mpsc::channel();
+        let shared_tx = Arc::new(Mutex::new(Some(tx)));
+        let shared_rx = Arc::new(Mutex::new(rx));
+        let sender = Value::Sender(ChannelSender::new(shared_tx.clone()));
+        let receiver = Value::Receiver(ChannelReceiver::new(shared_tx, shared_rx));
         Ok(vec![sender, receiver])
     }
 
@@ -1200,7 +1218,7 @@ impl Interpreter {
         match value {
             Value::Sender(tx) => Ok(tx),
             Value::Reference(reference) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 self.expect_sender(name, cloned)
             }
             other => Err(RuntimeError::TypeMismatch {
@@ -1216,7 +1234,7 @@ impl Interpreter {
         match value {
             Value::Receiver(rx) => Ok(rx),
             Value::Reference(reference) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 self.expect_receiver(name, cloned)
             }
             other => Err(RuntimeError::TypeMismatch {
@@ -1271,7 +1289,7 @@ impl Interpreter {
                 Ok(vec![Value::Unit])
             }
             Value::Reference(reference) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 self.builtin_close(vec![cloned])
             }
             other => Err(RuntimeError::TypeMismatch {
@@ -1286,14 +1304,14 @@ impl Interpreter {
     fn builtin_join(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("join", &args, 1)?;
         match args.remove(0) {
-            Value::JoinHandle(mut handle) => {
+            Value::JoinHandle(handle) => {
                 let value = handle
                     .join()
                     .map_err(|msg| RuntimeError::Panic { message: msg })?;
                 Ok(vec![value])
             }
             Value::Reference(reference) => {
-                let cloned = reference.cell.borrow().clone();
+                let cloned = reference.cell.lock().unwrap().clone();
                 self.builtin_join(vec![cloned])
             }
             other => Err(RuntimeError::TypeMismatch {
@@ -1356,7 +1374,7 @@ impl Interpreter {
                 }
             }
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 let mut new_args = Vec::with_capacity(args.len() + 1);
                 new_args.push(inner);
                 new_args.extend(args);
@@ -1443,7 +1461,7 @@ impl Interpreter {
                                     EvalOutcome::Value(value) => value,
                                     EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                                 };
-                                *reference.cell.borrow_mut() = value;
+                                *reference.cell.lock().unwrap() = value;
                             }
                             Value::Pointer(pointer) => {
                                 if !pointer.mutable {
@@ -1455,7 +1473,7 @@ impl Interpreter {
                                     EvalOutcome::Value(value) => value,
                                     EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                                 };
-                                *pointer.cell.borrow_mut() = value;
+                                *pointer.cell.lock().unwrap() = value;
                             }
                             _ => {
                                 return Err(RuntimeError::TypeMismatch {
@@ -1693,9 +1711,9 @@ impl Interpreter {
     fn value_struct_name(&self, value: &Value) -> Option<String> {
         match value {
             Value::Struct(instance) => Some(instance.name.clone()),
-            Value::Reference(reference) => self.value_struct_name(&reference.cell.borrow()),
-            Value::Pointer(pointer) => self.value_struct_name(&pointer.cell.borrow()),
-            Value::Boxed(inner) => self.value_struct_name(&inner.cell.borrow()),
+            Value::Reference(reference) => self.value_struct_name(&reference.cell.lock().unwrap()),
+            Value::Pointer(pointer) => self.value_struct_name(&pointer.cell.lock().unwrap()),
+            Value::Boxed(inner) => self.value_struct_name(&inner.cell.lock().unwrap()),
             _ => None,
         }
     }
@@ -1898,10 +1916,10 @@ impl Interpreter {
             Expr::Reference { mutable, expr, .. } => self.build_reference(expr, *mutable),
             Expr::Deref { expr, .. } => match self.eval_expression(expr)? {
                 EvalOutcome::Value(Value::Reference(reference)) => {
-                    Ok(EvalOutcome::Value(reference.cell.borrow().clone()))
+                    Ok(EvalOutcome::Value(reference.cell.lock().unwrap().clone()))
                 }
                 EvalOutcome::Value(Value::Pointer(pointer)) => {
-                    Ok(EvalOutcome::Value(pointer.cell.borrow().clone()))
+                    Ok(EvalOutcome::Value(pointer.cell.lock().unwrap().clone()))
                 }
                 EvalOutcome::Value(_) => Err(RuntimeError::TypeMismatch {
                     message: "Cannot dereference non-reference value".into(),
@@ -1910,12 +1928,42 @@ impl Interpreter {
             },
             Expr::ArrayLiteral(values, _) => self.eval_array_literal(values),
             Expr::Move { expr, .. } => self.eval_move_expression(expr).map(EvalOutcome::Value),
-            Expr::Spawn { expr, .. } => match self.eval_expression(expr)? {
-                EvalOutcome::Value(value) => Ok(EvalOutcome::Value(Value::JoinHandle(Box::new(
-                    JoinHandleValue::new(value),
-                )))),
-                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-            },
+            Expr::Spawn { expr, .. } => {
+                self.bootstrap()?;
+                let expr_clone = expr.clone();
+                let child = self.clone_for_spawn();
+                let handle = thread::spawn(move || {
+                    let mut runner = child;
+                    match runner.eval_expression(&expr_clone) {
+                        Ok(EvalOutcome::Value(value)) => Ok(value),
+                        Ok(EvalOutcome::Flow(FlowSignal::Return(values))) => {
+                            if values.len() == 1 {
+                                Ok(values.into_iter().next().unwrap())
+                            } else {
+                                Ok(Value::Tuple(values))
+                            }
+                        }
+                        Ok(EvalOutcome::Flow(flow @ FlowSignal::Propagate(_))) => Err(
+                            RuntimeError::Panic {
+                                message: format!(
+                                    "spawned task encountered {}",
+                                    flow_name(&flow)
+                                ),
+                            },
+                        ),
+                        Ok(EvalOutcome::Flow(flow)) => Err(RuntimeError::Panic {
+                            message: format!(
+                                "spawned task exited with {}",
+                                flow_name(&flow)
+                            ),
+                        }),
+                        Err(err) => Err(err),
+                    }
+                });
+                Ok(EvalOutcome::Value(Value::JoinHandle(Box::new(
+                    JoinHandleValue::new(handle),
+                ))))
+            }
         }
     }
 
@@ -1933,7 +1981,7 @@ impl Interpreter {
                         name: ident.name.clone(),
                     });
                 }
-                if matches!(*cell.borrow(), Value::Moved) {
+                if matches!(*cell.lock().unwrap(), Value::Moved) {
                     return Err(RuntimeError::MovedValue {
                         name: ident.name.clone(),
                     });
@@ -1952,7 +2000,7 @@ impl Interpreter {
                         })
                     }
                     other => Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
-                        cell: Rc::new(RefCell::new(other)),
+                        cell: Arc::new(Mutex::new(other)),
                         mutable,
                         origin: None,
                     }))),
@@ -1988,7 +2036,7 @@ impl Interpreter {
             let key = match key_value {
                 Value::String(text) => text,
                 Value::Reference(reference) => {
-                    if let Value::String(text) = reference.cell.borrow().clone() {
+                    if let Value::String(text) = reference.cell.lock().unwrap().clone() {
                         text
                     } else {
                         return Err(RuntimeError::TypeMismatch {
@@ -2027,7 +2075,7 @@ impl Interpreter {
                         message: format!("Cannot move `{}` while it is borrowed", ident.name),
                     });
                 }
-                let mut slot = cell.borrow_mut();
+                let mut slot = cell.lock().unwrap();
                 if matches!(*slot, Value::Moved) {
                     return Err(RuntimeError::MovedValue {
                         name: ident.name.clone(),
@@ -2106,7 +2154,7 @@ impl Interpreter {
             Pattern::Wildcard => Ok(true),
             Pattern::Identifier(name, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 self.env.declare(name, concrete, mutable_bindings)?;
@@ -2121,7 +2169,7 @@ impl Interpreter {
                     Literal::Rune(v, _) => Value::Int(*v as i128),
                 };
                 let target = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 Ok(match (target, lit_value) {
@@ -2139,7 +2187,7 @@ impl Interpreter {
                 ..
             } => {
                 let target = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 if let Value::Enum(enum_value) = target {
@@ -2161,7 +2209,7 @@ impl Interpreter {
             }
             Pattern::Tuple(patterns, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 if let Value::Tuple(values) = concrete {
@@ -2180,7 +2228,7 @@ impl Interpreter {
             }
             Pattern::Map(entries, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 if let Value::Map(map) = concrete {
@@ -2204,7 +2252,7 @@ impl Interpreter {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 if let Value::Struct(instance) = concrete {
@@ -2233,11 +2281,11 @@ impl Interpreter {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 let elements = match concrete {
-                    Value::Slice(slice) => slice.items.borrow().clone(),
+                    Value::Slice(slice) => slice.items.lock().unwrap().clone(),
                     _ => return Ok(false),
                 };
                 if rest.is_none() && elements.len() != prefix.len() + suffix.len() {
@@ -2440,11 +2488,11 @@ impl Interpreter {
 
     fn values_equal(&self, left: &Value, right: &Value) -> RuntimeResult<bool> {
         let left_val = match left {
-            Value::Reference(reference) => reference.cell.borrow().clone(),
+            Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
             other => other.clone(),
         };
         let right_val = match right {
-            Value::Reference(reference) => reference.cell.borrow().clone(),
+            Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
             other => other.clone(),
         };
         match (left_val, right_val) {
@@ -2584,8 +2632,16 @@ impl Interpreter {
         }
     }
 
-    fn collect_iterable_values(&self, value: Value) -> RuntimeResult<Vec<Value>> {
+    fn collect_iterable_values(&mut self, value: Value) -> RuntimeResult<Vec<Value>> {
         match value {
+            Value::Range(range) => {
+                let end = if range.inclusive {
+                    range.end + 1
+                } else {
+                    range.end
+                };
+                Ok((range.start..end).map(Value::Int).collect())
+            }
             Value::Slice(slice) => {
                 let mut items = Vec::new();
                 for idx in 0..slice.len() {
@@ -2597,7 +2653,7 @@ impl Interpreter {
             }
             Value::Map(map) => {
                 let mut items = Vec::new();
-                for (key, value) in map.entries.borrow().iter() {
+                for (key, value) in map.entries.lock().unwrap().iter() {
                     items.push(Value::Tuple(vec![
                         Value::String(key.clone()),
                         value.clone(),
@@ -2606,16 +2662,32 @@ impl Interpreter {
                 Ok(items)
             }
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.collect_iterable_values(inner)
             }
             Value::Pointer(pointer) => {
-                let inner = pointer.cell.borrow().clone();
+                let inner = pointer.cell.lock().unwrap().clone();
                 self.collect_iterable_values(inner)
+            }
+            Value::Struct(_) => {
+                if let Some(struct_name) = self.value_struct_name(&value) {
+                    let iter_outcome =
+                        self.call_function("iter", Some(struct_name), &[], vec![value])?;
+                    if iter_outcome.len() != 1 {
+                        return Err(RuntimeError::Panic {
+                            message: "`iter` must return a single iterable value".into(),
+                        });
+                    }
+                    self.collect_iterable_values(iter_outcome.into_iter().next().unwrap())
+                } else {
+                    Err(RuntimeError::TypeMismatch {
+                        message: "`iter` requires a struct receiver".into(),
+                    })
+                }
             }
             other => Err(RuntimeError::TypeMismatch {
                 message: format!(
-                    "`for ... in` only supports slices or maps; found {}",
+                    "`for ... in` only supports ranges, slices, maps, or values with iter(); found {}",
                     self.describe_value(&other)
                 ),
             }),

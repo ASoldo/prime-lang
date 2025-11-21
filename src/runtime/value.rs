@@ -1,7 +1,12 @@
-use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use crate::runtime::error::RuntimeResult;
+use std::collections::BTreeMap;
 use std::fmt;
-use std::rc::Rc;
+use std::sync::{
+    mpsc,
+    Arc,
+    Mutex,
+};
+use std::thread;
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -26,6 +31,8 @@ pub enum Value {
     Moved,
 }
 
+type SharedValue = Arc<Mutex<Value>>;
+
 impl Value {
     pub fn as_bool(&self) -> bool {
         match self {
@@ -34,10 +41,10 @@ impl Value {
             Value::Float(f) => *f != 0.0,
             Value::String(s) => !s.is_empty(),
             Value::Struct(_) | Value::Enum(_) | Value::Tuple(_) | Value::Range(_) => true,
-            Value::Reference(reference) => reference.cell.borrow().as_bool(),
-            Value::Boxed(b) => b.cell.borrow().as_bool(),
-            Value::Slice(slice) => !slice.items.borrow().is_empty(),
-            Value::Map(map) => !map.entries.borrow().is_empty(),
+            Value::Reference(reference) => reference.cell.lock().unwrap().as_bool(),
+            Value::Boxed(b) => b.cell.lock().unwrap().as_bool(),
+            Value::Slice(slice) => !slice.items.lock().unwrap().is_empty(),
+            Value::Map(map) => !map.entries.lock().unwrap().is_empty(),
             Value::FormatTemplate(_) => true,
             Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => true,
             Value::Pointer(_) => true,
@@ -49,73 +56,90 @@ impl Value {
 
 #[derive(Clone, Debug)]
 pub struct ChannelSender {
-    pub(crate) queue: Rc<RefCell<VecDeque<Value>>>,
-    pub(crate) closed: Rc<RefCell<bool>>,
+    inner: Arc<Mutex<Option<mpsc::Sender<Value>>>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ChannelReceiver {
-    pub(crate) queue: Rc<RefCell<VecDeque<Value>>>,
-    pub(crate) closed: Rc<RefCell<bool>>,
+    sender: Arc<Mutex<Option<mpsc::Sender<Value>>>>,
+    receiver: Arc<Mutex<mpsc::Receiver<Value>>>,
 }
 
 impl ChannelSender {
-    pub fn new(queue: Rc<RefCell<VecDeque<Value>>>, closed: Rc<RefCell<bool>>) -> Self {
-        Self { queue, closed }
+    pub fn new(sender: Arc<Mutex<Option<mpsc::Sender<Value>>>>) -> Self {
+        Self { inner: sender }
     }
 
     pub fn send(&self, value: Value) -> Result<(), String> {
-        if *self.closed.borrow() {
-            return Err("channel closed".into());
+        let guard = self.inner.lock().map_err(|_| "channel poisoned")?;
+        if let Some(sender) = guard.as_ref() {
+            sender.send(value).map_err(|_| "channel closed".into())
+        } else {
+            Err("channel closed".into())
         }
-        self.queue.borrow_mut().push_back(value);
-        Ok(())
     }
 
     pub fn close(&self) {
-        *self.closed.borrow_mut() = true;
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.take();
+        }
     }
 }
 
 impl ChannelReceiver {
-    pub fn new(queue: Rc<RefCell<VecDeque<Value>>>, closed: Rc<RefCell<bool>>) -> Self {
-        Self { queue, closed }
+    pub fn new(
+        sender: Arc<Mutex<Option<mpsc::Sender<Value>>>>,
+        receiver: Arc<Mutex<mpsc::Receiver<Value>>>,
+    ) -> Self {
+        Self { sender, receiver }
     }
 
     pub fn recv(&self) -> Option<Value> {
-        if let Some(v) = self.queue.borrow_mut().pop_front() {
-            return Some(v);
+        let result = {
+            let guard = self.receiver.lock().ok()?;
+            guard.recv()
+        };
+        match result {
+            Ok(value) => Some(value),
+            Err(_) => None,
         }
-        if *self.closed.borrow() { None } else { None }
     }
 
     pub fn close(&self) {
-        *self.closed.borrow_mut() = true;
+        if let Ok(mut guard) = self.sender.lock() {
+            guard.take();
+        }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct JoinHandleValue {
-    result: Option<Value>,
+    handle: Arc<Mutex<Option<thread::JoinHandle<RuntimeResult<Value>>>>>,
 }
 
 impl JoinHandleValue {
-    pub fn new(value: Value) -> Self {
+    pub fn new(handle: thread::JoinHandle<RuntimeResult<Value>>) -> Self {
         Self {
-            result: Some(value),
+            handle: Arc::new(Mutex::new(Some(handle))),
         }
     }
 
-    pub fn join(&mut self) -> Result<Value, String> {
-        self.result
+    pub fn join(&self) -> Result<Value, String> {
+        let mut guard = self.handle.lock().map_err(|_| "join handle poisoned")?;
+        let handle = guard
             .take()
-            .ok_or_else(|| "join handle already used".into())
+            .ok_or_else(|| "join handle already used".to_string())?;
+        match handle.join() {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(err)) => Err(err.to_string()),
+            Err(_) => Err("task panicked".into()),
+        }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct PointerValue {
-    pub cell: Rc<RefCell<Value>>,
+    pub cell: SharedValue,
     pub mutable: bool,
 }
 
@@ -146,11 +170,18 @@ impl fmt::Display for Value {
                 if range.inclusive { "..=" } else { ".." },
                 range.end
             ),
-            Value::Reference(reference) => write!(f, "&{}", reference.cell.borrow()),
-            Value::Boxed(inner) => write!(f, "Box({})", inner.cell.borrow()),
+            Value::Reference(reference) => {
+                let guard = reference.cell.lock().unwrap();
+                write!(f, "&{}", *guard)
+            }
+            Value::Boxed(inner) => {
+                let guard = inner.cell.lock().unwrap();
+                write!(f, "Box({})", *guard)
+            }
             Value::Slice(slice) => {
+                let guard = slice.items.lock().unwrap();
                 write!(f, "[")?;
-                for (idx, value) in slice.items.borrow().iter().enumerate() {
+                for (idx, value) in guard.iter().enumerate() {
                     if idx > 0 {
                         write!(f, ", ")?;
                     }
@@ -159,9 +190,10 @@ impl fmt::Display for Value {
                 write!(f, "]")
             }
             Value::Map(map) => {
+                let guard = map.entries.lock().unwrap();
                 write!(f, "{{")?;
                 let mut first = true;
-                for (key, value) in map.entries.borrow().iter() {
+                for (key, value) in guard.iter() {
                     if !first {
                         write!(f, ", ")?;
                     }
@@ -178,7 +210,7 @@ impl fmt::Display for Value {
                 f,
                 "{}Pointer->{}",
                 if ptr.mutable { "mut " } else { "" },
-                ptr.cell.borrow()
+                ptr.cell.lock().unwrap()
             ),
             Value::Moved => write!(f, "<moved>"),
         }
@@ -187,7 +219,7 @@ impl fmt::Display for Value {
 
 #[derive(Clone, Debug)]
 pub struct ReferenceValue {
-    pub cell: Rc<RefCell<Value>>,
+    pub cell: SharedValue,
     pub mutable: bool,
     pub origin: Option<String>,
 }
@@ -279,65 +311,65 @@ pub struct RangeValue {
 
 #[derive(Clone, Debug)]
 pub struct BoxValue {
-    pub cell: Rc<RefCell<Value>>,
+    pub cell: SharedValue,
 }
 
 impl BoxValue {
     pub fn new(value: Value) -> Self {
         Self {
-            cell: Rc::new(RefCell::new(value)),
+            cell: Arc::new(Mutex::new(value)),
         }
     }
 
     pub fn take(&self) -> Value {
-        std::mem::replace(&mut *self.cell.borrow_mut(), Value::Unit)
+        std::mem::replace(&mut *self.cell.lock().unwrap(), Value::Unit)
     }
 
     pub fn replace(&self, value: Value) -> Value {
-        std::mem::replace(&mut *self.cell.borrow_mut(), value)
+        std::mem::replace(&mut *self.cell.lock().unwrap(), value)
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct SliceValue {
-    pub items: Rc<RefCell<Vec<Value>>>,
+    pub items: Arc<Mutex<Vec<Value>>>,
 }
 
 impl SliceValue {
     pub fn new() -> Self {
         Self {
-            items: Rc::new(RefCell::new(Vec::new())),
+            items: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn from_vec(items: Vec<Value>) -> Self {
         Self {
-            items: Rc::new(RefCell::new(items)),
+            items: Arc::new(Mutex::new(items)),
         }
     }
 
     pub fn push(&self, value: Value) {
-        self.items.borrow_mut().push(value);
+        self.items.lock().unwrap().push(value);
     }
 
     pub fn len(&self) -> usize {
-        self.items.borrow().len()
+        self.items.lock().unwrap().len()
     }
 
     pub fn get(&self, index: usize) -> Option<Value> {
-        self.items.borrow().get(index).cloned()
+        self.items.lock().unwrap().get(index).cloned()
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct MapValue {
-    pub entries: Rc<RefCell<BTreeMap<String, Value>>>,
+    pub entries: Arc<Mutex<BTreeMap<String, Value>>>,
 }
 
 impl MapValue {
     pub fn new() -> Self {
         Self {
-            entries: Rc::new(RefCell::new(BTreeMap::new())),
+            entries: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -350,14 +382,14 @@ impl MapValue {
     }
 
     pub fn insert(&self, key: String, value: Value) {
-        self.entries.borrow_mut().insert(key, value);
+        self.entries.lock().unwrap().insert(key, value);
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
-        self.entries.borrow().get(key).cloned()
+        self.entries.lock().unwrap().get(key).cloned()
     }
 
     pub fn len(&self) -> usize {
-        self.entries.borrow().len()
+        self.entries.lock().unwrap().len()
     }
 }

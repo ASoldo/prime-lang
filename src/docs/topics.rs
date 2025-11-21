@@ -201,7 +201,7 @@ $ prime-lang add core::types --path types.prime --library
 let handle = spawn (send(tx, 1));
 let Option[int32] first = recv(rx);
 join(handle);"#,
-                explanation: "`spawn` returns `JoinHandle[T]`; `channel[T]()` yields `(Sender[T], Receiver[T])`. `send`/`recv`/`close`/`join` work in both interpreter and build modes (synchronous scheduling; no async yet).",
+                explanation: "`spawn` returns `JoinHandle[T]`; `channel[T]()` yields `(Sender[T], Receiver[T])`. In run mode, tasks execute on real threads and `recv` blocks until a value arrives or the channel closes; build mode still reuses synchronous scheduling for now.",
             },
             TopicSection {
                 title: "Checking examples & regression safety",
@@ -338,7 +338,7 @@ fn summarize_stats(stats: Map[string, int32]) {
   }
   total
 }"#,
-                explanation: "Range loops (`start..end`) and slice iteration move values directly into the loop binding. `while let` keeps looping as long as a pattern binds successfully, and `loop { ... }` is an infinite loop that exits with `break`. Borrow checking (see advanced topic) guarantees each body finishes before the next borrow.",
+                explanation: "Range loops (`start..end`) and slice iteration move values directly into the loop binding. Stored ranges and any type with an `iter()` method (`Iterable[T]`) work with `for` as well. `while let` keeps looping as long as a pattern binds successfully, and `loop { ... }` is an infinite loop that exits with `break`. Borrow checking (see advanced topic) guarantees each body finishes before the next borrow.",
             },
             TopicSection {
                 title: "Ranges as values",
@@ -346,7 +346,7 @@ fn summarize_stats(stats: Map[string, int32]) {
   let Range[int32] span = 2..=5;
   span
 }"#,
-                explanation: "Range expressions produce `Range[int32]` values you can store or pass, not just loop over. Printing yields `start..end` or `start..=end` formats.",
+                explanation: "Range expressions produce `Range[T]` values inferred from their bounds so you can store, pass, or iterate later. Printing yields `start..end` or `start..=end` formats.",
             },
             TopicSection {
                 title: "Collection literals & map/slice iteration",
@@ -540,10 +540,10 @@ fn probe(stats: Map[string, int32]) {
 fn copy_and_borrow() {
   let Counter base = Counter{ count: 1 };
   let Counter copy = base;     // value copy
-  let &Counter view = &base;   // shared ref via Rc<RefCell<_>>
+  let &Counter view = &base;   // shared ref via Arc<Mutex<_>>
   out(view.count);
 }"#,
-                explanation: "Structs and enums are value types: assignment copies fields. References wrap data in `Rc<RefCell<_>>` so borrows live on the heap until all refs drop. There is no manual alloc/free; heap helpers (Box, slices, maps) cover common cases, echoing the README's memory model notes.",
+                explanation: "Structs and enums are value types: assignment copies fields. References wrap data in a shared heap cell (`Arc<Mutex<_>>`) so borrows live on the heap until all refs drop. There is no manual alloc/free; heap helpers (Box, slices, maps) cover common cases, echoing the README's memory model notes.",
             },
         ],
     },
@@ -676,6 +676,13 @@ fn bad() {
 - Build-mode mirrors interpreter control flow, including return/break/continue
 - `try { }` blocks and postfix `?` use identical semantics in run/build"#,
                 explanation: "The README highlights April 2026 updates that fixed native exit codes and aligned LLVM output with interpreter control flow. Scripts and CI harnesses can now rely on identical semantics between `prime-lang run` and `prime-lang build`.",
+            },
+            TopicSection {
+                title: "Iterable ranges & threaded spawn (current)",
+                snippet: r#"- `Range[T]` bounds stay typed; stored ranges can be iterated later
+- `for` accepts anything implementing `iter()` (`Iterable[T]`)
+- Interpreter spawn/channel now run on OS threads; `recv` blocks until close"#,
+                explanation: "Ranges now carry their element type, `for` loops consult an `iter()` method when present, and run-mode concurrency uses real threads with blocking channel semantics. Build mode keeps the older synchronous scheduling.",
             },
             TopicSection {
                 title: "November 2025 release notes placeholder",

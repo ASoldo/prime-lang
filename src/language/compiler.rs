@@ -18,13 +18,12 @@ use llvm_sys::{
     prelude::*,
 };
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
     ffi::{CStr, CString},
     mem,
     path::Path,
     ptr,
-    rc::Rc,
+    sync::{Arc, Mutex},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -111,21 +110,21 @@ struct FloatValue {
 
 #[derive(Clone)]
 struct ReferenceValue {
-    cell: Rc<RefCell<Value>>,
+    cell: Arc<Mutex<Value>>,
     mutable: bool,
     origin: Option<String>,
 }
 
 #[derive(Clone)]
 struct PointerValue {
-    cell: Rc<RefCell<Value>>,
+    cell: Arc<Mutex<Value>>,
     mutable: bool,
 }
 
 #[derive(Clone)]
 struct StringValue {
     llvm: LLVMValueRef,
-    text: Rc<String>,
+    text: Arc<String>,
 }
 
 #[derive(Clone)]
@@ -137,81 +136,81 @@ struct RangeValue {
 
 #[derive(Clone)]
 struct BoxValue {
-    cell: Rc<RefCell<Value>>,
+    cell: Arc<Mutex<Value>>,
 }
 
 #[derive(Clone)]
 struct SliceValue {
-    items: Rc<RefCell<Vec<Value>>>,
+    items: Arc<Mutex<Vec<Value>>>,
 }
 
 #[derive(Clone)]
 struct MapValue {
-    entries: Rc<RefCell<BTreeMap<String, Value>>>,
+    entries: Arc<Mutex<BTreeMap<String, Value>>>,
 }
 
 #[derive(Clone)]
 struct ChannelSender {
-    queue: Rc<RefCell<Vec<Value>>>,
-    closed: Rc<RefCell<bool>>,
+    queue: Arc<Mutex<Vec<Value>>>,
+    closed: Arc<Mutex<bool>>,
 }
 
 #[derive(Clone)]
 struct ChannelReceiver {
-    queue: Rc<RefCell<Vec<Value>>>,
-    closed: Rc<RefCell<bool>>,
+    queue: Arc<Mutex<Vec<Value>>>,
+    closed: Arc<Mutex<bool>>,
 }
 
 #[derive(Clone)]
 struct JoinHandleValue {
-    result: Rc<RefCell<Option<Value>>>,
+    result: Arc<Mutex<Option<Value>>>,
 }
 
 impl ChannelSender {
-    fn new(queue: Rc<RefCell<Vec<Value>>>, closed: Rc<RefCell<bool>>) -> Self {
+    fn new(queue: Arc<Mutex<Vec<Value>>>, closed: Arc<Mutex<bool>>) -> Self {
         Self { queue, closed }
     }
 
     fn send(&self, value: Value) -> Result<(), String> {
-        if *self.closed.borrow() {
+        if *self.closed.lock().unwrap() {
             return Err("channel closed".into());
         }
-        self.queue.borrow_mut().push(value);
+        self.queue.lock().unwrap().push(value);
         Ok(())
     }
 
     fn close(&self) {
-        *self.closed.borrow_mut() = true;
+        *self.closed.lock().unwrap() = true;
     }
 }
 
 impl ChannelReceiver {
-    fn new(queue: Rc<RefCell<Vec<Value>>>, closed: Rc<RefCell<bool>>) -> Self {
+    fn new(queue: Arc<Mutex<Vec<Value>>>, closed: Arc<Mutex<bool>>) -> Self {
         Self { queue, closed }
     }
 
     fn recv(&self) -> Option<Value> {
-        if let Some(v) = self.queue.borrow_mut().pop() {
+        if let Some(v) = self.queue.lock().unwrap().pop() {
             return Some(v);
         }
-        if *self.closed.borrow() { None } else { None }
+        if *self.closed.lock().unwrap() { None } else { None }
     }
 
     fn close(&self) {
-        *self.closed.borrow_mut() = true;
+        *self.closed.lock().unwrap() = true;
     }
 }
 
 impl JoinHandleValue {
     fn new(value: Value) -> Self {
         Self {
-            result: Rc::new(RefCell::new(Some(value))),
+            result: Arc::new(Mutex::new(Some(value))),
         }
     }
 
     fn join(&self) -> Result<Value, String> {
         self.result
-            .borrow_mut()
+            .lock().unwrap()
             .take()
             .ok_or_else(|| "join handle already consumed".into())
     }
@@ -225,7 +224,7 @@ struct StructValue {
 
 #[derive(Clone)]
 struct Binding {
-    cell: Rc<RefCell<Value>>,
+    cell: Arc<Mutex<Value>>,
     mutable: bool,
 }
 
@@ -247,7 +246,7 @@ enum EvalOutcome<T> {
 }
 
 impl StringValue {
-    fn new(llvm: LLVMValueRef, text: Rc<String>) -> Self {
+    fn new(llvm: LLVMValueRef, text: Arc<String>) -> Self {
         Self { llvm, text }
     }
 }
@@ -255,45 +254,45 @@ impl StringValue {
 impl BoxValue {
     fn new(value: Value) -> Self {
         Self {
-            cell: Rc::new(RefCell::new(value)),
+            cell: Arc::new(Mutex::new(value)),
         }
     }
 
     fn replace(&self, value: Value) -> Value {
-        std::mem::replace(&mut *self.cell.borrow_mut(), value)
+        std::mem::replace(&mut *self.cell.lock().unwrap(), value)
     }
 }
 
 impl SliceValue {
     fn new() -> Self {
         Self {
-            items: Rc::new(RefCell::new(Vec::new())),
+            items: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn from_vec(items: Vec<Value>) -> Self {
         Self {
-            items: Rc::new(RefCell::new(items)),
+            items: Arc::new(Mutex::new(items)),
         }
     }
 
     fn push(&self, value: Value) {
-        self.items.borrow_mut().push(value);
+        self.items.lock().unwrap().push(value);
     }
 
     fn len(&self) -> usize {
-        self.items.borrow().len()
+        self.items.lock().unwrap().len()
     }
 
     fn get(&self, index: usize) -> Option<Value> {
-        self.items.borrow().get(index).cloned()
+        self.items.lock().unwrap().get(index).cloned()
     }
 }
 
 impl MapValue {
     fn new() -> Self {
         Self {
-            entries: Rc::new(RefCell::new(BTreeMap::new())),
+            entries: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -306,15 +305,15 @@ impl MapValue {
     }
 
     fn insert(&self, key: String, value: Value) {
-        self.entries.borrow_mut().insert(key, value);
+        self.entries.lock().unwrap().insert(key, value);
     }
 
     fn get(&self, key: &str) -> Option<Value> {
-        self.entries.borrow().get(key).cloned()
+        self.entries.lock().unwrap().get(key).cloned()
     }
 
     fn len(&self) -> usize {
-        self.entries.borrow().len()
+        self.entries.lock().unwrap().len()
     }
 }
 
@@ -439,7 +438,7 @@ impl Compiler {
         let c_value = CString::new(text.as_str())
             .map_err(|_| "String literal contains null byte".to_string())?;
         let name = CString::new("str_lit").unwrap();
-        let rc = Rc::new(text);
+        let rc = Arc::new(text);
         unsafe {
             let ptr = LLVMBuildGlobalString(self.builder, c_value.as_ptr(), name.as_ptr());
             Ok(Value::Str(StringValue::new(ptr, rc)))
@@ -729,7 +728,7 @@ impl Compiler {
                 } else {
                     self.emit_printf_call("Pointer->", &mut []);
                 }
-                let inner = pointer.cell.borrow().clone();
+                let inner = pointer.cell.lock().unwrap().clone();
                 self.print_value(inner)
             }
             Value::Struct(_) => Err("Cannot print struct value in build mode".into()),
@@ -739,7 +738,7 @@ impl Compiler {
             }
             Value::Reference(reference) => {
                 self.emit_printf_call("&", &mut []);
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.print_value(inner)
             }
             Value::Boxed(_) | Value::Slice(_) | Value::Map(_) => {
@@ -834,7 +833,7 @@ impl Compiler {
                                 EvalOutcome::Value(value) => value,
                                 EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                             };
-                            *reference.cell.borrow_mut() = value;
+                            *reference.cell.lock().unwrap() = value;
                         }
                         Value::Pointer(pointer) => {
                             if !pointer.mutable {
@@ -844,7 +843,7 @@ impl Compiler {
                                 EvalOutcome::Value(value) => value,
                                 EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                             };
-                            *pointer.cell.borrow_mut() = value;
+                            *pointer.cell.lock().unwrap() = value;
                         }
                         _ => {
                             return Err(
@@ -1091,8 +1090,8 @@ impl Compiler {
                                 .ok_or_else(|| format!("Field {} not found", field))?;
                             return Ok(EvalOutcome::Value(value));
                         }
-                        Value::Reference(reference) => reference.cell.borrow().clone(),
-                        Value::Pointer(pointer) => pointer.cell.borrow().clone(),
+                        Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
+                        Value::Pointer(pointer) => pointer.cell.lock().unwrap().clone(),
                         Value::Range(_) => {
                             return Err("Cannot access field on range value".into());
                         }
@@ -1424,7 +1423,7 @@ impl Compiler {
                         ident.name
                     ));
                 }
-                if matches!(*cell.borrow(), Value::Moved) {
+                if matches!(*cell.lock().unwrap(), Value::Moved) {
                     return Err(format!("Value `{}` has been moved", ident.name));
                 }
                 Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
@@ -1436,7 +1435,7 @@ impl Compiler {
             _ => match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => {
                     Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
-                        cell: Rc::new(RefCell::new(value)),
+                        cell: Arc::new(Mutex::new(value)),
                         mutable,
                         origin: None,
                     })))
@@ -1493,7 +1492,7 @@ impl Compiler {
                         ident.name
                     ));
                 }
-                let mut slot = cell.borrow_mut();
+                let mut slot = cell.lock().unwrap();
                 if matches!(*slot, Value::Moved) {
                     return Err(format!("Value `{}` has been moved", ident.name));
                 }
@@ -1517,8 +1516,8 @@ impl Compiler {
 
     fn deref_value(&self, value: Value) -> Result<Value, String> {
         match value {
-            Value::Reference(reference) => Ok(reference.cell.borrow().clone()),
-            Value::Pointer(pointer) => Ok(pointer.cell.borrow().clone()),
+            Value::Reference(reference) => Ok(reference.cell.lock().unwrap().clone()),
+            Value::Pointer(pointer) => Ok(pointer.cell.lock().unwrap().clone()),
             _ => Err("Cannot dereference non-reference value in build mode".into()),
         }
     }
@@ -1580,7 +1579,7 @@ impl Compiler {
             Pattern::Wildcard => Ok(true),
             Pattern::Identifier(name, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 self.insert_var(name, concrete, mutable_bindings)?;
@@ -1594,7 +1593,7 @@ impl Compiler {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 if let Value::Enum(enum_value) = concrete {
@@ -1627,7 +1626,7 @@ impl Compiler {
             }
             Pattern::Tuple(patterns, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 if let Value::Tuple(values) = concrete {
@@ -1646,7 +1645,7 @@ impl Compiler {
             }
             Pattern::Map(entries, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 if let Value::Map(map) = concrete {
@@ -1670,7 +1669,7 @@ impl Compiler {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 if let Value::Struct(instance) = concrete {
@@ -1699,11 +1698,11 @@ impl Compiler {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.borrow().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
                 let elements = match concrete {
-                    Value::Slice(slice) => slice.items.borrow().clone(),
+                    Value::Slice(slice) => slice.items.lock().unwrap().clone(),
                     _ => return Ok(false),
                 };
                 if rest.is_none() && elements.len() != prefix.len() + suffix.len() {
@@ -1739,7 +1738,7 @@ impl Compiler {
 
     fn match_literal(&self, value: Value, literal: &Literal) -> Result<bool, String> {
         let concrete = match value {
-            Value::Reference(reference) => reference.cell.borrow().clone(),
+            Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
             other => other,
         };
         match (literal, concrete) {
@@ -1956,7 +1955,7 @@ impl Compiler {
 
     fn deref_if_reference(value: Value) -> Value {
         match value {
-            Value::Reference(reference) => reference.cell.borrow().clone(),
+            Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
             other => other,
         }
     }
@@ -1965,11 +1964,11 @@ impl Compiler {
         match value {
             Value::Int(v) => Ok(v),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.expect_int(inner)
             }
             Value::Pointer(pointer) => {
-                let inner = pointer.cell.borrow().clone();
+                let inner = pointer.cell.lock().unwrap().clone();
                 self.expect_int(inner)
             }
             other => Err(format!(
@@ -1990,7 +1989,7 @@ impl Compiler {
         match value {
             Value::Float(v) => Ok(v),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.expect_float(inner)
             }
             other => Err(format!(
@@ -2233,11 +2232,19 @@ impl Compiler {
             type_args,
             &evaluated_args,
         )?;
+        self.run_function_with_values(func_entry, evaluated_args)
+    }
+
+    fn run_function_with_values(
+        &mut self,
+        func_entry: FunctionEntry,
+        evaluated_args: Vec<Value>,
+    ) -> Result<Vec<Value>, String> {
         let func = func_entry.def.clone();
         if func.params.len() != evaluated_args.len() {
             return Err(format!(
                 "Function `{}` expects {} arguments, got {}",
-                name,
+                func.name,
                 func.params.len(),
                 evaluated_args.len()
             ));
@@ -2284,6 +2291,17 @@ impl Compiler {
         })();
         self.module_stack.pop();
         result
+    }
+
+    fn call_function_with_values(
+        &mut self,
+        name: &str,
+        receiver_hint: Option<&str>,
+        type_args: &[TypeExpr],
+        args: Vec<Value>,
+    ) -> Result<Vec<Value>, String> {
+        let func_entry = self.resolve_function(name, receiver_hint, type_args, &args)?;
+        self.run_function_with_values(func_entry, args)
     }
 
     fn register_function(&mut self, func: &FunctionDef, module: &str) -> Result<(), String> {
@@ -2599,15 +2617,15 @@ impl Compiler {
         match value {
             Value::Struct(instance) => Some(instance.name.clone()),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow();
+                let inner = reference.cell.lock().unwrap();
                 self.value_struct_name(&inner)
             }
             Value::Pointer(pointer) => {
-                let inner = pointer.cell.borrow();
+                let inner = pointer.cell.lock().unwrap();
                 self.value_struct_name(&inner)
             }
             Value::Boxed(inner) => {
-                let value = inner.cell.borrow();
+                let value = inner.cell.lock().unwrap();
                 self.value_struct_name(&value)
             }
             _ => None,
@@ -2694,7 +2712,7 @@ impl Compiler {
         match value {
             Value::Boxed(b) => Ok(b),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.expect_box_value(inner, ctx)
             }
             _ => Err(format!("{ctx} expects Box value")),
@@ -2705,7 +2723,7 @@ impl Compiler {
         match value {
             Value::Slice(slice) => Ok(slice),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.expect_slice_value(inner, ctx)
             }
             _ => Err(format!("{ctx} expects slice value")),
@@ -2716,7 +2734,7 @@ impl Compiler {
         match value {
             Value::Map(map) => Ok(map),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.expect_map_value(inner, ctx)
             }
             _ => Err(format!("{ctx} expects map value")),
@@ -2727,7 +2745,7 @@ impl Compiler {
         match value {
             Value::Sender(tx) => Ok(tx),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.expect_sender(inner, ctx)
             }
             _ => Err(format!("{ctx} expects Sender value")),
@@ -2738,7 +2756,7 @@ impl Compiler {
         match value {
             Value::Receiver(rx) => Ok(rx),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.expect_receiver(inner, ctx)
             }
             _ => Err(format!("{ctx} expects Receiver value")),
@@ -2749,7 +2767,7 @@ impl Compiler {
         match value {
             Value::Str(s) => Ok((*s.text).clone()),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.expect_string_value(inner, ctx)
             }
             _ => Err(format!("{ctx} expects string value")),
@@ -2760,7 +2778,7 @@ impl Compiler {
         let c_value = CString::new(text.as_bytes())
             .map_err(|_| "string value cannot contain interior null bytes".to_string())?;
         let name = CString::new("map_key").unwrap();
-        let text_rc = Rc::new(text.to_string());
+        let text_rc = Arc::new(text.to_string());
         unsafe {
             let ptr = LLVMBuildGlobalString(self.builder, c_value.as_ptr(), name.as_ptr());
             Ok(Value::Str(StringValue::new(ptr, text_rc)))
@@ -2780,7 +2798,7 @@ impl Compiler {
             return Err("box_get expects 1 argument".into());
         }
         let boxed = self.expect_box_value(args.pop().unwrap(), "box_get")?;
-        Ok(boxed.cell.borrow().clone())
+        Ok(boxed.cell.lock().unwrap().clone())
     }
 
     fn builtin_box_set(&self, mut args: Vec<Value>) -> Result<Value, String> {
@@ -2894,7 +2912,7 @@ impl Compiler {
             Value::Slice(slice) => Ok(Value::Int(self.const_int_value(slice.len() as i128))),
             Value::Map(map) => Ok(Value::Int(self.const_int_value(map.len() as i128))),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.builtin_len(vec![inner])
             }
             _ => Err("len expects slice or map".into()),
@@ -2930,7 +2948,7 @@ impl Compiler {
             }
             Value::Reference(reference) => {
                 let mut forwarded = Vec::new();
-                forwarded.push(reference.cell.borrow().clone());
+                forwarded.push(reference.cell.lock().unwrap().clone());
                 forwarded.extend(args);
                 self.builtin_get(forwarded)
             }
@@ -3105,8 +3123,8 @@ impl Compiler {
         if !args.is_empty() {
             return Err("channel expects 0 arguments".into());
         }
-        let queue = Rc::new(RefCell::new(Vec::new()));
-        let closed = Rc::new(RefCell::new(false));
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let closed = Arc::new(Mutex::new(false));
         let sender = Value::Sender(ChannelSender::new(queue.clone(), closed.clone()));
         let receiver = Value::Receiver(ChannelReceiver::new(queue, closed));
         Ok(Value::Tuple(vec![sender, receiver]))
@@ -3149,7 +3167,7 @@ impl Compiler {
                 Ok(Value::Unit)
             }
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.builtin_close(vec![inner])
             }
             other => Err(format!(
@@ -3166,7 +3184,7 @@ impl Compiler {
         match args.pop().unwrap() {
             Value::JoinHandle(handle) => handle.join(),
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.builtin_join(vec![inner])
             }
             other => Err(format!(
@@ -3222,10 +3240,10 @@ impl Compiler {
                 let cell = binding.cell.clone();
                 self.track_reference_borrow_in_scope(&value, index)?;
                 {
-                    let current = cell.borrow();
+                    let current = cell.lock().unwrap();
                     self.release_reference_borrow(&current);
                 }
-                *cell.borrow_mut() = value;
+                *cell.lock().unwrap() = value;
                 return Ok(());
             }
         }
@@ -3234,8 +3252,8 @@ impl Compiler {
 
     fn value_to_bool(&self, value: Value) -> Result<bool, String> {
         let concrete = match value {
-            Value::Reference(reference) => reference.cell.borrow().clone(),
-            Value::Pointer(pointer) => pointer.cell.borrow().clone(),
+            Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
+            Value::Pointer(pointer) => pointer.cell.lock().unwrap().clone(),
             other => other,
         };
         match concrete {
@@ -3324,9 +3342,9 @@ impl Compiler {
 
     fn insert_var(&mut self, name: &str, value: Value, mutable: bool) -> Result<(), String> {
         let scope_index = self.scopes.len().saturating_sub(1);
-        let cell = Rc::new(RefCell::new(value));
+        let cell = Arc::new(Mutex::new(value));
         {
-            let stored = cell.borrow();
+            let stored = cell.lock().unwrap();
             self.track_reference_borrow_in_scope(&stored, scope_index)?;
         }
         if let Some(scope) = self.scopes.last_mut() {
@@ -3338,13 +3356,13 @@ impl Compiler {
     fn get_var(&self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.get(name) {
-                return Some(binding.cell.borrow().clone());
+                return Some(binding.cell.lock().unwrap().clone());
             }
         }
         None
     }
 
-    fn get_binding(&self, name: &str) -> Option<(Rc<RefCell<Value>>, bool)> {
+    fn get_binding(&self, name: &str) -> Option<(Arc<Mutex<Value>>, bool)> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.get(name) {
                 return Some((binding.cell.clone(), binding.mutable));
@@ -3375,8 +3393,22 @@ impl Compiler {
         }
     }
 
-    fn collect_iterable_values(&self, value: Value) -> Result<Vec<Value>, String> {
+    fn collect_iterable_values(&mut self, value: Value) -> Result<Vec<Value>, String> {
         match value {
+            Value::Range(range) => {
+                let start_const = range
+                    .start
+                    .constant
+                    .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
+                let end_const = range
+                    .end
+                    .constant
+                    .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
+                let end = if range.inclusive { end_const + 1 } else { end_const };
+                Ok((start_const..end)
+                    .map(|v| Value::Int(self.const_int_value(v)))
+                    .collect())
+            }
             Value::Slice(slice) => {
                 let mut items = Vec::new();
                 for idx in 0..slice.len() {
@@ -3388,22 +3420,38 @@ impl Compiler {
             }
             Value::Map(map) => {
                 let mut items = Vec::new();
-                for (key, value) in map.entries.borrow().iter() {
+                for (key, value) in map.entries.lock().unwrap().iter() {
                     let key_value = self.make_string_value(key)?;
                     items.push(Value::Tuple(vec![key_value, value.clone()]));
                 }
                 Ok(items)
             }
             Value::Reference(reference) => {
-                let inner = reference.cell.borrow().clone();
+                let inner = reference.cell.lock().unwrap().clone();
                 self.collect_iterable_values(inner)
             }
             Value::Pointer(pointer) => {
-                let inner = pointer.cell.borrow().clone();
+                let inner = pointer.cell.lock().unwrap().clone();
                 self.collect_iterable_values(inner)
             }
+            Value::Struct(_) => {
+                if let Some(struct_name) = self.value_struct_name(&value) {
+                    let iter_outcome = self.call_function_with_values(
+                        "iter",
+                        Some(struct_name.as_str()),
+                        &[],
+                        vec![value],
+                    )?;
+                    if iter_outcome.len() != 1 {
+                        return Err("iter() must return a single iterable value".into());
+                    }
+                    self.collect_iterable_values(iter_outcome.into_iter().next().unwrap())
+                } else {
+                    Err("iter() requires a struct receiver".into())
+                }
+            }
             other => Err(format!(
-                "`for ... in` only supports slices or maps (found {})",
+                "`for ... in` only supports ranges, slices, maps, or values with iter() (found {})",
                 self.describe_value(&other)
             )),
         }

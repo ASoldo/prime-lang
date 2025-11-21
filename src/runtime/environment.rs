@@ -3,13 +3,12 @@ use crate::runtime::{
     error::RuntimeError,
     value::{FormatRuntimeSegment, Value},
 };
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 struct Binding {
-    cell: Rc<RefCell<Value>>,
+    cell: Arc<Mutex<Value>>,
     mutable: bool,
 }
 
@@ -28,6 +27,7 @@ impl Scope {
     }
 }
 
+#[derive(Clone)]
 pub struct Environment {
     scopes: Vec<Scope>,
     active_mut_borrows: HashSet<String>,
@@ -65,9 +65,9 @@ impl Environment {
 
     pub fn declare(&mut self, name: &str, value: Value, mutable: bool) -> Result<(), RuntimeError> {
         let scope_index = self.scopes.len().saturating_sub(1);
-        let cell = Rc::new(RefCell::new(value));
+        let cell = Arc::new(Mutex::new(value));
         {
-            let stored = cell.borrow();
+            let stored = cell.lock().unwrap();
             self.track_reference_borrow_in_scope(&stored, scope_index)?;
         }
         if let Some(scope) = self.scopes.last_mut() {
@@ -93,10 +93,10 @@ impl Environment {
                 let cell = binding.cell.clone();
                 self.track_reference_borrow_in_scope(&value, index)?;
                 {
-                    let current = cell.borrow();
+                    let current = cell.lock().unwrap();
                     self.release_reference_borrow(&current);
                 }
-                *cell.borrow_mut() = value;
+                *cell.lock().unwrap() = value;
                 return Ok(());
             }
         }
@@ -108,13 +108,13 @@ impl Environment {
     pub fn get(&self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.bindings.get(name) {
-                return Some(binding.cell.borrow().clone());
+                return Some(binding.cell.lock().unwrap().clone());
             }
         }
         None
     }
 
-    pub fn get_cell(&self, name: &str) -> Option<(Rc<RefCell<Value>>, bool)> {
+    pub fn get_cell(&self, name: &str) -> Option<(Arc<Mutex<Value>>, bool)> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.bindings.get(name) {
                 return Some((binding.cell.clone(), binding.mutable));

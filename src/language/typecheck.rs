@@ -663,14 +663,14 @@ impl Checker {
             }
             Statement::For(for_stmt) => match &for_stmt.target {
                 ForTarget::Range(range) => {
-                    self.check_expression(module, &range.start, Some(&int_type()), returns, env);
-                    self.check_expression(module, &range.end, Some(&int_type()), returns, env);
+                    let element_ty =
+                        self.check_range_bounds(module, range, None, returns, env);
                     let entry_state = env.snapshot_borrows();
                     let (_, body_state) = env.run_branch(|env| {
                         env.push_scope();
                         env.declare(
                             &for_stmt.binding,
-                            Some(int_type()),
+                            element_ty.clone(),
                             for_stmt.span,
                             &mut self.errors,
                         );
@@ -701,7 +701,7 @@ impl Checker {
                             self.errors.push(TypeError::new(
                                 &module.path,
                                 for_stmt.span,
-                                "`for` loops over collections support slices and maps",
+                                "`for` loops require a range, slice, map, or value with an `iter()` method",
                             ));
                         }
                     }
@@ -809,9 +809,15 @@ impl Checker {
                 None => None,
             },
             Expr::Range(range) => {
-                self.check_expression(module, &range.start, Some(&int_type()), returns, env);
-                self.check_expression(module, &range.end, Some(&int_type()), returns, env);
-                Some(TypeExpr::Named("Range".into(), vec![int_type()]))
+                let expected_inner = match expected {
+                    Some(TypeExpr::Named(name, args)) if name == "Range" && args.len() == 1 => {
+                        Some(args[0].clone())
+                    }
+                    _ => None,
+                };
+                let inner =
+                    self.check_range_bounds(module, range, expected_inner.as_ref(), returns, env);
+                inner.map(|ty| TypeExpr::Named("Range".into(), vec![ty]))
             }
             Expr::Reference {
                 mutable,
@@ -2235,17 +2241,134 @@ impl Checker {
         }
     }
 
+    fn check_range_bounds(
+        &mut self,
+        module: &Module,
+        range: &RangeExpr,
+        expected_inner: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
+        let start_ty =
+            self.check_expression(module, &range.start, expected_inner, returns, env);
+        let end_ty = self.check_expression(module, &range.end, expected_inner, returns, env);
+        self.resolve_range_element_type(module, range.span, start_ty, end_ty, expected_inner)
+    }
+
+    fn resolve_range_element_type(
+        &mut self,
+        module: &Module,
+        span: Span,
+        start_ty: Option<TypeExpr>,
+        end_ty: Option<TypeExpr>,
+        expected_inner: Option<&TypeExpr>,
+    ) -> Option<TypeExpr> {
+        let mut candidate = match (start_ty.clone(), end_ty.clone()) {
+            (Some(start), Some(end)) => {
+                if start != end {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!(
+                            "range bounds must share a type (found `{}` and `{}`)",
+                            start.canonical_name(),
+                            end.canonical_name()
+                        ),
+                    ));
+                    None
+                } else {
+                    Some(start)
+                }
+            }
+            (Some(start), None) => Some(start),
+            (None, Some(end)) => Some(end),
+            (None, None) => None,
+        };
+
+        if let Some(expected) = expected_inner {
+            if let Some(actual) = &candidate {
+                if actual != expected {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!(
+                            "range expects `{}`, found `{}`",
+                            expected.canonical_name(),
+                            actual.canonical_name()
+                        ),
+                    ));
+                }
+            } else {
+                candidate = Some(expected.clone());
+            }
+        }
+
+        if let Some(ref ty) = candidate {
+            match numeric_kind(ty) {
+                Some(NumericKind::Int) => {}
+                Some(NumericKind::Float) => {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "ranges only support integer bounds",
+                    ));
+                    return None;
+                }
+                None => {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "range bounds must be numeric",
+                    ));
+                    return None;
+                }
+            }
+        }
+        candidate
+    }
+
     fn collection_element_type(&self, ty: &TypeExpr) -> Option<TypeExpr> {
+        if let Some(inner) = self.direct_collection_element_type(ty) {
+            return Some(inner);
+        }
+        if let Some(return_ty) = self.iter_method_return_type(ty) {
+            return self.collection_element_type(&return_ty);
+        }
+        None
+    }
+
+    fn direct_collection_element_type(&self, ty: &TypeExpr) -> Option<TypeExpr> {
         match ty {
             TypeExpr::Slice(inner) => Some((**inner).clone()),
             TypeExpr::Named(name, args) if name == "Map" && args.len() == 2 => {
                 Some(TypeExpr::Tuple(vec![args[0].clone(), args[1].clone()]))
             }
+            TypeExpr::Named(name, args) if name == "Range" && args.len() == 1 => {
+                Some(args[0].clone())
+            }
             TypeExpr::Reference { ty: inner, .. } | TypeExpr::Pointer { ty: inner, .. } => {
-                self.collection_element_type(inner.as_ref())
+                self.direct_collection_element_type(inner.as_ref())
             }
             _ => None,
         }
+    }
+
+    fn iter_method_return_type(&self, receiver: &TypeExpr) -> Option<TypeExpr> {
+        let Some(name) = named_type_name(receiver) else {
+            return None;
+        };
+        let sig = self.lookup_function("iter", Some(name))?;
+        if sig.params.len() != 1 || sig.returns.len() != 1 {
+            return None;
+        }
+        if named_type_name(&sig.params[0].ty) != named_type_name(receiver) {
+            return None;
+        }
+        let return_ty = sig.returns[0].ty.clone();
+        if &return_ty == receiver {
+            return None;
+        }
+        Some(return_ty)
     }
 
     fn is_builtin_name(&self, name: &str) -> bool {
