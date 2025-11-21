@@ -363,8 +363,10 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
         }
         Statement::Loop(loop_stmt) => {
             write_indent(out, indent);
-            out.push_str("loop ");
-            format_block(out, &loop_stmt.body, indent);
+            out.push_str("loop {\n");
+            format_block(out, &loop_stmt.body, indent + 2);
+            write_indent(out, indent);
+            out.push_str("}\n");
             false
         }
         Statement::For(for_stmt) => {
