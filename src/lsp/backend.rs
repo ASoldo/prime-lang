@@ -331,6 +331,12 @@ fn select_symbol_location<'a>(
     }
     if let Some(loc) = candidates
         .iter()
+        .find(|loc| matches!(loc.module_kind, ModuleKind::Module) && loc.visibility == Visibility::Public)
+    {
+        return Some(loc);
+    }
+    if let Some(loc) = candidates
+        .iter()
         .find(|loc| matches!(loc.visibility, Visibility::Public))
     {
         return Some(loc);
@@ -649,6 +655,9 @@ impl Backend {
         let offset = position_to_offset(&text, position);
         let (name, _) = identifier_at(&tokens, offset)?;
         if let Some(module) = module.as_ref() {
+            if let Some(loc) = self.import_definition_location(module, uri, offset).await {
+                return Some(loc);
+            }
             if let Some(span) = find_local_definition_span(module, &name, offset) {
                 return Some(Location::new(uri.clone(), span_to_range(&text, span)));
             }
@@ -667,6 +676,40 @@ impl Backend {
             return None;
         };
         Some(Location::new(symbol.uri.clone(), range))
+    }
+
+    async fn import_definition_location(
+        &self,
+        module: &Module,
+        uri: &Uri,
+        offset: usize,
+    ) -> Option<Location> {
+        let (manifest, _) = manifest_context_for_uri(uri)?;
+        for import in &module.imports {
+            if offset < import.span.start || offset > import.span.end {
+                continue;
+            }
+            let target = import.path.to_string();
+            let Some(path) = manifest.module_path(&target) else {
+                continue;
+            };
+            let Some(target_uri) = Uri::from_file_path(&path) else {
+                continue;
+            };
+            let target_text = fs::read_to_string(&path).ok()?;
+            let target_module =
+                self.parse_cached_module(&target_uri, &target_text).await.unwrap_or_else(|| {
+                    parse_module(&target, path.clone(), &target_text).unwrap_or_else(|_| module.clone())
+                });
+            let span = target_module
+                .declared_span
+                .unwrap_or_else(|| Span::new(0, target_text.len().min(1)));
+            return Some(Location::new(
+                target_uri,
+                span_to_range(&target_text, span),
+            ));
+        }
+        None
     }
 
     async fn resolve_type_location(&self, uri: &Uri, position: Position) -> Option<Location> {

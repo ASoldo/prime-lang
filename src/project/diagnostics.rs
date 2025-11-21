@@ -25,6 +25,10 @@ pub enum ManifestIssueKind {
         expected: String,
         actual: String,
     },
+    ModuleKindMismatch {
+        expected: String,
+        actual: String,
+    },
     MissingModuleHeader {
         expected: String,
     },
@@ -80,11 +84,14 @@ impl ManifestIssueKind {
                 "Module `{module}` exists at `{module_path}` but is not listed in prime.toml ({})",
                 manifest_path.display()
             ),
-            ManifestIssueKind::UnknownImport { module } => {
-                format!("Cannot resolve import `{module}` — no manifest entry or file found")
-            }
+        ManifestIssueKind::UnknownImport { module } => {
+            format!("Cannot resolve import `{module}` — no manifest entry or file found")
         }
+        ManifestIssueKind::ModuleKindMismatch { expected, actual } => format!(
+            "Header declares `{actual}` but manifest lists this entry as `{expected}`"
+        ),
     }
+}
 }
 
 pub fn analyze_manifest_issues(
@@ -99,6 +106,7 @@ pub fn analyze_manifest_issues(
         }
         issues.extend(module_declaration_issues(module, file_path, manifest));
         issues.extend(import_issues(module, file_path, manifest));
+        issues.extend(kind_issues(module, manifest));
     }
     issues
 }
@@ -143,6 +151,23 @@ fn module_declaration_issues(
             span: Some(*span),
             kind: ManifestIssueKind::DuplicateModuleDeclaration,
         });
+    }
+    issues
+}
+
+fn kind_issues(module: &Module, manifest: &PackageManifest) -> Vec<ManifestIssue> {
+    let mut issues = Vec::new();
+    let expected_kind = manifest.module_kind(&canonical_module_name(&module.name));
+    if let Some(expected_kind) = expected_kind {
+        if module.kind != expected_kind {
+            issues.push(ManifestIssue {
+                span: module.declared_span,
+                kind: ManifestIssueKind::ModuleKindMismatch {
+                    expected: format!("{expected_kind:?}").to_lowercase(),
+                    actual: format!("{:?}", module.kind).to_lowercase(),
+                },
+            });
+        }
     }
     issues
 }

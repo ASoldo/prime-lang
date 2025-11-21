@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use crate::language::ast::ModuleKind;
 use std::{
     collections::HashMap,
     fs,
@@ -22,6 +23,7 @@ pub struct ModuleInfo {
     pub package: Option<String>,
     pub visibility: ModuleVisibility,
     pub doc: Option<String>,
+    pub kind: ModuleKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +61,7 @@ struct RawModuleEntry {
     package: Option<String>,
     visibility: Option<String>,
     doc: Option<String>,
+    kind: Option<String>,
 }
 
 impl PackageManifest {
@@ -94,6 +97,13 @@ impl PackageManifest {
             .map(|info| info.path.clone())
     }
 
+    pub fn module_kind(&self, name: &str) -> Option<ModuleKind> {
+        self.modules
+            .get(name)
+            .or_else(|| self.tests.get(name))
+            .map(|info| info.kind)
+    }
+
     pub fn module_name_for_path(&self, path: &Path) -> Option<String> {
         let canonical = path.canonicalize().ok()?;
         self.reverse.get(&canonical).cloned()
@@ -126,6 +136,35 @@ fn parse_modules(
     let mut modules = HashMap::new();
     let mut reverse = HashMap::new();
     let mut tests = HashMap::new();
+    if let Some(Value::Array(entries)) = value.get("libraries") {
+        for item in entries {
+            let raw: RawModuleEntry =
+                item.clone()
+                    .try_into()
+                    .map_err(|error| ManifestError::InvalidModule {
+                        module: None,
+                        message: error.to_string(),
+                    })?;
+            let canonical_name = canonical_module_name(&raw.name);
+            if modules.contains_key(&canonical_name) {
+                return Err(ManifestError::InvalidModule {
+                    module: Some(raw.name.clone()),
+                    message: "Duplicate library entry".into(),
+                });
+            }
+            let info = build_module_info(
+                root,
+                &canonical_name,
+                &raw.path,
+                raw.package.as_deref(),
+                raw.visibility.as_deref(),
+                raw.doc.as_deref(),
+                Some("library"),
+            )?;
+            reverse.insert(info.path.clone(), canonical_name.clone());
+            modules.insert(canonical_name, info);
+        }
+    }
     match value.get("modules") {
         Some(Value::Table(table)) => {
             for (name, entry) in table {
@@ -136,7 +175,7 @@ fn parse_modules(
                     });
                 };
                 let canonical = canonical_module_name(name);
-                let info = build_module_info(root, &canonical, rel_path, None, None, None)?;
+                let info = build_module_info(root, &canonical, rel_path, None, None, None, None)?;
                 reverse.insert(info.path.clone(), canonical.clone());
                 modules.insert(canonical, info);
             }
@@ -164,6 +203,7 @@ fn parse_modules(
                     raw.package.as_deref(),
                     raw.visibility.as_deref(),
                     raw.doc.as_deref(),
+                    raw.kind.as_deref(),
                 )?;
                 reverse.insert(info.path.clone(), canonical_name.clone());
                 modules.insert(canonical_name, info);
@@ -200,6 +240,7 @@ fn parse_modules(
                 raw.package.as_deref(),
                 raw.visibility.as_deref(),
                 raw.doc.as_deref(),
+                Some("test"),
             )?;
             reverse.insert(info.path.clone(), canonical_name.clone());
             tests.insert(canonical_name, info);
@@ -215,6 +256,7 @@ fn build_module_info(
     package: Option<&str>,
     visibility: Option<&str>,
     doc: Option<&str>,
+    kind: Option<&str>,
 ) -> Result<ModuleInfo, ManifestError> {
     let canonical_name = canonical_module_name(name);
     let resolved = root.join(rel_path);
@@ -230,13 +272,28 @@ fn build_module_info(
             module: Some(name.to_string()),
             message,
         })?;
+    let kind = parse_module_kind(kind).map_err(|message| ManifestError::InvalidModule {
+        module: Some(name.to_string()),
+        message,
+    })?;
     Ok(ModuleInfo {
         name: canonical_name,
         path: canonical,
         package: package.map(|s| s.to_string()),
         visibility,
         doc: doc.map(|s| s.to_string()),
+        kind,
     })
+}
+
+fn parse_module_kind(kind: Option<&str>) -> Result<ModuleKind, String> {
+    match kind {
+        None => Ok(ModuleKind::Module),
+        Some("module") => Ok(ModuleKind::Module),
+        Some("library") => Ok(ModuleKind::Library),
+        Some("test") => Ok(ModuleKind::Test),
+        Some(other) => Err(format!("invalid kind `{}` (expected module|library|test)", other)),
+    }
 }
 
 pub fn canonical_module_name(name: &str) -> String {

@@ -45,6 +45,10 @@
             },
             {
               "type": "STRING",
+              "value": "library"
+            },
+            {
+              "type": "STRING",
               "value": "test"
             }
           ]

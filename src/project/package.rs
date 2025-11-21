@@ -115,6 +115,14 @@ impl ModuleLoader {
         match parse_module(&module_name, canonical.clone(), &source) {
             Ok(module) => {
                 let imports = module.imports.clone();
+                if let Some(err) = library_main_error(&module) {
+                    self.file_errors.push(FileErrors {
+                        path: canonical.clone(),
+                        source,
+                        errors: vec![err],
+                    });
+                    return Ok(());
+                }
                 self.modules.push(ModuleUnit { module });
 
                 for import in imports {
@@ -146,6 +154,23 @@ impl ModuleLoader {
         }
         Ok(resolve_import_relative(base, import_path))
     }
+}
+
+fn library_main_error(module: &Module) -> Option<SyntaxError> {
+    if module.kind != crate::language::ast::ModuleKind::Library {
+        return None;
+    }
+    for item in &module.items {
+        if let crate::language::ast::Item::Function(func) = item {
+            if func.name == "main" {
+                return Some(SyntaxError::new(
+                    "libraries cannot define `main` (use a `module` header for entrypoints)",
+                    func.span,
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn module_name_from_path(path: &Path) -> String {

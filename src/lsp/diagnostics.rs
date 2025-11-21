@@ -285,6 +285,18 @@ fn manifest_issue_to_diagnostic(text: &str, issue: ManifestIssue) -> Diagnostic 
             code: Some(NumberOrString::String(CODE_UNKNOWN_IMPORT.into())),
             ..Default::default()
         },
+        ManifestIssueKind::ModuleKindMismatch { expected, actual } => Diagnostic {
+            range: span_to_range(
+                text,
+                issue
+                    .span
+                    .unwrap_or_else(|| first_non_whitespace_span(text)),
+            ),
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("prime-lang".into()),
+            message: format!("Header declares `{actual}` but manifest lists `{expected}`"),
+            ..Default::default()
+        },
     }
 }
 

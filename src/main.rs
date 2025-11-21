@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use language::{compiler::Compiler, parser::parse_module, typecheck};
 use miette::NamedSource;
 use project::diagnostics::analyze_manifest_issues;
+use language::ast::ModuleKind;
 use project::{
     FileErrors, PackageError, apply_manifest_header_with_manifest, find_manifest, load_package,
     manifest::PackageManifest, warn_manifest_drift,
@@ -197,6 +198,11 @@ fn run_entry(path: &Path) {
         eprintln!("`prime-lang run` cannot execute test targets; use `prime-lang test`");
         std::process::exit(1);
     }
+    if is_library_file(path) {
+        eprintln!("`prime-lang run` cannot execute library targets; use a module with `main`");
+        std::process::exit(1);
+    }
+    reject_library_entry(path);
     warn_manifest_drift(path);
     match load_package(path) {
         Ok(package) => {
@@ -231,6 +237,11 @@ fn build_entry(path: &Path, name: &str) {
         eprintln!("`prime-lang build` cannot compile test targets; use `prime-lang test`");
         std::process::exit(1);
     }
+    if is_library_file(path) {
+        eprintln!("`prime-lang build` cannot compile library targets; use a module with `main`");
+        std::process::exit(1);
+    }
+    reject_library_entry(path);
     warn_manifest_drift(path);
     match load_package(path) {
         Ok(package) => {
@@ -380,6 +391,40 @@ fn is_test_file(path: &Path) -> bool {
                 || trimmed.starts_with("test.")
         })
         .unwrap_or(false)
+}
+
+fn is_library_file(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .map(|content| {
+            let trimmed = content.trim_start();
+            trimmed.starts_with("library ")
+                || trimmed.starts_with("library\t")
+                || trimmed.starts_with("library::")
+                || trimmed.starts_with("library.")
+        })
+        .unwrap_or(false)
+}
+
+fn reject_library_entry(path: &Path) {
+    if let Some(manifest_path) = find_manifest(path) {
+        if let Ok(manifest) = PackageManifest::load(&manifest_path) {
+            let canonical = path
+                .canonicalize()
+                .unwrap_or_else(|_| path.to_path_buf());
+            if let Some(name) = manifest.module_name_for_path(&canonical) {
+                if let Some(kind) = manifest.module_kind(&name) {
+                    if kind != ModuleKind::Module {
+                        eprintln!(
+                            "`{}` is listed as {:?} in prime.toml and cannot be used as an entrypoint",
+                            name, kind
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
