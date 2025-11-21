@@ -1,6 +1,6 @@
 use super::{
     analysis::{
-        find_local_decl, find_local_definition_span, find_module_item_span,
+        find_local_decl, find_local_definition_span, find_module_item_span, identifier_at_offset,
         unused_variable_diagnostics,
     },
     completion::{
@@ -30,6 +30,7 @@ use crate::{
         lexer::lex,
         parser::parse_module,
         span::Span,
+        token::{Token, TokenKind},
     },
     tools::formatter::format_module,
 };
@@ -653,7 +654,17 @@ impl Backend {
         let tokens = lex(&text).ok()?;
         let module = self.parse_cached_module(uri, &text).await;
         let offset = position_to_offset(&text, position);
-        let (name, _) = identifier_at(&tokens, offset)?;
+        let name = if let Some((name, _)) = identifier_at(&tokens, offset) {
+            name
+        } else if let Some(module) = module.as_ref() {
+            if let Some((name, _)) = identifier_at_offset(module, offset) {
+                name
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        };
         if let Some(module) = module.as_ref() {
             if let Some(loc) = self.import_definition_location(module, uri, offset).await {
                 return Some(loc);
@@ -934,6 +945,24 @@ impl LanguageServer for Backend {
                 Some(&struct_modules),
             ) {
                 return Ok(Some(hover));
+            }
+        }
+        if let Some(module) = module.as_ref() {
+            if let Some((name, span)) = identifier_at_offset(module, offset) {
+                let synthetic = Token {
+                    kind: TokenKind::Identifier(name),
+                    span,
+                };
+                if let Some(hover) = hover_for_token(
+                    &text,
+                    &synthetic,
+                    &vars,
+                    Some(module),
+                    struct_info.as_ref(),
+                    Some(&struct_modules),
+                ) {
+                    return Ok(Some(hover));
+                }
             }
         }
         Ok(None)

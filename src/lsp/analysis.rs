@@ -1,7 +1,8 @@
 use crate::language::{
     ast::{
         Block, ElseBranch, Expr, ForTarget, FormatSegment, FormatStringLiteral, FunctionBody,
-        FunctionDef, IfCondition, IfExpr, Item, LetStmt, Literal, Module, Pattern, RangeExpr,
+        FunctionDef, IfCondition, IfExpr, Item, LetStmt, Literal, MatchExpr, Module, Pattern,
+        RangeExpr,
         Statement, StructLiteralKind, WhileCondition,
     },
     span::Span,
@@ -736,6 +737,308 @@ fn collect_format_string_idents(literal: &FormatStringLiteral, used: &mut HashSe
             FormatSegment::Expr { expr, .. } => collect_expr_idents(expr, used),
             FormatSegment::Literal(_) | FormatSegment::Implicit(_) => {}
         }
+    }
+}
+
+fn span_contains(span: Span, offset: usize) -> bool {
+    offset >= span.start && offset < span.end
+}
+
+pub fn identifier_at_offset(module: &Module, offset: usize) -> Option<(String, Span)> {
+    for item in &module.items {
+        if let Some(found) = find_in_item(item, offset) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_in_item(item: &Item, offset: usize) -> Option<(String, Span)> {
+    match item {
+        Item::Function(func) => find_in_function(func, offset),
+        Item::Impl(block) => {
+            for method in &block.methods {
+                if let Some(found) = find_in_function(method, offset) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Item::Const(def) => find_in_expr(&def.value, offset),
+        _ => None,
+    }
+}
+
+fn find_in_function(func: &FunctionDef, offset: usize) -> Option<(String, Span)> {
+    match &func.body {
+        FunctionBody::Block(block) => find_in_block(block, offset),
+        FunctionBody::Expr(expr) => find_in_expr(&expr.node, offset),
+    }
+}
+
+fn find_in_block(block: &Block, offset: usize) -> Option<(String, Span)> {
+    if !span_contains(block.span, offset) {
+        return None;
+    }
+    for stmt in &block.statements {
+        if let Some(found) = find_in_statement(stmt, offset) {
+            return Some(found);
+        }
+    }
+    if let Some(tail) = &block.tail {
+        return find_in_expr(tail, offset);
+    }
+    None
+}
+
+fn find_in_statement(stmt: &Statement, offset: usize) -> Option<(String, Span)> {
+    match stmt {
+        Statement::Let(let_stmt) => {
+            if span_contains(let_stmt.span, offset) {
+                if let Some(value) = &let_stmt.value {
+                    if let Some(found) = find_in_expr(value, offset) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        Statement::Assign(assign) => {
+            find_in_expr(&assign.target, offset).or_else(|| find_in_expr(&assign.value, offset))
+        }
+        Statement::Expr(expr) => find_in_expr(&expr.expr, offset),
+        Statement::Return(ret) => {
+            for value in &ret.values {
+                if let Some(found) = find_in_expr(value, offset) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Statement::While(while_stmt) => {
+            match &while_stmt.condition {
+                WhileCondition::Expr(expr) => {
+                    if let Some(found) = find_in_expr(expr, offset) {
+                        return Some(found);
+                    }
+                }
+                WhileCondition::Let { value, .. } => {
+                    if let Some(found) = find_in_expr(value, offset) {
+                        return Some(found);
+                    }
+                }
+            }
+            find_in_block(&while_stmt.body, offset)
+        }
+        Statement::Loop(loop_stmt) => find_in_block(&loop_stmt.body, offset),
+        Statement::For(for_stmt) => {
+            match &for_stmt.target {
+                ForTarget::Range(range) => {
+                    if let Some(found) = find_in_expr(&range.start, offset) {
+                        return Some(found);
+                    }
+                    if let Some(found) = find_in_expr(&range.end, offset) {
+                        return Some(found);
+                    }
+                }
+                ForTarget::Collection(expr) => {
+                    if let Some(found) = find_in_expr(expr, offset) {
+                        return Some(found);
+                    }
+                }
+            }
+            find_in_block(&for_stmt.body, offset)
+        }
+        Statement::Defer(defer_stmt) => find_in_expr(&defer_stmt.expr, offset),
+        Statement::Block(block) => find_in_block(block, offset),
+        Statement::Break | Statement::Continue => None,
+    }
+}
+
+fn find_in_if(if_expr: &IfExpr, offset: usize) -> Option<(String, Span)> {
+    if !span_contains(if_expr.span, offset) {
+        return None;
+    }
+    match &if_expr.condition {
+        IfCondition::Expr(expr) => {
+            if let Some(found) = find_in_expr(expr, offset) {
+                return Some(found);
+            }
+        }
+        IfCondition::Let { value, .. } => {
+            if let Some(found) = find_in_expr(value, offset) {
+                return Some(found);
+            }
+        }
+    }
+    if let Some(found) = find_in_block(&if_expr.then_branch, offset) {
+        return Some(found);
+    }
+    if let Some(else_branch) = &if_expr.else_branch {
+        match else_branch {
+            ElseBranch::Block(block) => return find_in_block(block, offset),
+            ElseBranch::ElseIf(expr) => return find_in_if(expr, offset),
+        }
+    }
+    None
+}
+
+fn find_in_match(match_expr: &MatchExpr, offset: usize) -> Option<(String, Span)> {
+    if !span_contains(match_expr.span, offset) {
+        return None;
+    }
+    if let Some(found) = find_in_expr(&match_expr.expr, offset) {
+        return Some(found);
+    }
+    for arm in &match_expr.arms {
+        if let Some(guard) = &arm.guard {
+            if let Some(found) = find_in_expr(guard, offset) {
+                return Some(found);
+            }
+        }
+        if let Some(found) = find_in_expr(&arm.value, offset) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_in_format_string(literal: &FormatStringLiteral, offset: usize) -> Option<(String, Span)> {
+    for segment in &literal.segments {
+        match segment {
+            FormatSegment::Named { name, span } if span_contains(*span, offset) => {
+                return Some((name.clone(), *span));
+            }
+            FormatSegment::Expr { expr, span } => {
+                if span_contains(*span, offset) {
+                    if let Some(found) = find_in_expr(expr, offset) {
+                        return Some(found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_in_expr(expr: &Expr, offset: usize) -> Option<(String, Span)> {
+    match expr {
+        Expr::Identifier(ident) if span_contains(ident.span, offset) => {
+            Some((ident.name.clone(), ident.span))
+        }
+        Expr::Literal(_) => None,
+        Expr::FormatString(literal) => find_in_format_string(literal, offset),
+        Expr::Try { block, span } => {
+            if span_contains(*span, offset) {
+                find_in_block(block, offset)
+            } else {
+                None
+            }
+        }
+        Expr::TryPropagate { expr: inner, span }
+        | Expr::Reference { expr: inner, span, .. }
+        | Expr::Deref { expr: inner, span, .. }
+        | Expr::Move { expr: inner, span, .. }
+        | Expr::Spawn { expr: inner, span, .. } => {
+            if span_contains(*span, offset) {
+                find_in_expr(inner, offset)
+            } else {
+                None
+            }
+        }
+        Expr::Binary { left, right, span, .. } => {
+            if span_contains(*span, offset) {
+                find_in_expr(left, offset).or_else(|| find_in_expr(right, offset))
+            } else {
+                None
+            }
+        }
+        Expr::Unary { expr: inner, span, .. } => {
+            if span_contains(*span, offset) {
+                find_in_expr(inner, offset)
+            } else {
+                None
+            }
+        }
+        Expr::Call { callee, args, span, .. } => {
+            if !span_contains(*span, offset) {
+                return None;
+            }
+            if let Some(found) = find_in_expr(callee, offset) {
+                return Some(found);
+            }
+            for arg in args {
+                if let Some(found) = find_in_expr(arg, offset) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Expr::FieldAccess { base, span, .. } => {
+            if span_contains(*span, offset) {
+                find_in_expr(base, offset)
+            } else {
+                None
+            }
+        }
+        Expr::StructLiteral { fields, span, .. } => {
+            if !span_contains(*span, offset) {
+                return None;
+            }
+            match fields {
+                StructLiteralKind::Named(entries) => {
+                    for entry in entries {
+                        if let Some(found) = find_in_expr(&entry.value, offset) {
+                            return Some(found);
+                        }
+                    }
+                }
+                StructLiteralKind::Positional(values) => {
+                    for value in values {
+                        if let Some(found) = find_in_expr(value, offset) {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Expr::MapLiteral { entries, span } => {
+            if !span_contains(*span, offset) {
+                return None;
+            }
+            for entry in entries {
+                if let Some(found) = find_in_expr(&entry.key, offset) {
+                    return Some(found);
+                }
+                if let Some(found) = find_in_expr(&entry.value, offset) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Expr::Block(block) => find_in_block(block, offset),
+        Expr::If(if_expr) => find_in_if(if_expr, offset),
+        Expr::Match(match_expr) => find_in_match(match_expr, offset),
+        Expr::Tuple(values, span) | Expr::ArrayLiteral(values, span) => {
+            if !span_contains(*span, offset) {
+                return None;
+            }
+            for value in values {
+                if let Some(found) = find_in_expr(value, offset) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Expr::Range(range) => {
+            if !span_contains(range.span, offset) {
+                return None;
+            }
+            find_in_expr(&range.start, offset).or_else(|| find_in_expr(&range.end, offset))
+        }
+        _ => None,
     }
 }
 

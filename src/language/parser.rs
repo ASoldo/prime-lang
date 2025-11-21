@@ -46,6 +46,232 @@ pub fn parse_expression_snippet(path: PathBuf, source: &str) -> Result<Expr, Syn
     Ok(expr)
 }
 
+fn shift_span(span: &mut Span, delta: isize) {
+    span.start = ((span.start as isize) + delta) as usize;
+    span.end = ((span.end as isize) + delta) as usize;
+}
+
+fn shift_literal_span(lit: &mut Literal, delta: isize) {
+    match lit {
+        Literal::Int(_, span)
+        | Literal::Float(_, span)
+        | Literal::Bool(_, span)
+        | Literal::String(_, span)
+        | Literal::Rune(_, span) => shift_span(span, delta),
+    }
+}
+
+fn shift_pattern_spans(pattern: &mut Pattern, delta: isize) {
+    match pattern {
+        Pattern::Identifier(_, span) => shift_span(span, delta),
+        Pattern::Literal(lit) => shift_literal_span(lit, delta),
+        Pattern::EnumVariant { bindings, .. } => {
+            for binding in bindings {
+                shift_pattern_spans(binding, delta);
+            }
+        }
+        Pattern::Tuple(_, span)
+        | Pattern::Map(_, span)
+        | Pattern::Struct { span, .. }
+        | Pattern::Slice { span, .. } => shift_span(span, delta),
+        Pattern::Wildcard => {}
+    }
+}
+
+fn shift_block_spans(block: &mut Block, delta: isize) {
+    shift_span(&mut block.span, delta);
+    for stmt in &mut block.statements {
+        shift_statement_spans(stmt, delta);
+    }
+    if let Some(tail) = &mut block.tail {
+        shift_expr_spans(tail, delta);
+    }
+}
+
+fn shift_statement_spans(stmt: &mut Statement, delta: isize) {
+    match stmt {
+        Statement::Let(let_stmt) => {
+            shift_span(&mut let_stmt.span, delta);
+            if let Some(ty) = &mut let_stmt.ty {
+                shift_span(&mut ty.span, delta);
+            }
+            shift_pattern_spans(&mut let_stmt.pattern, delta);
+            if let Some(value) = &mut let_stmt.value {
+                shift_expr_spans(value, delta);
+            }
+        }
+        Statement::Assign(assign) => {
+            shift_expr_spans(&mut assign.target, delta);
+            shift_expr_spans(&mut assign.value, delta);
+        }
+        Statement::Expr(expr) => {
+            shift_expr_spans(&mut expr.expr, delta);
+        }
+        Statement::Return(ret) => {
+            for value in &mut ret.values {
+                shift_expr_spans(value, delta);
+            }
+        }
+        Statement::While(while_stmt) => {
+            match &mut while_stmt.condition {
+                WhileCondition::Expr(expr) => shift_expr_spans(expr, delta),
+                WhileCondition::Let { pattern, value } => {
+                    shift_pattern_spans(pattern, delta);
+                    shift_expr_spans(value, delta);
+                }
+            }
+            shift_block_spans(&mut while_stmt.body, delta);
+        }
+        Statement::Loop(loop_stmt) => {
+            shift_block_spans(&mut loop_stmt.body, delta);
+        }
+        Statement::For(for_stmt) => {
+            match &mut for_stmt.target {
+                ForTarget::Range(range) => {
+                    shift_expr_spans(&mut range.start, delta);
+                    shift_expr_spans(&mut range.end, delta);
+                    shift_span(&mut range.span, delta);
+                }
+                ForTarget::Collection(expr) => shift_expr_spans(expr, delta),
+            }
+            shift_block_spans(&mut for_stmt.body, delta);
+        }
+        Statement::Defer(defer_stmt) => {
+            shift_expr_spans(&mut defer_stmt.expr, delta);
+        }
+        Statement::Break | Statement::Continue => {}
+        Statement::Block(block) => shift_block_spans(block, delta),
+    }
+}
+
+fn shift_if_spans(if_expr: &mut IfExpr, delta: isize) {
+    shift_span(&mut if_expr.span, delta);
+    match &mut if_expr.condition {
+        IfCondition::Expr(expr) => shift_expr_spans(expr, delta),
+        IfCondition::Let { pattern, value } => {
+            shift_pattern_spans(pattern, delta);
+            shift_expr_spans(value, delta);
+        }
+    }
+    shift_block_spans(&mut if_expr.then_branch, delta);
+    if let Some(else_branch) = &mut if_expr.else_branch {
+        match else_branch {
+            ElseBranch::Block(block) => shift_block_spans(block, delta),
+            ElseBranch::ElseIf(expr) => shift_if_spans(expr, delta),
+        }
+    }
+}
+
+fn shift_match_spans(match_expr: &mut MatchExpr, delta: isize) {
+    shift_span(&mut match_expr.span, delta);
+    shift_expr_spans(&mut match_expr.expr, delta);
+    for arm in &mut match_expr.arms {
+        shift_pattern_spans(&mut arm.pattern, delta);
+        if let Some(guard) = &mut arm.guard {
+            shift_expr_spans(guard, delta);
+        }
+        shift_expr_spans(&mut arm.value, delta);
+    }
+}
+
+pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
+    match expr {
+        Expr::Identifier(ident) => shift_span(&mut ident.span, delta),
+        Expr::Literal(lit) => shift_literal_span(lit, delta),
+        Expr::FormatString(literal) => {
+            shift_span(&mut literal.span, delta);
+            for segment in &mut literal.segments {
+                match segment {
+                    FormatSegment::Literal(_) => {}
+                    FormatSegment::Named { span, .. } => shift_span(span, delta),
+                    FormatSegment::Implicit(span) => shift_span(span, delta),
+                    FormatSegment::Expr { expr, span } => {
+                        shift_span(span, delta);
+                        shift_expr_spans(expr, delta);
+                    }
+                }
+            }
+        }
+        Expr::Try { block, span } => {
+            shift_span(span, delta);
+            shift_block_spans(block, delta);
+        }
+        Expr::TryPropagate { expr: inner, span } => {
+            shift_span(span, delta);
+            shift_expr_spans(inner, delta);
+        }
+        Expr::Binary { left, right, span, .. } => {
+            shift_span(span, delta);
+            shift_expr_spans(left, delta);
+            shift_expr_spans(right, delta);
+        }
+        Expr::Unary { expr: inner, span, .. } => {
+            shift_span(span, delta);
+            shift_expr_spans(inner, delta);
+        }
+        Expr::Call { callee, args, span, .. } => {
+            shift_span(span, delta);
+            shift_expr_spans(callee, delta);
+            for arg in args {
+                shift_expr_spans(arg, delta);
+            }
+        }
+        Expr::FieldAccess { base, span, .. } => {
+            shift_span(span, delta);
+            shift_expr_spans(base, delta);
+        }
+        Expr::StructLiteral { fields, span, .. } => {
+            shift_span(span, delta);
+            match fields {
+                StructLiteralKind::Named(entries) => {
+                    for entry in entries {
+                        shift_expr_spans(&mut entry.value, delta);
+                    }
+                }
+                StructLiteralKind::Positional(values) => {
+                    for value in values {
+                        shift_expr_spans(value, delta);
+                    }
+                }
+            }
+        }
+        Expr::MapLiteral { entries, span } => {
+            shift_span(span, delta);
+            for entry in entries {
+                shift_expr_spans(&mut entry.key, delta);
+                shift_expr_spans(&mut entry.value, delta);
+            }
+        }
+        Expr::Block(block) => shift_block_spans(block, delta),
+        Expr::If(if_expr) => shift_if_spans(if_expr, delta),
+        Expr::Match(match_expr) => shift_match_spans(match_expr, delta),
+        Expr::Tuple(values, span) => {
+            shift_span(span, delta);
+            for value in values {
+                shift_expr_spans(value, delta);
+            }
+        }
+        Expr::ArrayLiteral(values, span) => {
+            shift_span(span, delta);
+            for value in values {
+                shift_expr_spans(value, delta);
+            }
+        }
+        Expr::Range(range) => {
+            shift_span(&mut range.span, delta);
+            shift_expr_spans(&mut range.start, delta);
+            shift_expr_spans(&mut range.end, delta);
+        }
+        Expr::Reference { expr: inner, span, .. }
+        | Expr::Deref { expr: inner, span, .. }
+        | Expr::Move { expr: inner, span, .. }
+        | Expr::Spawn { expr: inner, span, .. } => {
+            shift_span(span, delta);
+            shift_expr_spans(inner, delta);
+        }
+    }
+}
+
 fn is_pascal_case(name: &str) -> bool {
     name.chars()
         .next()
@@ -1920,7 +2146,8 @@ impl Parser {
                         ));
                     }
                     match parse_expression_snippet(self.path.clone(), trimmed) {
-                        Ok(expr) => {
+                        Ok(mut expr) => {
+                            shift_expr_spans(&mut expr, expr_start as isize);
                             segments.push(FormatSegment::Expr {
                                 expr,
                                 span: Span::new(placeholder_start, close_abs),
