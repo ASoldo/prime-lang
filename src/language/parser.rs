@@ -183,7 +183,6 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
             for segment in &mut literal.segments {
                 match segment {
                     FormatSegment::Literal(_) => {}
-                    FormatSegment::Named { span, .. } => shift_span(span, delta),
                     FormatSegment::Implicit(span) => shift_span(span, delta),
                     FormatSegment::Expr { expr, span } => {
                         shift_span(span, delta);
@@ -2469,10 +2468,12 @@ impl Parser {
         }
     }
 
+    #[allow(dead_code)]
     fn is_identifier_start(ch: char) -> bool {
         ch == '_' || ch.is_ascii_alphabetic()
     }
 
+    #[allow(dead_code)]
     fn is_identifier_part(ch: char) -> bool {
         ch == '_' || ch.is_ascii_alphanumeric()
     }

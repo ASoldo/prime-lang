@@ -731,9 +731,6 @@ fn collect_range_expr(range: &RangeExpr, used: &mut HashSet<String>) {
 fn collect_format_string_idents(literal: &FormatStringLiteral, used: &mut HashSet<String>) {
     for segment in &literal.segments {
         match segment {
-            FormatSegment::Named { name, .. } => {
-                used.insert(name.clone());
-            }
             FormatSegment::Expr { expr, .. } => collect_expr_idents(expr, used),
             FormatSegment::Literal(_) | FormatSegment::Implicit(_) => {}
         }
@@ -906,9 +903,6 @@ fn find_in_match(match_expr: &MatchExpr, offset: usize) -> Option<(String, Span)
 fn find_in_format_string(literal: &FormatStringLiteral, offset: usize) -> Option<(String, Span)> {
     for segment in &literal.segments {
         match segment {
-            FormatSegment::Named { name, span } if span_contains(*span, offset) => {
-                return Some((name.clone(), *span));
-            }
             FormatSegment::Expr { expr, span } => {
                 if span_contains(*span, offset) {
                     if let Some(found) = find_in_expr(expr, offset) {
@@ -975,12 +969,17 @@ fn find_in_expr(expr: &Expr, offset: usize) -> Option<(String, Span)> {
             }
             None
         }
-        Expr::FieldAccess { base, span, .. } => {
-            if span_contains(*span, offset) {
-                find_in_expr(base, offset)
-            } else {
-                None
+        Expr::FieldAccess { base, span, field, .. } => {
+            if !span_contains(*span, offset) {
+                return None;
             }
+            let field_len = field.len();
+            let field_start = span.end.saturating_sub(field_len);
+            let field_span = Span::new(field_start, span.end);
+            if span_contains(field_span, offset) {
+                return Some((field.clone(), field_span));
+            }
+            find_in_expr(base, offset)
         }
         Expr::StructLiteral { fields, span, .. } => {
             if !span_contains(*span, offset) {

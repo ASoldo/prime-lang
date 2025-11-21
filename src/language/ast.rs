@@ -389,7 +389,6 @@ pub struct FormatStringLiteral {
 pub enum FormatSegment {
     Literal(String),
     Implicit(Span),
-    Named { name: String, span: Span },
     Expr { expr: Expr, span: Span },
 }
 

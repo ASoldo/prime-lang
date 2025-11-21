@@ -2633,14 +2633,6 @@ impl Interpreter {
                     rendered.push_str(text);
                     segments.push(FormatRuntimeSegment::Literal(text.clone()));
                 }
-                FormatSegment::Named { name, .. } => {
-                    has_placeholders = true;
-                    let value = self
-                        .env
-                        .get(name)
-                        .ok_or_else(|| RuntimeError::UnknownSymbol { name: name.clone() })?;
-                    segments.push(FormatRuntimeSegment::Named(value));
-                }
                 FormatSegment::Expr { expr, .. } => {
                     has_placeholders = true;
                     let value = match self.eval_expression(expr)? {
@@ -3052,8 +3044,11 @@ fn stub() {}
         let literal = FormatStringLiteral {
             segments: vec![
                 FormatSegment::Literal("HP ".into()),
-                FormatSegment::Named {
-                    name: "hp".into(),
+                FormatSegment::Expr {
+                    expr: Expr::Identifier(Identifier {
+                        name: "hp".into(),
+                        span: Span::new(0, 0),
+                    }),
                     span: Span::new(0, 0),
                 },
                 FormatSegment::Literal(" delta ".into()),

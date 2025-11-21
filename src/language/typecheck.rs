@@ -97,7 +97,9 @@ struct FunctionKey {
 #[derive(Clone)]
 struct InterfaceInfo {
     def: InterfaceDef,
+    #[allow(dead_code)]
     module: String,
+    #[allow(dead_code)]
     span: Span,
 }
 
@@ -435,15 +437,7 @@ impl Checker {
         env: &mut FnEnv,
     ) {
         for segment in &literal.segments {
-            if let FormatSegment::Named { name, span } = segment {
-                if env.lookup(name).is_none() && !self.registry.consts.contains_key(name) {
-                    self.errors.push(TypeError::new(
-                        &module.path,
-                        *span,
-                        format!("unknown identifier `{}` in format string", name),
-                    ));
-                }
-            } else if let FormatSegment::Expr { expr, .. } = segment {
+            if let FormatSegment::Expr { expr, .. } = segment {
                 self.check_expression(module, expr, None, &[], env);
             }
         }

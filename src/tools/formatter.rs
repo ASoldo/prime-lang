@@ -1086,11 +1086,6 @@ fn format_format_string(literal: &FormatStringLiteral) -> String {
     for segment in &literal.segments {
         match segment {
             FormatSegment::Literal(text) => buf.push_str(&escape_format_literal(text)),
-            FormatSegment::Named { name, .. } => {
-                buf.push('{');
-                buf.push_str(name);
-                buf.push('}');
-            }
             FormatSegment::Implicit(_) => buf.push_str("{}"),
             FormatSegment::Expr { expr, .. } => {
                 buf.push('{');

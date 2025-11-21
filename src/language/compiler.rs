@@ -460,13 +460,6 @@ impl Compiler {
                     literal_text.push_str(text);
                     segments.push(FormatRuntimeSegment::Literal(text.clone()));
                 }
-                FormatSegment::Named { name, .. } => {
-                    has_placeholders = true;
-                    let value = self
-                        .get_var(name)
-                        .ok_or_else(|| format!("Unknown symbol `{}`", name))?;
-                    segments.push(FormatRuntimeSegment::Named(value));
-                }
                 FormatSegment::Expr { expr, .. } => {
                     has_placeholders = true;
                     let value = match self.emit_expression(expr)? {
@@ -1152,10 +1145,6 @@ impl Compiler {
                 };
                 self.eval_unary(*op, value).map(EvalOutcome::Value)
             }
-            other => Err(format!(
-                "Expression `{}` not supported in build mode",
-                describe_expr(other)
-            )),
         }
     }
 
@@ -3497,31 +3486,6 @@ fn substitute_self_in_function(def: &mut FunctionDef, target: &str) {
     }
 }
 
-fn describe_expr(expr: &Expr) -> &'static str {
-    match expr {
-        Expr::Identifier(_) => "identifier",
-        Expr::Literal(_) => "literal",
-        Expr::Try { .. } => "try expression",
-        Expr::TryPropagate { .. } => "error propagation",
-        Expr::Binary { .. } => "binary",
-        Expr::Unary { .. } => "unary",
-        Expr::Call { .. } => "call",
-        Expr::FieldAccess { .. } => "field access",
-        Expr::StructLiteral { .. } => "struct literal",
-        Expr::MapLiteral { .. } => "map literal",
-        Expr::Block(_) => "block",
-        Expr::If(_) => "if expression",
-        Expr::Match(_) => "match expression",
-        Expr::Tuple(_, _) => "tuple",
-        Expr::ArrayLiteral(_, _) => "array literal",
-        Expr::Move { .. } => "move expression",
-        Expr::Range(_) => "range",
-        Expr::Reference { .. } => "reference",
-        Expr::Deref { .. } => "deref",
-        Expr::FormatString(_) => "format string",
-        Expr::Spawn { .. } => "spawn expression",
-    }
-}
 
 fn describe_value(value: &Value) -> &'static str {
     match value {
