@@ -555,11 +555,12 @@ module.exports = grammar({
       optional(seq(':', field('value', $.pattern)))
     ),
 
-    slice_pattern: $ => seq(
+    // Patterns like [head, ..rest] or [].
+    slice_pattern: $ => prec(1, seq(
       '[',
-      commaSep(choice($.pattern, $.slice_rest)),
+      optional(commaSep1(choice($.pattern, $.slice_rest))),
       ']'
-    ),
+    )),
 
     slice_rest: $ => seq('..', optional($.pattern)),
 

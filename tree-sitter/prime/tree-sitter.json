@@ -2,15 +2,15 @@
   "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
   "grammars": [
     {
-      "name": "prime_lang",
-      "camelcase": "PrimeLang",
-      "title": "PrimeLang",
-      "scope": "source.prime_lang",
+      "name": "prime",
+      "camelcase": "Prime",
+      "title": "Prime",
+      "scope": "source.prime",
       "file-types": [
         "prime"
       ],
-      "injection-regex": "^prime_lang$",
-      "class-name": "TreeSitterPrimeLang"
+      "injection-regex": "^prime$",
+      "class-name": "TreeSitterPrime"
     }
   ],
   "metadata": {
