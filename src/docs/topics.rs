@@ -201,7 +201,7 @@ $ prime-lang add core::types --path types.prime --library
 let handle = spawn (send(tx, 1));
 let Option[int32] first = recv(rx);
 join(handle);"#,
-                explanation: "`spawn` returns `JoinHandle[T]`; `channel[T]()` yields `(Sender[T], Receiver[T])`. In run mode, tasks execute on real threads and `recv` blocks until a value arrives or the channel closes; build mode still reuses synchronous scheduling for now.",
+                explanation: "`spawn` returns `JoinHandle[T]`; `channel[T]()` yields `(Sender[T], Receiver[T])`. `send` returns `Result[(), string]` and `recv` yields `Option[T]`. In run mode, tasks execute on real threads and `recv` blocks until a value arrives or the channel closes; build mode mirrors the same blocking semantics while evaluating deterministically during compilation.",
             },
             TopicSection {
                 title: "Checking examples & regression safety",
@@ -682,7 +682,7 @@ fn bad() {
                 snippet: r#"- `Range[T]` bounds stay typed; stored ranges can be iterated later
 - `for` accepts anything implementing `iter()` (`Iterable[T]`)
 - Interpreter spawn/channel now run on OS threads; `recv` blocks until close"#,
-                explanation: "Ranges now carry their element type, `for` loops consult an `iter()` method when present, and run-mode concurrency uses real threads with blocking channel semantics. Build mode keeps the older synchronous scheduling.",
+                explanation: "Ranges now carry their element type, `for` loops consult an `iter()` method when present, and run-mode concurrency uses real threads with blocking channel semantics. Build mode mirrors the same blocking semantics during compilation so spawn/send/recv/join behave uniformly, even though execution is deterministic.",
             },
             TopicSection {
                 title: "November 2025 release notes placeholder",

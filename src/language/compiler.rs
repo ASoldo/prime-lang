@@ -18,12 +18,12 @@ use llvm_sys::{
     prelude::*,
 };
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     ffi::{CStr, CString},
     mem,
     path::Path,
     ptr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -151,14 +151,12 @@ struct MapValue {
 
 #[derive(Clone)]
 struct ChannelSender {
-    queue: Arc<Mutex<Vec<Value>>>,
-    closed: Arc<Mutex<bool>>,
+    inner: Arc<(Mutex<ChannelState>, Condvar)>,
 }
 
 #[derive(Clone)]
 struct ChannelReceiver {
-    queue: Arc<Mutex<Vec<Value>>>,
-    closed: Arc<Mutex<bool>>,
+    inner: Arc<(Mutex<ChannelState>, Condvar)>,
 }
 
 #[derive(Clone)]
@@ -166,38 +164,59 @@ struct JoinHandleValue {
     result: Arc<Mutex<Option<Value>>>,
 }
 
+struct ChannelState {
+    queue: VecDeque<Value>,
+    closed: bool,
+}
+
 impl ChannelSender {
-    fn new(queue: Arc<Mutex<Vec<Value>>>, closed: Arc<Mutex<bool>>) -> Self {
-        Self { queue, closed }
+    fn new(inner: Arc<(Mutex<ChannelState>, Condvar)>) -> Self {
+        Self { inner }
     }
 
     fn send(&self, value: Value) -> Result<(), String> {
-        if *self.closed.lock().unwrap() {
+        let (lock, cv) = &*self.inner;
+        let mut guard = lock.lock().unwrap();
+        if guard.closed {
             return Err("channel closed".into());
         }
-        self.queue.lock().unwrap().push(value);
+        guard.queue.push_back(value);
+        cv.notify_one();
         Ok(())
     }
 
     fn close(&self) {
-        *self.closed.lock().unwrap() = true;
+        let (lock, cv) = &*self.inner;
+        let mut guard = lock.lock().unwrap();
+        guard.closed = true;
+        cv.notify_all();
     }
 }
 
 impl ChannelReceiver {
-    fn new(queue: Arc<Mutex<Vec<Value>>>, closed: Arc<Mutex<bool>>) -> Self {
-        Self { queue, closed }
+    fn new(inner: Arc<(Mutex<ChannelState>, Condvar)>) -> Self {
+        Self { inner }
     }
 
     fn recv(&self) -> Option<Value> {
-        if let Some(v) = self.queue.lock().unwrap().pop() {
-            return Some(v);
+        let (lock, cv) = &*self.inner;
+        let mut guard = lock.lock().unwrap();
+        loop {
+            if let Some(v) = guard.queue.pop_front() {
+                return Some(v);
+            }
+            if guard.closed {
+                return None;
+            }
+            guard = cv.wait(guard).unwrap();
         }
-        if *self.closed.lock().unwrap() { None } else { None }
     }
 
     fn close(&self) {
-        *self.closed.lock().unwrap() = true;
+        let (lock, cv) = &*self.inner;
+        let mut guard = lock.lock().unwrap();
+        guard.closed = true;
+        cv.notify_all();
     }
 }
 
@@ -3123,10 +3142,13 @@ impl Compiler {
         if !args.is_empty() {
             return Err("channel expects 0 arguments".into());
         }
-        let queue = Arc::new(Mutex::new(Vec::new()));
-        let closed = Arc::new(Mutex::new(false));
-        let sender = Value::Sender(ChannelSender::new(queue.clone(), closed.clone()));
-        let receiver = Value::Receiver(ChannelReceiver::new(queue, closed));
+        let state = ChannelState {
+            queue: VecDeque::new(),
+            closed: false,
+        };
+        let shared = Arc::new((Mutex::new(state), Condvar::new()));
+        let sender = Value::Sender(ChannelSender::new(shared.clone()));
+        let receiver = Value::Receiver(ChannelReceiver::new(shared));
         Ok(Value::Tuple(vec![sender, receiver]))
     }
 
@@ -3137,8 +3159,11 @@ impl Compiler {
         let value = args.pop().unwrap();
         let sender = self.expect_sender(args.pop().unwrap(), "send")?;
         match sender.send(value) {
-            Ok(()) => Ok(Value::Unit),
-            Err(msg) => Err(msg),
+            Ok(()) => self.instantiate_enum_variant("Ok", vec![Value::Unit]),
+            Err(msg) => {
+                let err = self.make_string_value(&msg)?;
+                self.instantiate_enum_variant("Err", vec![err])
+            }
         }
     }
 

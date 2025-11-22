@@ -91,7 +91,7 @@ fresh. Highlights:
 | `prime-lang add <module> [--path file.prime] [--test|--library]` | Append a module, test, or library entry to the manifest and stub the file with the correct header |
 | `prime-lang test [target,...]` | Run test modules (header `test ...;`) by name or file; discovers tests when no target is provided |
 | `prime-lang docs [--list|--query ...]` | Print the curated reference topics described below |
-| Concurrency | `spawn expr` → `JoinHandle[T]`; `channel[T]()` → `(Sender[T], Receiver[T])`; `send/recv/close/join` built-ins (run uses real threads; build remains synchronous) |
+| Concurrency | `spawn expr` → `JoinHandle[T]`; `channel[T]()` → `(Sender[T], Receiver[T])`; `send` returns `Result[(), string]`; `recv` yields `Option[T]` (run uses real threads; build evaluates deterministically with the same blocking semantics) |
 
 ### `prime-lang docs`
 
@@ -191,8 +191,8 @@ fn log_once() -> Option[int32] {
 ```
 
 - `spawn expr` returns `JoinHandle[T]` where `T` is the expression type; `join(handle)` produces the value (or panic) and consumes the handle.
-- `channel[T]()` returns `(Sender[T], Receiver[T])`; `send`/`recv`/`close` act on endpoints. `recv` yields `Option[T]` (None if closed).
-- Run mode executes spawned work on OS threads and `recv` blocks until a value arrives or the channel closes. Build mode still evaluates these operations synchronously.
+- `channel[T]()` returns `(Sender[T], Receiver[T])`; `send`/`recv`/`close` act on endpoints. `send` returns `Result[(), string]`; `recv` yields `Option[T]` (None if closed).
+- Run mode executes spawned work on OS threads and `recv` blocks until a value arrives or the channel closes. Build mode mirrors the same blocking channel semantics while still executing deterministically during compilation.
 
 ### Constants & Mutability
 
