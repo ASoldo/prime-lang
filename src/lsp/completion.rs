@@ -60,9 +60,9 @@ pub fn module_path_completion_context(
 }
 
 pub fn completion_trigger_characters() -> Vec<String> {
-    // Trigger on identifiers and qualification separators. `:` is kept so the LSP can fire on the
-    // second colon in `::`.
-    const TRIGGER_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.";
+    // Trigger on identifiers, qualification separators, and macro sigils.
+    // `:` is kept so the LSP can fire on the second colon in `::`.
+    const TRIGGER_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.~";
     TRIGGER_CHARS.chars().map(|ch| ch.to_string()).collect()
 }
 
@@ -161,9 +161,9 @@ pub fn completion_prefix(
     let base = identifier_prefix_slice(text, offset).map(str::to_string);
     let trigger = context
         .and_then(|ctx| ctx.trigger_character.as_ref())
-        .filter(|ch| is_ident_string(ch));
+        .filter(|ch| is_ident_string(ch) || ch.as_str() == "~");
 
-    match (base, trigger) {
+    let mut base = match (base, trigger) {
         (Some(mut prefix), Some(trigger)) => {
             if !prefix.ends_with(trigger) {
                 prefix.push_str(trigger);
@@ -173,7 +173,21 @@ pub fn completion_prefix(
         (Some(prefix), None) => Some(prefix),
         (None, Some(trigger)) => Some(trigger.to_string()),
         _ => None,
+    };
+
+    // If the cursor is immediately after a '~', treat it as part of the prefix so macro
+    // completions (labels like "~foo") match.
+    if let Some(ref prefix) = base {
+        let start = offset.saturating_sub(prefix.len());
+        if start > 0 && text.as_bytes().get(start - 1) == Some(&b'~') && !prefix.starts_with('~')
+        {
+            base = Some(format!("~{}", prefix));
+        }
+    } else if offset > 0 && text.as_bytes().get(offset - 1) == Some(&b'~') {
+        base = Some("~".to_string());
     }
+
+    base
 }
 
 #[derive(Clone)]
