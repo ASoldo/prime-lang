@@ -7,21 +7,25 @@ fn worker(id: int32, tx: Sender[int32], values: []int32) -> Result[(), string] {
   for value in values {
     total = total + value;
   }
-  // tag the total so the receiver can attribute work
   send(tx, total + id)
 }
 
 fn main() {
   let (tx, rx) = channel[int32]();
-
-  // Split the workload and launch two workers.
-  let []int32 left = [1, 2, 3, 4];
-  let []int32 right = [5, 6, 7, 8];
-
+  let []int32 left = [
+    1,
+    2,
+    3,
+    4,
+  ];
+  let []int32 right = [
+    5,
+    6,
+    7,
+    8,
+  ];
   let JoinHandle[Result[(), string]] handle_left = spawn worker(100, tx, left);
   let JoinHandle[Result[(), string]] handle_right = spawn worker(200, tx, right);
-
-  // Collect both results from the channel.
   let mut int32 collected = 0;
   let mut int32 left_total = -1;
   let mut int32 right_total = -1;
@@ -39,8 +43,6 @@ fn main() {
     }
   }
   close(rx);
-
-  // Ensure both tasks finished cleanly.
   let Result[(), string] result_left = join(handle_left);
   if let Err(message) = &result_left {
     out(`left worker failed: {message}`);
@@ -51,36 +53,33 @@ fn main() {
     out(`right worker failed: {message}`);
     return;
   }
-
   let bool left_ok = match result_left {
     Ok(_) => true,
     Err(message) => {
       out(`left worker returned error: {message}`);
       false
-    }
+    },
     _ => {
       out("left worker returned unexpected value");
       false
-    }
+    },
   };
   let bool right_ok = match result_right {
     Ok(_) => true,
     Err(message) => {
       out(`right worker returned error: {message}`);
       false
-    }
+    },
     _ => {
       out("right worker returned unexpected value");
       false
-    }
+    },
   };
   if !(left_ok && right_ok) {
     out("workers did not complete successfully");
     return;
   }
-
-  // The channel carried the numeric work totals.
-  out(`left total -> {left_total}`);  // 1+2+3+4 + 100 tag
-  out(`right total -> {right_total}`); // 5+6+7+8 + 200 tag
+  out(`left total -> {left_total}`);
+  out(`right total -> {right_total}`);
   out(`channel collected -> {collected}`);
 }

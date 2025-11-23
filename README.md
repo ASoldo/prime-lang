@@ -79,6 +79,13 @@ Validated outputs (fresh run, current syntax):
 - `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
 - `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
 
+### Collections and Indexing
+
+- Slices: `let []int32 values = [1, 2, 3];` and `values[1]` yields `Option[int32]`. Methods: `.len()`, `.get(index)`, `.push(value)`.
+- Maps: `let Map[string, int32] scores = #{ "alpha": 10 };` and `scores["alpha"]` yields `Option[int32]`. Methods: `.len()`, `.get(key)`, `.insert(key, value)`.
+- Arrays: fixed-size `[T;N]` types index to `Option[T]` too.
+- Indexing works in both run/build modes; assignment through indexes is supported for slices and maps.
+
 ## CLI Overview & Built-in Docs
 
 Every command is defined in `src/main.rs` with clap, so `prime-lang --help` stays

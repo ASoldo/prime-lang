@@ -500,10 +500,10 @@ fn read_hp(target: &Player) -> int32 {
 let Box[int32] counter = box_new(0);
 bump_counter(&counter, 5);
 out(`box counter -> {}`, counter.box_get());"#,
-                explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and either `.get(key)` or bracket indexing for safe ownership transfers.",
+                explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and either `.get(key)` or bracket indexing for safe ownership transfers; the same APIs work in build/run modes.",
             },
             TopicSection {
-                title: "Map/slice literals and methods",
+                title: "Collections and indexing",
                 snippet: r#"let []string probe_notes = ["ok", "stable"];
 let Map[string, int32] rewards = #{
   "Harbor sweep": 175,
@@ -512,8 +512,9 @@ let Map[string, int32] rewards = #{
 
 out(probe_notes.get(0));
 out(rewards.get("Ridge scouting"));
-out(rewards.len());"#,
-                explanation: "Inline literals build slices and maps without helper calls. Non-empty map literals infer `Map[string, T]` automatically, so the binding can omit a type hint. Bracket indexing (`probe_notes[0]`, `rewards[\"Ridge scouting\"]`) returns `Option` values alongside methods like `.get` and `.len`, matching the README's collection section and powering the `prime-lang docs` snippets.",
+out(probe_notes[1]);
+out(rewards["Harbor sweep"]);"#,
+                explanation: "Inline literals build slices and maps without helper calls. Non-empty map literals infer `Map[string, T]` automatically, so the binding can omit a type hint. Bracket indexing (`probe_notes[0]`, `rewards[\"Ridge scouting\"]`) returns `Option` values alongside methods like `.get` and `.len`, and works uniformly in build/run modes for slices, arrays, and maps.",
             },
             TopicSection {
                 title: "Type checking and diagnostics",
@@ -544,6 +545,29 @@ fn copy_and_borrow() {
   out(view.count);
 }"#,
                 explanation: "Structs and enums are value types: assignment copies fields. References wrap data in a shared heap cell (`Arc<Mutex<_>>`) so borrows live on the heap until all refs drop. There is no manual alloc/free; heap helpers (Box, slices, maps) cover common cases, echoing the README's memory model notes.",
+            },
+            TopicSection {
+                title: "Concurrency (build/run parity)",
+                snippet: r#"fn worker(id: int32, tx: Sender[int32], values: []int32) -> Result[(), string] {
+  let mut int32 total = 0;
+  for value in values {
+    total = total + value;
+  }
+  send(tx, total + id)
+}
+
+fn main() {
+  let (tx, rx) = channel[int32]();
+  let handle = spawn worker(100, tx, [1, 2, 3, 4]);
+  match join(handle) {
+    Ok(result) => match result {
+      Ok(()) => out(rx.recv()),
+      Err(msg) => out(msg),
+    },
+    Err(msg) => out(msg),
+  }
+}"#,
+                explanation: "Channels (`channel[T]`), `spawn expr`, and `join(handle)` work in both the interpreter and build mode. Build-mode execution stays deterministic unless you opt into `PRIME_BUILD_PARALLEL=1`; emitted binaries always use OS threads. See `parallel_demo.prime` for a two-worker aggregation example.",
             },
         ],
     },
