@@ -513,7 +513,7 @@ let Map[string, int32] rewards = #{
 out(probe_notes.get(0));
 out(rewards.get("Ridge scouting"));
 out(rewards.len());"#,
-                explanation: "Inline literals build slices and maps without helper calls. Non-empty map literals infer `Map[string, T]` automatically, so the binding can omit a type hint. Bracket indexing returns `Option` values alongside methods like `.get` and `.len`, matching the README's collection section and powering the `prime-lang docs` snippets.",
+                explanation: "Inline literals build slices and maps without helper calls. Non-empty map literals infer `Map[string, T]` automatically, so the binding can omit a type hint. Bracket indexing (`probe_notes[0]`, `rewards[\"Ridge scouting\"]`) returns `Option` values alongside methods like `.get` and `.len`, matching the README's collection section and powering the `prime-lang docs` snippets.",
             },
             TopicSection {
                 title: "Type checking and diagnostics",

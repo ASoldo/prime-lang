@@ -43,6 +43,9 @@ and CI integrations no longer see spurious failures after a successful build.
 Build-mode now mirrors the interpreter for control flow (`return`/`break`/`continue`)
 and for the new `try {}` / `?` sugar, so you can rely on identical semantics in both
 `prime run` and `prime build`.
+Build-mode also executes concurrency the same way: `spawn`/`join` plus channels work
+while compiling (deterministically unless you opt into `PRIME_BUILD_PARALLEL=1`), and
+the emitted binary uses real OS threads.
 
 ### Example Programs
 
@@ -71,9 +74,10 @@ Validated outputs (fresh run, current syntax):
 - `lab_demo.prime` — three plan runs with totals/synergy summaries and pairing.
 - `main.prime` — full gameplay log (players, enemies, quests, patrols, defers).
 - `ns_demo.prime` — namespace overloading demo with foo/bar labels.
-- `pattern_demo.prime` — pattern matches over tuples/maps/slices plus mutation demos.
+- `pattern_demo.prime` – pattern matches over tuples/maps/slices plus mutation demos.
 - `pkg_app.prime` — banner/promotion output.
 - `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
+- `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
 
 ## CLI Overview & Built-in Docs
 
