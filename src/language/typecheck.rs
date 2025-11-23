@@ -65,6 +65,7 @@ struct StructInfo {
 #[derive(Clone)]
 struct EnumInfo {
     def: EnumDef,
+    module: String,
 }
 
 #[derive(Clone)]
@@ -72,13 +73,15 @@ struct EnumVariantInfo {
     enum_name: String,
     def: EnumVariant,
     span: Span,
+    _module: String,
 }
 
 impl EnumVariantInfo {
-    fn from_def(enum_name: String, def: EnumVariant) -> Self {
+    fn from_def(enum_name: String, enum_module: String, def: EnumVariant) -> Self {
         Self {
             enum_name,
             span: def.span,
+            _module: enum_module,
             def,
         }
     }
@@ -156,14 +159,24 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
             }
             Item::Enum(def) => {
                 for variant in &def.variants {
-                registry.enum_variants.insert(
-                    variant.name.clone(),
-                    EnumVariantInfo::from_def(def.name.clone(), variant.clone()),
-                );
-            }
+                    registry.enum_variants.insert(
+                        variant.name.clone(),
+                        EnumVariantInfo::from_def(
+                            def.name.clone(),
+                            module.name.clone(),
+                            variant.clone(),
+                        ),
+                    );
+                }
                 registry
                     .enums
-                    .insert(def.name.clone(), EnumInfo { def: def.clone() });
+                    .insert(
+                        def.name.clone(),
+                        EnumInfo {
+                            def: def.clone(),
+                            module: module.name.clone(),
+                        },
+                    );
             }
             Item::Function(def) => {
                 register_function(registry, &module.name, def.clone(), None);
@@ -279,8 +292,13 @@ impl Checker {
             let enum_info = self.registry.enums.get(name).ok_or_else(|| {
                 TypeError::new(&module.path, span, format!("Unknown enum `{}`", name))
             })?;
-            let variant_def = find_variant(&enum_info.def, variant, module, span)?;
-            Ok(EnumVariantInfo::from_def(name.to_string(), variant_def.clone()))
+            let variant_def =
+                find_variant(&enum_info.def, &enum_info.module, variant, module, span)?;
+            Ok(EnumVariantInfo::from_def(
+                name.to_string(),
+                enum_info.module.clone(),
+                variant_def.clone(),
+            ))
         } else if let Some(info) = self.registry.enum_variants.get(variant) {
             Ok(info.clone())
         } else {
@@ -896,12 +914,17 @@ impl Checker {
                 values,
                 span,
             } => {
-                let info = match self.resolve_enum_literal(module, enum_name.as_deref(), variant, *span) {
-                    Ok(info) => info,
-                    Err(err) => {
-                        self.errors.push(err);
-                        return None;
-                    }
+        let info = match self.resolve_enum_literal(
+            module,
+            enum_name.as_deref(),
+            variant,
+            *span,
+        ) {
+            Ok(info) => info,
+            Err(err) => {
+                self.errors.push(err);
+                return None;
+            }
                 };
                 for (field, expr) in info.def.fields.iter().zip(values.iter()) {
                     self.check_expression(module, expr, Some(&field.ty), returns, env);
@@ -2236,6 +2259,54 @@ impl Checker {
                 variant,
                 bindings,
             } => {
+                if let Some(name) = enum_name {
+                    if let Some(enum_info) = self.registry.enums.get(name) {
+                        let Ok(variant_def) = find_variant(
+                            &enum_info.def,
+                            &enum_info.module,
+                            variant,
+                            module,
+                            pattern_span(pattern),
+                        ) else {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                pattern_span(pattern),
+                                format!("`{}` does not belong to enum `{}`", variant, name),
+                            ));
+                            return;
+                        };
+                        if bindings.len() != variant_def.fields.len() {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                pattern_span(pattern),
+                                format!(
+                                    "`{}` expects {} field(s), found {}",
+                                    variant,
+                                    variant_def.fields.len(),
+                                    bindings.len()
+                                ),
+                            ));
+                            return;
+                        }
+                        let info = EnumVariantInfo::from_def(
+                            enum_info.def.name.clone(),
+                            enum_info.module.clone(),
+                            variant_def.clone(),
+                        );
+                        let fields = instantiate_variant_fields(&info, ty, &self.registry);
+                        for (binding, field) in bindings.iter().zip(fields.iter()) {
+                            self.bind_pattern(module, binding, Some(&field.ty), env);
+                        }
+                        return;
+                    } else {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            pattern_span(pattern),
+                            format!("Unknown enum `{}`", name),
+                        ));
+                        return;
+                    }
+                }
                 if let Some(info) = self.registry.enum_variants.get(variant).cloned() {
                     if let Some(actual_enum) = enum_name {
                         if actual_enum != &info.enum_name {

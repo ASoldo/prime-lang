@@ -2,16 +2,21 @@ module demos::parallel_demo;
 
 import core::types;
 
-fn worker(id: int32, tx: Sender[int32], values: []int32) -> Result[(), string] {
+enum WorkerOutcome {
+  Total(int32),
+  Error(string),
+}
+
+fn worker(id: int32, tx: Sender[WorkerOutcome], values: []int32) -> Result[(), string] {
   let mut int32 total = 0;
   for value in values {
     total = total + value;
   }
-  send(tx, total + id)
+  send(tx, WorkerOutcome::Total(total + id))
 }
 
 fn main() {
-  let (tx, rx) = channel[int32]();
+  let (tx, rx) = channel[WorkerOutcome]();
   let []int32 left = [
     1,
     2,
@@ -30,12 +35,19 @@ fn main() {
   let mut int32 left_total = -1;
   let mut int32 right_total = -1;
   let mut int32 seen = 0;
-  while let Some(value) = recv(rx) {
-    collected = collected + value;
-    if value > 200 {
-      right_total = value;
-    } else {
-      left_total = value;
+  while let Some(outcome) = recv(rx) {
+    match outcome {
+      WorkerOutcome::Total(value) => {
+        collected = collected + value;
+        if value > 200 {
+          right_total = value;
+        } else {
+          left_total = value;
+        }
+      },
+      WorkerOutcome::Error(message) => {
+        out(`worker reported error: {message}`);
+      },
     }
     seen = seen + 1;
     if seen == 2 {
