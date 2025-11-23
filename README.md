@@ -33,7 +33,7 @@ cargo install --path .
 prime-lang run main.prime         # interpret
 prime-lang build main.prime       # emit LLVM, link to ./.build.prime/output
 ./.build.prime/output/output      # run the native binary
-# Try another module: prime-lang run --entry demos::error_handling
+# Try another module: prime-lang run --entry demos.error_handling
 ```
 
 The repository ships with `main.prime` so you can confirm the full toolchain
@@ -59,9 +59,9 @@ the emitted binary uses real OS threads.
 Run any of them directly:
 
 ```bash
-prime-lang run lab_demo.prime            # module demos::lab_demo in the manifest
-prime-lang run pattern_demo.prime        # module demos::patterns
-prime-lang run error_handling_demo.prime # module demos::error_handling
+prime-lang run lab_demo.prime            # module demos.lab_demo in the manifest
+prime-lang run pattern_demo.prime        # module demos.patterns
+prime-lang run error_handling_demo.prime # module demos.error_handling
 ```
 
 Validated outputs (fresh run, current syntax):
@@ -127,19 +127,19 @@ names map to which files and what the entry module is:
 manifest_version = "2"
 
 [package]
-entry = "app::main"
+entry = "app.main"
 kind = "binary"
 name = "prime-lang-playground"
 version = "0.1.0"
 
 [[modules]]
-name = "app::main"
+name = "app.main"
 path = "main.prime"
 visibility = "pub"
 kind = "module"
 
 [[modules]]
-name = "core::types"
+name = "core.types"
 path = "types.prime"
 visibility = "pub"
 kind = "library"
@@ -158,12 +158,12 @@ discovered by `prime-lang test`.
   is treated as pass/fail). The full return list is passed to the next function
   when arity matches (supports multi-value chaining) or to a single-arg function
   when there is exactly one return; otherwise the function is skipped with a note.
-- Targets can be files or module names (`prime-lang test tests::basic,other.test`);
+- Targets can be files or module names (`prime-lang test tests.basic,other.test`);
   no target runs all discovered test headers.
 - `prime-lang run/build` refuse to execute/compile `test ...;` targets.
 - Built-in helpers for tests: `assert(cond: bool)` and `expect(cond: bool, message: string)`.
 
-`prime-lang add demos::patterns --path pattern_demo.prime` will append another
+`prime-lang add demos.patterns --path pattern_demo.prime` will append another
 `[[modules]]` table and create the stub file automatically. Keeping the manifest
 in sync with each file’s `module ...;` declaration lets the CLI, interpreter,
 compiler, and LSP share the same package graph.
@@ -176,11 +176,11 @@ in `main.prime` and `types.prime` demonstrate the core semantics:
 ### Modules, Libraries & Imports
 
 ```prime
-module app::main;
-library core::types;
+module app.main;
+library core.types;
 
-import core::types;           // load structs/enums from types.prime
-import math::random;          // relative paths become math/random.prime
+import core.types;            // load structs/enums from types.prime
+import math.random;           // relative paths become math/random.prime
 ```
 
 Headers distinguish entrypoints (`module` with `main`), shared code (`library`
@@ -278,7 +278,7 @@ fn move_player(p: Player, delta: Vec2) -> Player {
 match damage {
   Flat(amount) => Player{ .. },
   Percent(rate) if rate > 25 => { /* guard branch */ },
-  MissionEvent::Waiting => { /* zero-field variant */ },
+  MissionEvent:Waiting => { /* zero-field variant */ },
   Percent(rate) => { /* fallback */ },
 };
 
@@ -338,7 +338,7 @@ let #{ "hp": hp_total, .. } = stats;
 out(hp_stat + mp_stat + hp_total);
 ```
 
-- `match` is exhaustive, supports `Enum::Variant` syntax, and each arm can carry
+- `match` is exhaustive, supports `Enum:Variant` syntax, and each arm can carry
   an `if guard` to refine patterns.
 - Loops include `for range`, `while`, `while let`, and `match` drives branching.
 
@@ -408,10 +408,10 @@ fn calibrate_profile(value: int32) -> Result[int32, string] {
 }
 ```
 
-- `try { ... }` wraps the final expression in `Result::Ok` and propagates any
-  `FlowSignal::Propagate` out of the block automatically—perfect for composing
+- `try { ... }` wraps the final expression in `Result:Ok` and propagates any
+  `FlowSignal:Propagate` out of the block automatically—perfect for composing
   fallible helpers.
-- The postfix `?` operator unwraps `Result::Ok` (returning the payload) or
+- The postfix `?` operator unwraps `Result:Ok` (returning the payload) or
   triggers an early `Err` by propagating the current value outward. Both the
   interpreter and build-mode backend now honor this control flow.
 

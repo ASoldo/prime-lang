@@ -159,7 +159,7 @@ $ prime-lang lint main.prime --watch
 $ prime-lang fmt main.prime --write
 $ prime-lang lsp
 $ prime-lang init adventure
-$ prime-lang add demos::new --path demos/new_demo.prime
+$ prime-lang add demos.new --path demos/new_demo.prime
 $ prime-lang docs --query core-syntax"#,
                 explanation: "Each subcommand is wired up in `src/main.rs` via clap. `run` interprets a file after loading the manifest, `build` emits LLVM + native binaries, `lint`/`fmt` offer single-shot or watch modes, `lsp` serves editors, `init` scaffolds a workspace, `add` appends a manifest entry and stub file, and `docs` prints these references.",
             },
