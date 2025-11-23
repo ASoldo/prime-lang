@@ -1328,47 +1328,6 @@ pub fn chain_for_field_token(text: &str, span: Span) -> Option<Vec<String>> {
     Some(segments)
 }
 
-fn find_match_scrutinee(slice: &str) -> Option<String> {
-    let mut last_match = None;
-    let mut iter = slice.match_indices("match");
-    while let Some((idx, _)) = iter.next() {
-        last_match = Some(idx);
-    }
-    let start = last_match?;
-    let after = &slice[start + "match".len()..];
-    let after = after.trim_start();
-    let mut ident = String::new();
-    for ch in after.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == ':' || ch == '.' {
-            ident.push(ch);
-        } else {
-            break;
-        }
-    }
-    if ident.is_empty() {
-        None
-    } else {
-        Some(ident)
-    }
-}
-
-fn enclosing_param_enum_type(module: &Module, offset: usize, name: &str) -> Option<String> {
-    for item in &module.items {
-        if let Item::Function(func) = item {
-            if offset >= func.span.start && offset <= func.span.end {
-                for param in &func.params {
-                    if param.name == name {
-                        if let TypeExpr::Named(enum_name, _) = &param.ty.ty {
-                            return Some(enum_name.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
 fn skip_ws_back(text: &str, mut idx: usize) -> usize {
     let bytes = text.as_bytes();
     while idx > 0 {
