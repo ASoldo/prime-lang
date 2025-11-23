@@ -262,6 +262,21 @@ PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh"#,
 - casts:    `cast[T](value)` explicitly converts between numeric widths/signedness"#,
                 explanation: "Arithmetic, ranges, and bitwise ops accept the full Rust-like numeric set. Context drives literal types (`let uint8 f = 0;` works without casts). Mixed numeric operations require matching widths/signedness—use `cast[uint32](value)` (etc.) to opt into conversions. The typechecker surfaces clear errors when operands diverge.",
             },
+            TopicSection {
+                title: "Concurrency helpers",
+                snippet: r#"- spawn/task: `spawn expr` returns JoinHandle[T]
+- channels: channel[T]() -> (Sender[T], Receiver[T]); send/recv/recv_timeout
+- timing:   sleep(ms) pauses the current task"#,
+                explanation: "Channels and joins now support timeouts via `recv_timeout(rx, millis)`; `sleep(ms)` pauses the current task. Build and run modes mirror semantics so determinism holds during compilation, while runtime uses host threads and timers.",
+            },
+            TopicSection {
+                title: "ABI & FFI status",
+                snippet: r#"- Targets: host triple by default; pointer width matches host
+- Scalars: int/uint widths lower than 128 bits emit native integer types
+- ABI shims: runtime_abi.rs exposes stable C-callable entry points for runtime primitives
+- Limits: no non-native pointer sizes; 128-bit is the widest scalar; FFI considered experimental pre-1.0"#,
+                explanation: "Codegen relies on LLVM’s host triple today and assumes the host pointer width. Runtime ABI functions (`prime_*` shims in runtime_abi.rs) back channels, slices, maps, and boxed values. External FFI and cross-target builds remain experimental until locked for 1.0; avoid relying on undocumented calling conventions.",
+            },
         ],
     },
     Topic {

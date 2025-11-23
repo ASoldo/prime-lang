@@ -7,6 +7,7 @@ use std::sync::{
     Mutex,
 };
 use std::thread;
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -98,6 +99,22 @@ impl ChannelReceiver {
         let result = {
             let guard = self.receiver.lock().ok()?;
             guard.recv()
+        };
+        match result {
+            Ok(value) => Some(value),
+            Err(_) => None,
+        }
+    }
+
+    pub fn recv_timeout(&self, millis: i64) -> Option<Value> {
+        let duration = if millis < 0 {
+            Duration::from_millis(0)
+        } else {
+            Duration::from_millis(millis as u64)
+        };
+        let result = {
+            let guard = self.receiver.lock().ok()?;
+            guard.recv_timeout(duration)
         };
         match result {
             Ok(value) => Some(value),

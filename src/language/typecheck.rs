@@ -1767,6 +1767,31 @@ impl Checker {
                 }
                 Some(TypeExpr::Named("Option".into(), vec![TypeExpr::Unit]))
             }
+            "recv_timeout" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`recv_timeout` expects 2 arguments",
+                    ));
+                    return None;
+                }
+                let receiver_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some(TypeExpr::Named(name, params)) = receiver_ty {
+                    if name == "Receiver" && params.len() == 1 {
+                        self.check_expression(
+                            module,
+                            &args[1],
+                            Some(&TypeExpr::Named("int64".into(), Vec::new())),
+                            returns,
+                            env,
+                        );
+                        return Some(make_option_type(params[0].clone()));
+                    }
+                }
+                self.check_expression(module, &args[1], None, returns, env);
+                Some(TypeExpr::Named("Option".into(), vec![TypeExpr::Unit]))
+            }
             "close" => {
                 if args.len() != 1 {
                     self.errors.push(TypeError::new(
@@ -1777,6 +1802,59 @@ impl Checker {
                 } else {
                     self.check_expression(module, &args[0], None, returns, env);
                 }
+                Some(TypeExpr::Unit)
+            }
+            "sleep" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`sleep` expects 1 argument (millis)",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("int64".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                Some(TypeExpr::Unit)
+            }
+            "assert_eq" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`assert_eq` expects 2 arguments",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                let left = self.check_expression(module, &args[0], None, returns, env);
+                let right =
+                    self.check_expression(module, &args[1], left.as_ref(), returns, env);
+                if let Some(expected) = left.as_ref() {
+                    self.ensure_type(module, expr_span(&args[1]), expected, right.as_ref());
+                }
+                Some(TypeExpr::Unit)
+            }
+            "panic" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`panic` expects 1 argument",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("string".into(), Vec::new())),
+                    returns,
+                    env,
+                );
                 Some(TypeExpr::Unit)
             }
             "join" => {
@@ -2708,11 +2786,15 @@ impl Checker {
                 | "channel"
                 | "send"
                 | "recv"
+                | "recv_timeout"
                 | "close"
                 | "join"
+                | "sleep"
                 | "ptr"
                 | "ptr_mut"
                 | "cast"
+                | "assert_eq"
+                | "panic"
         )
     }
 

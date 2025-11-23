@@ -765,11 +765,15 @@ impl Interpreter {
             "channel" => self.builtin_channel(args),
             "send" => self.builtin_send(args),
             "recv" => self.builtin_recv(args),
+            "recv_timeout" => self.builtin_recv_timeout(args, type_args),
             "close" => self.builtin_close(args),
             "join" => self.builtin_join(args),
+            "sleep" => self.builtin_sleep(args),
             "ptr" => self.builtin_ptr(args, false),
             "ptr_mut" => self.builtin_ptr(args, true),
             "cast" => self.builtin_cast(args, type_args),
+            "assert_eq" => self.builtin_assert_eq(args),
+            "panic" => self.builtin_panic(args),
             _ => return None,
         };
         Some(result)
@@ -1229,6 +1233,29 @@ impl Interpreter {
         Ok(Vec::new())
     }
 
+    fn builtin_assert_eq(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("assert_eq", &args, 2)?;
+        let left = args.remove(0);
+        let right = args.remove(0);
+        let equal = self.values_equal(&left, &right)?;
+        if !equal {
+            return Err(RuntimeError::Panic {
+                message: format!(
+                    "assertion failed: left `{}` != right `{}`",
+                    self.describe_value(&left),
+                    self.describe_value(&right)
+                ),
+            });
+        }
+        Ok(Vec::new())
+    }
+
+    fn builtin_panic(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("panic", &args, 1)?;
+        let message = self.expect_string_or_format("panic", args.remove(0))?;
+        Err(RuntimeError::Panic { message })
+    }
+
     fn builtin_expect(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("expect", &args, 2)?;
         let cond = self.expect_bool("expect", args.remove(0))?;
@@ -1379,6 +1406,31 @@ impl Interpreter {
         }
     }
 
+    fn builtin_recv_timeout(
+        &mut self,
+        mut args: Vec<Value>,
+        type_args: &[TypeExpr],
+    ) -> RuntimeResult<Vec<Value>> {
+        if !type_args.is_empty() {
+            return Err(RuntimeError::Unsupported {
+                message: "`recv_timeout` does not accept type arguments".into(),
+            });
+        }
+        self.expect_arity("recv_timeout", &args, 2)?;
+        let millis = self.expect_int_value("recv_timeout", args.pop().unwrap())?;
+        let receiver = self.expect_receiver("recv_timeout", args.remove(0))?;
+        match receiver.recv_timeout(millis as i64) {
+            Some(value) => {
+                let some = self.instantiate_enum("Option", "Some", vec![value])?;
+                Ok(vec![some])
+            }
+            None => {
+                let none = self.instantiate_enum("Option", "None", Vec::new())?;
+                Ok(vec![none])
+            }
+        }
+    }
+
     fn builtin_close(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("close", &args, 1)?;
         match args.remove(0) {
@@ -1401,6 +1453,15 @@ impl Interpreter {
                 ),
             }),
         }
+    }
+
+    fn builtin_sleep(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("sleep", &args, 1)?;
+        let millis = self.expect_int_value("sleep", args.remove(0))?;
+        if millis > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(millis as u64));
+        }
+        Ok(vec![Value::Unit])
     }
 
     fn builtin_join(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {

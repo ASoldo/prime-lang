@@ -9,6 +9,7 @@ use crate::runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGene
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 use std::thread;
 
 #[allow(dead_code)]
@@ -218,6 +219,42 @@ struct BuildChannelState {
     closed: bool,
 }
 
+fn build_values_equal(left: &BuildValue, right: &BuildValue) -> bool {
+    match (left, right) {
+        (BuildValue::Int(a), BuildValue::Int(b)) => a == b,
+        (BuildValue::Float(a), BuildValue::Float(b)) => (*a - *b).abs() < f64::EPSILON,
+        (BuildValue::Bool(a), BuildValue::Bool(b)) => a == b,
+        (BuildValue::String(a), BuildValue::String(b)) => a == b,
+        (BuildValue::Unit, BuildValue::Unit) => true,
+        (
+            BuildValue::Enum {
+                enum_name: a_name,
+                variant: a_variant,
+                values: a_values,
+                ..
+            },
+            BuildValue::Enum {
+                enum_name: b_name,
+                variant: b_variant,
+                values: b_values,
+                ..
+            },
+        ) => {
+            a_name == b_name
+                && a_variant == b_variant
+                && a_values.len() == b_values.len()
+                && a_values
+                    .iter()
+                    .zip(b_values.iter())
+                    .all(|(x, y)| build_values_equal(x, y))
+        }
+        (BuildValue::Tuple(a), BuildValue::Tuple(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| build_values_equal(x, y))
+        }
+        _ => false,
+    }
+}
+
 impl BuildChannelSender {
     fn new(id: u64, inner: Arc<(Mutex<BuildChannelState>, Condvar)>) -> Self {
         Self { id, inner }
@@ -258,6 +295,29 @@ impl BuildChannelReceiver {
                 return None;
             }
             guard = cv.wait(guard).unwrap();
+        }
+    }
+
+    fn recv_timeout(&self, millis: i64) -> Option<BuildValue> {
+        let (lock, cv) = &*self.inner;
+        let mut guard = lock.lock().unwrap();
+        let duration = if millis < 0 {
+            Duration::from_millis(0)
+        } else {
+            Duration::from_millis(millis as u64)
+        };
+        loop {
+            if let Some(v) = guard.queue.pop_front() {
+                return Some(v);
+            }
+            if guard.closed {
+                return None;
+            }
+            let (g, timeout) = cv.wait_timeout(guard, duration).unwrap();
+            guard = g;
+            if timeout.timed_out() {
+                return None;
+            }
         }
     }
 
@@ -1771,6 +1831,36 @@ impl BuildInterpreter {
                     None => Ok(self.wrap_enum("None", vec![])),
                 }
             }
+            "recv_timeout" => {
+                if args.len() != 2 {
+                    return Err("recv_timeout expects 2 arguments".into());
+                }
+                let receiver = match self.eval_expr_mut(&args[0])? {
+                    BuildValue::ChannelReceiver(rx) => rx,
+                    other => {
+                        return Err(format!(
+                            "recv_timeout expects channel receiver, found {}",
+                            other.kind()
+                        ))
+                    }
+                };
+                let millis = match self.eval_expr_mut(&args[1])? {
+                    BuildValue::Int(v) => v,
+                    other => {
+                        return Err(format!(
+                            "recv_timeout expects integer millis, found {}",
+                            other.kind()
+                        ))
+                    }
+                };
+                let millis_i64: i64 = millis
+                    .try_into()
+                    .unwrap_or_else(|_| if millis.is_negative() { 0 } else { i64::MAX });
+                match receiver.recv_timeout(millis_i64) {
+                    Some(value) => Ok(self.wrap_enum("Some", vec![value])),
+                    None => Ok(self.wrap_enum("None", vec![])),
+                }
+            }
             "close" => {
                 if args.len() != 1 {
                     return Err("close expects 1 argument".into());
@@ -1802,6 +1892,45 @@ impl BuildInterpreter {
                     .map_err(|_| "join handle panicked".to_string())??;
                 self.effects.extend(evaluation.effects);
                 Ok(evaluation.value)
+            }
+            "assert_eq" => {
+                if args.len() != 2 {
+                    return Err("assert_eq expects 2 arguments".into());
+                }
+                let left = self.eval_expr_mut(&args[0])?;
+                let right = self.eval_expr_mut(&args[1])?;
+                if !build_values_equal(&left, &right) {
+                    return Err("assert_eq failed".into());
+                }
+                Ok(BuildValue::Unit)
+            }
+            "panic" => {
+                if args.len() != 1 {
+                    return Err("panic expects 1 argument".into());
+                }
+                let msg = match self.eval_expr_mut(&args[0])? {
+                    BuildValue::String(s) => s,
+                    other => return Err(format!("panic expects string, found {}", other.kind())),
+                };
+                Err(msg)
+            }
+            "sleep" => {
+                if args.len() != 1 {
+                    return Err("sleep expects 1 argument".into());
+                }
+                let millis = match self.eval_expr_mut(&args[0])? {
+                    BuildValue::Int(v) => v,
+                    other => {
+                        return Err(format!(
+                            "sleep expects integer millis, found {}",
+                            other.kind()
+                        ))
+                    }
+                };
+                if millis > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(millis as u64));
+                }
+                Ok(BuildValue::Unit)
             }
             "get" => {
                 if args.len() != 2 {

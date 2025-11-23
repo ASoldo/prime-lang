@@ -507,6 +507,8 @@ panel.render();  // rewrites to Renderable::render(panel)
   annotated type (e.g., `let uint8 x = 0;`, `let float64 y = 0.0;`) and default
   to `int32`/`float32` only when the surrounding context is untyped. Use
   `cast[T](value)` to convert explicitly between numeric widths/signedness.
+- Concurrency helpers: `channel[T]()` yields `(Sender[T], Receiver[T])`; `recv_timeout(rx, ms)`
+  returns `Option[T]` after waiting; `sleep(ms)` pauses the current task.
 - Structs/enums are value types; assignment copies the fields. Heap helpers
   include `Box[T]`, slices (`[]T`), and maps (`Map[string, T]`) with literals,
   methods (+/- borrow checks), and iteration support.
@@ -518,6 +520,18 @@ panel.render();  // rewrites to Renderable::render(panel)
 With these primitives you can already compose larger programs (see
 `main.prime`/`types.prime`) while keeping the future roadmap—better memory
 controls—in mind.
+
+### ABI, FFI & Targets
+
+- Codegen targets the host triple by default (LLVM) and assumes pointer width
+  matches the host. Integer values lower than 128 bits are represented with
+  their exact width; the backend lowers `int32`/`uint32` et al. directly.
+- Runtime ABI uses a stable set of C-callable shims (`prime_int_new`,
+  `prime_float_new`, `prime_string_new`, etc.) defined in `runtime_abi.rs`. FFI
+  is not finalized yet; linking against external symbols should be treated as
+  experimental until the ABI is locked for 1.0.
+- Codegen limits: 128-bit integers are the widest supported scalar; larger
+  widths or non-native pointer sizes are currently unsupported.
 
 
 ## CLI Usage
