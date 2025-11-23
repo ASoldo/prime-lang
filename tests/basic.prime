@@ -76,3 +76,56 @@ fn iterates_custom_iterable() -> bool {
   }
   total == 9
 }
+
+fn indexes_slice() -> bool {
+  let []int32 values = [
+    10,
+    20,
+  ];
+  match values[1] {
+    Some(found) => found == 20,
+    None => false,
+  }
+}
+
+fn indexes_map_literal() -> bool {
+  let Map[string, int32] rewards = #{
+    "Alpha": 3,
+  };
+  match rewards["Alpha"] {
+    Some(found) => found == 3,
+    None => false,
+  }
+}
+
+fn index_bounds_are_safe() -> bool {
+  let []string empty = [];
+  match empty[0] {
+    Some(_) => false,
+    None => true,
+  }
+}
+
+fn index_assignment_updates_slice() -> bool {
+  let []int32 numbers = [
+    1,
+    2,
+    3,
+  ];
+  numbers[1] = 42;
+  match numbers[1] {
+    Some(found) => found == 42,
+    None => false,
+  }
+}
+
+fn index_assignment_inserts_map() -> bool {
+  let Map[string, int32] counts = #{
+    "hp": 5,
+  };
+  counts["mp"] = 7;
+  match counts["mp"] {
+    Some(found) => found == 7,
+    None => false,
+  }
+}

@@ -370,6 +370,11 @@ impl BuildInterpreter {
             }
             Expr::If(if_expr) => self.eval_if(if_expr),
             Expr::Range(range) => self.eval_range(range),
+            Expr::Index { base, index, .. } => {
+                let base_value = self.eval_expr_mut(base)?;
+                let index_value = self.eval_expr_mut(index)?;
+                self.eval_index(base_value, index_value)
+            }
             Expr::StructLiteral { name, fields, .. } => {
                 self.eval_struct_literal(name, fields)
             }
@@ -702,6 +707,44 @@ impl BuildInterpreter {
                         "Cannot assign through non-reference value `{}`",
                         other.kind()
                     )),
+                }
+            }
+            Expr::Index { base, index, .. } => {
+                let value = self.eval_expr_mut(&assign.value)?;
+                let index_value = self.eval_expr_mut(index)?;
+                match base.as_ref() {
+                    Expr::Identifier(Identifier { name, .. }) => {
+                        let cell = {
+                            let binding = self.find_binding_mut(name).ok_or_else(|| {
+                                format!("Unknown identifier `{}` in assignment", name)
+                            })?;
+                            if !binding.mutable {
+                                return Err(format!("Identifier `{}` is immutable", name));
+                            }
+                            if binding.borrowed_mut || binding.borrowed_shared > 0 {
+                                return Err(format!("Identifier `{}` is borrowed", name));
+                            }
+                            binding.cell.clone()
+                        };
+                        let mut guard = cell.lock().unwrap();
+                        self.assign_index_into_value(&mut *guard, index_value, value)
+                    }
+                    Expr::Deref { expr, .. } => match self.eval_expr_mut(expr)? {
+                        BuildValue::Reference(reference) => {
+                            if !reference.mutable {
+                                return Err(
+                                    "Cannot assign through immutable reference".into()
+                                );
+                            }
+                            let mut guard = reference.cell.lock().unwrap();
+                            self.assign_index_into_value(&mut *guard, index_value, value)
+                        }
+                        other => Err(format!(
+                            "Cannot assign through non-reference value `{}`",
+                            other.kind()
+                        )),
+                    },
+                    _ => Err("assignment target not supported in build spawn".into()),
                 }
             }
             Expr::FieldAccess { base, field, .. } => {
@@ -1505,6 +1548,79 @@ impl BuildInterpreter {
         match value {
             BuildValue::Int(v) => Ok(v),
             other => Err(format!("expected int, found {}", other.kind())),
+        }
+    }
+
+    fn eval_index(&self, base: BuildValue, index: BuildValue) -> Result<BuildValue, String> {
+        match base {
+            BuildValue::Slice(items) => {
+                let idx = self.expect_int(index)?;
+                if idx < 0 {
+                    return Ok(self.wrap_enum("None", Vec::new()));
+                }
+                if let Some(value) = items.get(idx as usize) {
+                    Ok(self.wrap_enum("Some", vec![value.clone()]))
+                } else {
+                    Ok(self.wrap_enum("None", Vec::new()))
+                }
+            }
+            BuildValue::Map(entries) => {
+                let key = match index {
+                    BuildValue::String(s) => s,
+                    other => {
+                        return Err(format!(
+                            "map index expects string, found {}",
+                            other.kind()
+                        ))
+                    }
+                };
+                if let Some(value) = entries.get(&key) {
+                    Ok(self.wrap_enum("Some", vec![value.clone()]))
+                } else {
+                    Ok(self.wrap_enum("None", Vec::new()))
+                }
+            }
+            BuildValue::Reference(reference) => {
+                let inner = reference.cell.lock().unwrap().clone();
+                self.eval_index(inner, index)
+            }
+            other => Err(format!("{} cannot be indexed", other.kind())),
+        }
+    }
+
+    fn assign_index_into_value(
+        &self,
+        target: &mut BuildValue,
+        index: BuildValue,
+        value: BuildValue,
+    ) -> Result<(), String> {
+        match target {
+            BuildValue::Slice(items) => {
+                let idx = self.expect_int(index)?;
+                if idx < 0 {
+                    return Err("slice index cannot be negative".into());
+                }
+                if let Some(slot) = items.get_mut(idx as usize) {
+                    *slot = value;
+                    Ok(())
+                } else {
+                    Err(format!("slice index {} out of bounds", idx))
+                }
+            }
+            BuildValue::Map(entries) => {
+                let key = match index {
+                    BuildValue::String(s) => s,
+                    other => {
+                        return Err(format!(
+                            "map index expects string, found {}",
+                            other.kind()
+                        ))
+                    }
+                };
+                entries.insert(key, value);
+                Ok(())
+            }
+            other => Err(format!("{} cannot be indexed", other.kind())),
         }
     }
 

@@ -678,6 +678,10 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             let base_str = format_expr_prec(base, 100);
             format!("{base_str}.{field}")
         }
+        Expr::Index { base, index, .. } => {
+            let base_str = format_expr_prec(base, 100);
+            format!("{base_str}[{}]", format_expr(index))
+        }
         Expr::Tuple(values, _) => {
             let inner = values
                 .iter()

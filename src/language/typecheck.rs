@@ -603,30 +603,119 @@ impl Checker {
                 }
             }
             Statement::Assign(assign) => {
-                if let Expr::Identifier(ident) = &assign.target {
-                    env.clear_binding_borrows(&ident.name);
-                    env.reset_moved(&ident.name);
-                    let expected_type = env.lookup(&ident.name).and_then(|info| info.ty.clone());
-                    if let Some(expected) = expected_type {
-                        let ty = self.check_expression(
-                            module,
-                            &assign.value,
-                            Some(&expected),
-                            returns,
-                            env,
-                        );
-                        self.ensure_type(module, ident.span, &expected, ty.as_ref());
-                        for target in expression_borrow_targets(&assign.value, env) {
-                            env.register_binding_borrow(&ident.name, target);
-                        }
-                    } else {
-                        self.check_expression(module, &assign.value, None, returns, env);
-                        for target in expression_borrow_targets(&assign.value, env) {
-                            env.register_binding_borrow(&ident.name, target);
+                match &assign.target {
+                    Expr::Identifier(ident) => {
+                        env.clear_binding_borrows(&ident.name);
+                        env.reset_moved(&ident.name);
+                        let expected_type =
+                            env.lookup(&ident.name).and_then(|info| info.ty.clone());
+                        if let Some(expected) = expected_type {
+                            let ty = self.check_expression(
+                                module,
+                                &assign.value,
+                                Some(&expected),
+                                returns,
+                                env,
+                            );
+                            self.ensure_type(module, ident.span, &expected, ty.as_ref());
+                            for target in expression_borrow_targets(&assign.value, env) {
+                                env.register_binding_borrow(&ident.name, target);
+                            }
+                        } else {
+                            self.check_expression(module, &assign.value, None, returns, env);
+                            for target in expression_borrow_targets(&assign.value, env) {
+                                env.register_binding_borrow(&ident.name, target);
+                            }
                         }
                     }
-                } else {
-                    self.check_expression(module, &assign.value, None, returns, env);
+                    Expr::Index { base, index, span } => {
+                        let base_ty = self.check_expression(module, base, None, returns, env);
+                        let Some(container_ty) = base_ty.as_ref() else {
+                            self.check_expression(module, &assign.value, None, returns, env);
+                            return;
+                        };
+                        let target_ty = strip_refs_and_pointers(container_ty);
+                        match target_ty {
+                            TypeExpr::Slice(inner) => {
+                                self.check_expression(
+                                    module,
+                                    index,
+                                    Some(&int_type()),
+                                    returns,
+                                    env,
+                                );
+                                let value_ty = self.check_expression(
+                                    module,
+                                    &assign.value,
+                                    Some(inner.as_ref()),
+                                    returns,
+                                    env,
+                                );
+                                self.ensure_type(
+                                    module,
+                                    expr_span(&assign.value),
+                                    inner.as_ref(),
+                                    value_ty.as_ref(),
+                                );
+                            }
+                            TypeExpr::Named(name, args) if name == "Map" && args.len() == 2 => {
+                                self.check_expression(
+                                    module,
+                                    index,
+                                    Some(&string_type()),
+                                    returns,
+                                    env,
+                                );
+                                let expected = &args[1];
+                                let value_ty = self.check_expression(
+                                    module,
+                                    &assign.value,
+                                    Some(expected),
+                                    returns,
+                                    env,
+                                );
+                                self.ensure_type(
+                                    module,
+                                    expr_span(&assign.value),
+                                    expected,
+                                    value_ty.as_ref(),
+                                );
+                            }
+                            TypeExpr::Array { ty, .. } => {
+                                self.check_expression(
+                                    module,
+                                    index,
+                                    Some(&int_type()),
+                                    returns,
+                                    env,
+                                );
+                                let value_ty = self.check_expression(
+                                    module,
+                                    &assign.value,
+                                    Some(ty.as_ref()),
+                                    returns,
+                                    env,
+                                );
+                                self.ensure_type(
+                                    module,
+                                    expr_span(&assign.value),
+                                    ty.as_ref(),
+                                    value_ty.as_ref(),
+                                );
+                            }
+                            other => {
+                                self.errors.push(TypeError::new(
+                                    &module.path,
+                                    *span,
+                                    format!("`{}` cannot be indexed", other.canonical_name()),
+                                ));
+                                self.check_expression(module, &assign.value, None, returns, env);
+                            }
+                        }
+                    }
+                    _ => {
+                        self.check_expression(module, &assign.value, None, returns, env);
+                    }
                 }
             }
             Statement::Expr(expr) => {
@@ -978,6 +1067,37 @@ impl Checker {
                     ));
                 }
                 Some(handle_ty)
+            }
+            Expr::Index { base, index, span } => {
+                let base_ty = self.check_expression(module, base, None, returns, env);
+                let Some(container_ty) = base_ty.as_ref() else {
+                    self.check_expression(module, index, None, returns, env);
+                    return None;
+                };
+                let target_ty = strip_refs_and_pointers(container_ty);
+                match target_ty {
+                    TypeExpr::Slice(inner) => {
+                        self.check_expression(module, index, Some(&int_type()), returns, env);
+                        Some(make_option_type((**inner).clone()))
+                    }
+                    TypeExpr::Named(name, args) if name == "Map" && args.len() == 2 => {
+                        self.check_expression(module, index, Some(&string_type()), returns, env);
+                        Some(make_option_type(args[1].clone()))
+                    }
+                    TypeExpr::Array { ty, .. } => {
+                        self.check_expression(module, index, Some(&int_type()), returns, env);
+                        Some(make_option_type((**ty).clone()))
+                    }
+                    other => {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            *span,
+                            format!("`{}` cannot be indexed", other.canonical_name()),
+                        ));
+                        self.check_expression(module, index, None, returns, env);
+                        None
+                    }
+                }
             }
         }
     }
@@ -2149,7 +2269,8 @@ impl Checker {
                         ));
                         return;
                     }
-                    for (binding, field) in bindings.iter().zip(info.def.fields.iter()) {
+                    let fields = instantiate_variant_fields(&info, ty, &self.registry);
+                    for (binding, field) in bindings.iter().zip(fields.iter()) {
                         self.bind_pattern(module, binding, Some(&field.ty), env);
                     }
                 } else {
@@ -3303,6 +3424,37 @@ fn is_string_type(ty: &TypeExpr) -> bool {
     matches!(ty, TypeExpr::Named(name, args) if name == "string" && args.is_empty())
 }
 
+fn instantiate_variant_fields(
+    info: &EnumVariantInfo,
+    scrutinee: Option<&TypeExpr>,
+    registry: &TypeRegistry,
+) -> Vec<TypeAnnotation> {
+    let mut fields = info.def.fields.clone();
+    let Some(TypeExpr::Named(enum_name, args)) = scrutinee else {
+        return fields;
+    };
+    if enum_name != &info.enum_name {
+        return fields;
+    }
+    let Some(enum_info) = registry.enums.get(enum_name) else {
+        return fields;
+    };
+    if enum_info.def.type_params.len() != args.len() {
+        return fields;
+    }
+    let map: HashMap<String, TypeExpr> = enum_info
+        .def
+        .type_params
+        .iter()
+        .cloned()
+        .zip(args.iter().cloned())
+        .collect();
+    for field in &mut fields {
+        field.ty = field.ty.substitute(&map);
+    }
+    fields
+}
+
 fn expr_span(expr: &Expr) -> Span {
     match expr {
         Expr::Identifier(ident) => ident.span,
@@ -3326,6 +3478,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Try { span, .. } => *span,
         Expr::TryPropagate { span, .. } => *span,
         Expr::Move { span, .. } => *span,
+        Expr::Index { span, .. } => *span,
         Expr::Spawn { span, .. } => *span,
     }
 }
@@ -3494,9 +3647,19 @@ fn reference_may_dangle(expr: &Expr) -> bool {
         | Expr::Binary { .. }
         | Expr::Try { .. }
         | Expr::TryPropagate { .. }
+        | Expr::Index { .. }
         | Expr::Range(_) => true,
         Expr::Spawn { .. } => true,
         Expr::EnumLiteral { .. } => true,
+    }
+}
+
+fn strip_refs_and_pointers<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
+    match ty {
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
+            strip_refs_and_pointers(ty)
+        }
+        _ => ty,
     }
 }
 

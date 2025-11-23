@@ -1070,6 +1070,90 @@ impl Interpreter {
         }
     }
 
+    fn eval_index_value(&mut self, base: Value, index: Value) -> RuntimeResult<Value> {
+        match base {
+            Value::Slice(slice) => {
+                let idx = self.expect_int_value("index", index)?;
+                if idx < 0 {
+                    return self.instantiate_enum("Option", "None", Vec::new());
+                }
+                match slice.get(idx as usize) {
+                    Some(value) => self.instantiate_enum("Option", "Some", vec![value]),
+                    None => self.instantiate_enum("Option", "None", Vec::new()),
+                }
+            }
+            Value::Map(map) => {
+                let key = self.expect_string("index", index)?;
+                match map.get(&key) {
+                    Some(value) => self.instantiate_enum("Option", "Some", vec![value]),
+                    None => self.instantiate_enum("Option", "None", Vec::new()),
+                }
+            }
+            Value::Reference(reference) => {
+                let cloned = reference.cell.lock().unwrap().clone();
+                self.eval_index_value(cloned, index)
+            }
+            Value::Pointer(pointer) => {
+                let cloned = pointer.cell.lock().unwrap().clone();
+                self.eval_index_value(cloned, index)
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!("`{}` cannot be indexed", self.describe_value(&other)),
+            }),
+        }
+    }
+
+    fn assign_index_value(
+        &mut self,
+        base: Value,
+        index: Value,
+        value: Value,
+    ) -> RuntimeResult<()> {
+        match base {
+            Value::Slice(slice) => {
+                let idx = self.expect_int_value("index", index)?;
+                if idx < 0 {
+                    return Err(RuntimeError::Panic {
+                        message: "slice index cannot be negative".into(),
+                    });
+                }
+                if slice.set(idx as usize, value) {
+                    Ok(())
+                } else {
+                    Err(RuntimeError::Panic {
+                        message: format!("slice index {} out of bounds", idx),
+                    })
+                }
+            }
+            Value::Map(map) => {
+                let key = self.expect_string("index", index)?;
+                map.insert(key, value);
+                Ok(())
+            }
+            Value::Reference(reference) => {
+                if !reference.mutable {
+                    return Err(RuntimeError::Panic {
+                        message: "Cannot assign through immutable reference".into(),
+                    });
+                }
+                let inner = reference.cell.lock().unwrap().clone();
+                self.assign_index_value(inner, index, value)
+            }
+            Value::Pointer(pointer) => {
+                if !pointer.mutable {
+                    return Err(RuntimeError::Panic {
+                        message: "Cannot assign through immutable reference".into(),
+                    });
+                }
+                let inner = pointer.cell.lock().unwrap().clone();
+                self.assign_index_value(inner, index, value)
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!("`{}` cannot be indexed", self.describe_value(&other)),
+            }),
+        }
+    }
+
     fn builtin_map_insert(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.warn_deprecated("map_insert");
         if args.len() != 3 {
@@ -1482,10 +1566,26 @@ impl Interpreter {
                             }
                         }
                     }
+                    Expr::Index { base, index, .. } => {
+                        let target = match self.eval_expression(base)? {
+                            EvalOutcome::Value(value) => value,
+                            EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                        };
+                        let index_value = match self.eval_expression(index)? {
+                            EvalOutcome::Value(value) => value,
+                            EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                        };
+                        let value = match self.eval_expression(&stmt.value)? {
+                            EvalOutcome::Value(value) => value,
+                            EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                        };
+                        self.assign_index_value(target, index_value, value)?;
+                    }
                     _ => {
                         return Err(RuntimeError::Unsupported {
-                            message: "Only identifier or dereference assignments are supported"
-                                .into(),
+                            message:
+                                "Only identifier, dereference, or index assignments are supported"
+                                    .into(),
                         });
                     }
                 }
@@ -1930,6 +2030,18 @@ impl Interpreter {
                 }
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
+            Expr::Index { base, index, .. } => {
+                let base_value = match self.eval_expression(base)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                let index_value = match self.eval_expression(index)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                let value = self.eval_index_value(base_value, index_value)?;
+                Ok(EvalOutcome::Value(value))
+            }
             Expr::Reference { mutable, expr, .. } => self.build_reference(expr, *mutable),
             Expr::Deref { expr, .. } => match self.eval_expression(expr)? {
                 EvalOutcome::Value(Value::Reference(reference)) => {

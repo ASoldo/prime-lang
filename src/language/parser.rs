@@ -267,6 +267,11 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
             shift_expr_spans(&mut range.start, delta);
             shift_expr_spans(&mut range.end, delta);
         }
+        Expr::Index { base, index, span } => {
+            shift_span(span, delta);
+            shift_expr_spans(base, delta);
+            shift_expr_spans(index, delta);
+        }
         Expr::Reference { expr: inner, span, .. }
         | Expr::Deref { expr: inner, span, .. }
         | Expr::Move { expr: inner, span, .. }
@@ -1049,6 +1054,27 @@ impl Parser {
                     }
                     index += 1;
                 }
+                Some(TokenKind::LBracket) => {
+                    let mut depth = 1;
+                    index += 1;
+                    while depth > 0 {
+                        match self.peek_kind_n(index) {
+                            Some(TokenKind::LBracket) => {
+                                depth += 1;
+                                index += 1;
+                            }
+                            Some(TokenKind::RBracket) => {
+                                depth -= 1;
+                                index += 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            Some(_) => index += 1,
+                            None => return false,
+                        }
+                    }
+                }
                 _ => break,
             }
         }
@@ -1126,7 +1152,7 @@ impl Parser {
 
     fn parse_assignment(&mut self) -> Result<AssignStmt, SyntaxError> {
         let start = self.current_span_start();
-        let target = if self.matches(TokenKind::Star) {
+        let mut target = if self.matches(TokenKind::Star) {
             let ident = self.expect_identifier("Expected target after '*'")?;
             let span = Span::new(start, ident.span.end);
             Expr::Deref {
@@ -1134,18 +1160,32 @@ impl Parser {
                 span,
             }
         } else {
-            let mut expr = Expr::Identifier(self.expect_identifier("Expected assignment target")?);
-            while self.matches(TokenKind::Dot) {
+            Expr::Identifier(self.expect_identifier("Expected assignment target")?)
+        };
+        loop {
+            if self.matches(TokenKind::Dot) {
                 let field = self.expect_identifier("Expected field name after '.'")?;
-                let span = expr_span(&expr).union(field.span);
-                expr = Expr::FieldAccess {
-                    base: Box::new(expr),
+                let span = expr_span(&target).union(field.span);
+                target = Expr::FieldAccess {
+                    base: Box::new(target),
                     field: field.name,
                     span,
                 };
+                continue;
             }
-            expr
-        };
+            if self.matches(TokenKind::LBracket) {
+                let index = self.parse_expression()?;
+                let end = self.expect(TokenKind::RBracket)?.span.end;
+                let span = Span::new(expr_span(&target).start, end);
+                target = Expr::Index {
+                    base: Box::new(target),
+                    index: Box::new(index),
+                    span,
+                };
+                continue;
+            }
+            break;
+        }
         self.expect(TokenKind::Eq)?;
         let value = self.parse_expression()?;
         self.expect(TokenKind::Semi)?;
@@ -1406,42 +1446,54 @@ impl Parser {
         let mut expr = self.parse_primary()?;
         loop {
             if self.matches(TokenKind::LBracket) {
-                let mut type_args = Vec::new();
-                if !self.check(TokenKind::RBracket) {
-                    loop {
-                        type_args.push(self.parse_type_expr()?);
-                        if self.matches(TokenKind::Comma) {
-                            continue;
-                        }
-                        break;
-                    }
-                }
-                self.expect(TokenKind::RBracket)?;
-                self.expect(TokenKind::LParen)?;
-                self.enter_paren();
                 let span_start = expr_span(&expr).start;
-                let mut args = Vec::new();
-                if !self.check(TokenKind::RParen) {
-                    loop {
-                        args.push(self.parse_expression()?);
-                        if self.matches(TokenKind::Comma) {
-                            continue;
+                let saved_pos = self.pos;
+                let saved_last_span = self.last_span.clone();
+                let saved_errors_len = self.errors.len();
+                if self.bracket_followed_by_lparen() {
+                    match self.parse_type_arguments() {
+                        Ok((type_args, _)) => {
+                            if self.matches(TokenKind::LParen) {
+                                self.enter_paren();
+                                let mut args = Vec::new();
+                                if !self.check(TokenKind::RParen) {
+                                    loop {
+                                        args.push(self.parse_expression()?);
+                                        if self.matches(TokenKind::Comma) {
+                                            continue;
+                                        }
+                                        break;
+                                    }
+                                }
+                                let end = match self.expect(TokenKind::RParen) {
+                                    Ok(token) => token.span.end,
+                                    Err(err) => {
+                                        self.exit_paren();
+                                        return Err(err);
+                                    }
+                                };
+                                self.exit_paren();
+                                expr = Expr::Call {
+                                    callee: Box::new(expr),
+                                    type_args,
+                                    args,
+                                    span: Span::new(span_start, end),
+                                };
+                                continue;
+                            }
                         }
-                        break;
+                        Err(_) => {}
                     }
+                    // rewind if type argument parse failed or there was no call
+                    self.pos = saved_pos;
+                    self.last_span = saved_last_span;
+                    self.errors.truncate(saved_errors_len);
                 }
-                let end = match self.expect(TokenKind::RParen) {
-                    Ok(token) => token.span.end,
-                    Err(err) => {
-                        self.exit_paren();
-                        return Err(err);
-                    }
-                };
-                self.exit_paren();
-                expr = Expr::Call {
-                    callee: Box::new(expr),
-                    type_args,
-                    args,
+                let index_expr = self.parse_expression()?;
+                let end = self.expect(TokenKind::RBracket)?.span.end;
+                expr = Expr::Index {
+                    base: Box::new(expr),
+                    index: Box::new(index_expr),
                     span: Span::new(span_start, end),
                 };
                 continue;
@@ -2365,6 +2417,28 @@ impl Parser {
         Ok((args, end))
     }
 
+    fn bracket_followed_by_lparen(&self) -> bool {
+        let mut depth = 1usize;
+        let mut offset = 0usize;
+        while let Some(kind) = self.peek_kind_n(offset) {
+            match kind {
+                TokenKind::LBracket => {
+                    depth += 1;
+                }
+                TokenKind::RBracket => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return matches!(self.peek_kind_n(offset + 1), Some(TokenKind::LParen));
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            offset += 1;
+        }
+        false
+    }
+
     fn current_binary_op(&self) -> Option<(BinaryOp, u8)> {
         match self.peek_kind() {
             Some(TokenKind::Plus) => Some((BinaryOp::Add, 10)),
@@ -2553,6 +2627,40 @@ impl Parser {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_index_expression() {
+        let expr = parse_expression_snippet(PathBuf::from("test.prime"), "values[1]").unwrap();
+        if let Expr::Index { .. } = expr {
+        } else {
+            panic!("expected index expression, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn parses_match_with_index_scrutinee() {
+        let source = r#"
+module test::index;
+
+fn main() {
+  let []int32 values = [1, 2];
+  match values[1] {
+    Some(found) => out(found),
+    None => {},
+  }
+}
+"#;
+        let result = parse_module("test::index", PathBuf::from("test.prime"), source);
+        assert!(
+            result.is_ok(),
+            "parse errors: {:?}",
+            result.err().map(|e| e.errors)
+        );
+    }
+}
 fn legacy_import_segments(input: &str) -> Vec<String> {
     let without_ext = input.strip_suffix(".prime").unwrap_or(input);
     let normalized = without_ext.replace("::", "/").replace('.', "/");
@@ -2586,6 +2694,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Tuple(_, span) => *span,
         Expr::ArrayLiteral(_, span) => *span,
         Expr::Range(range) => range.span,
+        Expr::Index { span, .. } => *span,
         Expr::Reference { span, .. } => *span,
         Expr::Deref { span, .. } => *span,
         Expr::Move { span, .. } => *span,

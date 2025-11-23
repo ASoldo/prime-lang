@@ -358,12 +358,12 @@ for hero in squad {
 let Map[string, int32] rewards = #{
   "Harbor sweep": 175,
   "Ridge scouting": 250,
-};
-for entry in rewards {
-  let (mission, payout) = entry;
-  out(`mission {mission} pays {payout}`);
-}"#,
-                explanation: "Slice literals inline values without helper calls and can be iterated directly. Map literals use `#{ ... }`, and `for entry in rewards` binds `(key, value)` tuples so you can destructure them before use. Methods like `.get`, `.insert`, and `.len` mirror the README examples.",
+                };
+                for entry in rewards {
+                  let (mission, payout) = entry;
+                  out(`mission {mission} pays {payout}`);
+                }"#,
+                explanation: "Slice literals inline values without helper calls and can be iterated directly. Map literals use `#{ ... }`, and `for entry in rewards` binds `(key, value)` tuples so you can destructure them before use. Use `squad[idx]` or `rewards[\"Harbor sweep\"]` to get `Option` values; methods like `.get`, `.insert`, and `.len` remain available too.",
             },
             TopicSection {
                 title: "Printing and utility APIs",
@@ -500,7 +500,7 @@ fn read_hp(target: &Player) -> int32 {
 let Box[int32] counter = box_new(0);
 bump_counter(&counter, 5);
 out(`box counter -> {}`, counter.box_get());"#,
-                explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and `.get(key)` for safe ownership transfers.",
+                explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and either `.get(key)` or bracket indexing for safe ownership transfers.",
             },
             TopicSection {
                 title: "Map/slice literals and methods",
@@ -513,7 +513,7 @@ let Map[string, int32] rewards = #{
 out(probe_notes.get(0));
 out(rewards.get("Ridge scouting"));
 out(rewards.len());"#,
-                explanation: "Inline literals build slices and maps without helper calls. Non-empty map literals infer `Map[string, T]` automatically, so the binding can omit a type hint. Methods like `.get` and `.len` mirror the README's collection section and power the `prime-lang docs` snippets.",
+                explanation: "Inline literals build slices and maps without helper calls. Non-empty map literals infer `Map[string, T]` automatically, so the binding can omit a type hint. Bracket indexing returns `Option` values alongside methods like `.get` and `.len`, matching the README's collection section and powering the `prime-lang docs` snippets.",
             },
             TopicSection {
                 title: "Type checking and diagnostics",

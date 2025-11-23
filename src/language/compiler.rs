@@ -402,6 +402,16 @@ impl SliceValue {
     fn get(&self, index: usize) -> Option<Value> {
         self.items.lock().unwrap().get(index).cloned()
     }
+
+    fn set(&self, index: usize, value: Value) -> bool {
+        let mut guard = self.items.lock().unwrap();
+        if let Some(slot) = guard.get_mut(index) {
+            *slot = value;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl MapValue {
@@ -1847,9 +1857,24 @@ impl Compiler {
                         }
                     }
                 }
+                Expr::Index { base, index, .. } => {
+                    let target = match self.emit_expression(base)? {
+                        EvalOutcome::Value(value) => value.into_value(),
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    let index_value = match self.emit_expression(index)? {
+                        EvalOutcome::Value(value) => value.into_value(),
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    let value = match self.emit_expression(&stmt.value)? {
+                        EvalOutcome::Value(value) => value.into_value(),
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    self.assign_index_value(target, index_value, value)?;
+                }
                 _ => {
                     return Err(
-                        "Only assignments to identifiers or dereferences are supported in build mode"
+                        "Only assignments to identifiers, dereferences, or indexes are supported in build mode"
                             .into(),
                     );
                 }
@@ -2067,6 +2092,18 @@ impl Compiler {
                     end,
                     inclusive: range.inclusive,
                 }))))
+            }
+            Expr::Index { base, index, .. } => {
+                let base_value = match self.emit_expression(base)? {
+                    EvalOutcome::Value(value) => value.into_value(),
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                let index_value = match self.emit_expression(index)? {
+                    EvalOutcome::Value(value) => value.into_value(),
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                let value = self.builtin_get(vec![base_value, index_value])?;
+                Ok(EvalOutcome::Value(self.evaluated(value)))
             }
             Expr::Block(block) => {
                 self.push_scope();
@@ -4024,6 +4061,45 @@ impl Compiler {
                 self.builtin_get(forwarded)
             }
             _ => Err("get expects slice or map".into()),
+        }
+    }
+
+    fn assign_index_value(&mut self, base: Value, index: Value, value: Value) -> Result<(), String> {
+        match base {
+            Value::Slice(slice) => {
+                let int_value = self.expect_int(index)?;
+                let idx = int_value
+                    .constant()
+                    .ok_or_else(|| "index must be constant in build mode".to_string())?;
+                if idx < 0 {
+                    return Err("slice index cannot be negative".into());
+                }
+                if slice.set(idx as usize, value) {
+                    Ok(())
+                } else {
+                    Err(format!("slice index {} out of bounds", idx))
+                }
+            }
+            Value::Map(map) => {
+                let key = self.expect_string_value(index, "index assignment")?;
+                map.insert(key, value);
+                Ok(())
+            }
+            Value::Reference(reference) => {
+                if !reference.mutable {
+                    return Err("Cannot assign through immutable reference".into());
+                }
+                let inner = reference.cell.lock().unwrap().clone().into_value();
+                self.assign_index_value(inner, index, value)
+            }
+            Value::Pointer(pointer) => {
+                if !pointer.mutable {
+                    return Err("Cannot assign through immutable reference".into());
+                }
+                let inner = pointer.cell.lock().unwrap().clone().into_value();
+                self.assign_index_value(inner, index, value)
+            }
+            other => Err(format!("{} cannot be indexed", describe_value(&other))),
         }
     }
 

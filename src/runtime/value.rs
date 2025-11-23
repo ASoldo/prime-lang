@@ -359,6 +359,16 @@ impl SliceValue {
     pub fn get(&self, index: usize) -> Option<Value> {
         self.items.lock().unwrap().get(index).cloned()
     }
+
+    pub fn set(&self, index: usize, value: Value) -> bool {
+        let mut guard = self.items.lock().unwrap();
+        if let Some(slot) = guard.get_mut(index) {
+            *slot = value;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

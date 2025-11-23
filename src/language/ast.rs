@@ -351,6 +351,11 @@ pub enum Expr {
     Tuple(Vec<Expr>, Span),
     ArrayLiteral(Vec<Expr>, Span),
     Range(RangeExpr),
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+        span: Span,
+    },
     Reference {
         mutable: bool,
         expr: Box<Expr>,

@@ -220,6 +220,10 @@ fn collect_decl_from_expr(expr: &Expr, module: &Module, decls: &mut Vec<DeclInfo
             }
         }
         Expr::FieldAccess { base, .. } => collect_decl_from_expr(base, module, decls),
+        Expr::Index { base, index, .. } => {
+            collect_decl_from_expr(base, module, decls);
+            collect_decl_from_expr(index, module, decls);
+        }
         Expr::StructLiteral { fields, .. } => match fields {
             StructLiteralKind::Named(named) => {
                 for field in named {
@@ -685,6 +689,10 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
             }
         }
         Expr::FieldAccess { base, .. } => collect_expr_idents(base, used),
+        Expr::Index { base, index, .. } => {
+            collect_expr_idents(base, used);
+            collect_expr_idents(index, used);
+        }
         Expr::StructLiteral { fields, .. } => match fields {
             StructLiteralKind::Named(named) => {
                 for field in named {
@@ -1151,6 +1159,7 @@ pub fn expr_span(expr: &Expr) -> Span {
         Expr::Reference { span, .. } => *span,
         Expr::Deref { span, .. } => *span,
         Expr::Move { span, .. } => *span,
+        Expr::Index { span, .. } => *span,
         Expr::FormatString(literal) => literal.span,
         Expr::Spawn { span, .. } => *span,
     }
