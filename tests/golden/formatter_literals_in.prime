@@ -1,4 +1,4 @@
-test tests::formatter_literals;
+test tests.formatter_literals;
 
 fn arrays_and_maps() {
   let []int32 numbers = [

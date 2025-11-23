@@ -1,4 +1,4 @@
-test tests::formatter_interface_self;
+test tests.formatter_interface_self;
 
 interface Flyable[T] {
   fn fly(self: T, offset: int32) -> T;

@@ -9,6 +9,7 @@ use super::{
         format_function_signature, general_completion_items, keyword_completion_items,
         member_completion_items, module_completion_items_from_manifest,
         module_path_completion_context,
+        enum_variant_completion_items,
     },
     diagnostics::{collect_parse_and_manifest_diagnostics, diagnostic_code, manifest_entry_action},
     hover::{collect_var_infos, hover_for_token},
@@ -1165,6 +1166,9 @@ impl LanguageServer for Backend {
         let struct_info = collect_struct_info(&struct_modules);
         let interface_info = collect_interface_info(&struct_modules);
         if let Some(module) = module_opt {
+            if let Some(items) = enum_variant_completion_items(&text, offset, &module) {
+                return Ok(Some(CompletionResponse::Array(items)));
+            }
             if let Some(chain) = expression_chain_before_dot(&text, offset) {
                 if let Some(items) = member_completion_items(
                     &text,

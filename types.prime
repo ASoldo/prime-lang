@@ -1,4 +1,4 @@
-library core::types;
+library core.types;
 
 pub enum Option[T] {
   Some(T),

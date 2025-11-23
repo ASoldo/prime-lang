@@ -1,104 +1,104 @@
 manifest_version = "2"
 
 [package]
-entry = "app::main"
+entry = "app.main"
 kind = "binary"
 name = "prime-lang-playground"
 version = "0.1.0"
 
 [[modules]]
-name = "app::main"
+name = "app.main"
 path = "main.prime"
 visibility = "pub"
 
 [[modules]]
-name = "core::types"
+name = "core.types"
 path = "types.prime"
 visibility = "pub"
 kind = "library"
 
 [[modules]]
-name = "pkg::app"
+name = "pkg.app"
 path = "pkg_app.prime"
 visibility = "pub"
 
 [[modules]]
-name = "pkg::lib"
+name = "pkg.lib"
 path = "pkg_lib.prime"
 visibility = "pub"
 kind = "library"
 
 [[modules]]
-name = "demos::generic"
+name = "demos.generic"
 path = "generic_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::heap"
+name = "demos.heap"
 path = "heap_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::heap_features"
+name = "demos.heap_features"
 path = "heap_features.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::interface_demo"
+name = "demos.interface_demo"
 path = "interface_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::interface_generics"
+name = "demos.interface_generics"
 path = "interface_generics_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::error_handling"
+name = "demos.error_handling"
 path = "error_handling_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::ns"
+name = "demos.ns"
 path = "ns_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::borrow"
+name = "demos.borrow"
 path = "borrow_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::borrow_checker_errors"
+name = "demos.borrow_checker_errors"
 path = "borrow_error_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::patterns"
+name = "demos.patterns"
 path = "pattern_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::lab_demo"
+name = "demos.lab_demo"
 path = "lab_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::channel_demo"
+name = "demos.channel_demo"
 path = "channel_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::parallel_demo"
+name = "demos.parallel_demo"
 path = "parallel_demo.prime"
 visibility = "pub"
 
 [[modules]]
-name = "demos::pointer_demo"
+name = "demos.pointer_demo"
 path = "pointer_demo.prime"
 visibility = "pub"
 
 [[tests]]
-name = "tests::basic"
+name = "tests.basic"
 path = "tests/basic.prime"
 visibility = "pub"

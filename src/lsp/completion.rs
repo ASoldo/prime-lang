@@ -60,7 +60,7 @@ pub fn module_path_completion_context(
 }
 
 pub fn completion_trigger_characters() -> Vec<String> {
-    const TRIGGER_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.";
+    const TRIGGER_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.";
     TRIGGER_CHARS.chars().map(|ch| ch.to_string()).collect()
 }
 
@@ -808,6 +808,60 @@ fn build_type_subst(params: &[String], args: &[TypeExpr]) -> Option<HashMap<Stri
         map.insert(param.clone(), arg.clone());
     }
     Some(map)
+}
+
+pub fn enum_variant_completion_items(
+    text: &str,
+    offset: usize,
+    module: &Module,
+) -> Option<Vec<CompletionItem>> {
+    if offset < 2 || text.len() < offset {
+        return None;
+    }
+    let slice = &text[..offset];
+    let pos = slice.rfind('.')?;
+    let enum_path = &slice[..pos];
+    if enum_path.is_empty() {
+        return None;
+    }
+    let enum_name = enum_path
+        .rsplit('.')
+        .next()
+        .filter(|name| !name.is_empty())?;
+    let variant_prefix = &slice[pos + 1..];
+    let edit_start = pos + 1;
+    let edit_range = Range {
+        start: offset_to_position(text, edit_start),
+        end: offset_to_position(text, offset),
+    };
+    let mut items = Vec::new();
+    for item in &module.items {
+        if let Item::Enum(def) = item {
+            if def.name != enum_name {
+                continue;
+            }
+            for variant in &def.variants {
+                if !prefix_matches(&variant.name, Some(variant_prefix)) {
+                    continue;
+                }
+                items.push(CompletionItem {
+                    label: variant.name.clone(),
+                    kind: Some(CompletionItemKind::ENUM_MEMBER),
+                    detail: Some(format!("{} variant", def.name)),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range: edit_range.clone(),
+                        new_text: variant.name.clone(),
+                    })),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 pub fn general_completion_items(

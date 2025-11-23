@@ -1,4 +1,4 @@
-module demos::interface_demo;
+module demos.interface_demo;
 
 struct Hero {
   name: string;

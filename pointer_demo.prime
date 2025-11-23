@@ -1,6 +1,6 @@
-module demos::pointer_demo;
+module demos.pointer_demo;
 
-import core::types;
+import core.types;
 
 fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
   Player{

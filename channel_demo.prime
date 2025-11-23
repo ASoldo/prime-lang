@@ -1,6 +1,6 @@
-module demos::channel_demo;
+module demos.channel_demo;
 
-import core::types;
+import core.types;
 
 fn worker(tx: Sender[int32], values: []int32) {
   for v in values {

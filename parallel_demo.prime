@@ -1,6 +1,6 @@
-module demos::parallel_demo;
+module demos.parallel_demo;
 
-import core::types;
+import core.types;
 
 enum WorkerOutcome {
   Total(int32),
@@ -12,7 +12,7 @@ fn worker(id: int32, tx: Sender[WorkerOutcome], values: []int32) -> Result[(), s
   for value in values {
     total = total + value;
   }
-  send(tx, WorkerOutcome::Total(total + id))
+  send(tx, WorkerOutcome.Total(total + id))
 }
 
 fn main() {
@@ -37,7 +37,7 @@ fn main() {
   let mut int32 seen = 0;
   while let Some(outcome) = recv(rx) {
     match outcome {
-      WorkerOutcome::Total(value) => {
+      WorkerOutcome.Total(value) => {
         collected = collected + value;
         if value > 200 {
           right_total = value;
@@ -45,7 +45,7 @@ fn main() {
           left_total = value;
         }
       },
-      WorkerOutcome::Error(message) => {
+      WorkerOutcome.Error(message) => {
         out(`worker reported error: {message}`);
       },
     }

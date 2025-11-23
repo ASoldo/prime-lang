@@ -1,4 +1,4 @@
-module demos::lab_demo;
+module demos.lab_demo;
 
 const LAB_TITLE: string = "Prime Resonance Lab";
 
@@ -83,7 +83,7 @@ impl Summarizable[ExperimentResult] for ExperimentResult {
   fn pair(result: ExperimentResult, other: ExperimentResult) -> string {
     let int32 left = result.normalized;
     let int32 right = other.normalized;
-    `pair::{left}+{right}`
+    `pair.{left}+{right}`
   }
 }
 

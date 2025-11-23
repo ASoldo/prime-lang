@@ -1529,6 +1529,46 @@ impl Parser {
             }
             if self.matches(TokenKind::Dot) {
                 let field = self.expect_identifier("Expected field name after '.'")?;
+                if self.check(TokenKind::LParen) {
+                    self.expect(TokenKind::LParen)?;
+                    let mut values = Vec::new();
+                    if !self.check(TokenKind::RParen) {
+                        loop {
+                            values.push(self.parse_expression()?);
+                            if self.matches(TokenKind::Comma) {
+                                if self.check(TokenKind::RParen) {
+                                    break;
+                                }
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    let end = self.expect(TokenKind::RParen)?.span.end;
+                    let span = Span::new(expr_span(&expr).start, end);
+                    if let Expr::Identifier(enum_ident) = &expr {
+                        expr = Expr::EnumLiteral {
+                            enum_name: Some(enum_ident.name.clone()),
+                            variant: field.name,
+                            values,
+                            span,
+                        };
+                        continue;
+                    } else {
+                        let span = Span::new(expr_span(&expr).start, end);
+                        expr = Expr::Call {
+                            callee: Box::new(Expr::FieldAccess {
+                                base: Box::new(expr),
+                                field: field.name,
+                                span,
+                            }),
+                            type_args: Vec::new(),
+                            args: values,
+                            span,
+                        };
+                        continue;
+                    }
+                }
                 let span = expr_span(&expr).union(field.span);
                 expr = Expr::FieldAccess {
                     base: Box::new(expr),
@@ -1996,8 +2036,8 @@ impl Parser {
 
     fn parse_named_pattern(&mut self) -> Result<Pattern, SyntaxError> {
         let ident = self.expect_identifier("Expected pattern identifier")?;
-        if self.matches(TokenKind::ColonColon) {
-            let variant = self.expect_identifier("Expected variant name after `::`")?;
+        if self.matches(TokenKind::ColonColon) || self.matches(TokenKind::Dot) {
+            let variant = self.expect_identifier("Expected variant name after `::` or `.`")?;
             let bindings = if self.matches(TokenKind::LParen) {
                 self.parse_pattern_bindings()?
             } else {

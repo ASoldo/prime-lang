@@ -1,7 +1,7 @@
-test tests::basic;
+test tests.basic;
 
-import pkg::lib;
-import core::types;
+import pkg.lib;
+import core.types;
 
 fn adds_numbers() -> (int32, int32) {
   (1, 4)
