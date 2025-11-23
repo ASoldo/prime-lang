@@ -505,7 +505,8 @@ panel.render();  // rewrites to Renderable::render(panel)
 - Numbers: `int8`…`int64`, `uint8`…`uint64`, `isize`/`usize`, `float32`,
   `float64`, plus `bool`, `rune`, and `string`. Numeric literals pick up the
   annotated type (e.g., `let uint8 x = 0;`, `let float64 y = 0.0;`) and default
-  to `int32`/`float32` only when the surrounding context is untyped.
+  to `int32`/`float32` only when the surrounding context is untyped. Use
+  `cast[T](value)` to convert explicitly between numeric widths/signedness.
 - Structs/enums are value types; assignment copies the fields. Heap helpers
   include `Box[T]`, slices (`[]T`), and maps (`Map[string, T]`) with literals,
   methods (+/- borrow checks), and iteration support.

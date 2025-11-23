@@ -368,7 +368,7 @@ impl Interpreter {
                 message: format!("`{}` does not accept type arguments", name),
             });
         }
-        if let Some(result) = self.call_builtin(name, args.clone()) {
+        if let Some(result) = self.call_builtin(name, args.clone(), type_args) {
             return result;
         }
         let info = self.resolve_function(name, receiver, type_args, &args)?;
@@ -731,7 +731,12 @@ impl Interpreter {
         }
     }
 
-    fn call_builtin(&mut self, name: &str, args: Vec<Value>) -> Option<RuntimeResult<Vec<Value>>> {
+    fn call_builtin(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        type_args: &[TypeExpr],
+    ) -> Option<RuntimeResult<Vec<Value>>> {
         let result = match name {
             "box_new" => self.builtin_box_new(args),
             "box_get" => self.builtin_box_get(args),
@@ -764,6 +769,7 @@ impl Interpreter {
             "join" => self.builtin_join(args),
             "ptr" => self.builtin_ptr(args, false),
             "ptr_mut" => self.builtin_ptr(args, true),
+            "cast" => self.builtin_cast(args, type_args),
             _ => return None,
         };
         Some(result)
@@ -1021,6 +1027,18 @@ impl Interpreter {
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects integer value"),
             }),
+        }
+    }
+
+    fn numeric_kind_from_type<'a>(&self, ty: &'a TypeExpr) -> Option<&'a str> {
+        match ty {
+            TypeExpr::Named(name, _) => match name.as_str() {
+                "int8" | "int16" | "int32" | "int64" | "isize" => Some(name),
+                "uint8" | "uint16" | "uint32" | "uint64" | "usize" => Some(name),
+                "float32" | "float64" => Some(name),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -1427,6 +1445,46 @@ impl Interpreter {
                 ),
             }),
         }
+    }
+
+    fn builtin_cast(
+        &mut self,
+        mut args: Vec<Value>,
+        type_args: &[TypeExpr],
+    ) -> RuntimeResult<Vec<Value>> {
+        if type_args.len() != 1 {
+            return Err(RuntimeError::Unsupported {
+                message: "`cast` expects one type argument".into(),
+            });
+        }
+        self.expect_arity("cast", &args, 1)?;
+        let target = &type_args[0];
+        let Some(target_name) = self.numeric_kind_from_type(target) else {
+            return Err(RuntimeError::Unsupported {
+                message: "`cast` only supports numeric target types".into(),
+            });
+        };
+        let value = args.remove(0);
+        let casted = match (target_name, value) {
+            (_, Value::Reference(reference)) => {
+                let cloned = reference.cell.lock().unwrap().clone();
+                return self.builtin_cast(vec![cloned], type_args);
+            }
+            ("float32" | "float64", Value::Int(i)) => Value::Float(i as f64),
+            ("float32" | "float64", Value::Float(f)) => Value::Float(f),
+            (target, Value::Float(f)) if target.starts_with("int") || target.starts_with("uint") => {
+                Value::Int(f as i128)
+            }
+            (target, Value::Int(i)) if target.starts_with("int") || target.starts_with("uint") => {
+                Value::Int(i)
+            }
+            (_, other) => {
+                return Err(RuntimeError::TypeMismatch {
+                    message: format!("`cast` only supports numeric values (got {})", self.describe_value(&other)),
+                })
+            }
+        };
+        Ok(vec![casted])
     }
 
     fn builtin_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {

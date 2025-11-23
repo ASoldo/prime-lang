@@ -60,6 +60,8 @@ pub fn module_path_completion_context(
 }
 
 pub fn completion_trigger_characters() -> Vec<String> {
+    // Trigger on identifiers and qualification separators. `:` is kept so the LSP can fire on the
+    // second colon in `::`.
     const TRIGGER_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.";
     TRIGGER_CHARS.chars().map(|ch| ch.to_string()).collect()
 }
@@ -819,16 +821,10 @@ pub fn enum_variant_completion_items(
         return None;
     }
     let slice = &text[..offset];
-    // prefer `::` if present, otherwise single ':' or '.'
-    let pos = if let Some(p) = slice.rfind("::") {
-        p + 1
-    } else if let Some(p) = slice.rfind(':') {
-        p
-    } else {
-        slice.rfind('.')?
-    };
-    // Walk backward to find the start of the enum identifier (letters, digits, underscore, dot).
-    let mut start = pos;
+    // Require `::` to qualify enum variants.
+    let sep = slice.rfind("::")?;
+    // Walk backward from the separator to find the start of the enum identifier (letters, digits, underscore, dot).
+    let mut start = sep;
     while start > 0 {
         let ch = slice.chars().nth(start.saturating_sub(1)).unwrap();
         if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
@@ -837,7 +833,7 @@ pub fn enum_variant_completion_items(
             break;
         }
     }
-    let enum_path = slice[start..pos].trim_end_matches('.');
+    let enum_path = slice[start..sep].trim_end_matches('.');
     if enum_path.is_empty() {
         return None;
     }
@@ -845,8 +841,8 @@ pub fn enum_variant_completion_items(
         .rsplit('.')
         .next()
         .filter(|name| !name.is_empty())?;
-    let variant_prefix = &slice[pos + 1..];
-    let edit_start = pos + 1;
+    let variant_prefix = slice.get(sep + 2..offset).unwrap_or("");
+    let edit_start = sep + 2;
     let edit_range = Range {
         start: offset_to_position(text, edit_start),
         end: offset_to_position(text, offset),

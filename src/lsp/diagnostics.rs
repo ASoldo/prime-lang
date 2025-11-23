@@ -362,7 +362,8 @@ fn type_error_to_lsp(text: &str, err: TypeError) -> Diagnostic {
         range: span_to_range(text, span),
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some("prime-lang".into()),
-        message: err.message,
+        message: err.display_message(),
+        code: err.code.clone().map(NumberOrString::String),
         ..Default::default()
     }
 }

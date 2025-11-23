@@ -1692,6 +1692,34 @@ impl BuildInterpreter {
                     other => Err(format!("abs expects int or float, found {}", other.kind())),
                 }
             }
+            "cast" => {
+                if type_args.len() != 1 {
+                    return Err("cast expects exactly one type argument".into());
+                }
+                if args.len() != 1 {
+                    return Err(format!("cast expects 1 argument, got {}", args.len()));
+                }
+                let target = &type_args[0];
+                let target_name = match target {
+                    TypeExpr::Named(name, _) => name.as_str(),
+                    _ => return Err("cast only supports numeric target types".into()),
+                };
+                let value = self.eval_expr_mut(&args[0])?;
+                let casted = match (target_name, value) {
+                    ("float32" | "float64", BuildValue::Int(i)) => BuildValue::Float(i as f64),
+                    ("float32" | "float64", BuildValue::Float(f)) => BuildValue::Float(f),
+                    (name, BuildValue::Float(f)) if name.starts_with("int") || name.starts_with("uint") => {
+                        BuildValue::Int(f as i128)
+                    }
+                    (name, BuildValue::Int(i)) if name.starts_with("int") || name.starts_with("uint") => {
+                        BuildValue::Int(i)
+                    }
+                    (_, other) => {
+                        return Err(format!("cast only supports numeric values (found {})", other.kind()))
+                    }
+                };
+                Ok(casted)
+            }
             "channel" => {
                 if !args.is_empty() {
                     return Err("channel expects no arguments".into());

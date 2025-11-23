@@ -418,7 +418,7 @@ fn refill_hp(target: &mut Player, amount: int32) {
 
 fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
   if ready {
-    Completed(name)
+    MissionEvent::Completed(name)
   } else {
     if slots_open {
       Failed("requires tide shift")

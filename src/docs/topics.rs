@@ -258,8 +258,9 @@ PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh"#,
                 snippet: r#"- signed:  int8, int16, int32, int64, isize
 - unsigned: uint8, uint16, uint32, uint64, usize
 - floats:   float32, float64
-- literals: `0`/`0.0` adopt the annotated type; default to int32/float32 only when untyped"#,
-                explanation: "Arithmetic, ranges, and bitwise ops accept the full Rust-like numeric set. Context drives literal types (`let uint8 f = 0;` works without casts). Mixed numeric operations require matching widths/signedness, and the typechecker surfaces clear errors when operands diverge.",
+- literals: `0`/`0.0` adopt the annotated type; default to int32/float32 only when untyped
+- casts:    `cast[T](value)` explicitly converts between numeric widths/signedness"#,
+                explanation: "Arithmetic, ranges, and bitwise ops accept the full Rust-like numeric set. Context drives literal types (`let uint8 f = 0;` works without casts). Mixed numeric operations require matching widths/signedness—use `cast[uint32](value)` (etc.) to opt into conversions. The typechecker surfaces clear errors when operands diverge.",
             },
         ],
     },

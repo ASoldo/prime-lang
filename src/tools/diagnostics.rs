@@ -96,7 +96,7 @@ pub fn emit_type_errors(errors: &[TypeError]) {
                 let named = NamedSource::new(err.path.display().to_string(), contents);
                 let diagnostic = TypeDiagnostic {
                     span: span_to_source_span(err.span),
-                    message: err.message.clone(),
+                    message: err.display_message(),
                     label: err.label.clone(),
                     src: named,
                 };

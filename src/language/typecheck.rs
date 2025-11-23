@@ -16,6 +16,7 @@ pub struct TypeError {
     pub span: Span,
     pub message: String,
     pub label: String,
+    pub code: Option<String>,
 }
 
 impl TypeError {
@@ -26,6 +27,20 @@ impl TypeError {
             span,
             label: message.clone(),
             message,
+            code: None,
+        }
+    }
+
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
+    }
+
+    pub fn display_message(&self) -> String {
+        if let Some(code) = &self.code {
+            format!("[{code}] {}", self.message)
+        } else {
+            self.message.clone()
         }
     }
 }
@@ -1810,6 +1825,57 @@ impl Checker {
                     None
                 }
             }
+            "cast" => {
+                if type_args.len() != 1 {
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            span,
+                            "`cast` expects exactly one type argument (target type)",
+                        )
+                        .with_code("E0300"),
+                    );
+                    return None;
+                }
+                if args.len() != 1 {
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            span,
+                            format!("`cast` expects 1 argument, got {}", args.len()),
+                        )
+                        .with_code("E0300"),
+                    );
+                    return Some(type_args[0].clone());
+                }
+                let target = &type_args[0];
+                let target_kind = numeric_kind(target);
+                if target_kind.is_none() {
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            span,
+                            "`cast` only supports numeric target types",
+                        )
+                        .with_code("E0301"),
+                    );
+                    return None;
+                }
+                let value_ty = self.check_expression(module, &args[0], None, returns, env);
+                let value_kind = value_ty.as_ref().and_then(numeric_kind);
+                if value_kind.is_none() {
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            expr_span(&args[0]),
+                            "`cast` only supports numeric values",
+                        )
+                        .with_code("E0302"),
+                    );
+                    return Some(target.clone());
+                }
+                Some(target.clone())
+            }
             _ => None,
         }
     }
@@ -2553,7 +2619,8 @@ impl Checker {
                         &module.path,
                         span,
                         "ranges only support integer bounds",
-                    ));
+                    )
+                    .with_code("E0204"));
                     return None;
                 }
                 None => {
@@ -2561,7 +2628,8 @@ impl Checker {
                         &module.path,
                         span,
                         "range bounds must be numeric",
-                    ));
+                    )
+                    .with_code("E0205"));
                     return None;
                 }
             }
@@ -2644,6 +2712,7 @@ impl Checker {
                 | "join"
                 | "ptr"
                 | "ptr_mut"
+                | "cast"
         )
     }
 
@@ -2991,7 +3060,8 @@ impl Checker {
                 &module.path,
                 span,
                 "bitwise operations require integer operands",
-            ));
+            )
+            .with_code("E0206"));
             return None;
         }
 
@@ -3005,7 +3075,8 @@ impl Checker {
                 &module.path,
                 span,
                 "bitwise operations require integer operands",
-            ));
+            )
+            .with_code("E0206"));
             return None;
         }
 
@@ -3027,7 +3098,8 @@ impl Checker {
                     &module.path,
                     span,
                     "bitwise operations require integer operands",
-                ));
+                )
+                .with_code("E0206"));
                 None
             }
             Some(other) => Some(numeric_type_from_kind(other)),
@@ -3053,8 +3125,9 @@ impl Checker {
                         "expected `{}`, found `{}`",
                         numeric_type_from_kind(expected_kind).canonical_name(),
                         describe_type(operand_ty)
-                    ),
-                ));
+                    )
+                )
+                .with_code("E0201"));
                 false
             }
             None => {
@@ -3062,7 +3135,8 @@ impl Checker {
                     &module.path,
                     span,
                     "numeric operations require int or float operands",
-                ));
+                )
+                .with_code("E0200"));
                 false
             }
         }
@@ -3100,8 +3174,9 @@ impl Checker {
                 format!(
                     "numeric operations require numeric operands (found `{}`)",
                     ty.canonical_name()
-                ),
-            ));
+                )
+            )
+            .with_code("E0200"));
             had_error = true;
         }
         if let (Some(ty), None) = (right_ty, right_kind) {
@@ -3111,8 +3186,9 @@ impl Checker {
                 format!(
                     "numeric operations require numeric operands (found `{}`)",
                     ty.canonical_name()
-                ),
-            ));
+                )
+            )
+            .with_code("E0200"));
             had_error = true;
         }
         if had_error {
@@ -3126,7 +3202,8 @@ impl Checker {
                     &module.path,
                     span,
                     "numeric operations require int or float operands",
-                ));
+                )
+                .with_code("E0200"));
                 None
             }
             (Some(NumericKind::Float(_, left_bits)), Some(NumericKind::Float(_, right_bits))) => {
@@ -3134,29 +3211,20 @@ impl Checker {
             }
             (Some(NumericKind::Float(_, bits)), Some(_))
             | (Some(_), Some(NumericKind::Float(_, bits))) => Some(float_kind(bits)),
-            (Some(NumericKind::Signed(left_name, left_bits)), Some(NumericKind::Signed(_, right_bits))) => {
-                if left_bits == right_bits {
-                    Some(NumericKind::Signed(left_name, left_bits))
-                } else {
-                    self.emit_numeric_mismatch(module, span, left_ty, right_ty);
-                    None
-                }
+            (Some(NumericKind::Signed(_, left_bits)), Some(NumericKind::Signed(_, right_bits))) => {
+                Some(signed_kind_for_bits(left_bits.max(right_bits)))
             }
-            (Some(NumericKind::Unsigned(left_name, left_bits)), Some(NumericKind::Unsigned(_, right_bits))) => {
-                if left_bits == right_bits {
-                    Some(NumericKind::Unsigned(left_name, left_bits))
-                } else {
-                    self.emit_numeric_mismatch(module, span, left_ty, right_ty);
-                    None
-                }
+            (Some(NumericKind::Unsigned(_, left_bits)), Some(NumericKind::Unsigned(_, right_bits))) => {
+                Some(unsigned_kind_for_bits(left_bits.max(right_bits)))
             }
             _ => {
-                self.emit_numeric_mismatch(module, span, left_ty, right_ty);
+                self.emit_signedness_mismatch(module, span, left_ty, right_ty);
                 None
             }
         }
     }
 
+    #[allow(dead_code)]
     fn emit_numeric_mismatch(
         &mut self,
         module: &Module,
@@ -3164,15 +3232,39 @@ impl Checker {
         left_ty: Option<&TypeExpr>,
         right_ty: Option<&TypeExpr>,
     ) {
-        self.errors.push(TypeError::new(
-            &module.path,
-            span,
-            format!(
-                "numeric operands must share a type (found `{}` and `{}`)",
-                describe_type(left_ty),
-                describe_type(right_ty)
-            ),
-        ));
+        self.errors.push(
+            TypeError::new(
+                &module.path,
+                span,
+                format!(
+                    "numeric operands must share a type (found `{}` and `{}`)",
+                    describe_type(left_ty),
+                    describe_type(right_ty)
+                ),
+            )
+            .with_code("E0201"),
+        );
+    }
+
+    fn emit_signedness_mismatch(
+        &mut self,
+        module: &Module,
+        span: Span,
+        left_ty: Option<&TypeExpr>,
+        right_ty: Option<&TypeExpr>,
+    ) {
+        self.errors.push(
+            TypeError::new(
+                &module.path,
+                span,
+                format!(
+                    "signed and unsigned integers cannot be combined implicitly (found `{}` and `{}`)",
+                    describe_type(left_ty),
+                    describe_type(right_ty)
+                ),
+            )
+            .with_code("E0202"),
+        );
     }
 
     fn check_binary(
@@ -3278,7 +3370,8 @@ impl Checker {
                             &module.path,
                             span,
                             "unary `-` requires a signed or floating-point type",
-                        ));
+                        )
+                        .with_code("E0203"));
                         None
                     }
                     Some(kind) => Some(numeric_type_from_kind(kind)),
@@ -3844,6 +3937,30 @@ enum NumericKind {
 
 fn pointer_width_bits() -> u32 {
     (mem::size_of::<usize>() * 8) as u32
+}
+
+fn signed_kind_for_bits(bits: u32) -> NumericKind {
+    let name = match bits {
+        8 => "int8",
+        16 => "int16",
+        32 => "int32",
+        64 => "int64",
+        b if b == pointer_width_bits() => "isize",
+        _ => "int64",
+    };
+    NumericKind::Signed(name, bits)
+}
+
+fn unsigned_kind_for_bits(bits: u32) -> NumericKind {
+    let name = match bits {
+        8 => "uint8",
+        16 => "uint16",
+        32 => "uint32",
+        64 => "uint64",
+        b if b == pointer_width_bits() => "usize",
+        _ => "uint64",
+    };
+    NumericKind::Unsigned(name, bits)
 }
 
 fn numeric_kind_from_name(name: &str) -> Option<NumericKind> {
