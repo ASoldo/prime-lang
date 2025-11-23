@@ -294,6 +294,8 @@ impl BuildInterpreter {
         clone
     }
 
+    // Used heavily in tests; keep available but silence dead-code warning in normal builds.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<BuildValue, String> {
         self.eval_expr_mut(expr)
     }
