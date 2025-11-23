@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod build;
 pub mod compiler;
 pub mod enum_utils;
 pub mod errors;

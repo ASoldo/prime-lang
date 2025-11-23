@@ -1,6 +1,17 @@
 use crate::{
     language::{
         ast::*,
+        build::{
+            BuildBinding,
+            BuildEnumVariant,
+            BuildEffect,
+            BuildEvaluation,
+            BuildFormatTemplate,
+            BuildInterpreter,
+            BuildScope,
+            BuildSnapshot,
+            BuildValue,
+        },
         runtime_abi::RuntimeAbi,
         types::{Mutability, TypeExpr},
     },
@@ -29,6 +40,7 @@ use std::{
     ptr,
     env,
     sync::{Arc, Condvar, Mutex},
+    thread,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -167,9 +179,14 @@ struct ChannelReceiver {
     inner: Arc<(Mutex<ChannelState>, Condvar)>,
 }
 
+enum JoinResult {
+    Immediate(Option<Value>),
+    BuildThread(Option<thread::JoinHandle<Result<BuildEvaluation, String>>>),
+}
+
 #[derive(Clone)]
 struct JoinHandleValue {
-    result: Arc<Mutex<Option<Value>>>,
+    result: Arc<Mutex<JoinResult>>,
 }
 
 struct ChannelState {
@@ -179,6 +196,10 @@ struct ChannelState {
 
 impl ChannelSender {
     fn new(inner: Arc<(Mutex<ChannelState>, Condvar)>) -> Self {
+        Self { inner }
+    }
+
+    fn new_with_state(inner: Arc<(Mutex<ChannelState>, Condvar)>) -> Self {
         Self { inner }
     }
 
@@ -203,6 +224,10 @@ impl ChannelSender {
 
 impl ChannelReceiver {
     fn new(inner: Arc<(Mutex<ChannelState>, Condvar)>) -> Self {
+        Self { inner }
+    }
+
+    fn new_with_state(inner: Arc<(Mutex<ChannelState>, Condvar)>) -> Self {
         Self { inner }
     }
 
@@ -231,15 +256,37 @@ impl ChannelReceiver {
 impl JoinHandleValue {
     fn new(value: Value) -> Self {
         Self {
-            result: Arc::new(Mutex::new(Some(value))),
+            result: Arc::new(Mutex::new(JoinResult::Immediate(Some(value)))),
         }
     }
 
-    fn join(&self) -> Result<Value, String> {
-        self.result
-            .lock().unwrap()
-            .take()
-            .ok_or_else(|| "join handle already consumed".into())
+    fn new_build(handle: thread::JoinHandle<Result<BuildEvaluation, String>>) -> Self {
+        Self {
+            result: Arc::new(Mutex::new(JoinResult::BuildThread(Some(handle)))),
+        }
+    }
+
+    fn join_with(&self, compiler: &mut Compiler) -> Result<Value, String> {
+        let mut guard = self.result.lock().unwrap();
+        match &mut *guard {
+            JoinResult::Immediate(slot) => {
+                slot.take()
+                    .ok_or_else(|| "join handle already consumed".to_string())
+            }
+            JoinResult::BuildThread(handle_slot) => {
+                let handle = handle_slot
+                    .take()
+                    .ok_or_else(|| "join handle already consumed".to_string())?;
+                match handle.join() {
+                    Ok(Ok(build)) => {
+                        let channels = compiler.apply_build_effects(build.effects)?;
+                        compiler.build_value_to_value(build.value, Some(&channels))
+                    }
+                    Ok(Err(err)) => Err(err),
+                    Err(_) => Err("spawned task panicked".into()),
+                }
+            }
+        }
     }
 }
 
@@ -380,6 +427,122 @@ impl MapValue {
 
     fn len(&self) -> usize {
         self.entries.lock().unwrap().len()
+    }
+}
+
+fn expect_constant_int(int: &IntValue) -> Result<i128, String> {
+    int.constant
+        .ok_or_else(|| "Non-constant integer cannot be captured for parallel build execution".into())
+}
+
+fn expect_constant_float(float: &FloatValue) -> Result<f64, String> {
+    float.constant.ok_or_else(|| {
+        "Non-constant float cannot be captured for parallel build execution".into()
+    })
+}
+
+fn format_template_to_build(template: &FormatTemplateValue) -> Result<BuildFormatTemplate, String> {
+    let mut segments = Vec::with_capacity(template.segments.len());
+    for segment in &template.segments {
+        let converted = match segment {
+            FormatRuntimeSegment::Literal(text) => {
+                FormatRuntimeSegmentGeneric::Literal(text.clone())
+            }
+            FormatRuntimeSegment::Named(value) => {
+                FormatRuntimeSegmentGeneric::Named(value_to_build_value(value)?)
+            }
+            FormatRuntimeSegment::Implicit => FormatRuntimeSegmentGeneric::Implicit,
+        };
+        segments.push(converted);
+    }
+    Ok(BuildFormatTemplate {
+        segments,
+        implicit_placeholders: template.implicit_placeholders,
+    })
+}
+
+fn value_to_build_value(value: &Value) -> Result<BuildValue, String> {
+    match value {
+        Value::Unit => Ok(BuildValue::Unit),
+        Value::Int(int) => Ok(BuildValue::Int(expect_constant_int(int)?)),
+        Value::Float(float) => Ok(BuildValue::Float(expect_constant_float(float)?)),
+        Value::Bool(flag) => Ok(BuildValue::Bool(*flag)),
+        Value::Str(text) => Ok(BuildValue::String((*text.text).clone())),
+        Value::Tuple(items) => {
+            let mut converted = Vec::with_capacity(items.len());
+            for item in items {
+                converted.push(value_to_build_value(item)?);
+            }
+            Ok(BuildValue::Tuple(converted))
+        }
+        Value::Struct(instance) => {
+            let mut fields = BTreeMap::new();
+            for (name, field) in &instance.fields {
+                fields.insert(name.clone(), value_to_build_value(field)?);
+            }
+            Ok(BuildValue::Struct {
+                name: instance.name.clone(),
+                fields,
+            })
+        }
+        Value::Enum(value) => {
+            let mut converted = Vec::with_capacity(value.values.len());
+            for val in &value.values {
+                converted.push(value_to_build_value(val)?);
+            }
+            Ok(BuildValue::Enum {
+                enum_name: value.enum_name.clone(),
+                variant: value.variant.clone(),
+                values: converted,
+                variant_index: value.variant_index,
+            })
+        }
+        Value::Range(range) => Ok(BuildValue::Range {
+            start: expect_constant_int(&range.start)?,
+            end: expect_constant_int(&range.end)?,
+            inclusive: range.inclusive,
+        }),
+        Value::Boxed(boxed) => {
+            let guard = boxed
+                .cell
+                .lock()
+                .map_err(|_| "Box value poisoned while capturing build snapshot")?;
+            Ok(BuildValue::Boxed(Box::new(value_to_build_value(&guard)?)))
+        }
+        Value::Slice(slice) => {
+            let guard = slice
+                .items
+                .lock()
+                .map_err(|_| "Slice value poisoned while capturing build snapshot")?;
+            let mut converted = Vec::with_capacity(guard.len());
+            for item in guard.iter() {
+                converted.push(value_to_build_value(item)?);
+            }
+            Ok(BuildValue::Slice(converted))
+        }
+        Value::Map(map) => {
+            let guard = map
+                .entries
+                .lock()
+                .map_err(|_| "Map value poisoned while capturing build snapshot")?;
+            let mut converted = BTreeMap::new();
+            for (key, value) in guard.iter() {
+                converted.insert(key.clone(), value_to_build_value(value)?);
+            }
+            Ok(BuildValue::Map(converted))
+        }
+        Value::FormatTemplate(template) => {
+            Ok(BuildValue::FormatTemplate(format_template_to_build(template)?))
+        }
+        Value::Sender(_) | Value::Receiver(_) => {
+            Err("channel endpoints cannot be captured for parallel build execution (yet)".into())
+        }
+        Value::Reference(_) | Value::Pointer(_)
+        | Value::JoinHandle(_)
+        | Value::Moved => Err(format!(
+            "{} cannot be captured for parallel build execution",
+            describe_value(value)
+        )),
     }
 }
 
@@ -621,6 +784,84 @@ impl Compiler {
         }
     }
 
+    fn apply_build_effects(
+        &mut self,
+        effects: Vec<BuildEffect>,
+    ) -> Result<HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>>, String> {
+        let mut channel_handles: HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>> = HashMap::new();
+        for effect in effects {
+            match effect {
+                BuildEffect::Out(values) => {
+                    if values.is_empty() {
+                        continue;
+                    }
+                    let mut iter = values.into_iter();
+                    let first = iter.next().unwrap();
+                    let first_value = self.build_value_to_value(first, Some(&channel_handles))?;
+                    match first_value {
+                        Value::FormatTemplate(template) => {
+                            let provided: Result<Vec<Value>, String> = iter
+                                .map(|v| self.build_value_to_value(v, Some(&channel_handles)))
+                                .collect();
+                            let provided = provided?;
+                            if template.implicit_placeholders != provided.len() {
+                                return Err(format!(
+                                    "Format string expects {} argument(s), got {}",
+                                    template.implicit_placeholders,
+                                    provided.len()
+                                ));
+                            }
+                            self.emit_format_template(template, provided)?;
+                        }
+                        other => {
+                            if iter.next().is_some() {
+                                return Err(
+                                    "out() with multiple arguments requires a format string literal"
+                                        .into(),
+                                );
+                            }
+                            self.emit_out_value(other.into())?;
+                        }
+                    }
+                }
+                BuildEffect::ChannelCreate { id } => {
+                    channel_handles.insert(
+                        id,
+                        Arc::new((
+                            Mutex::new(ChannelState {
+                                queue: VecDeque::new(),
+                                closed: false,
+                            }),
+                            Condvar::new(),
+                        )),
+                    );
+                }
+                BuildEffect::ChannelSend { id, value } => {
+                    let inner = channel_handles
+                        .get(&id)
+                        .ok_or_else(|| "channel send without creation".to_string())?;
+                    let built = self.build_value_to_value(value, Some(&channel_handles))?;
+                    let (lock, cv) = &**inner;
+                    let mut guard = lock.lock().unwrap();
+                    if guard.closed {
+                        continue;
+                    }
+                    guard.queue.push_back(built);
+                    cv.notify_one();
+                }
+                BuildEffect::ChannelClose { id } => {
+                    if let Some(inner) = channel_handles.get(&id) {
+                        let (lock, cv) = &**inner;
+                        let mut guard = lock.lock().unwrap();
+                        guard.closed = true;
+                        cv.notify_all();
+                    }
+                }
+            }
+        }
+        Ok(channel_handles)
+    }
+
     fn const_int_value(&self, value: i128) -> IntValue {
         unsafe {
             let llvm = LLVMConstInt(self.i32_type, value as u64, 0);
@@ -632,6 +873,153 @@ impl Compiler {
         unsafe {
             let llvm = LLVMConstReal(self.f64_type, value);
             FloatValue::new(llvm, Some(value))
+        }
+    }
+
+    fn build_value_to_value(
+        &mut self,
+        value: BuildValue,
+        channels: Option<&HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>>>,
+    ) -> Result<Value, String> {
+        match value {
+            BuildValue::Unit => Ok(Value::Unit),
+            BuildValue::Int(v) => Ok(Value::Int(self.const_int_value(v))),
+            BuildValue::Float(v) => Ok(Value::Float(self.const_float_value(v))),
+            BuildValue::Bool(v) => Ok(Value::Bool(v)),
+            BuildValue::String(text) => self.build_string_constant(text),
+            BuildValue::Tuple(items) => {
+                let mut converted = Vec::with_capacity(items.len());
+                for item in items {
+                    converted.push(self.build_value_to_value(item, channels)?);
+                }
+                Ok(Value::Tuple(converted))
+            }
+            BuildValue::Struct { name, fields } => {
+                let mut converted = HashMap::new();
+                for (key, value) in fields {
+                    converted.insert(key, self.build_value_to_value(value, channels)?);
+                }
+                Ok(Value::Struct(StructValue::new(name, converted)))
+            }
+            BuildValue::Enum {
+                enum_name,
+                variant,
+                values,
+                variant_index,
+            } => {
+                let mut converted = Vec::with_capacity(values.len());
+                for value in values {
+                    converted.push(self.build_value_to_value(value, channels)?);
+                }
+                Ok(Value::Enum(EnumValue {
+                    enum_name,
+                    variant,
+                    values: converted,
+                    variant_index,
+                }))
+            }
+            BuildValue::Range {
+                start,
+                end,
+                inclusive,
+            } => Ok(Value::Range(RangeValue {
+                start: self.const_int_value(start),
+                end: self.const_int_value(end),
+                inclusive,
+            })),
+            BuildValue::Boxed(inner) => {
+                Ok(Value::Boxed(BoxValue::new(self.build_value_to_value(*inner, channels)?)))
+            }
+            BuildValue::Slice(items) => {
+                let mut converted = Vec::with_capacity(items.len());
+                for item in items {
+                    converted.push(self.build_value_to_value(item, channels)?);
+                }
+                Ok(Value::Slice(SliceValue::from_vec(converted)))
+            }
+            BuildValue::Map(entries) => {
+                let mut converted = Vec::with_capacity(entries.len());
+                for (key, value) in entries {
+                    converted.push((key, self.build_value_to_value(value, channels)?));
+                }
+                Ok(Value::Map(MapValue::from_entries(converted)))
+            }
+            BuildValue::Reference(reference) => {
+                let inner = self.build_value_to_value(
+                    reference
+                        .cell
+                        .lock()
+                        .map_err(|_| "reference poisoned in build result")?
+                        .clone(),
+                    channels,
+                )?;
+                let cell = Arc::new(Mutex::new(EvaluatedValue::from_value(inner)));
+                Ok(Value::Reference(ReferenceValue {
+                    cell,
+                    mutable: reference.mutable,
+                    origin: None,
+                }))
+            }
+            BuildValue::FormatTemplate(template) => {
+                let mut segments = Vec::with_capacity(template.segments.len());
+                for segment in template.segments {
+                    let converted = match segment {
+                        FormatRuntimeSegmentGeneric::Literal(text) => {
+                            FormatRuntimeSegmentGeneric::Literal(text)
+                        }
+                        FormatRuntimeSegmentGeneric::Named(value) => {
+                            FormatRuntimeSegmentGeneric::Named(
+                                self.build_value_to_value(value, channels)?,
+                            )
+                        }
+                        FormatRuntimeSegmentGeneric::Implicit => {
+                            FormatRuntimeSegmentGeneric::Implicit
+                        }
+                    };
+                    segments.push(converted);
+                }
+                Ok(Value::FormatTemplate(FormatTemplateValue {
+                    segments,
+                    implicit_placeholders: template.implicit_placeholders,
+                }))
+            }
+            BuildValue::ChannelSender(sender) => {
+                let inner = channels
+                    .and_then(|map| map.get(&sender.id).cloned())
+                    .ok_or_else(|| "channel handle missing during join".to_string())?;
+                Ok(Value::Sender(ChannelSender::new_with_state(inner)))
+            }
+            BuildValue::ChannelReceiver(receiver) => {
+                let inner = channels
+                    .and_then(|map| map.get(&receiver.id).cloned())
+                    .ok_or_else(|| "channel handle missing during join".to_string())?;
+                Ok(Value::Receiver(ChannelReceiver::new_with_state(inner)))
+            }
+            BuildValue::DeferredCall { name, type_args, args } => {
+                let mut evaluated = Vec::with_capacity(args.len());
+                for arg in args {
+                    evaluated.push(self.build_value_to_value(arg, channels)?);
+                }
+                let mut evaluated_wrapped = Vec::with_capacity(evaluated.len());
+                for value in evaluated {
+                    evaluated_wrapped.push(EvaluatedValue::from_value(value));
+                }
+                let receiver_candidate = evaluated_wrapped
+                    .first()
+                    .and_then(|v| self.value_struct_name(v.value()));
+                let func_entry = self.resolve_function(
+                    &name,
+                    receiver_candidate.as_deref(),
+                    &type_args,
+                    &evaluated_wrapped
+                        .iter()
+                        .map(|v| v.value().clone())
+                        .collect::<Vec<_>>(),
+                )?;
+                let results = self.run_function_with_values(func_entry, evaluated_wrapped)?;
+                Ok(self.collapse_results(results).into_value())
+            }
+            BuildValue::Moved => Err("moved value cannot be used in build spawn result".into()),
         }
     }
 
@@ -1691,12 +2079,30 @@ impl Compiler {
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
-            Expr::Spawn { expr, .. } => match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => Ok(EvalOutcome::Value(
-                    Value::JoinHandle(Box::new(JoinHandleValue::new(value.into_value()))).into(),
-                )),
-                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-            },
+            Expr::Spawn { expr, .. } => {
+                let experimental = env::var("PRIME_BUILD_PARALLEL")
+                    .map(|v| v == "1")
+                    .unwrap_or(false);
+                if experimental {
+                    let snapshot = self.snapshot_build_state()?;
+                    let expr_clone = expr.clone();
+                    let handle = thread::spawn(move || {
+                        let interpreter = BuildInterpreter::new(snapshot);
+                        interpreter.eval_with_effects(&expr_clone)
+                    });
+                    Ok(EvalOutcome::Value(
+                        Value::JoinHandle(Box::new(JoinHandleValue::new_build(handle))).into(),
+                    ))
+                } else {
+                    match self.emit_expression(expr)? {
+                        EvalOutcome::Value(value) => Ok(EvalOutcome::Value(
+                            Value::JoinHandle(Box::new(JoinHandleValue::new(value.into_value())))
+                                .into(),
+                        )),
+                        EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                    }
+                }
+            }
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = match self.emit_expression(base)? {
                     EvalOutcome::Value(value) => value,
@@ -3846,7 +4252,7 @@ impl Compiler {
             return Err("join expects 1 argument".into());
         }
         match args.pop().unwrap() {
-            Value::JoinHandle(handle) => handle.join(),
+            Value::JoinHandle(handle) => handle.join_with(self),
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.builtin_join(vec![inner])
@@ -3955,6 +4361,41 @@ impl Compiler {
             end_const,
             range.inclusive,
         )))
+    }
+
+    fn snapshot_build_state(&self) -> Result<BuildSnapshot, String> {
+        let mut scopes = Vec::with_capacity(self.scopes.len());
+        for scope in &self.scopes {
+            let mut bindings = HashMap::new();
+            for (name, binding) in scope {
+                let guard = binding
+                    .cell
+                    .lock()
+                    .map_err(|_| format!("Binding `{name}` poisoned while capturing build snapshot"))?;
+                bindings.insert(
+                    name.clone(),
+                    BuildBinding {
+                        cell: Arc::new(Mutex::new(value_to_build_value(guard.value())?)),
+                        mutable: binding.mutable,
+                        borrowed_mut: false,
+                        borrowed_shared: 0,
+                    },
+                );
+            }
+            scopes.push(BuildScope { bindings });
+        }
+        let mut enum_variants = HashMap::new();
+        for (variant, info) in &self.enum_variants {
+            enum_variants.insert(
+                variant.clone(),
+                BuildEnumVariant {
+                    enum_name: info.enum_name.clone(),
+                    variant_index: info.variant_index,
+                    fields: info.fields,
+                },
+            );
+        }
+        Ok(BuildSnapshot { scopes, enum_variants })
     }
 
     fn push_scope(&mut self) {
@@ -4240,7 +4681,8 @@ mod tests {
     use std::{
         env,
         path::{Path, PathBuf},
-        sync::{Mutex, OnceLock},
+        ptr,
+        sync::{Arc, Mutex, OnceLock},
     };
 
     fn compile_source(source: &str) -> Result<(), String> {
@@ -4272,6 +4714,95 @@ mod tests {
         }
         drop(guard);
         result
+    }
+
+    #[test]
+    fn build_snapshot_captures_basic_constants() {
+        let mut compiler = Compiler::new();
+        compiler.push_scope();
+        let int_binding = Binding {
+            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Int(IntValue::new(
+                ptr::null_mut(),
+                Some(7),
+            ))))),
+            mutable: false,
+        };
+        let tuple_binding = Binding {
+            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Tuple(vec![
+                Value::Bool(true),
+                Value::Int(IntValue::new(ptr::null_mut(), Some(2))),
+            ])))),
+            mutable: true,
+        };
+        let string_binding = Binding {
+            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Str(StringValue::new(
+                ptr::null_mut(),
+                Arc::new("hello".to_string()),
+            ))))),
+            mutable: false,
+        };
+        if let Some(scope) = compiler.scopes.last_mut() {
+            scope.insert("seven".into(), int_binding);
+            scope.insert("pair".into(), tuple_binding);
+            scope.insert("greeting".into(), string_binding);
+        }
+
+        let snapshot = compiler
+            .snapshot_build_state()
+            .expect("snapshot should capture constants");
+        assert_eq!(snapshot.scopes.len(), 1);
+        let bindings = &snapshot.scopes[0].bindings;
+        match bindings
+            .get("seven")
+            .and_then(|b| b.cell.lock().ok())
+            .map(|v| v.clone())
+        {
+            Some(BuildValue::Int(value)) => assert_eq!(value, 7),
+            other => panic!("unexpected binding for seven: {:?}", other),
+        }
+        match bindings
+            .get("pair")
+            .and_then(|b| b.cell.lock().ok())
+            .map(|v| v.clone())
+        {
+            Some(BuildValue::Tuple(items)) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(items[0], BuildValue::Bool(true)));
+                assert!(matches!(items[1], BuildValue::Int(2)));
+            }
+            other => panic!("unexpected binding for pair: {:?}", other),
+        }
+        match bindings
+            .get("greeting")
+            .and_then(|b| b.cell.lock().ok())
+            .map(|v| v.clone())
+        {
+            Some(BuildValue::String(text)) => assert_eq!(text, "hello"),
+            other => panic!("unexpected binding for greeting: {:?}", other),
+        }
+        assert!(bindings.get("pair").map(|b| b.mutable).unwrap_or_default());
+    }
+
+    #[test]
+    fn build_snapshot_rejects_non_constant_values() {
+        let mut compiler = Compiler::new();
+        compiler.push_scope();
+        let non_const_int = Binding {
+            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Int(IntValue::new(
+                ptr::null_mut(),
+                None,
+            ))))),
+            mutable: false,
+        };
+        if let Some(scope) = compiler.scopes.last_mut() {
+            scope.insert("ephemeral".into(), non_const_int);
+        }
+
+        let snapshot_err = compiler.snapshot_build_state().unwrap_err();
+        assert!(
+            snapshot_err.contains("Non-constant integer"),
+            "unexpected error: {snapshot_err}"
+        );
     }
 
     #[test]
