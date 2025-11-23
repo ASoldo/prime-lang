@@ -7,7 +7,7 @@ mod tools;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use language::ast::ModuleKind;
-use language::{compiler::Compiler, parser::parse_module, typecheck};
+use language::{compiler::Compiler, macro_expander, parser::parse_module, typecheck};
 use miette::NamedSource;
 use project::diagnostics::analyze_manifest_issues;
 use project::{
@@ -206,11 +206,16 @@ fn run_entry(path: &Path) {
     warn_manifest_drift(path);
     match load_package(path) {
         Ok(package) => {
-            if let Err(errors) = typecheck::check_program(&package.program) {
+            let expanded_program = expand_or_report(&package.program);
+            let expanded_package = project::Package {
+                program: expanded_program.clone(),
+                modules: package.modules.clone(),
+            };
+            if let Err(errors) = typecheck::check_program(&expanded_program) {
                 emit_type_errors(&errors);
                 std::process::exit(1);
             }
-            let mut interpreter = Interpreter::new(package.clone());
+            let mut interpreter = Interpreter::new(expanded_package);
             if let Err(err) = interpreter.run() {
                 report_runtime_error(&err);
                 std::process::exit(1);
@@ -245,12 +250,13 @@ fn build_entry(path: &Path, name: &str) {
     warn_manifest_drift(path);
     match load_package(path) {
         Ok(package) => {
-            if let Err(errors) = typecheck::check_program(&package.program) {
+            let expanded_program = expand_or_report(&package.program);
+            if let Err(errors) = typecheck::check_program(&expanded_program) {
                 emit_type_errors(&errors);
                 std::process::exit(1);
             }
             let mut compiler = Compiler::new();
-            if let Err(err) = compiler.compile_program(&package.program) {
+            if let Err(err) = compiler.compile_program(&expanded_program) {
                 eprintln!("Build failed: {err}");
                 std::process::exit(1);
             }
@@ -421,6 +427,24 @@ fn reject_library_entry(path: &Path) {
                     }
                 }
             }
+        }
+    }
+}
+
+fn expand_or_report(program: &language::ast::Program) -> language::ast::Program {
+    match macro_expander::expand_program(program) {
+        Ok(expanded) => expanded,
+        Err(errors) => {
+            let file_errors: Vec<FileErrors> = errors
+                .into_iter()
+                .map(|err| FileErrors {
+                    source: fs::read_to_string(&err.path).unwrap_or_default(),
+                    path: err.path,
+                    errors: err.errors,
+                })
+                .collect();
+            emit_syntax_errors(&file_errors);
+            std::process::exit(1);
         }
     }
 }

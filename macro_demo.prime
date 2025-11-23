@@ -1,0 +1,22 @@
+struct Vec2 {
+  x: int32;
+  y: int32;
+}
+
+macro dbg(value: int32) -> int32 {
+  out(`DBG: {value}`);
+  value
+}
+
+macro vec2(x: int32, y: int32) -> Vec2 {
+  Vec2{
+    x,
+    y,
+  }
+}
+
+fn main() {
+  let Vec2 p = ~vec2(3, 4);
+  let int32 hp = ~dbg(p.x + p.y);
+  out(hp);
+}

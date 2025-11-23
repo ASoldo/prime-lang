@@ -246,6 +246,7 @@ fn module_symbol_definitions(
                 def.visibility,
                 module.kind,
             )),
+            Item::Macro(_) => {}
             Item::Impl(_) => {}
         }
     }
@@ -1465,6 +1466,7 @@ fn collect_symbols(uri: &Uri, text: &str, module: &Module) -> Vec<SymbolInformat
                 SymbolKind::CONSTANT,
                 def.span,
             )),
+            Item::Macro(_) => {}
             Item::Impl(block) => {
                 if let Some(first) = block.methods.first() {
                     symbols.push(make_symbol(

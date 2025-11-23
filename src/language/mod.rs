@@ -3,6 +3,7 @@ pub mod build;
 pub mod compiler;
 pub mod enum_utils;
 pub mod errors;
+pub mod macro_expander;
 pub mod lexer;
 pub mod parser;
 pub mod runtime_abi;

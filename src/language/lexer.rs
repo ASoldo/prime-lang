@@ -157,6 +157,7 @@ impl<'a> Lexer<'a> {
             "module" => TokenKind::ModuleKw,
             "library" => TokenKind::LibraryKw,
             "test" => TokenKind::TestKw,
+            "macro" => TokenKind::Macro,
             _ => TokenKind::Identifier(slice.to_string()),
         };
         self.push_token(kind, start, end);
@@ -367,6 +368,7 @@ impl<'a> Lexer<'a> {
             Some('%') => self.single(TokenKind::Percent),
             Some('?') => self.single(TokenKind::Question),
             Some('@') => self.single(TokenKind::At),
+            Some('~') => self.single(TokenKind::Tilde),
             Some('#') => self.single(TokenKind::Hash),
             Some('+') => self.single(TokenKind::Plus),
             Some('*') => self.single(TokenKind::Star),

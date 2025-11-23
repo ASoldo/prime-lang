@@ -33,6 +33,7 @@ pub fn format_module(module: &Module) -> String {
             Item::Interface(def) => format_interface(&mut out, def),
             Item::Impl(block) => format_impl(&mut out, block),
             Item::Function(def) => format_function(&mut out, def),
+            Item::Macro(def) => format_macro(&mut out, def),
             Item::Const(def) => format_const(&mut out, def),
         }
     }
@@ -171,6 +172,43 @@ fn format_function(out: &mut String, def: &FunctionDef) {
         out.push_str(&format!("{}\n", format_expr(&expr.node)));
     }
     out.push_str("}\n");
+}
+
+fn format_macro(out: &mut String, def: &MacroDef) {
+    write_visibility(out, def.visibility);
+    out.push_str(&format!("macro {}(", def.name));
+    for (idx, param) in def.params.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&format_macro_param(param));
+    }
+    out.push(')');
+    if let Some(ret) = &def.return_ty {
+        out.push_str(&format!(" -> {}", format_type(&ret.ty)));
+    }
+    match &def.body {
+        MacroBody::Block(block) => {
+            out.push_str(" {\n");
+            if needs_leading_blank_line(block) {
+                out.push('\n');
+            }
+            format_block(out, block, 2);
+            out.push_str("}\n");
+        }
+        MacroBody::Expr(expr) => {
+            out.push_str(" => ");
+            out.push_str(&format_expr(&expr.node));
+            out.push_str(";\n");
+        }
+    }
+}
+
+fn format_macro_param(param: &MacroParam) -> String {
+    match &param.ty {
+        Some(ty) => format!("{}: {}", param.name, format_type(&ty.ty)),
+        None => param.name.clone(),
+    }
 }
 
 fn format_function_with_indent(out: &mut String, def: &FunctionDef, indent: usize) {
@@ -637,6 +675,14 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
                 type_args_str,
                 args
             )
+        }
+        Expr::MacroCall { name, args, .. } => {
+            let args = args
+                .iter()
+                .map(|expr| format_expr(expr))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("~{}({})", name.name, args)
         }
         Expr::StructLiteral { name, fields, .. } => match fields {
             StructLiteralKind::Named(named) => {

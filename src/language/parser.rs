@@ -215,6 +215,13 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
                 shift_expr_spans(arg, delta);
             }
         }
+        Expr::MacroCall { name, args, span } => {
+            shift_span(&mut name.span, delta);
+            shift_span(span, delta);
+            for arg in args {
+                shift_expr_spans(arg, delta);
+            }
+        }
         Expr::FieldAccess { base, span, .. } => {
             shift_span(span, delta);
             shift_expr_spans(base, delta);
@@ -527,6 +534,9 @@ impl Parser {
             }
             return self.parse_impl().map(Item::Impl);
         }
+        if self.matches(TokenKind::Macro) {
+            return self.parse_macro(visibility).map(Item::Macro);
+        }
         if self.matches(TokenKind::Fn) {
             return self.parse_function(visibility).map(Item::Function);
         }
@@ -792,6 +802,67 @@ impl Parser {
             body,
             span,
             visibility,
+        })
+    }
+
+    fn parse_macro(&mut self, visibility: Visibility) -> Result<MacroDef, SyntaxError> {
+        let start = self
+            .previous_span()
+            .map(|s| s.start)
+            .unwrap_or_else(|| self.current_span_start());
+        let name = self.expect_identifier("Expected macro name")?;
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            loop {
+                params.push(self.parse_macro_param()?);
+                if self.matches(TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        let return_ty = if self.matches(TokenKind::Arrow) {
+            Some(self.parse_type_annotation()?)
+        } else {
+            None
+        };
+        let body = if self.matches(TokenKind::FatArrow) {
+            let expr = self.parse_expression()?;
+            let span = expr_span(&expr);
+            self.expect(TokenKind::Semi)?;
+            MacroBody::Expr(Spanned::new(expr, span))
+        } else {
+            MacroBody::Block(Box::new(self.parse_block()?))
+        };
+        let end = match &body {
+            MacroBody::Block(block) => block.span.end,
+            MacroBody::Expr(expr) => expr.span.end,
+        };
+        Ok(MacroDef {
+            name: name.name,
+            params,
+            return_ty,
+            body,
+            span: Span::new(start, end),
+            visibility,
+        })
+    }
+
+    fn parse_macro_param(&mut self) -> Result<MacroParam, SyntaxError> {
+        let start = self.current_span_start();
+        let name = self.expect_identifier("Expected macro parameter name")?;
+        let ty = if self.matches(TokenKind::Colon) {
+            Some(self.parse_type_annotation()?)
+        } else {
+            None
+        };
+        let end = ty.as_ref().map(|ty| ty.span.end).unwrap_or(name.span.end);
+        Ok(MacroParam {
+            name: name.name,
+            ty,
+            span: Span::new(start, end),
         })
     }
 
@@ -1611,6 +1682,41 @@ impl Parser {
             self.rewind();
             let block = self.parse_block()?;
             return Ok(Expr::Block(Box::new(block)));
+        }
+        if self.matches(TokenKind::Tilde) {
+            let start = self
+                .previous_span()
+                .map(|s| s.start)
+                .unwrap_or_else(|| self.current_span_start());
+            let name = self.expect_identifier("Expected macro name after '~'")?;
+            self.expect(TokenKind::LParen)?;
+            self.enter_paren();
+            let mut args = Vec::new();
+            if !self.check(TokenKind::RParen) {
+                loop {
+                    args.push(self.parse_expression()?);
+                    if self.matches(TokenKind::Comma) {
+                        if self.check(TokenKind::RParen) {
+                            break;
+                        }
+                        continue;
+                    }
+                    break;
+                }
+            }
+            let end = match self.expect(TokenKind::RParen) {
+                Ok(token) => token.span.end,
+                Err(err) => {
+                    self.exit_paren();
+                    return Err(err);
+                }
+            };
+            self.exit_paren();
+            return Ok(Expr::MacroCall {
+                name,
+                args,
+                span: Span::new(start, end),
+            });
         }
 
         match self.peek_kind() {
@@ -2851,6 +2957,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Binary { span, .. } => *span,
         Expr::Unary { span, .. } => *span,
         Expr::Call { span, .. } => *span,
+        Expr::MacroCall { span, .. } => *span,
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
         Expr::MapLiteral { span, .. } => *span,

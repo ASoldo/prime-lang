@@ -28,6 +28,7 @@ pub enum TokenKind {
     ModuleKw,
     LibraryKw,
     TestKw,
+    Macro,
     Return,
     If,
     Else,
@@ -75,6 +76,7 @@ pub enum TokenKind {
     Semi,
     Question,
     At,
+    Tilde,
 
     Arrow,    // ->
     FatArrow, // =>

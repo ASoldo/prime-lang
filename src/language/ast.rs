@@ -78,6 +78,7 @@ pub enum Item {
     Interface(InterfaceDef),
     Impl(ImplBlock),
     Function(FunctionDef),
+    Macro(MacroDef),
     Const(ConstDef),
 }
 
@@ -137,6 +138,29 @@ pub struct ImplBlock {
     pub type_args: Vec<TypeExpr>,
     pub target: String,
     pub methods: Vec<FunctionDef>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MacroDef {
+    pub name: String,
+    pub params: Vec<MacroParam>,
+    pub return_ty: Option<TypeAnnotation>,
+    pub body: MacroBody,
+    pub span: Span,
+    pub visibility: Visibility,
+}
+
+#[derive(Clone, Debug)]
+pub struct MacroParam {
+    pub name: String,
+    pub ty: Option<TypeAnnotation>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum MacroBody {
+    Block(Box<Block>),
+    Expr(Spanned<Expr>),
 }
 
 #[derive(Clone, Debug)]
@@ -371,6 +395,11 @@ pub enum Expr {
     },
     Spawn {
         expr: Box<Expr>,
+        span: Span,
+    },
+    MacroCall {
+        name: Identifier,
+        args: Vec<Expr>,
         span: Span,
     },
 }

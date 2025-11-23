@@ -524,6 +524,10 @@ impl BuildInterpreter {
                 });
                 Ok(BuildValue::JoinHandle(BuildJoinHandle::new(handle)))
             }
+            Expr::MacroCall { name, .. } => Err(format!(
+                "macro `{}` cannot be evaluated in build mode before expansion",
+                name.name
+            )),
         }
     }
 

@@ -3,6 +3,7 @@ use crate::{
         ast::{ImportPath, Module, Program},
         errors::SyntaxError,
         lexer::{LexError, lex},
+        macro_expander,
         parser::parse_module,
         span::Span,
         typecheck::{TypeError, check_program},
@@ -341,7 +342,11 @@ fn type_diagnostics(
             modules: vec![module.clone()],
         }
     };
-    match check_program(&program) {
+    let expanded = match macro_expander::expand_program(&program) {
+        Ok(prog) => prog,
+        Err(errors) => return macro_errors_to_lsp(errors, text, &module.path),
+    };
+    match check_program(&expanded) {
         Ok(_) => Vec::new(),
         Err(errors) => errors
             .into_iter()
@@ -366,6 +371,25 @@ fn type_error_to_lsp(text: &str, err: TypeError) -> Diagnostic {
         code: err.code.clone().map(NumberOrString::String),
         ..Default::default()
     }
+}
+
+fn macro_errors_to_lsp(
+    errors: Vec<macro_expander::MacroExpansionError>,
+    text: &str,
+    module_path: &Path,
+) -> Vec<Diagnostic> {
+    errors
+        .into_iter()
+        .filter(|err| err.path == module_path)
+        .flat_map(|err| err.errors)
+        .map(|err| Diagnostic {
+            range: span_to_range(text, err.span),
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("prime-lang".into()),
+            message: err.message,
+            ..Default::default()
+        })
+        .collect()
 }
 
 fn build_program_for_manifest(

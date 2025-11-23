@@ -176,6 +176,7 @@ impl Interpreter {
                     Item::Impl(block) => {
                         self.register_impl(&module.name, block.clone())?;
                     }
+                    Item::Macro(_) => {}
                     Item::Function(def) => {
                         self.register_function(&module.name, def.clone())?;
                     }
@@ -2212,6 +2213,12 @@ impl Interpreter {
                     JoinHandleValue::new(handle),
                 ))))
             }
+            Expr::MacroCall { name, .. } => Err(RuntimeError::Unsupported {
+                message: format!(
+                    "macro `{}` must be expanded before interpretation",
+                    name.name
+                ),
+            }),
         }
     }
 

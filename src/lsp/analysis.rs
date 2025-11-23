@@ -219,6 +219,11 @@ fn collect_decl_from_expr(expr: &Expr, module: &Module, decls: &mut Vec<DeclInfo
                 collect_decl_from_expr(arg, module, decls);
             }
         }
+        Expr::MacroCall { args, .. } => {
+            for arg in args {
+                collect_decl_from_expr(arg, module, decls);
+            }
+        }
         Expr::FieldAccess { base, .. } => collect_decl_from_expr(base, module, decls),
         Expr::Index { base, index, .. } => {
             collect_decl_from_expr(base, module, decls);
@@ -688,6 +693,11 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
                 collect_expr_idents(arg, used);
             }
         }
+        Expr::MacroCall { args, .. } => {
+            for arg in args {
+                collect_expr_idents(arg, used);
+            }
+        }
         Expr::FieldAccess { base, .. } => collect_expr_idents(base, used),
         Expr::Index { base, index, .. } => {
             collect_expr_idents(base, used);
@@ -1146,6 +1156,7 @@ pub fn expr_span(expr: &Expr) -> Span {
         Expr::Binary { span, .. } => *span,
         Expr::Unary { span, .. } => *span,
         Expr::Call { span, .. } => *span,
+        Expr::MacroCall { span, .. } => *span,
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
         Expr::MapLiteral { span, .. } => *span,

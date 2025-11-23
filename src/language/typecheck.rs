@@ -206,6 +206,7 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
                     },
                 );
             }
+            Item::Macro(_) => {}
             Item::Impl(block) => {
                 for method in &block.methods {
                     let mut method_def = method.clone();
@@ -899,6 +900,17 @@ impl Checker {
             Expr::FormatString(literal) => {
                 self.validate_format_string(module, literal, env);
                 Some(string_type())
+            }
+            Expr::MacroCall { name, span, .. } => {
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        *span,
+                        format!("macro `{}` requires expansion before type checking", name.name),
+                    )
+                    .with_code("Emacro"),
+                );
+                None
             }
             Expr::Binary {
                 op,
@@ -3993,6 +4005,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Binary { span, .. } => *span,
         Expr::Unary { span, .. } => *span,
         Expr::Call { span, .. } => *span,
+        Expr::MacroCall { span, .. } => *span,
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
         Expr::MapLiteral { span, .. } => *span,
@@ -4246,7 +4259,8 @@ fn reference_may_dangle(expr: &Expr) -> bool {
         | Expr::Try { .. }
         | Expr::TryPropagate { .. }
         | Expr::Index { .. }
-        | Expr::Range(_) => true,
+        | Expr::Range(_)
+        | Expr::MacroCall { .. } => true,
         Expr::Spawn { .. } => true,
         Expr::EnumLiteral { .. } => true,
     }

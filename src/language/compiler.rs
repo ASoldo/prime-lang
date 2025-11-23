@@ -1142,6 +1142,7 @@ impl Compiler {
                     Item::Impl(block) => {
                         self.register_impl_block(&module.name, block)?;
                     }
+                    Item::Macro(_) => {}
                     Item::Function(func) => {
                         self.register_function(func, &module.name)?;
                     }
@@ -2218,6 +2219,10 @@ impl Compiler {
                 self.eval_unary(*op, value)
                     .map(|v| EvalOutcome::Value(self.evaluated(v)))
             }
+            Expr::MacroCall { name, .. } => Err(format!(
+                "macro `{}` must be expanded before code generation",
+                name.name
+            )),
         }
     }
 

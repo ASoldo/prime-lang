@@ -977,6 +977,35 @@ pub fn general_completion_items(
                     .or(Some("const".into())),
                 ..Default::default()
             }),
+            Item::Macro(def) => {
+                let label = format!("~{}", def.name);
+                if !seen.insert(label.clone()) {
+                    continue;
+                }
+                let detail = {
+                    let params = def
+                        .params
+                        .iter()
+                        .map(|p| match &p.ty {
+                            Some(ty) => format!("{}: {}", p.name, format_type_expr(&ty.ty)),
+                            None => p.name.clone(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let ret = def
+                        .return_ty
+                        .as_ref()
+                        .map(|ty| format!(" -> {}", format_type_expr(&ty.ty)))
+                        .unwrap_or_default();
+                    format!("macro ~{}({}){}", def.name, params, ret)
+                };
+                items.push(CompletionItem {
+                    label,
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: Some(detail),
+                    ..Default::default()
+                });
+            }
             Item::Impl(_) => {}
         }
     }
@@ -1049,6 +1078,35 @@ pub fn general_completion_items(
                             .or(Some("const".into())),
                         ..Default::default()
                     }),
+                    Item::Macro(def) => {
+                        let label = format!("~{}", def.name);
+                        if !seen.insert(label.clone()) {
+                            continue;
+                        }
+                        let detail = {
+                            let params = def
+                                .params
+                                .iter()
+                                .map(|p| match &p.ty {
+                                    Some(ty) => format!("{}: {}", p.name, format_type_expr(&ty.ty)),
+                                    None => p.name.clone(),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let ret = def
+                                .return_ty
+                                .as_ref()
+                                .map(|ty| format!(" -> {}", format_type_expr(&ty.ty)))
+                                .unwrap_or_default();
+                            format!("macro ~{}({}){}", def.name, params, ret)
+                        };
+                        items.push(CompletionItem {
+                            label,
+                            kind: Some(CompletionItemKind::FUNCTION),
+                            detail: Some(detail),
+                            ..Default::default()
+                        });
+                    }
                     Item::Impl(_) => {}
                 }
             }
