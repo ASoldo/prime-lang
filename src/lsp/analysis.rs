@@ -736,8 +736,8 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
         Expr::Reference { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Deref { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Move { expr: inner, .. } => collect_expr_idents(inner, used),
+        Expr::Spawn { expr, .. } => collect_expr_idents(expr, used),
         Expr::FormatString(literal) => collect_format_string_idents(literal, used),
-        Expr::Spawn { .. } => {}
     }
 }
 
