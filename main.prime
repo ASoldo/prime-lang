@@ -439,7 +439,7 @@ fn describe_event(event: MissionEvent) {
     Failed(reason) => {
       out(`mission failed: {reason}`);
     },
-    MissionEvent.Waiting => {
+    MissionEvent:Waiting => {
       out("mission awaiting clearance");
     },
   }
@@ -449,7 +449,7 @@ fn summarize_event(event: MissionEvent) -> string {
   match event {
     Completed(stage) => stage,
     Failed(reason) => reason,
-    MissionEvent.Waiting => "Awaiting assignment",
+    MissionEvent:Waiting => "Awaiting assignment",
   }
 }
 

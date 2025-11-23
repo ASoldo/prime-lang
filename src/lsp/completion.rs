@@ -813,14 +813,31 @@ fn build_type_subst(params: &[String], args: &[TypeExpr]) -> Option<HashMap<Stri
 pub fn enum_variant_completion_items(
     text: &str,
     offset: usize,
-    module: &Module,
+    modules: &[Module],
 ) -> Option<Vec<CompletionItem>> {
-    if offset < 2 || text.len() < offset {
+    if offset == 0 || offset > text.len() {
         return None;
     }
     let slice = &text[..offset];
-    let pos = slice.rfind('.')?;
-    let enum_path = &slice[..pos];
+    // prefer `::` if present, otherwise single ':' or '.'
+    let pos = if let Some(p) = slice.rfind("::") {
+        p + 1
+    } else if let Some(p) = slice.rfind(':') {
+        p
+    } else {
+        slice.rfind('.')?
+    };
+    // Walk backward to find the start of the enum identifier (letters, digits, underscore, dot).
+    let mut start = pos;
+    while start > 0 {
+        let ch = slice.chars().nth(start.saturating_sub(1)).unwrap();
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    let enum_path = slice[start..pos].trim_end_matches('.');
     if enum_path.is_empty() {
         return None;
     }
@@ -835,25 +852,27 @@ pub fn enum_variant_completion_items(
         end: offset_to_position(text, offset),
     };
     let mut items = Vec::new();
-    for item in &module.items {
-        if let Item::Enum(def) = item {
-            if def.name != enum_name {
-                continue;
-            }
-            for variant in &def.variants {
-                if !prefix_matches(&variant.name, Some(variant_prefix)) {
+    for module in modules {
+        for item in &module.items {
+            if let Item::Enum(def) = item {
+                if def.name != enum_name {
                     continue;
                 }
-                items.push(CompletionItem {
-                    label: variant.name.clone(),
-                    kind: Some(CompletionItemKind::ENUM_MEMBER),
-                    detail: Some(format!("{} variant", def.name)),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                        range: edit_range.clone(),
-                        new_text: variant.name.clone(),
-                    })),
-                    ..Default::default()
-                });
+                for variant in &def.variants {
+                    if !prefix_matches(&variant.name, Some(variant_prefix)) {
+                        continue;
+                    }
+                    items.push(CompletionItem {
+                        label: variant.name.clone(),
+                        kind: Some(CompletionItemKind::ENUM_MEMBER),
+                        detail: Some(format!("{} variant", def.name)),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range: edit_range.clone(),
+                            new_text: variant.name.clone(),
+                        })),
+                        ..Default::default()
+                    });
+                }
             }
         }
     }

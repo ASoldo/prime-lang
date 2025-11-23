@@ -671,7 +671,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             if prefix.is_empty() {
                 format!("{variant}({values_str})")
             } else {
-                format!("{prefix}.{variant}({values_str})")
+                format!("{prefix}:{variant}({values_str})")
             }
         }
         Expr::MapLiteral { entries, .. } => format_map_literal(entries),
@@ -1002,7 +1002,7 @@ fn format_pattern(pattern: &Pattern) -> String {
         } => {
             let prefix = enum_name
                 .as_ref()
-                .map(|name| format!("{name}.{variant}"))
+                .map(|name| format!("{name}:{variant}"))
                 .unwrap_or_else(|| variant.clone());
             if bindings.is_empty() {
                 prefix

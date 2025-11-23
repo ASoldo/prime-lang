@@ -1529,6 +1529,7 @@ impl Parser {
             }
             if self.matches(TokenKind::Dot) {
                 let field = self.expect_identifier("Expected field name after '.'")?;
+                let span = expr_span(&expr).union(field.span);
                 if self.check(TokenKind::LParen) {
                     self.expect(TokenKind::LParen)?;
                     let mut values = Vec::new();
@@ -1545,36 +1546,36 @@ impl Parser {
                         }
                     }
                     let end = self.expect(TokenKind::RParen)?.span.end;
-                    let span = Span::new(expr_span(&expr).start, end);
+                    let call_span = Span::new(span.start, end);
                     if let Expr::Identifier(enum_ident) = &expr {
-                        expr = Expr::EnumLiteral {
-                            enum_name: Some(enum_ident.name.clone()),
-                            variant: field.name,
-                            values,
-                            span,
-                        };
-                        continue;
-                    } else {
-                        let span = Span::new(expr_span(&expr).start, end);
-                        expr = Expr::Call {
-                            callee: Box::new(Expr::FieldAccess {
-                                base: Box::new(expr),
-                                field: field.name,
-                                span,
-                            }),
-                            type_args: Vec::new(),
-                            args: values,
-                            span,
-                        };
-                        continue;
+                        if is_pascal_case(&enum_ident.name) {
+                            expr = Expr::EnumLiteral {
+                                enum_name: Some(enum_ident.name.clone()),
+                                variant: field.name,
+                                values,
+                                span: call_span,
+                            };
+                            continue;
+                        }
                     }
+                    expr = Expr::Call {
+                        callee: Box::new(Expr::FieldAccess {
+                            base: Box::new(expr),
+                            field: field.name,
+                            span,
+                        }),
+                        type_args: Vec::new(),
+                        args: values,
+                        span: call_span,
+                    };
+                    continue;
+                } else {
+                    expr = Expr::FieldAccess {
+                        base: Box::new(expr),
+                        field: field.name,
+                        span,
+                    };
                 }
-                let span = expr_span(&expr).union(field.span);
-                expr = Expr::FieldAccess {
-                    base: Box::new(expr),
-                    field: field.name,
-                    span,
-                };
                 continue;
             }
             if self.matches(TokenKind::Question) {
@@ -1879,7 +1880,48 @@ impl Parser {
         self.expect(TokenKind::LBrace)?;
         let mut arms = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.is_eof() {
-            let pattern = self.parse_pattern()?;
+            let mut pattern = match self.parse_pattern() {
+                Ok(pat) => pat,
+                Err(_) => {
+                    // Fallback: allow enum constructor syntax parsed as expression (e.g. Enum.Variant(...)) in patterns.
+                    let saved_pos = self.pos;
+                    let saved_last = self.last_span.clone();
+                    match self.parse_expression() {
+                        Ok(expr) => {
+                            if let Some(pat) = expr_to_pattern(&expr) {
+                                pat
+                            } else {
+                                self.pos = saved_pos;
+                                self.last_span = saved_last;
+                                return Err(self.error_here("Expected pattern"));
+                            }
+                        }
+                        Err(_) => {
+                            self.pos = saved_pos;
+                            self.last_span = saved_last;
+                            return Err(self.error_here("Expected pattern"));
+                        }
+                    }
+                }
+            };
+            if let Pattern::Identifier(enum_name, _) = &pattern {
+                if self.matches(TokenKind::Dot)
+                    || self.matches(TokenKind::ColonColon)
+                    || self.matches(TokenKind::Colon)
+                {
+                    let variant = self.expect_identifier("Expected enum variant name")?;
+                    let bindings = if self.matches(TokenKind::LParen) {
+                        self.parse_pattern_bindings()?
+                    } else {
+                        Vec::new()
+                    };
+                    pattern = Pattern::EnumVariant {
+                        enum_name: Some(enum_name.clone()),
+                        variant: variant.name,
+                        bindings,
+                    };
+                }
+            }
             let guard = if self.matches(TokenKind::If) {
                 Some(self.parse_expression()?)
             } else {
@@ -1969,6 +2011,46 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, SyntaxError> {
+        // Enum variant with qualified name using '.' or '::'
+        if matches!(self.peek_kind(), Some(TokenKind::Identifier(_))) {
+            if let Some(sep) = self.peek_kind_n(1) {
+                let is_qualified_enum = match sep {
+                    TokenKind::Dot | TokenKind::ColonColon => true,
+                    TokenKind::Colon => {
+                        let next = self.peek_kind_n(2);
+                        let after = self.peek_kind_n(3);
+                        matches!(next, Some(TokenKind::Identifier(_)))
+                            && matches!(
+                                after,
+                                Some(
+                                    TokenKind::LParen
+                                        | TokenKind::FatArrow
+                                        | TokenKind::Comma
+                                        | TokenKind::RBrace
+                                        | TokenKind::RParen
+                                )
+                            )
+                    }
+                    _ => false,
+                };
+                if is_qualified_enum {
+            let enum_ident = self.expect_identifier("Expected enum name")?;
+            self.advance(); // consume separator
+            let variant_ident =
+                self.expect_identifier("Expected enum variant name after enum qualifier")?;
+            let bindings = if self.matches(TokenKind::LParen) {
+                self.parse_pattern_bindings()?
+            } else {
+                Vec::new()
+            };
+            return Ok(Pattern::EnumVariant {
+                enum_name: Some(enum_ident.name),
+                variant: variant_ident.name,
+                bindings,
+            });
+                }
+            }
+        }
         if self.matches(TokenKind::Identifier("_".into())) {
             return Ok(Pattern::Wildcard);
         }
@@ -2036,18 +2118,24 @@ impl Parser {
 
     fn parse_named_pattern(&mut self) -> Result<Pattern, SyntaxError> {
         let ident = self.expect_identifier("Expected pattern identifier")?;
-        if self.matches(TokenKind::ColonColon) || self.matches(TokenKind::Dot) {
-            let variant = self.expect_identifier("Expected variant name after `::` or `.`")?;
-            let bindings = if self.matches(TokenKind::LParen) {
-                self.parse_pattern_bindings()?
+        if self.check(TokenKind::ColonColon) || self.check(TokenKind::Dot) || self.check(TokenKind::Colon) {
+            // Avoid misinterpreting type annotations (`name: Type`) as enum qualifiers.
+            if self.check(TokenKind::Colon) && matches!(self.peek_kind_n(2), Some(TokenKind::Eq)) {
+                // fall through to treat as identifier pattern
             } else {
-                Vec::new()
-            };
-            return Ok(Pattern::EnumVariant {
-                enum_name: Some(ident.name),
-                variant: variant.name,
-                bindings,
-            });
+                self.advance();
+                let variant = self.expect_identifier("Expected variant name after enum qualifier")?;
+                let bindings = if self.matches(TokenKind::LParen) {
+                    self.parse_pattern_bindings()?
+                } else {
+                    Vec::new()
+                };
+                return Ok(Pattern::EnumVariant {
+                    enum_name: Some(ident.name),
+                    variant: variant.name,
+                    bindings,
+                });
+            }
         }
         if self.matches(TokenKind::LParen) {
             let bindings = self.parse_pattern_bindings()?;
@@ -2664,6 +2752,45 @@ impl Parser {
 
     fn rewind(&mut self) {
         self.pos = self.pos.saturating_sub(1);
+    }
+}
+
+fn expr_to_pattern(expr: &Expr) -> Option<Pattern> {
+    match expr {
+        Expr::EnumLiteral {
+            enum_name,
+            variant,
+            values,
+            ..
+        } => {
+            let mut patterns = Vec::new();
+            for value in values {
+                if let Some(pat) = expr_to_pattern(value) {
+                    patterns.push(pat);
+                } else {
+                    return None;
+                }
+            }
+            Some(Pattern::EnumVariant {
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+                bindings: patterns,
+            })
+        }
+        Expr::Identifier(ident) => Some(Pattern::Identifier(ident.name.clone(), ident.span)),
+        Expr::Literal(lit) => Some(Pattern::Literal(lit.clone())),
+        Expr::Tuple(values, span) => {
+            let mut parts = Vec::new();
+            for value in values {
+                if let Some(pat) = expr_to_pattern(value) {
+                    parts.push(pat);
+                } else {
+                    return None;
+                }
+            }
+            Some(Pattern::Tuple(parts, *span))
+        }
+        _ => None,
     }
 }
 

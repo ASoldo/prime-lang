@@ -554,7 +554,7 @@ fn main() {
         fs::write(&file_path, "").expect("write file");
         let uri = Uri::from_file_path(&file_path).expect("uri");
         let text = r#"
-module test::main;
+module test.main;
 
 fn main() {
   let value: int32 = "oops";
