@@ -2700,11 +2700,18 @@ impl Compiler {
                     if enum_value.variant != *variant {
                         return Ok(false);
                     }
-                    if enum_name
-                        .as_ref()
-                        .map(|name| enum_value.enum_name == *name)
-                        .unwrap_or(true)
-                    {
+                    let name_matches = if let Some(name) = enum_name {
+                        if enum_value.enum_name == *name {
+                            true
+                        } else if let Some(binding) = self.get_var(name) {
+                            matches!(binding.value(), Value::Enum(existing) if existing.enum_name == enum_value.enum_name)
+                        } else {
+                            false
+                        }
+                    } else {
+                        true
+                    };
+                    if name_matches {
                         if bindings.len() != enum_value.values.len() {
                             return Err(format!(
                                 "Variant `{}` expects {} bindings, got {}",

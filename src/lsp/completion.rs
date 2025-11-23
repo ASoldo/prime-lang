@@ -815,34 +815,53 @@ fn build_type_subst(params: &[String], args: &[TypeExpr]) -> Option<HashMap<Stri
 pub fn enum_variant_completion_items(
     text: &str,
     offset: usize,
+    _current_module: Option<&Module>,
     modules: &[Module],
 ) -> Option<Vec<CompletionItem>> {
     if offset == 0 || offset > text.len() {
         return None;
     }
     let slice = &text[..offset];
-    // Require `::` to qualify enum variants.
+    // Require `Enum::` qualifiers for variant completions to avoid noisy suggestions.
     let sep = slice.rfind("::")?;
     // Walk backward from the separator to find the start of the enum identifier (letters, digits, underscore, dot).
     let mut start = sep;
     while start > 0 {
         let ch = slice.chars().nth(start.saturating_sub(1)).unwrap();
         if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
-            start -= 1;
-        } else {
-            break;
+                start -= 1;
+            } else {
+                break;
+            }
         }
-    }
-    let enum_path = slice[start..sep].trim_end_matches('.');
-    if enum_path.is_empty() {
-        return None;
-    }
-    let enum_name = enum_path
+        let enum_path = slice[start..sep].trim_end_matches('.');
+        if enum_path.is_empty() {
+            return None;
+        }
+    let enum_token = enum_path
         .rsplit('.')
         .next()
         .filter(|name| !name.is_empty())?;
+    // Allow `binding::Variant` when binding has an enum type in scope.
+    let enum_name = if modules.iter().any(|m| {
+        m.items
+            .iter()
+            .any(|item| matches!(item, Item::Enum(def) if def.name == enum_token))
+    }) {
+        enum_token.to_string()
+    } else if let Some(module) = _current_module {
+        find_local_decl(module, enum_token, offset)
+            .and_then(|decl| decl.ty)
+            .and_then(|ty| match ty {
+                TypeExpr::Named(name, _) => Some(name),
+                _ => None,
+            })?
+    } else {
+        return None;
+    };
     let variant_prefix = slice.get(sep + 2..offset).unwrap_or("");
     let edit_start = sep + 2;
+
     let edit_range = Range {
         start: offset_to_position(text, edit_start),
         end: offset_to_position(text, offset),
@@ -872,11 +891,7 @@ pub fn enum_variant_completion_items(
             }
         }
     }
-    if items.is_empty() {
-        None
-    } else {
-        Some(items)
-    }
+    if items.is_empty() { None } else { Some(items) }
 }
 
 pub fn general_completion_items(
@@ -1311,6 +1326,47 @@ pub fn chain_for_field_token(text: &str, span: Span) -> Option<Vec<String>> {
         return None;
     }
     Some(segments)
+}
+
+fn find_match_scrutinee(slice: &str) -> Option<String> {
+    let mut last_match = None;
+    let mut iter = slice.match_indices("match");
+    while let Some((idx, _)) = iter.next() {
+        last_match = Some(idx);
+    }
+    let start = last_match?;
+    let after = &slice[start + "match".len()..];
+    let after = after.trim_start();
+    let mut ident = String::new();
+    for ch in after.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == ':' || ch == '.' {
+            ident.push(ch);
+        } else {
+            break;
+        }
+    }
+    if ident.is_empty() {
+        None
+    } else {
+        Some(ident)
+    }
+}
+
+fn enclosing_param_enum_type(module: &Module, offset: usize, name: &str) -> Option<String> {
+    for item in &module.items {
+        if let Item::Function(func) = item {
+            if offset >= func.span.start && offset <= func.span.end {
+                for param in &func.params {
+                    if param.name == name {
+                        if let TypeExpr::Named(enum_name, _) = &param.ty.ty {
+                            return Some(enum_name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn skip_ws_back(text: &str, mut idx: usize) -> usize {

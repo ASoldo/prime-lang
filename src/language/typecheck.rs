@@ -881,10 +881,10 @@ impl Checker {
     ) -> Option<TypeExpr> {
         match expr {
             Expr::Identifier(ident) => {
-                if let Some(entry) = env.lookup(&ident.name) {
-                    env.ensure_not_moved(module, ident.span, &ident.name, &mut self.errors);
-                    return entry.ty.clone();
-                }
+        if let Some(entry) = env.lookup(&ident.name) {
+            env.ensure_not_moved(module, ident.span, &ident.name, &mut self.errors);
+            return entry.ty.clone();
+        }
                 if let Some(const_info) = self.registry.consts.get(&ident.name) {
                     return const_info.ty.as_ref().map(|ann| ann.ty.clone());
                 }
@@ -930,17 +930,25 @@ impl Checker {
                 values,
                 span,
             } => {
-        let info = match self.resolve_enum_literal(
-            module,
-            enum_name.as_deref(),
-            variant,
-            *span,
-        ) {
-            Ok(info) => info,
-            Err(err) => {
-                self.errors.push(err);
-                return None;
-            }
+                // Support `value::Variant` when the value has an enum type.
+                let mut resolved_name = enum_name.as_deref();
+                if let Some(name) = enum_name {
+                    if !self.registry.enums.contains_key(name) {
+                        if let Some(binding) = env.lookup(name) {
+                            if let Some(TypeExpr::Named(actual, _)) = &binding.ty {
+                                if self.registry.enums.contains_key(actual) {
+                                    resolved_name = Some(actual.as_str());
+                                }
+                            }
+                        }
+                    }
+                }
+                let info = match self.resolve_enum_literal(module, resolved_name, variant, *span) {
+                    Ok(info) => info,
+                    Err(err) => {
+                        self.errors.push(err);
+                        return None;
+                    }
                 };
                 for (field, expr) in info.def.fields.iter().zip(values.iter()) {
                     self.check_expression(module, expr, Some(&field.ty), returns, env);
@@ -2405,7 +2413,17 @@ impl Checker {
                 bindings,
             } => {
                 if let Some(name) = enum_name {
-                    if let Some(enum_info) = self.registry.enums.get(name) {
+                    let mut resolved = name.as_str();
+                    if !self.registry.enums.contains_key(name) {
+                        if let Some(binding) = env.lookup(name) {
+                            if let Some(TypeExpr::Named(actual, _)) = &binding.ty {
+                                if self.registry.enums.contains_key(actual) {
+                                    resolved = actual;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(enum_info) = self.registry.enums.get(resolved) {
                         let Ok(variant_def) = find_variant(
                             &enum_info.def,
                             &enum_info.module,

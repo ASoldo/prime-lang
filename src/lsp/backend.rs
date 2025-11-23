@@ -1166,7 +1166,9 @@ impl LanguageServer for Backend {
         let struct_info = collect_struct_info(&struct_modules);
         let interface_info = collect_interface_info(&struct_modules);
         if let Some(module) = module_opt {
-            if let Some(items) = enum_variant_completion_items(&text, offset, &struct_modules) {
+            if let Some(items) =
+                enum_variant_completion_items(&text, offset, Some(&module), &struct_modules)
+            {
                 return Ok(Some(CompletionResponse::Array(items)));
             }
             if let Some(chain) = expression_chain_before_dot(&text, offset) {

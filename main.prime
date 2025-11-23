@@ -421,25 +421,25 @@ fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
     MissionEvent::Completed(name)
   } else {
     if slots_open {
-      Failed("requires tide shift")
+      MissionEvent::Failed("requires tide shift")
     } else {
-      Waiting()
+      MissionEvent::Waiting()
     }
   }
 }
 
 fn describe_event(event: MissionEvent) {
   match event {
-    Completed(stage) if stage == "Prime ascent" => {
+    event::Completed(stage) if stage == "Prime ascent" => {
       out(`mission completed with honors: {stage}`);
     },
-    Completed(stage) => {
+    event::Completed(stage) => {
       out(`mission completed: {stage}`);
     },
-    Failed(reason) => {
+    event::Failed(reason) => {
       out(`mission failed: {reason}`);
     },
-    MissionEvent::Waiting => {
+    event::Waiting => {
       out("mission awaiting clearance");
     },
   }
@@ -447,9 +447,9 @@ fn describe_event(event: MissionEvent) {
 
 fn summarize_event(event: MissionEvent) -> string {
   match event {
-    Completed(stage) => stage,
-    Failed(reason) => reason,
-    MissionEvent::Waiting => "Awaiting assignment",
+    event::Completed(stage) => stage,
+    event::Failed(reason) => reason,
+    event::Waiting => "Awaiting assignment",
   }
 }
 
