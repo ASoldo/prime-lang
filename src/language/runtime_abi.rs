@@ -1,0 +1,327 @@
+#![allow(unsafe_op_in_unsafe_fn)]
+
+use llvm_sys::{
+    LLVMLinkage,
+    core::{
+        LLVMAddFunction, LLVMDoubleTypeInContext, LLVMFunctionType, LLVMInt1TypeInContext,
+        LLVMInt32TypeInContext, LLVMInt8TypeInContext, LLVMIntTypeInContext, LLVMPointerType,
+        LLVMSetLinkage, LLVMVoidTypeInContext,
+    },
+    prelude::*,
+};
+use std::{ffi::CString, mem};
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub struct RuntimeAbi {
+    pub handle_type: LLVMTypeRef,
+    pub status_type: LLVMTypeRef,
+    pub bool_type: LLVMTypeRef,
+    pub int_type: LLVMTypeRef,
+    pub float_type: LLVMTypeRef,
+    pub usize_type: LLVMTypeRef,
+    pub thread_fn_type: LLVMTypeRef,
+    pub channel_out_type: LLVMTypeRef,
+    pub string_data_type: LLVMTypeRef,
+    pub prime_value_retain: LLVMValueRef,
+    pub prime_value_retain_ty: LLVMTypeRef,
+    pub prime_value_release: LLVMValueRef,
+    pub prime_value_release_ty: LLVMTypeRef,
+    pub prime_unit_new: LLVMValueRef,
+    pub prime_unit_new_ty: LLVMTypeRef,
+    pub prime_int_new: LLVMValueRef,
+    pub prime_int_new_ty: LLVMTypeRef,
+    pub prime_float_new: LLVMValueRef,
+    pub prime_float_new_ty: LLVMTypeRef,
+    pub prime_bool_new: LLVMValueRef,
+    pub prime_bool_new_ty: LLVMTypeRef,
+    pub prime_string_new: LLVMValueRef,
+    pub prime_string_new_ty: LLVMTypeRef,
+    pub prime_slice_new: LLVMValueRef,
+    pub prime_slice_new_ty: LLVMTypeRef,
+    pub prime_slice_push: LLVMValueRef,
+    pub prime_slice_push_ty: LLVMTypeRef,
+    pub prime_map_new: LLVMValueRef,
+    pub prime_map_new_ty: LLVMTypeRef,
+    pub prime_map_insert: LLVMValueRef,
+    pub prime_map_insert_ty: LLVMTypeRef,
+    pub prime_enum_new: LLVMValueRef,
+    pub prime_enum_new_ty: LLVMTypeRef,
+    pub prime_reference_new: LLVMValueRef,
+    pub prime_reference_new_ty: LLVMTypeRef,
+    pub prime_reference_read: LLVMValueRef,
+    pub prime_reference_read_ty: LLVMTypeRef,
+    pub prime_channel_new: LLVMValueRef,
+    pub prime_channel_new_ty: LLVMTypeRef,
+    pub prime_send: LLVMValueRef,
+    pub prime_send_ty: LLVMTypeRef,
+    pub prime_recv: LLVMValueRef,
+    pub prime_recv_ty: LLVMTypeRef,
+    pub prime_close: LLVMValueRef,
+    pub prime_close_ty: LLVMTypeRef,
+    pub prime_spawn: LLVMValueRef,
+    pub prime_spawn_ty: LLVMTypeRef,
+    pub prime_join: LLVMValueRef,
+    pub prime_join_ty: LLVMTypeRef,
+    pub prime_print: LLVMValueRef,
+    pub prime_print_ty: LLVMTypeRef,
+    pub prime_struct_new: LLVMValueRef,
+    pub prime_struct_new_ty: LLVMTypeRef,
+    pub prime_struct_insert: LLVMValueRef,
+    pub prime_struct_insert_ty: LLVMTypeRef,
+}
+
+impl RuntimeAbi {
+    pub unsafe fn declare(context: LLVMContextRef, module: LLVMModuleRef) -> Self {
+        let handle_type = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+        let status_type = LLVMInt32TypeInContext(context);
+        let mut thread_params = [handle_type];
+        let thread_fn_type =
+            LLVMPointerType(LLVMFunctionType(handle_type, thread_params.as_mut_ptr(), 1, 0), 0);
+        let channel_out_type = LLVMPointerType(handle_type, 0);
+        let string_data_type = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
+        let void_type = LLVMVoidTypeInContext(context);
+        let bool_type = LLVMInt1TypeInContext(context);
+        let int_type = LLVMIntTypeInContext(context, 128);
+        let float_type = LLVMDoubleTypeInContext(context);
+        let usize_type = LLVMIntTypeInContext(context, (mem::size_of::<usize>() * 8) as u32);
+
+        let (prime_value_retain, prime_value_retain_ty) = declare_fn(
+            module,
+            "prime_value_retain",
+            handle_type,
+            &mut [handle_type],
+        );
+        let (prime_value_release, prime_value_release_ty) =
+            declare_fn(module, "prime_value_release", void_type, &mut [handle_type]);
+        let (prime_unit_new, prime_unit_new_ty) =
+            declare_fn(module, "prime_unit_new", handle_type, &mut []);
+        let (prime_int_new, prime_int_new_ty) =
+            declare_fn(module, "prime_int_new", handle_type, &mut [int_type]);
+        let (prime_float_new, prime_float_new_ty) =
+            declare_fn(module, "prime_float_new", handle_type, &mut [float_type]);
+        let (prime_bool_new, prime_bool_new_ty) =
+            declare_fn(module, "prime_bool_new", handle_type, &mut [bool_type]);
+        let (prime_string_new, prime_string_new_ty) = declare_fn(
+            module,
+            "prime_string_new",
+            handle_type,
+            &mut [string_data_type, int_type],
+        );
+        let (prime_slice_new, prime_slice_new_ty) =
+            declare_fn(module, "prime_slice_new", handle_type, &mut []);
+        let (prime_slice_push, prime_slice_push_ty) = declare_fn(
+            module,
+            "prime_slice_push",
+            status_type,
+            &mut [handle_type, handle_type],
+        );
+        let (prime_map_new, prime_map_new_ty) =
+            declare_fn(module, "prime_map_new", handle_type, &mut []);
+        let (prime_map_insert, prime_map_insert_ty) = declare_fn(
+            module,
+            "prime_map_insert",
+            status_type,
+            &mut [handle_type, string_data_type, usize_type, handle_type],
+        );
+        let (prime_enum_new, prime_enum_new_ty) = declare_fn(
+            module,
+            "prime_enum_new",
+            handle_type,
+            &mut [LLVMPointerType(handle_type, 0), usize_type, LLVMInt32TypeInContext(context)],
+        );
+        let (prime_reference_new, prime_reference_new_ty) = declare_fn(
+            module,
+            "prime_reference_new",
+            handle_type,
+            &mut [handle_type, bool_type],
+        );
+        let (prime_reference_read, prime_reference_read_ty) = declare_fn(
+            module,
+            "prime_reference_read",
+            handle_type,
+            &mut [handle_type],
+        );
+        let (prime_channel_new, prime_channel_new_ty) = declare_fn(
+            module,
+            "prime_channel_new",
+            status_type,
+            &mut [channel_out_type, channel_out_type],
+        );
+        let (prime_send, prime_send_ty) = declare_fn(
+            module,
+            "prime_send",
+            status_type,
+            &mut [handle_type, handle_type],
+        );
+        let (prime_recv, prime_recv_ty) = declare_fn(
+            module,
+            "prime_recv",
+            status_type,
+            &mut [handle_type, channel_out_type],
+        );
+        let (prime_close, prime_close_ty) =
+            declare_fn(module, "prime_close", status_type, &mut [handle_type]);
+        let (prime_spawn, prime_spawn_ty) = declare_fn(
+            module,
+            "prime_spawn",
+            status_type,
+            &mut [thread_fn_type, handle_type, channel_out_type],
+        );
+        let (prime_join, prime_join_ty) = declare_fn(
+            module,
+            "prime_join",
+            status_type,
+            &mut [handle_type, channel_out_type],
+        );
+        let (prime_print, prime_print_ty) = declare_fn(
+            module,
+            "prime_print",
+            void_type,
+            &mut [handle_type],
+        );
+        let (prime_struct_new, prime_struct_new_ty) = declare_fn(
+            module,
+            "prime_struct_new",
+            handle_type,
+            &mut [string_data_type, usize_type],
+        );
+        let (prime_struct_insert, prime_struct_insert_ty) = declare_fn(
+            module,
+            "prime_struct_insert",
+            status_type,
+            &mut [handle_type, string_data_type, usize_type, handle_type],
+        );
+
+        Self {
+            handle_type,
+            status_type,
+            bool_type,
+            int_type,
+            float_type,
+            usize_type,
+            thread_fn_type,
+            channel_out_type,
+            string_data_type,
+            prime_value_retain,
+            prime_value_retain_ty,
+            prime_value_release,
+            prime_value_release_ty,
+            prime_unit_new,
+            prime_unit_new_ty,
+            prime_int_new,
+            prime_int_new_ty,
+            prime_float_new,
+            prime_float_new_ty,
+            prime_bool_new,
+            prime_bool_new_ty,
+            prime_string_new,
+            prime_string_new_ty,
+            prime_slice_new,
+            prime_slice_new_ty,
+            prime_slice_push,
+            prime_slice_push_ty,
+            prime_map_new,
+            prime_map_new_ty,
+            prime_map_insert,
+            prime_map_insert_ty,
+            prime_enum_new,
+            prime_enum_new_ty,
+            prime_reference_new,
+            prime_reference_new_ty,
+            prime_reference_read,
+            prime_reference_read_ty,
+            prime_channel_new,
+            prime_channel_new_ty,
+            prime_send,
+            prime_send_ty,
+            prime_recv,
+            prime_recv_ty,
+            prime_close,
+            prime_close_ty,
+            prime_spawn,
+            prime_spawn_ty,
+            prime_join,
+            prime_join_ty,
+            prime_print,
+            prime_print_ty,
+            prime_struct_new,
+            prime_struct_new_ty,
+            prime_struct_insert,
+            prime_struct_insert_ty,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            handle_type: std::ptr::null_mut(),
+            status_type: std::ptr::null_mut(),
+            bool_type: std::ptr::null_mut(),
+            int_type: std::ptr::null_mut(),
+            float_type: std::ptr::null_mut(),
+            usize_type: std::ptr::null_mut(),
+            thread_fn_type: std::ptr::null_mut(),
+            channel_out_type: std::ptr::null_mut(),
+            string_data_type: std::ptr::null_mut(),
+            prime_value_retain: std::ptr::null_mut(),
+            prime_value_retain_ty: std::ptr::null_mut(),
+            prime_value_release: std::ptr::null_mut(),
+            prime_value_release_ty: std::ptr::null_mut(),
+            prime_unit_new: std::ptr::null_mut(),
+            prime_unit_new_ty: std::ptr::null_mut(),
+            prime_int_new: std::ptr::null_mut(),
+            prime_int_new_ty: std::ptr::null_mut(),
+            prime_float_new: std::ptr::null_mut(),
+            prime_float_new_ty: std::ptr::null_mut(),
+            prime_bool_new: std::ptr::null_mut(),
+            prime_bool_new_ty: std::ptr::null_mut(),
+            prime_string_new: std::ptr::null_mut(),
+            prime_string_new_ty: std::ptr::null_mut(),
+            prime_slice_new: std::ptr::null_mut(),
+            prime_slice_new_ty: std::ptr::null_mut(),
+            prime_slice_push: std::ptr::null_mut(),
+            prime_slice_push_ty: std::ptr::null_mut(),
+            prime_map_new: std::ptr::null_mut(),
+            prime_map_new_ty: std::ptr::null_mut(),
+            prime_map_insert: std::ptr::null_mut(),
+            prime_map_insert_ty: std::ptr::null_mut(),
+            prime_enum_new: std::ptr::null_mut(),
+            prime_enum_new_ty: std::ptr::null_mut(),
+            prime_reference_new: std::ptr::null_mut(),
+            prime_reference_new_ty: std::ptr::null_mut(),
+            prime_reference_read: std::ptr::null_mut(),
+            prime_reference_read_ty: std::ptr::null_mut(),
+            prime_channel_new: std::ptr::null_mut(),
+            prime_channel_new_ty: std::ptr::null_mut(),
+            prime_send: std::ptr::null_mut(),
+            prime_send_ty: std::ptr::null_mut(),
+            prime_recv: std::ptr::null_mut(),
+            prime_recv_ty: std::ptr::null_mut(),
+            prime_close: std::ptr::null_mut(),
+            prime_close_ty: std::ptr::null_mut(),
+            prime_spawn: std::ptr::null_mut(),
+            prime_spawn_ty: std::ptr::null_mut(),
+            prime_join: std::ptr::null_mut(),
+            prime_join_ty: std::ptr::null_mut(),
+            prime_print: std::ptr::null_mut(),
+            prime_print_ty: std::ptr::null_mut(),
+            prime_struct_new: std::ptr::null_mut(),
+            prime_struct_new_ty: std::ptr::null_mut(),
+            prime_struct_insert: std::ptr::null_mut(),
+            prime_struct_insert_ty: std::ptr::null_mut(),
+        }
+    }
+}
+
+unsafe fn declare_fn(
+    module: LLVMModuleRef,
+    name: &str,
+    ret: LLVMTypeRef,
+    params: &mut [LLVMTypeRef],
+) -> (LLVMValueRef, LLVMTypeRef) {
+    let name_c = CString::new(name).expect("ffi string");
+    let function_type = LLVMFunctionType(ret, params.as_mut_ptr(), params.len() as u32, 0);
+    let func = LLVMAddFunction(module, name_c.as_ptr(), function_type);
+    LLVMSetLinkage(func, LLVMLinkage::LLVMExternalLinkage);
+    (func, function_type)
+}

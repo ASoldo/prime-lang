@@ -232,6 +232,11 @@ fn collect_decl_from_expr(expr: &Expr, module: &Module, decls: &mut Vec<DeclInfo
                 }
             }
         },
+        Expr::EnumLiteral { values, .. } => {
+            for value in values {
+                collect_decl_from_expr(value, module, decls);
+            }
+        }
         Expr::MapLiteral { entries, .. } => {
             for entry in entries {
                 collect_decl_from_expr(&entry.key, module, decls);
@@ -692,6 +697,11 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
                 }
             }
         },
+        Expr::EnumLiteral { values, .. } => {
+            for value in values {
+                collect_expr_idents(value, used);
+            }
+        }
         Expr::MapLiteral { entries, .. } => {
             for entry in entries {
                 collect_expr_idents(&entry.key, used);
@@ -1131,6 +1141,7 @@ pub fn expr_span(expr: &Expr) -> Span {
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
         Expr::MapLiteral { span, .. } => *span,
+        Expr::EnumLiteral { span, .. } => *span,
         Expr::Block(block) => block.span,
         Expr::If(if_expr) => if_expr.span,
         Expr::Match(match_expr) => match_expr.span,

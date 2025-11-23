@@ -1,8 +1,10 @@
 pub mod ast;
 pub mod compiler;
+pub mod enum_utils;
 pub mod errors;
 pub mod lexer;
 pub mod parser;
+pub mod runtime_abi;
 pub mod span;
 pub mod token;
 pub mod typecheck;

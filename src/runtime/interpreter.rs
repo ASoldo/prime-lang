@@ -1890,6 +1890,23 @@ impl Interpreter {
                 }
             }
             Expr::StructLiteral { name, fields, .. } => self.instantiate_struct(name, fields),
+            Expr::EnumLiteral {
+                enum_name,
+                variant,
+                values,
+                ..
+            } => {
+                let mut evaluated = Vec::new();
+                for expr in values {
+                    match self.eval_expression(expr)? {
+                        EvalOutcome::Value(value) => evaluated.push(value),
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    }
+                }
+                let enum_name = enum_name.clone().unwrap_or_else(|| variant.clone());
+                self.instantiate_enum(&enum_name, variant, evaluated)
+                    .map(EvalOutcome::Value)
+            }
             Expr::MapLiteral { entries, .. } => self.eval_map_literal(entries),
             Expr::Match(expr) => self.eval_match(expr),
             Expr::Block(block) => match self.eval_block(block)? {

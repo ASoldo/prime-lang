@@ -1,6 +1,7 @@
 use crate::{
     language::{
         ast::*,
+        runtime_abi::RuntimeAbi,
         types::{Mutability, TypeExpr},
     },
     runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric},
@@ -8,13 +9,16 @@ use crate::{
 use llvm_sys::{
     LLVMLinkage,
     core::{
-        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMBuildCall2, LLVMBuildGlobalString,
-        LLVMBuildRet, LLVMConstInt, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
-        LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
-        LLVMDoubleTypeInContext, LLVMFunctionType, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
-        LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilderAtEnd,
-        LLVMPrintModuleToFile, LLVMSetLinkage,
+        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAlloca, LLVMBuildCall2,
+        LLVMBuildGlobalString, LLVMBuildInBoundsGEP2, LLVMBuildLoad2, LLVMBuildRet, LLVMBuildStore, LLVMConstInt,
+        LLVMConstReal, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
+        LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent,
+        LLVMGetElementType, LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetLastInstruction, LLVMGetModuleContext,
+        LLVMGetTypeKind, LLVMInt32TypeInContext, LLVMInt8TypeInContext, LLVMIsAFunction,
+        LLVMModuleCreateWithNameInContext, LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPointerType,
+        LLVMPrintModuleToFile, LLVMSetLinkage, LLVMTypeOf,
     },
+    LLVMTypeKind,
     prelude::*,
 };
 use std::{
@@ -23,6 +27,7 @@ use std::{
     mem,
     path::Path,
     ptr,
+    env,
     sync::{Arc, Condvar, Mutex},
 };
 
@@ -49,6 +54,8 @@ pub struct Compiler {
     printf_type: LLVMTypeRef,
     printf: LLVMValueRef,
     main_fn: LLVMValueRef,
+    #[allow(dead_code)]
+    runtime_abi: RuntimeAbi,
     scopes: Vec<HashMap<String, Binding>>,
     structs: HashMap<String, StructEntry>,
     functions: HashMap<FunctionKey, FunctionEntry>,
@@ -91,6 +98,7 @@ struct EnumValue {
     enum_name: String,
     variant: String,
     values: Vec<Value>,
+    variant_index: u32,
 }
 
 type FormatTemplateValue = FormatTemplateValueGeneric<Value>;
@@ -110,14 +118,14 @@ struct FloatValue {
 
 #[derive(Clone)]
 struct ReferenceValue {
-    cell: Arc<Mutex<Value>>,
+    cell: Arc<Mutex<EvaluatedValue>>,
     mutable: bool,
     origin: Option<String>,
 }
 
 #[derive(Clone)]
 struct PointerValue {
-    cell: Arc<Mutex<Value>>,
+    cell: Arc<Mutex<EvaluatedValue>>,
     mutable: bool,
 }
 
@@ -243,19 +251,58 @@ struct StructValue {
 
 #[derive(Clone)]
 struct Binding {
-    cell: Arc<Mutex<Value>>,
+    cell: Arc<Mutex<EvaluatedValue>>,
     mutable: bool,
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeValue {
+    handle: LLVMValueRef,
+}
+
+#[derive(Clone)]
+struct EvaluatedValue {
+    value: Value,
+    runtime: Option<RuntimeValue>,
+}
+
+impl EvaluatedValue {
+    fn from_value(value: Value) -> Self {
+        Self { value, runtime: None }
+    }
+
+    fn runtime_handle(&self) -> Option<LLVMValueRef> {
+        self.runtime.map(|rt| rt.handle)
+    }
+
+    fn into_value(self) -> Value {
+        self.value
+    }
+
+    fn value(&self) -> &Value {
+        &self.value
+    }
+
+    fn set_runtime(&mut self, handle: LLVMValueRef) {
+        self.runtime = Some(RuntimeValue { handle });
+    }
+}
+
+impl From<Value> for EvaluatedValue {
+    fn from(value: Value) -> Self {
+        EvaluatedValue::from_value(value)
+    }
 }
 
 enum FlowSignal {
     Break,
     Continue,
-    Return(Vec<Value>),
-    Propagate(Value),
+    Return(Vec<EvaluatedValue>),
+    Propagate(EvaluatedValue),
 }
 
 enum BlockEval {
-    Value(Value),
+    Value(EvaluatedValue),
     Flow(FlowSignal),
 }
 
@@ -356,6 +403,7 @@ struct EnumVariantInfo {
     fields: usize,
     module: String,
     visibility: Visibility,
+    variant_index: u32,
 }
 
 #[derive(Clone)]
@@ -405,6 +453,139 @@ impl FloatValue {
 }
 
 impl Compiler {
+    fn evaluated(&mut self, value: Value) -> EvaluatedValue {
+        EvaluatedValue::from_value(value)
+    }
+
+    fn runtime_release(&mut self, handle: LLVMValueRef) {
+        if handle.is_null() {
+            return;
+        }
+        let _ = self.call_runtime(
+            self.runtime_abi.prime_value_release,
+            self.runtime_abi.prime_value_release_ty,
+            &mut [handle],
+            "value_release",
+        );
+    }
+
+    fn runtime_close(&mut self, handle: LLVMValueRef) {
+        if handle.is_null() {
+            return;
+        }
+        let _ = self.call_runtime(
+            self.runtime_abi.prime_close,
+            self.runtime_abi.prime_close_ty,
+            &mut [handle],
+            "channel_close",
+        );
+    }
+
+    fn build_channel_handles(&mut self) -> Option<(LLVMValueRef, LLVMValueRef)> {
+        unsafe {
+            if self.runtime_abi.handle_type.is_null() {
+                return None;
+            }
+            let sender_slot = LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("chan_sender_out").unwrap().as_ptr(),
+            );
+            let receiver_slot = LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("chan_receiver_out").unwrap().as_ptr(),
+            );
+            let _ = self.call_runtime(
+                self.runtime_abi.prime_channel_new,
+                self.runtime_abi.prime_channel_new_ty,
+                &mut [sender_slot, receiver_slot],
+                "channel_new",
+            );
+            let sender = LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                sender_slot,
+                CString::new("chan_sender").unwrap().as_ptr(),
+            );
+            let receiver = LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                receiver_slot,
+                CString::new("chan_receiver").unwrap().as_ptr(),
+            );
+            Some((sender, receiver))
+        }
+    }
+
+    fn seed_channel_queue(
+        &mut self,
+        sender_handle: LLVMValueRef,
+        queued: &[Value],
+    ) -> Result<(), String> {
+        for value in queued {
+            let handle = self.build_runtime_handle(value.clone())?;
+            let _ = self.call_runtime(
+                self.runtime_abi.prime_send,
+                self.runtime_abi.prime_send_ty,
+                &mut [sender_handle, handle],
+                "channel_seed_send",
+            );
+            self.runtime_release(handle);
+        }
+        Ok(())
+    }
+
+    fn ensure_runtime_symbols(&mut self) {
+        unsafe {
+            let module = self.module;
+            if module.is_null() {
+                return;
+            }
+            let handle_ready = !self.runtime_abi.handle_type.is_null()
+                && LLVMGetModuleContext(module) == self.context;
+            let unit_parent = if self.runtime_abi.prime_unit_new.is_null() {
+                ptr::null_mut()
+            } else {
+                LLVMGetGlobalParent(self.runtime_abi.prime_unit_new)
+            };
+            let needs_refresh = !handle_ready
+                || unit_parent.is_null()
+                || LLVMIsAFunction(self.runtime_abi.prime_unit_new).is_null()
+                || unit_parent != module;
+            if needs_refresh {
+                self.runtime_abi = RuntimeAbi::declare(self.context, module);
+            }
+        }
+    }
+
+    fn maybe_attach_runtime_handle(&mut self, value: &mut EvaluatedValue) -> Option<LLVMValueRef> {
+        if value.runtime_handle().is_some() {
+            return value.runtime_handle();
+        }
+        if env::var("PRIME_ENABLE_RT_HANDLES").is_err() {
+            return None;
+        }
+        self.ensure_runtime_symbols();
+        // Skip in compiler-mode to avoid unsafe builder states during multiple compilations.
+        if self.runtime_abi.handle_type.is_null() {
+            return None;
+        }
+        unsafe {
+            if self.builder.is_null()
+                || LLVMGetInsertBlock(self.builder).is_null()
+                || self.runtime_abi.handle_type.is_null()
+            {
+                return None;
+            }
+        }
+        self.build_runtime_handle_scoped(value.value().clone())
+            .map(|handle| {
+                value.set_runtime(handle);
+                handle
+            })
+    }
+
     pub fn new() -> Self {
         unsafe {
             let context = LLVMContextCreate();
@@ -421,6 +602,7 @@ impl Compiler {
                 printf_type: ptr::null_mut(),
                 printf: ptr::null_mut(),
                 main_fn: ptr::null_mut(),
+                runtime_abi: RuntimeAbi::empty(),
                 scopes: Vec::new(),
                 structs: HashMap::new(),
                 functions: HashMap::new(),
@@ -486,7 +668,7 @@ impl Compiler {
                             return Err("control flow not allowed inside format placeholders".into());
                         }
                     };
-                    segments.push(FormatRuntimeSegment::Named(value));
+                    segments.push(FormatRuntimeSegment::Named(value.into_value()));
                 }
                 FormatSegment::Implicit(_) => {
                     has_placeholders = true;
@@ -530,7 +712,7 @@ impl Compiler {
                         );
                     }
                     Item::Enum(def) => {
-                        for variant in &def.variants {
+                        for (idx, variant) in def.variants.iter().enumerate() {
                             self.enum_variants.insert(
                                 variant.name.clone(),
                                 EnumVariantInfo {
@@ -538,6 +720,7 @@ impl Compiler {
                                     fields: variant.fields.len(),
                                     module: module.name.clone(),
                                     visibility: def.visibility,
+                                    variant_index: idx as u32,
                                 },
                             );
                         }
@@ -653,7 +836,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_out_value(&mut self, value: Value) -> Result<(), String> {
+    fn emit_out_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         self.print_value(value)?;
         self.emit_printf_call("\n", &mut []);
         Ok(())
@@ -671,11 +854,15 @@ impl Compiler {
                     self.emit_printf_call(&text, &mut []);
                 }
                 FormatRuntimeSegment::Named(value) => {
-                    self.print_value(value)?;
+                    let mut wrapped = EvaluatedValue::from_value(value);
+                    self.maybe_attach_runtime_handle(&mut wrapped);
+                    self.print_value(wrapped)?;
                 }
                 FormatRuntimeSegment::Implicit => {
                     if let Some(value) = args_iter.next() {
-                        self.print_value(value)?;
+                        let mut wrapped = EvaluatedValue::from_value(value);
+                        self.maybe_attach_runtime_handle(&mut wrapped);
+                        self.print_value(wrapped)?;
                     }
                 }
             }
@@ -684,8 +871,13 @@ impl Compiler {
         Ok(())
     }
 
-    fn print_value(&mut self, value: Value) -> Result<(), String> {
-        match value {
+    fn print_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
+        let mut value = value;
+        if let Some(handle) = value.runtime_handle().or_else(|| self.maybe_attach_runtime_handle(&mut value)) {
+            self.emit_runtime_print(handle);
+            return Ok(());
+        }
+        match value.into_value() {
             Value::Int(int_value) => {
                 self.emit_printf_call("%d", &mut [int_value.llvm()]);
                 Ok(())
@@ -712,7 +904,7 @@ impl Compiler {
                     if idx > 0 {
                         self.emit_printf_call(", ", &mut []);
                     }
-                    self.print_value(item)?;
+                    self.print_value(item.into())?;
                 }
                 self.emit_printf_call(")", &mut []);
                 Ok(())
@@ -729,7 +921,7 @@ impl Compiler {
                         if idx > 0 {
                             self.emit_printf_call(", ", &mut []);
                         }
-                        self.print_value(item)?;
+                        self.print_value(item.into())?;
                     }
                     self.emit_printf_call(")", &mut []);
                     Ok(())
@@ -771,6 +963,395 @@ impl Compiler {
         }
     }
 
+    fn emit_runtime_print(&mut self, handle: LLVMValueRef) {
+        let mut args = [handle];
+        let name = CString::new("prime_print").unwrap();
+        unsafe {
+            LLVMBuildCall2(
+                self.builder,
+                self.runtime_abi.prime_print_ty,
+                self.runtime_abi.prime_print,
+                args.as_mut_ptr(),
+                args.len() as u32,
+                name.as_ptr(),
+            );
+        }
+    }
+
+    fn build_runtime_handle(&mut self, value: Value) -> Result<LLVMValueRef, String> {
+        match value {
+            Value::Unit => Ok(self.call_runtime(
+                self.runtime_abi.prime_unit_new,
+                self.runtime_abi.prime_unit_new_ty,
+                &mut [],
+                "unit",
+            )),
+            Value::Int(int_value) => {
+                let constant = int_value
+                    .constant()
+                    .ok_or_else(|| "Non-constant int not yet supported in runtime codegen".to_string())?;
+                let arg = unsafe { LLVMConstInt(self.runtime_abi.int_type, constant as u64, 1) };
+                Ok(self.call_runtime(
+                    self.runtime_abi.prime_int_new,
+                    self.runtime_abi.prime_int_new_ty,
+                    &mut [arg],
+                    "int_new",
+                ))
+            }
+            Value::Float(float_value) => {
+                let constant = float_value
+                    .constant()
+                    .ok_or_else(|| "Non-constant float not yet supported in runtime codegen".to_string())?;
+                let arg = unsafe { LLVMConstReal(self.runtime_abi.float_type, constant) };
+                Ok(self.call_runtime(
+                    self.runtime_abi.prime_float_new,
+                    self.runtime_abi.prime_float_new_ty,
+                    &mut [arg],
+                    "float_new",
+                ))
+            }
+            Value::Bool(flag) => {
+                let arg = unsafe { LLVMConstInt(self.runtime_abi.bool_type, flag as u64, 0) };
+                Ok(self.call_runtime(
+                    self.runtime_abi.prime_bool_new,
+                    self.runtime_abi.prime_bool_new_ty,
+                    &mut [arg],
+                    "bool_new",
+                ))
+            }
+            Value::Str(text) => {
+                let (ptr, len) = self.build_runtime_bytes(&text.text, "rt_str")?;
+                Ok(self.call_runtime(
+                    self.runtime_abi.prime_string_new,
+                    self.runtime_abi.prime_string_new_ty,
+                    &mut [ptr, len],
+                    "string_new",
+                ))
+            }
+            Value::Tuple(values) => {
+                let slice = self.call_runtime(
+                    self.runtime_abi.prime_slice_new,
+                    self.runtime_abi.prime_slice_new_ty,
+                    &mut [],
+                    "slice",
+                );
+                for v in values {
+                    let handle = self.build_runtime_handle(v)?;
+                    let _ = self.call_runtime(
+                        self.runtime_abi.prime_slice_push,
+                        self.runtime_abi.prime_slice_push_ty,
+                        &mut [slice, handle],
+                        "slice_push",
+                    );
+                }
+                Ok(slice)
+            }
+            Value::Enum(enum_value) => {
+                let mut elements = Vec::new();
+                for v in enum_value.values {
+                    elements.push(self.build_runtime_handle(v)?);
+                }
+                let arr_ptr = self.alloc_handle_array(&elements);
+                let len_const =
+                    unsafe { LLVMConstInt(self.runtime_abi.usize_type, elements.len() as u64, 0) };
+                let tag = unsafe {
+                    LLVMConstInt(
+                        self.runtime_abi.int_type,
+                        enum_value.variant_index as u64,
+                        0,
+                    )
+                };
+                Ok(self.call_runtime(
+                    self.runtime_abi.prime_enum_new,
+                    self.runtime_abi.prime_enum_new_ty,
+                    &mut [arr_ptr, len_const, tag],
+                    "enum_new",
+                ))
+            }
+            Value::Range(range) => {
+                let start = range.start.constant().ok_or_else(|| "range start not constant".to_string())?;
+                let end = range.end.constant().ok_or_else(|| "range end not constant".to_string())?;
+                let rendered = if range.inclusive {
+                    format!("{start}..={end}")
+                } else {
+                    format!("{start}..{end}")
+                };
+                let (ptr, len) = self.build_runtime_bytes(&rendered, "rt_range_str")?;
+                Ok(self.call_runtime(
+                    self.runtime_abi.prime_string_new,
+                    self.runtime_abi.prime_string_new_ty,
+                    &mut [ptr, len],
+                    "range_str",
+                ))
+            }
+            Value::Struct(struct_value) => {
+                let (name_ptr, name_len) =
+                    self.build_runtime_bytes(&struct_value.name, "rt_struct_name")?;
+                let handle = self.call_runtime(
+                    self.runtime_abi.prime_struct_new,
+                    self.runtime_abi.prime_struct_new_ty,
+                    &mut [name_ptr, name_len],
+                    "struct_new",
+                );
+                let mut fields: Vec<_> = struct_value.fields.iter().collect();
+                fields.sort_by(|a, b| a.0.cmp(b.0));
+                for (field, val) in fields {
+                    let (key_ptr, key_len) = self.build_runtime_bytes(field, "rt_struct_field")?;
+                    let field_handle = self.build_runtime_handle(val.clone())?;
+                    let _ = self.call_runtime(
+                        self.runtime_abi.prime_struct_insert,
+                        self.runtime_abi.prime_struct_insert_ty,
+                        &mut [handle, key_ptr, key_len, field_handle],
+                        "struct_insert",
+                    );
+                }
+                Ok(handle)
+            }
+            Value::Sender(sender) => {
+                let (queued, closed) = {
+                    let (lock, _) = &*sender.inner;
+                    let guard = lock.lock().unwrap();
+                    (guard.queue.iter().cloned().collect::<Vec<_>>(), guard.closed)
+                };
+                let (send_handle, recv_handle) = self
+                    .build_channel_handles()
+                    .ok_or_else(|| "runtime channel handles unavailable".to_string())?;
+                self.seed_channel_queue(send_handle, &queued)?;
+                if closed {
+                    self.runtime_close(send_handle);
+                }
+                self.runtime_release(recv_handle);
+                Ok(send_handle)
+            }
+            Value::Receiver(receiver) => {
+                let (queued, closed) = {
+                    let (lock, _) = &*receiver.inner;
+                    let guard = lock.lock().unwrap();
+                    (guard.queue.iter().cloned().collect::<Vec<_>>(), guard.closed)
+                };
+                let (send_handle, recv_handle) = self
+                    .build_channel_handles()
+                    .ok_or_else(|| "runtime channel handles unavailable".to_string())?;
+                self.seed_channel_queue(send_handle, &queued)?;
+                if closed {
+                    self.runtime_close(send_handle);
+                }
+                self.runtime_release(send_handle);
+                Ok(recv_handle)
+            }
+            Value::Pointer(ptr) => {
+                let inner = ptr.cell.lock().unwrap().clone().into_value();
+                let target = self.build_runtime_handle(inner)?;
+                let mut_flag = unsafe { LLVMConstInt(self.runtime_abi.bool_type, ptr.mutable as u64, 0) };
+                Ok(self.call_runtime(
+                    self.runtime_abi.prime_reference_new,
+                    self.runtime_abi.prime_reference_new_ty,
+                    &mut [target, mut_flag],
+                    "ptr_new",
+                ))
+            }
+            Value::Slice(slice) => {
+                let handle = self.call_runtime(
+                    self.runtime_abi.prime_slice_new,
+                    self.runtime_abi.prime_slice_new_ty,
+                    &mut [],
+                    "slice",
+                );
+                for idx in 0..slice.len() {
+                    if let Some(item) = slice.get(idx) {
+                        let h = self.build_runtime_handle(item)?;
+                        let _ = self.call_runtime(
+                            self.runtime_abi.prime_slice_push,
+                            self.runtime_abi.prime_slice_push_ty,
+                            &mut [handle, h],
+                            "slice_push",
+                        );
+                    }
+                }
+                Ok(handle)
+            }
+            Value::Map(map) => {
+                let handle = self.call_runtime(
+                    self.runtime_abi.prime_map_new,
+                    self.runtime_abi.prime_map_new_ty,
+                    &mut [],
+                    "map_new",
+                );
+                for (k, v) in map.entries.lock().unwrap().iter() {
+                    let (key_ptr, len) = self.build_runtime_bytes(k, "rt_map_key")?;
+                    let val_handle = self.build_runtime_handle(v.clone())?;
+                    let _ = self.call_runtime(
+                        self.runtime_abi.prime_map_insert,
+                        self.runtime_abi.prime_map_insert_ty,
+                        &mut [handle, key_ptr, len, val_handle],
+                        "map_insert",
+                    );
+                }
+                Ok(handle)
+            }
+            Value::Reference(reference) => {
+                let inner = reference.cell.lock().unwrap().clone().into_value();
+                let target = self.build_runtime_handle(inner)?;
+                let mut_flag =
+                    unsafe { LLVMConstInt(self.runtime_abi.bool_type, reference.mutable as u64, 0) };
+                Ok(self.call_runtime(
+                    self.runtime_abi.prime_reference_new,
+                    self.runtime_abi.prime_reference_new_ty,
+                    &mut [target, mut_flag],
+                    "ref_new",
+                ))
+            }
+            _ => Err("runtime handle generation not implemented for this value".into()),
+        }
+    }
+
+    fn build_runtime_handle_scoped(&mut self, value: Value) -> Option<LLVMValueRef> {
+        // Only lower safe, pure values for now.
+        let allowed = matches!(
+            value,
+            Value::Unit
+                | Value::Int(_)
+                | Value::Float(_)
+                | Value::Bool(_)
+                | Value::Str(_)
+                | Value::Tuple(_)
+                | Value::Enum(_)
+                | Value::Range(_)
+                | Value::Slice(_)
+                | Value::Map(_)
+                | Value::Reference(_)
+                | Value::Sender(_)
+                | Value::Receiver(_)
+                | Value::Struct(_)
+                | Value::Pointer(_)
+        );
+        if !allowed {
+            return None;
+        }
+        unsafe {
+            let current_block = LLVMGetInsertBlock(self.builder);
+            if current_block.is_null() {
+                return None;
+            }
+            let last_instr = LLVMGetLastInstruction(current_block);
+            let result = self.build_runtime_handle(value).ok();
+            // Ensure builder is still at a valid position; if not, reset to block end.
+            let now_block = LLVMGetInsertBlock(self.builder);
+            if now_block.is_null() || now_block != current_block {
+                let end = LLVMGetLastInstruction(current_block);
+                if end.is_null() {
+                    LLVMPositionBuilderAtEnd(self.builder, current_block);
+                } else {
+                    // Position after the last instruction.
+                    LLVMPositionBuilder(self.builder, current_block, end);
+                }
+            } else if last_instr == LLVMGetLastInstruction(current_block) {
+                // No new instructions; keep position at end.
+                LLVMPositionBuilderAtEnd(self.builder, current_block);
+            }
+            result
+        }
+    }
+
+    fn call_runtime(
+        &mut self,
+        func: LLVMValueRef,
+        func_type: LLVMTypeRef,
+        args: &mut [LLVMValueRef],
+        name: &str,
+    ) -> LLVMValueRef {
+        let name_c = CString::new(name).unwrap();
+        let debug_handles = env::var("PRIME_DEBUG_RT_HANDLES").is_ok();
+        assert!(!func.is_null(), "runtime function `{}` is null", name);
+        assert!(!self.builder.is_null(), "LLVM builder is not initialized");
+        unsafe {
+            let block = LLVMGetInsertBlock(self.builder);
+            assert!(!block.is_null(), "no insertion block for runtime call `{}`", name);
+            if debug_handles {
+                let parent_fn = LLVMGetBasicBlockParent(block);
+                let func_mod = LLVMGetGlobalParent(func);
+                let module_ctx = LLVMGetModuleContext(self.module);
+                eprintln!(
+                    "[rt_call] name={name} func_ptr={:?} func_mod={:?} current_mod={:?} block={:?} block_fn={:?} ctx={:?}",
+                    func,
+                    func_mod,
+                    self.module,
+                    block,
+                    parent_fn,
+                    module_ctx
+                );
+            }
+        }
+        unsafe {
+            let mut fn_type = func_type;
+            if fn_type.is_null() && LLVMGetTypeKind(LLVMTypeOf(func)) == LLVMTypeKind::LLVMPointerTypeKind {
+                fn_type = LLVMGetElementType(LLVMTypeOf(func));
+            }
+            assert!(
+                !fn_type.is_null() && LLVMGetTypeKind(fn_type) == LLVMTypeKind::LLVMFunctionTypeKind,
+                "runtime function `{}` has invalid type for call",
+                name
+            );
+            LLVMBuildCall2(
+                self.builder,
+                fn_type,
+                func,
+                args.as_mut_ptr(),
+                args.len() as u32,
+                name_c.as_ptr(),
+            )
+        }
+    }
+
+    fn build_runtime_bytes(
+        &mut self,
+        text: &str,
+        symbol: &str,
+    ) -> Result<(LLVMValueRef, LLVMValueRef), String> {
+        let c_text =
+            CString::new(text.as_bytes()).map_err(|_| "string contains interior null byte".to_string())?;
+        let sym = CString::new(symbol).unwrap();
+        let ptr = unsafe { LLVMBuildGlobalString(self.builder, c_text.as_ptr(), sym.as_ptr()) };
+        let len = unsafe { LLVMConstInt(self.runtime_abi.usize_type, text.len() as u64, 0) };
+        Ok((ptr, len))
+    }
+
+    fn alloc_handle_array(&mut self, handles: &[LLVMValueRef]) -> LLVMValueRef {
+        if handles.is_empty() {
+            return std::ptr::null_mut();
+        }
+        unsafe {
+            let array_type = LLVMArrayType2(self.runtime_abi.handle_type, handles.len() as u64);
+            let name = CString::new("enum_values").unwrap();
+            let alloca = LLVMBuildAlloca(self.builder, array_type, name.as_ptr());
+            let zero = LLVMConstInt(self.i32_type, 0, 0);
+            for (idx, handle) in handles.iter().enumerate() {
+                let idx_const = LLVMConstInt(self.i32_type, idx as u64, 0);
+                let mut indices = [zero, idx_const];
+                let gep_name = CString::new("enum_val_gep").unwrap();
+                let elem_ptr = LLVMBuildInBoundsGEP2(
+                    self.builder,
+                    array_type,
+                    alloca,
+                    indices.as_mut_ptr(),
+                    2,
+                    gep_name.as_ptr(),
+                );
+                LLVMBuildStore(self.builder, *handle, elem_ptr);
+            }
+            let mut indices = [zero, zero];
+            let base_ptr = LLVMBuildInBoundsGEP2(
+                self.builder,
+                array_type,
+                alloca,
+                indices.as_mut_ptr(),
+                2,
+                CString::new("enum_vals_base").unwrap().as_ptr(),
+            );
+            base_ptr
+        }
+    }
+
     fn emit_statement(&mut self, statement: &Statement) -> Result<Option<FlowSignal>, String> {
         match statement {
             Statement::Let(stmt) => match &stmt.pattern {
@@ -781,7 +1362,7 @@ impl Compiler {
                             EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                         }
                     } else {
-                        Value::Unit
+                        self.evaluated(Value::Unit)
                     };
                     self.insert_var(name, value, stmt.mutability == Mutability::Mutable)?;
                 }
@@ -794,7 +1375,7 @@ impl Compiler {
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
                     let allow_mut = stmt.mutability == Mutability::Mutable;
-                    if !self.match_pattern(&value, pattern, allow_mut)? {
+                    if !self.match_pattern(value.value(), pattern, allow_mut)? {
                         return Err("Pattern did not match value".into());
                     }
                 }
@@ -840,7 +1421,7 @@ impl Compiler {
                 },
                 Expr::Deref { expr, .. } => {
                     let target = match self.emit_expression(expr)? {
-                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Value(value) => value.into_value(),
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
                     match target {
@@ -881,7 +1462,7 @@ impl Compiler {
             Statement::While(stmt) => match &stmt.condition {
                 WhileCondition::Expr(expr) => loop {
                     let condition = match self.emit_expression(expr)? {
-                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Value(value) => value.into_value(),
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
                     if !self.value_to_bool(condition)? {
@@ -904,7 +1485,7 @@ impl Compiler {
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
                     self.push_scope();
-                    let matched = self.match_pattern(&candidate, pattern, false)?;
+                    let matched = self.match_pattern(candidate.value(), pattern, false)?;
                     if !matched {
                         self.exit_scope()?;
                         break;
@@ -947,7 +1528,7 @@ impl Compiler {
                         self.push_scope();
                         self.insert_var(
                             &stmt.binding,
-                            Value::Int(self.const_int_value(current)),
+                            Value::Int(self.const_int_value(current)).into(),
                             false,
                         )?;
                         let result = self.execute_block_contents(&stmt.body)?;
@@ -969,7 +1550,7 @@ impl Compiler {
                         EvalOutcome::Value(value) => value,
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
-                    let elements = self.collect_iterable_values(iterable)?;
+                    let elements = self.collect_iterable_values(iterable.into_value())?;
                     for element in elements {
                         self.push_scope();
                         self.insert_var(&stmt.binding, element, false)?;
@@ -991,25 +1572,27 @@ impl Compiler {
         Ok(None)
     }
 
-    fn emit_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<Value>, String> {
+    fn emit_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
-            Expr::Literal(Literal::Int(value, _)) => Ok(EvalOutcome::Value(Value::Int(
-                self.const_int_value(*value as i128),
+            Expr::Literal(Literal::Int(value, _)) => Ok(EvalOutcome::Value(self.evaluated(
+                Value::Int(self.const_int_value(*value as i128)),
             ))),
-            Expr::Literal(Literal::Bool(value, _)) => Ok(EvalOutcome::Value(Value::Bool(*value))),
-            Expr::Literal(Literal::Float(value, _)) => Ok(EvalOutcome::Value(Value::Float(
-                self.const_float_value(*value),
+            Expr::Literal(Literal::Bool(value, _)) => {
+                Ok(EvalOutcome::Value(self.evaluated(Value::Bool(*value))))
+            }
+            Expr::Literal(Literal::Float(value, _)) => Ok(EvalOutcome::Value(self.evaluated(
+                Value::Float(self.const_float_value(*value)),
             ))),
             Expr::Literal(Literal::String(value, _)) => {
                 let string = self.build_string_constant(value.clone())?;
-                Ok(EvalOutcome::Value(string))
+                Ok(EvalOutcome::Value(self.evaluated(string)))
             }
             Expr::FormatString(literal) => {
                 let value = self.build_format_string_value(literal)?;
-                Ok(EvalOutcome::Value(value))
+                Ok(EvalOutcome::Value(self.evaluated(value)))
             }
-            Expr::Literal(Literal::Rune(value, _)) => Ok(EvalOutcome::Value(Value::Int(
-                self.const_int_value(*value as i128),
+            Expr::Literal(Literal::Rune(value, _)) => Ok(EvalOutcome::Value(self.evaluated(
+                Value::Int(self.const_int_value(*value as i128)),
             ))),
             Expr::Try { block, .. } => {
                 self.push_scope();
@@ -1017,8 +1600,9 @@ impl Compiler {
                 self.exit_scope()?;
                 match result {
                     BlockEval::Value(value) => {
-                        let wrapped = self.instantiate_enum_variant("Ok", vec![value])?;
-                        Ok(EvalOutcome::Value(wrapped))
+                        let wrapped =
+                            self.instantiate_enum_variant("Ok", vec![value.into_value()])?;
+                        Ok(EvalOutcome::Value(self.evaluated(wrapped)))
                     }
                     BlockEval::Flow(FlowSignal::Propagate(value)) => Ok(EvalOutcome::Value(value)),
                     BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
@@ -1032,7 +1616,7 @@ impl Compiler {
                 let value = self
                     .get_var(&ident.name)
                     .ok_or_else(|| format!("Unknown variable {}", ident.name))?;
-                if matches!(value, Value::Moved) {
+                if matches!(value.value(), Value::Moved) {
                     return Err(format!("Value `{}` has been moved", ident.name));
                 }
                 Ok(EvalOutcome::Value(value))
@@ -1048,30 +1632,46 @@ impl Compiler {
                     EvalOutcome::Value(value) => value,
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
-                self.eval_binary(*op, lhs, rhs).map(EvalOutcome::Value)
+                self.eval_binary(*op, lhs.into_value(), rhs.into_value())
+                    .map(|v| EvalOutcome::Value(self.evaluated(v)))
             }
             Expr::StructLiteral { name, fields, .. } => self.build_struct_literal(name, fields),
+            Expr::EnumLiteral {
+                variant,
+                values,
+                ..
+            } => {
+                let mut evaluated = Vec::new();
+                for expr in values {
+                    match self.emit_expression(expr)? {
+                        EvalOutcome::Value(value) => evaluated.push(value.into_value()),
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    }
+                }
+                self.instantiate_enum_variant(variant, evaluated)
+                    .map(|v| EvalOutcome::Value(self.evaluated(v)))
+            }
             Expr::MapLiteral { entries, .. } => self.emit_map_literal(entries),
             Expr::Match(match_expr) => self.emit_match_expression(match_expr),
             Expr::Tuple(values, _) => {
                 let mut items = Vec::new();
                 for value in values {
                     match self.emit_expression(value)? {
-                        EvalOutcome::Value(value) => items.push(value),
+                        EvalOutcome::Value(value) => items.push(value.into_value()),
                         EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                     }
                 }
-                Ok(EvalOutcome::Value(Value::Tuple(items)))
+                Ok(EvalOutcome::Value(self.evaluated(Value::Tuple(items))))
             }
             Expr::ArrayLiteral(values, _) => self.emit_array_literal(values),
             Expr::Range(range) => {
                 let start = self.expect_int_value_from_expr(&range.start)?;
                 let end = self.expect_int_value_from_expr(&range.end)?;
-                Ok(EvalOutcome::Value(Value::Range(RangeValue {
+                Ok(EvalOutcome::Value(self.evaluated(Value::Range(RangeValue {
                     start,
                     end,
                     inclusive: range.inclusive,
-                })))
+                }))))
             }
             Expr::Block(block) => {
                 self.push_scope();
@@ -1085,14 +1685,16 @@ impl Compiler {
             Expr::If(if_expr) => self.emit_if_expression(if_expr),
             Expr::Reference { mutable, expr, .. } => self.build_reference(expr, *mutable),
             Expr::Deref { expr, .. } => match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => self.deref_value(value).map(EvalOutcome::Value),
+                EvalOutcome::Value(value) => {
+                    self.deref_value(value.into_value()).map(EvalOutcome::Value)
+                }
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
             Expr::Spawn { expr, .. } => match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => Ok(EvalOutcome::Value(Value::JoinHandle(Box::new(
-                    JoinHandleValue::new(value),
-                )))),
+                EvalOutcome::Value(value) => Ok(EvalOutcome::Value(
+                    Value::JoinHandle(Box::new(JoinHandleValue::new(value.into_value()))).into(),
+                )),
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::FieldAccess { base, field, .. } => {
@@ -1100,17 +1702,19 @@ impl Compiler {
                     EvalOutcome::Value(value) => value,
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
-                let mut current = base_value;
+                let mut current = base_value.into_value();
                 loop {
                     current = match current {
                         Value::Struct(instance) => {
                             let value = instance
                                 .get(field)
                                 .ok_or_else(|| format!("Field {} not found", field))?;
-                            return Ok(EvalOutcome::Value(value));
+                            return Ok(EvalOutcome::Value(value.into()));
                         }
-                        Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
-                        Value::Pointer(pointer) => pointer.cell.lock().unwrap().clone(),
+                        Value::Reference(reference) => {
+                            reference.cell.lock().unwrap().clone().into_value()
+                        }
+                        Value::Pointer(pointer) => pointer.cell.lock().unwrap().clone().into_value(),
                         Value::Range(_) => {
                             return Err("Cannot access field on range value".into());
                         }
@@ -1158,10 +1762,11 @@ impl Compiler {
             } => self.emit_call_expression(callee, type_args, args),
             Expr::Unary { op, expr, .. } => {
                 let value = match self.emit_expression(expr)? {
-                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Value(value) => value.into_value(),
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
-                self.eval_unary(*op, value).map(EvalOutcome::Value)
+                self.eval_unary(*op, value)
+                    .map(|v| EvalOutcome::Value(self.evaluated(v)))
             }
         }
     }
@@ -1171,7 +1776,7 @@ impl Compiler {
         callee: &Expr,
         type_args: &[TypeExpr],
         args: &[Expr],
-    ) -> Result<EvalOutcome<Value>, String> {
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match callee {
             Expr::Identifier(ident) => {
                 if let Some(info) = self.enum_variants.get(&ident.name).cloned() {
@@ -1219,15 +1824,18 @@ impl Compiler {
         }
     }
 
-    fn collapse_results(&self, mut values: Vec<Value>) -> Value {
+    fn collapse_results(&self, mut values: Vec<EvaluatedValue>) -> EvaluatedValue {
         match values.len() {
-            0 => Value::Unit,
+            0 => EvaluatedValue::from_value(Value::Unit),
             1 => values.pop().unwrap(),
-            _ => Value::Tuple(values),
+            _ => {
+                let tuple = values.into_iter().map(EvaluatedValue::into_value).collect();
+                EvaluatedValue::from_value(Value::Tuple(tuple))
+            }
         }
     }
 
-    fn emit_out_call(&mut self, args: &[Expr]) -> Result<EvalOutcome<Value>, String> {
+    fn emit_out_call(&mut self, args: &[Expr]) -> Result<EvalOutcome<EvaluatedValue>, String> {
         if args.is_empty() {
             return Err("out() expects at least one argument".into());
         }
@@ -1240,9 +1848,9 @@ impl Compiler {
         }
         let mut iter = evaluated.into_iter();
         let first = iter.next().unwrap();
-        match first {
+        match first.into_value() {
             Value::FormatTemplate(template) => {
-                let provided: Vec<Value> = iter.collect();
+                let provided: Vec<Value> = iter.map(EvaluatedValue::into_value).collect();
                 if template.implicit_placeholders != provided.len() {
                     return Err(format!(
                         "Format string expects {} argument(s), got {}",
@@ -1251,7 +1859,7 @@ impl Compiler {
                     ));
                 }
                 self.emit_format_template(template, provided)?;
-                Ok(EvalOutcome::Value(Value::Unit))
+                Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
             }
             other => {
                 if iter.next().is_some() {
@@ -1259,8 +1867,8 @@ impl Compiler {
                         "out() with multiple arguments requires a format string literal".into(),
                     );
                 }
-                self.emit_out_value(other)?;
-                Ok(EvalOutcome::Value(Value::Unit))
+                self.emit_out_value(other.into())?;
+                Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
             }
         }
     }
@@ -1269,7 +1877,7 @@ impl Compiler {
         &mut self,
         name: &str,
         args: &[Expr],
-    ) -> Option<Result<EvalOutcome<Value>, String>> {
+    ) -> Option<Result<EvalOutcome<EvaluatedValue>, String>> {
         match name {
             "box_new" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_box_new(values)))
@@ -1342,11 +1950,14 @@ impl Compiler {
         }
     }
 
-    fn emit_if_expression(&mut self, if_expr: &IfExpr) -> Result<EvalOutcome<Value>, String> {
+    fn emit_if_expression(
+        &mut self,
+        if_expr: &IfExpr,
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match &if_expr.condition {
             IfCondition::Expr(condition) => {
                 let cond_value = match self.emit_expression(condition)? {
-                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Value(value) => value.into_value(),
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
                 if self.value_to_bool(cond_value)? {
@@ -1371,7 +1982,7 @@ impl Compiler {
                         ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
                     }
                 } else {
-                    Ok(EvalOutcome::Value(Value::Unit))
+                    Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
                 }
             }
             IfCondition::Let { pattern, value, .. } => {
@@ -1380,7 +1991,7 @@ impl Compiler {
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
                 self.push_scope();
-                let matches = self.match_pattern(&scrutinee, pattern, false)?;
+                let matches = self.match_pattern(scrutinee.value(), pattern, false)?;
                 if matches {
                     let result = self.execute_block_contents(&if_expr.then_branch)?;
                     self.exit_scope()?;
@@ -1404,33 +2015,38 @@ impl Compiler {
                             ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
                         }
                     } else {
-                        Ok(EvalOutcome::Value(Value::Unit))
+                        Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
                     }
                 }
             }
         }
     }
 
-    fn invoke_builtin<F>(&mut self, args: &[Expr], mut f: F) -> Result<EvalOutcome<Value>, String>
+    fn invoke_builtin<F>(
+        &mut self,
+        args: &[Expr],
+        mut f: F,
+    ) -> Result<EvalOutcome<EvaluatedValue>, String>
     where
         F: FnMut(&mut Self, Vec<Value>) -> Result<Value, String>,
     {
         let mut evaluated = Vec::with_capacity(args.len());
         for expr in args {
             match self.emit_expression(expr) {
-                Ok(EvalOutcome::Value(value)) => evaluated.push(value),
+                Ok(EvalOutcome::Value(value)) => evaluated.push(value.into_value()),
                 Ok(EvalOutcome::Flow(flow)) => return Ok(EvalOutcome::Flow(flow)),
                 Err(err) => return Err(err),
             }
         }
-        f(self, evaluated).map(EvalOutcome::Value)
+        f(self, evaluated)
+            .map(|v| EvalOutcome::Value(self.evaluated(v)))
     }
 
     fn build_reference(
         &mut self,
         expr: &Expr,
         mutable: bool,
-    ) -> Result<EvalOutcome<Value>, String> {
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Identifier(ident) => {
                 let (cell, binding_mut) = self
@@ -1442,64 +2058,71 @@ impl Compiler {
                         ident.name
                     ));
                 }
-                if matches!(*cell.lock().unwrap(), Value::Moved) {
+                if matches!(cell.lock().unwrap().value(), Value::Moved) {
                     return Err(format!("Value `{}` has been moved", ident.name));
                 }
                 Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
                     cell,
                     mutable,
                     origin: Some(ident.name.clone()),
-                })))
+                })
+                .into()))
             }
             _ => match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => {
-                    Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
-                        cell: Arc::new(Mutex::new(value)),
-                        mutable,
-                        origin: None,
-                    })))
+                    Ok(EvalOutcome::Value(
+                        Value::Reference(ReferenceValue {
+                            cell: Arc::new(Mutex::new(value)),
+                            mutable,
+                            origin: None,
+                        })
+                        .into(),
+                    ))
                 }
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
         }
     }
 
-    fn emit_array_literal(&mut self, values: &[Expr]) -> Result<EvalOutcome<Value>, String> {
+    fn emit_array_literal(&mut self, values: &[Expr]) -> Result<EvalOutcome<EvaluatedValue>, String> {
         let mut items = Vec::with_capacity(values.len());
         for expr in values {
             match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => items.push(value),
+                EvalOutcome::Value(value) => items.push(value.into_value()),
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
             }
         }
-        Ok(EvalOutcome::Value(Value::Slice(SliceValue::from_vec(
-            items,
-        ))))
+        Ok(EvalOutcome::Value(
+            self.evaluated(Value::Slice(SliceValue::from_vec(items))),
+        ))
     }
 
     fn emit_map_literal(
         &mut self,
         entries: &[MapLiteralEntry],
-    ) -> Result<EvalOutcome<Value>, String> {
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         let mut pairs = Vec::new();
         for entry in entries {
             let key_value = match self.emit_expression(&entry.key)? {
-                EvalOutcome::Value(value) => value,
+                EvalOutcome::Value(value) => value.into_value(),
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
             };
             let key = self.expect_string_value(key_value, "map literal key")?;
             let value = match self.emit_expression(&entry.value)? {
-                EvalOutcome::Value(value) => value,
+                EvalOutcome::Value(value) => value.into_value(),
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
             };
             pairs.push((key, value));
         }
-        Ok(EvalOutcome::Value(Value::Map(MapValue::from_entries(
-            pairs,
-        ))))
+        Ok(EvalOutcome::Value(
+            self.evaluated(Value::Map(MapValue::from_entries(pairs))),
+        ))
     }
 
-    fn emit_move_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<Value>, String> {
+    fn emit_move_expression(
+        &mut self,
+        expr: &Expr,
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Identifier(ident) => {
                 let (cell, _) = self
@@ -1512,16 +2135,17 @@ impl Compiler {
                     ));
                 }
                 let mut slot = cell.lock().unwrap();
-                if matches!(*slot, Value::Moved) {
+                if matches!(slot.value(), Value::Moved) {
                     return Err(format!("Value `{}` has been moved", ident.name));
                 }
-                if !Self::is_heap_value(&slot) {
+                if !Self::is_heap_value(slot.value()) {
                     return Err(format!(
                         "`{}` cannot be moved; only boxes, slices, and maps support move semantics",
                         ident.name
                     ));
                 }
-                let moved = std::mem::replace(&mut *slot, Value::Moved);
+                let moved =
+                    std::mem::replace(&mut *slot, EvaluatedValue::from_value(Value::Moved));
                 self.register_move(&ident.name);
                 Ok(EvalOutcome::Value(moved))
             }
@@ -1533,7 +2157,7 @@ impl Compiler {
         matches!(value, Value::Boxed(_) | Value::Slice(_) | Value::Map(_))
     }
 
-    fn deref_value(&self, value: Value) -> Result<Value, String> {
+    fn deref_value(&self, value: Value) -> Result<EvaluatedValue, String> {
         match value {
             Value::Reference(reference) => Ok(reference.cell.lock().unwrap().clone()),
             Value::Pointer(pointer) => Ok(pointer.cell.lock().unwrap().clone()),
@@ -1544,14 +2168,14 @@ impl Compiler {
     fn emit_match_expression(
         &mut self,
         match_expr: &MatchExpr,
-    ) -> Result<EvalOutcome<Value>, String> {
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         let target = match self.emit_expression(&match_expr.expr)? {
             EvalOutcome::Value(value) => value,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
         };
         for arm in &match_expr.arms {
             self.push_scope();
-            if self.match_pattern(&target, &arm.pattern, false)? {
+            if self.match_pattern(target.value(), &arm.pattern, false)? {
                 let value = self.emit_expression(&arm.value)?;
                 self.exit_scope()?;
                 return Ok(value);
@@ -1561,7 +2185,11 @@ impl Compiler {
         Err("No match arm matched in build mode".into())
     }
 
-    fn eval_try_operator(&self, value: Value) -> Result<EvalOutcome<Value>, String> {
+    fn eval_try_operator(
+        &mut self,
+        value: EvaluatedValue,
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        let EvaluatedValue { value, runtime } = value;
         match value {
             Value::Enum(enum_value) => {
                 if enum_value.enum_name != "Result" {
@@ -1571,16 +2199,19 @@ impl Compiler {
                     "Ok" => {
                         let mut values = enum_value.values;
                         if values.is_empty() {
-                            Ok(EvalOutcome::Value(Value::Unit))
+                            Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
                         } else if values.len() == 1 {
-                            Ok(EvalOutcome::Value(values.remove(0)))
+                            Ok(EvalOutcome::Value(self.evaluated(values.remove(0))))
                         } else {
-                            Ok(EvalOutcome::Value(Value::Tuple(values)))
+                            Ok(EvalOutcome::Value(self.evaluated(Value::Tuple(values))))
                         }
                     }
-                    "Err" => Ok(EvalOutcome::Flow(FlowSignal::Propagate(Value::Enum(
-                        enum_value,
-                    )))),
+                    "Err" => Ok(EvalOutcome::Flow(FlowSignal::Propagate(
+                        EvaluatedValue {
+                            value: Value::Enum(enum_value),
+                            runtime,
+                        },
+                    ))),
                     _ => Err("? operator expects Result value in build mode".into()),
                 }
             }
@@ -1598,10 +2229,10 @@ impl Compiler {
             Pattern::Wildcard => Ok(true),
             Pattern::Identifier(name, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
                     other => other.clone(),
                 };
-                self.insert_var(name, concrete, mutable_bindings)?;
+                self.insert_var(name, concrete.into(), mutable_bindings)?;
                 Ok(true)
             }
             Pattern::Literal(lit) => self.match_literal(value.clone(), lit),
@@ -1612,7 +2243,7 @@ impl Compiler {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
                     other => other.clone(),
                 };
                 if let Value::Enum(enum_value) = concrete {
@@ -1645,7 +2276,7 @@ impl Compiler {
             }
             Pattern::Tuple(patterns, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
                     other => other.clone(),
                 };
                 if let Value::Tuple(values) = concrete {
@@ -1664,7 +2295,7 @@ impl Compiler {
             }
             Pattern::Map(entries, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
                     other => other.clone(),
                 };
                 if let Value::Map(map) = concrete {
@@ -1688,7 +2319,7 @@ impl Compiler {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
                     other => other.clone(),
                 };
                 if let Value::Struct(instance) = concrete {
@@ -1717,7 +2348,7 @@ impl Compiler {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
+                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
                     other => other.clone(),
                 };
                 let elements = match concrete {
@@ -1757,7 +2388,7 @@ impl Compiler {
 
     fn match_literal(&self, value: Value, literal: &Literal) -> Result<bool, String> {
         let concrete = match value {
-            Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
+            Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
             other => other,
         };
         match (literal, concrete) {
@@ -1974,7 +2605,7 @@ impl Compiler {
 
     fn deref_if_reference(value: Value) -> Value {
         match value {
-            Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
+            Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
             other => other,
         }
     }
@@ -1983,11 +2614,11 @@ impl Compiler {
         match value {
             Value::Int(v) => Ok(v),
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_int(inner)
             }
             Value::Pointer(pointer) => {
-                let inner = pointer.cell.lock().unwrap().clone();
+                let inner = pointer.cell.lock().unwrap().clone().into_value();
                 self.expect_int(inner)
             }
             other => Err(format!(
@@ -1999,7 +2630,7 @@ impl Compiler {
 
     fn expect_int_value_from_expr(&mut self, expr: &Expr) -> Result<IntValue, String> {
         match self.emit_expression(expr)? {
-            EvalOutcome::Value(value) => self.expect_int(value),
+            EvalOutcome::Value(value) => self.expect_int(value.into_value()),
             EvalOutcome::Flow(_) => Err("control flow not allowed here".into()),
         }
     }
@@ -2008,7 +2639,7 @@ impl Compiler {
         match value {
             Value::Float(v) => Ok(v),
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_float(inner)
             }
             other => Err(format!(
@@ -2022,7 +2653,7 @@ impl Compiler {
         &mut self,
         name: &str,
         fields: &StructLiteralKind,
-    ) -> Result<EvalOutcome<Value>, String> {
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         let entry = self
             .structs
             .get(name)
@@ -2036,15 +2667,14 @@ impl Compiler {
                 for field in named {
                     match self.emit_expression(&field.value)? {
                         EvalOutcome::Value(value) => {
-                            map.insert(field.name.clone(), value);
+                            map.insert(field.name.clone(), value.into_value());
                         }
                         EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                     }
                 }
-                Ok(EvalOutcome::Value(Value::Struct(StructValue::new(
-                    name.to_string(),
-                    map,
-                ))))
+                Ok(EvalOutcome::Value(
+                    Value::Struct(StructValue::new(name.to_string(), map)).into(),
+                ))
             }
             StructLiteralKind::Positional(values) => {
                 if def.fields.len() != values.len() {
@@ -2058,7 +2688,7 @@ impl Compiler {
                 let mut map = HashMap::new();
                 for (field_def, expr) in def.fields.iter().zip(values.iter()) {
                     let value = match self.emit_expression(expr)? {
-                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Value(value) => value.into_value(),
                         EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                     };
                     if field_def.embedded {
@@ -2083,10 +2713,9 @@ impl Compiler {
                         map.insert(fallback, value);
                     }
                 }
-                Ok(EvalOutcome::Value(Value::Struct(StructValue::new(
-                    name.to_string(),
-                    map,
-                ))))
+                Ok(EvalOutcome::Value(
+                    Value::Struct(StructValue::new(name.to_string(), map)).into(),
+                ))
             }
         }
     }
@@ -2096,7 +2725,7 @@ impl Compiler {
         enum_name: Option<&str>,
         variant: &str,
         values: &[Expr],
-    ) -> Result<EvalOutcome<Value>, String> {
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         let info = self
             .enum_variants
             .get(variant)
@@ -2122,15 +2751,16 @@ impl Compiler {
         let mut evaluated = Vec::new();
         for expr in values {
             match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => evaluated.push(value),
+                EvalOutcome::Value(value) => evaluated.push(value.into_value()),
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
             }
         }
-        Ok(EvalOutcome::Value(Value::Enum(EnumValue {
+        Ok(EvalOutcome::Value(self.evaluated(Value::Enum(EnumValue {
             enum_name: info.enum_name.clone(),
             variant: variant.to_string(),
             values: evaluated,
-        })))
+            variant_index: info.variant_index,
+        }))))
     }
 
     fn instantiate_enum_variant(&self, variant: &str, values: Vec<Value>) -> Result<Value, String> {
@@ -2151,6 +2781,7 @@ impl Compiler {
             enum_name: info.enum_name.clone(),
             variant: variant.to_string(),
             values,
+            variant_index: info.variant_index,
         }))
     }
 
@@ -2231,7 +2862,7 @@ impl Compiler {
         name: &str,
         type_args: &[TypeExpr],
         args: &[Expr],
-    ) -> Result<Vec<Value>, String> {
+    ) -> Result<Vec<EvaluatedValue>, String> {
         let mut evaluated_args = Vec::new();
         for expr in args {
             match self.emit_expression(expr)? {
@@ -2244,12 +2875,14 @@ impl Compiler {
                 }
             }
         }
-        let receiver_candidate = self.receiver_name_from_values(&evaluated_args);
+        let receiver_args: Vec<Value> =
+            evaluated_args.iter().map(|v| v.value().clone()).collect();
+        let receiver_candidate = self.receiver_name_from_values(&receiver_args);
         let func_entry = self.resolve_function(
             name,
             receiver_candidate.as_deref(),
             type_args,
-            &evaluated_args,
+            &receiver_args,
         )?;
         self.run_function_with_values(func_entry, evaluated_args)
     }
@@ -2257,8 +2890,8 @@ impl Compiler {
     fn run_function_with_values(
         &mut self,
         func_entry: FunctionEntry,
-        evaluated_args: Vec<Value>,
-    ) -> Result<Vec<Value>, String> {
+        evaluated_args: Vec<EvaluatedValue>,
+    ) -> Result<Vec<EvaluatedValue>, String> {
         let func = func_entry.def.clone();
         if func.params.len() != evaluated_args.len() {
             return Err(format!(
@@ -2270,7 +2903,8 @@ impl Compiler {
         }
 
         self.ensure_item_visible(&func_entry.module, func.visibility, &func.name, "function")?;
-        self.ensure_interface_arguments(&func.params, &evaluated_args)?;
+        let value_args: Vec<Value> = evaluated_args.iter().map(|v| v.value().clone()).collect();
+        self.ensure_interface_arguments(&func.params, &value_args)?;
         self.module_stack.push(func_entry.module.clone());
         let result = (|| {
             self.push_scope();
@@ -2293,10 +2927,14 @@ impl Compiler {
                         } else {
                             Ok(vec![value])
                         }
-                    } else if let Value::Tuple(values) = value {
-                        Ok(values)
                     } else {
-                        Ok(vec![value])
+                        match value.into_value() {
+                            Value::Tuple(values) => Ok(values
+                                .into_iter()
+                                .map(|v| self.evaluated(v))
+                                .collect()),
+                            other => Ok(vec![self.evaluated(other)]),
+                        }
                     }
                 }
                 BlockEval::Flow(FlowSignal::Return(values)) => Ok(values),
@@ -2317,9 +2955,10 @@ impl Compiler {
         name: &str,
         receiver_hint: Option<&str>,
         type_args: &[TypeExpr],
-        args: Vec<Value>,
-    ) -> Result<Vec<Value>, String> {
-        let func_entry = self.resolve_function(name, receiver_hint, type_args, &args)?;
+        args: Vec<EvaluatedValue>,
+    ) -> Result<Vec<EvaluatedValue>, String> {
+        let value_args: Vec<Value> = args.iter().map(|v| v.value().clone()).collect();
+        let func_entry = self.resolve_function(name, receiver_hint, type_args, &value_args)?;
         self.run_function_with_values(func_entry, args)
     }
 
@@ -2637,11 +3276,11 @@ impl Compiler {
             Value::Struct(instance) => Some(instance.name.clone()),
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap();
-                self.value_struct_name(&inner)
+                self.value_struct_name(inner.value())
             }
             Value::Pointer(pointer) => {
                 let inner = pointer.cell.lock().unwrap();
-                self.value_struct_name(&inner)
+                self.value_struct_name(inner.value())
             }
             Value::Boxed(inner) => {
                 let value = inner.cell.lock().unwrap();
@@ -2731,7 +3370,7 @@ impl Compiler {
         match value {
             Value::Boxed(b) => Ok(b),
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_box_value(inner, ctx)
             }
             _ => Err(format!("{ctx} expects Box value")),
@@ -2742,7 +3381,7 @@ impl Compiler {
         match value {
             Value::Slice(slice) => Ok(slice),
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_slice_value(inner, ctx)
             }
             _ => Err(format!("{ctx} expects slice value")),
@@ -2753,7 +3392,7 @@ impl Compiler {
         match value {
             Value::Map(map) => Ok(map),
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_map_value(inner, ctx)
             }
             _ => Err(format!("{ctx} expects map value")),
@@ -2764,7 +3403,7 @@ impl Compiler {
         match value {
             Value::Sender(tx) => Ok(tx),
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_sender(inner, ctx)
             }
             _ => Err(format!("{ctx} expects Sender value")),
@@ -2775,7 +3414,7 @@ impl Compiler {
         match value {
             Value::Receiver(rx) => Ok(rx),
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_receiver(inner, ctx)
             }
             _ => Err(format!("{ctx} expects Receiver value")),
@@ -2786,7 +3425,7 @@ impl Compiler {
         match value {
             Value::Str(s) => Ok((*s.text).clone()),
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_string_value(inner, ctx)
             }
             _ => Err(format!("{ctx} expects string value")),
@@ -2931,7 +3570,7 @@ impl Compiler {
             Value::Slice(slice) => Ok(Value::Int(self.const_int_value(slice.len() as i128))),
             Value::Map(map) => Ok(Value::Int(self.const_int_value(map.len() as i128))),
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.builtin_len(vec![inner])
             }
             _ => Err("len expects slice or map".into()),
@@ -2967,7 +3606,7 @@ impl Compiler {
             }
             Value::Reference(reference) => {
                 let mut forwarded = Vec::new();
-                forwarded.push(reference.cell.lock().unwrap().clone());
+                forwarded.push(reference.cell.lock().unwrap().clone().into_value());
                 forwarded.extend(args);
                 self.builtin_get(forwarded)
             }
@@ -3192,7 +3831,7 @@ impl Compiler {
                 Ok(Value::Unit)
             }
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.builtin_close(vec![inner])
             }
             other => Err(format!(
@@ -3209,7 +3848,7 @@ impl Compiler {
         match args.pop().unwrap() {
             Value::JoinHandle(handle) => handle.join(),
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.builtin_join(vec![inner])
             }
             other => Err(format!(
@@ -3252,21 +3891,21 @@ impl Compiler {
                 EvalOutcome::Flow(flow) => Ok(BlockEval::Flow(flow)),
             }
         } else {
-            Ok(BlockEval::Value(Value::Unit))
+            Ok(BlockEval::Value(self.evaluated(Value::Unit)))
         }
     }
 
-    fn assign_var(&mut self, name: &str, value: Value) -> Result<(), String> {
+    fn assign_var(&mut self, name: &str, value: EvaluatedValue) -> Result<(), String> {
         for index in (0..self.scopes.len()).rev() {
             if let Some(binding) = self.scopes[index].get(name) {
                 if !binding.mutable {
                     return Err(format!("Variable {} is immutable", name));
                 }
                 let cell = binding.cell.clone();
-                self.track_reference_borrow_in_scope(&value, index)?;
+                self.track_reference_borrow_in_scope(value.value(), index)?;
                 {
                     let current = cell.lock().unwrap();
-                    self.release_reference_borrow(&current);
+                    self.release_reference_borrow(current.value());
                 }
                 *cell.lock().unwrap() = value;
                 return Ok(());
@@ -3277,8 +3916,8 @@ impl Compiler {
 
     fn value_to_bool(&self, value: Value) -> Result<bool, String> {
         let concrete = match value {
-            Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
-            Value::Pointer(pointer) => pointer.cell.lock().unwrap().clone(),
+            Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
+            Value::Pointer(pointer) => pointer.cell.lock().unwrap().clone().into_value(),
             other => other,
         };
         match concrete {
@@ -3298,11 +3937,11 @@ impl Compiler {
         range: &RangeExpr,
     ) -> Result<EvalOutcome<(i128, i128, bool)>, String> {
         let start_value = match self.emit_expression(&range.start)? {
-            EvalOutcome::Value(value) => self.expect_int(value)?,
+            EvalOutcome::Value(value) => self.expect_int(value.into_value())?,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
         };
         let end_value = match self.emit_expression(&range.end)? {
-            EvalOutcome::Value(value) => self.expect_int(value)?,
+            EvalOutcome::Value(value) => self.expect_int(value.into_value())?,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
         };
         let start_const = start_value
@@ -3365,12 +4004,17 @@ impl Compiler {
         Ok(())
     }
 
-    fn insert_var(&mut self, name: &str, value: Value, mutable: bool) -> Result<(), String> {
+    fn insert_var(
+        &mut self,
+        name: &str,
+        value: EvaluatedValue,
+        mutable: bool,
+    ) -> Result<(), String> {
         let scope_index = self.scopes.len().saturating_sub(1);
         let cell = Arc::new(Mutex::new(value));
         {
             let stored = cell.lock().unwrap();
-            self.track_reference_borrow_in_scope(&stored, scope_index)?;
+            self.track_reference_borrow_in_scope(stored.value(), scope_index)?;
         }
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), Binding { cell, mutable });
@@ -3378,7 +4022,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn get_var(&self, name: &str) -> Option<Value> {
+    fn get_var(&self, name: &str) -> Option<EvaluatedValue> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.get(name) {
                 return Some(binding.cell.lock().unwrap().clone());
@@ -3387,7 +4031,7 @@ impl Compiler {
         None
     }
 
-    fn get_binding(&self, name: &str) -> Option<(Arc<Mutex<Value>>, bool)> {
+    fn get_binding(&self, name: &str) -> Option<(Arc<Mutex<EvaluatedValue>>, bool)> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.get(name) {
                 return Some((binding.cell.clone(), binding.mutable));
@@ -3415,10 +4059,12 @@ impl Compiler {
             let printf_name = CString::new("printf").unwrap();
             self.printf = LLVMAddFunction(self.module, printf_name.as_ptr(), self.printf_type);
             LLVMSetLinkage(self.printf, LLVMLinkage::LLVMExternalLinkage);
+
+            self.runtime_abi = RuntimeAbi::declare(self.context, self.module);
         }
     }
 
-    fn collect_iterable_values(&mut self, value: Value) -> Result<Vec<Value>, String> {
+    fn collect_iterable_values(&mut self, value: Value) -> Result<Vec<EvaluatedValue>, String> {
         match value {
             Value::Range(range) => {
                 let start_const = range
@@ -3431,14 +4077,14 @@ impl Compiler {
                     .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
                 let end = if range.inclusive { end_const + 1 } else { end_const };
                 Ok((start_const..end)
-                    .map(|v| Value::Int(self.const_int_value(v)))
+                    .map(|v| Value::Int(self.const_int_value(v)).into())
                     .collect())
             }
             Value::Slice(slice) => {
                 let mut items = Vec::new();
                 for idx in 0..slice.len() {
                     if let Some(item) = slice.get(idx) {
-                        items.push(item);
+                        items.push(item.into());
                     }
                 }
                 Ok(items)
@@ -3447,16 +4093,16 @@ impl Compiler {
                 let mut items = Vec::new();
                 for (key, value) in map.entries.lock().unwrap().iter() {
                     let key_value = self.make_string_value(key)?;
-                    items.push(Value::Tuple(vec![key_value, value.clone()]));
+                    items.push(Value::Tuple(vec![key_value, value.clone()]).into());
                 }
                 Ok(items)
             }
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.collect_iterable_values(inner)
             }
             Value::Pointer(pointer) => {
-                let inner = pointer.cell.lock().unwrap().clone();
+                let inner = pointer.cell.lock().unwrap().clone().into_value();
                 self.collect_iterable_values(inner)
             }
             Value::Struct(_) => {
@@ -3465,12 +4111,14 @@ impl Compiler {
                         "iter",
                         Some(struct_name.as_str()),
                         &[],
-                        vec![value],
+                        vec![value.into()],
                     )?;
                     if iter_outcome.len() != 1 {
                         return Err("iter() must return a single iterable value".into());
                     }
-                    self.collect_iterable_values(iter_outcome.into_iter().next().unwrap())
+                    self.collect_iterable_values(
+                        iter_outcome.into_iter().next().unwrap().into_value(),
+                    )
                 } else {
                     Err("iter() requires a struct receiver".into())
                 }
@@ -3589,7 +4237,11 @@ mod tests {
     use super::*;
     use crate::language::{ast::Program, parser::parse_module};
     use crate::project::load_package;
-    use std::path::{Path, PathBuf};
+    use std::{
+        env,
+        path::{Path, PathBuf},
+        sync::{Mutex, OnceLock},
+    };
 
     fn compile_source(source: &str) -> Result<(), String> {
         let module =
@@ -3599,6 +4251,27 @@ mod tests {
         };
         let mut compiler = Compiler::new();
         compiler.compile_program(&program)
+    }
+
+    fn with_rt_handles<T>(f: impl FnOnce() -> T) -> T {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let prior = env::var("PRIME_ENABLE_RT_HANDLES").ok();
+        unsafe {
+            env::set_var("PRIME_ENABLE_RT_HANDLES", "1");
+        }
+        let result = f();
+        if let Some(val) = prior {
+            unsafe {
+                env::set_var("PRIME_ENABLE_RT_HANDLES", val);
+            }
+        } else {
+            unsafe {
+                env::remove_var("PRIME_ENABLE_RT_HANDLES");
+            }
+        }
+        drop(guard);
+        result
     }
 
     #[test]
@@ -3836,5 +4509,67 @@ fn main() {
     #[test]
     fn pattern_demo_compiles() {
         compile_entry("pattern_demo.prime").expect("compile pattern demo in build mode");
+    }
+
+    #[test]
+    fn runtime_handles_cover_collections() {
+        with_rt_handles(|| {
+            let source = r#"
+module tests::handles;
+
+fn main() {
+  let []int32 items = [1, 2];
+  out(items);
+  let Map[string, int32] scores = #{
+    "one": 1,
+    "two": 2,
+  };
+  out(scores);
+  let int32 base = 5;
+  let &int32 alias = &base;
+  out(alias);
+}
+"#;
+            compile_source(source)
+                .expect("handles should be emitted for slices, maps, and references");
+        });
+    }
+
+    #[test]
+    fn runtime_handles_cover_channels() {
+        with_rt_handles(|| {
+            let source = r#"
+module tests::handles;
+
+fn main() {
+  let (sender, receiver) = channel();
+  out(sender);
+  out(receiver);
+}
+"#;
+            compile_source(source).expect("handles should be emitted for channel endpoints");
+        });
+    }
+
+    #[test]
+    fn runtime_handles_cover_structs_and_pointers() {
+        with_rt_handles(|| {
+            let source = r#"
+module tests::handles;
+
+struct Pair { left: int32; right: int32; };
+
+fn main() {
+  let Pair value = Pair{ left: 1, right: 2 };
+  let &Pair alias = &value;
+  let ptr alias_ptr = ptr(alias);
+  out(value);
+  out(alias);
+  out(alias_ptr);
+}
+"#;
+            compile_source(source)
+                .expect("handles should be emitted for structs and pointers/references");
+        });
     }
 }

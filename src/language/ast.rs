@@ -330,6 +330,12 @@ pub enum Expr {
         field: String,
         span: Span,
     },
+    EnumLiteral {
+        enum_name: Option<String>,
+        variant: String,
+        values: Vec<Expr>,
+        span: Span,
+    },
     StructLiteral {
         name: String,
         fields: StructLiteralKind,

@@ -1,5 +1,6 @@
 use crate::language::{
     ast::*,
+    enum_utils::find_variant,
     span::Span,
     types::{TypeAnnotation, TypeExpr},
 };
@@ -17,7 +18,7 @@ pub struct TypeError {
 }
 
 impl TypeError {
-    fn new(path: &PathBuf, span: Span, message: impl Into<String>) -> Self {
+    pub fn new(path: &PathBuf, span: Span, message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
             path: path.clone(),
@@ -71,6 +72,16 @@ struct EnumVariantInfo {
     enum_name: String,
     def: EnumVariant,
     span: Span,
+}
+
+impl EnumVariantInfo {
+    fn from_def(enum_name: String, def: EnumVariant) -> Self {
+        Self {
+            enum_name,
+            span: def.span,
+            def,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -145,15 +156,11 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
             }
             Item::Enum(def) => {
                 for variant in &def.variants {
-                    registry.enum_variants.insert(
-                        variant.name.clone(),
-                        EnumVariantInfo {
-                            enum_name: def.name.clone(),
-                            def: variant.clone(),
-                            span: variant.span,
-                        },
-                    );
-                }
+                registry.enum_variants.insert(
+                    variant.name.clone(),
+                    EnumVariantInfo::from_def(def.name.clone(), variant.clone()),
+                );
+            }
                 registry
                     .enums
                     .insert(def.name.clone(), EnumInfo { def: def.clone() });
@@ -261,6 +268,30 @@ struct Checker {
 }
 
 impl Checker {
+    fn resolve_enum_literal(
+        &self,
+        module: &Module,
+        enum_name: Option<&str>,
+        variant: &str,
+        span: Span,
+    ) -> Result<EnumVariantInfo, TypeError> {
+        if let Some(name) = enum_name {
+            let enum_info = self.registry.enums.get(name).ok_or_else(|| {
+                TypeError::new(&module.path, span, format!("Unknown enum `{}`", name))
+            })?;
+            let variant_def = find_variant(&enum_info.def, variant, module, span)?;
+            Ok(EnumVariantInfo::from_def(name.to_string(), variant_def.clone()))
+        } else if let Some(info) = self.registry.enum_variants.get(variant) {
+            Ok(info.clone())
+        } else {
+            Err(TypeError::new(
+                &module.path,
+                span,
+                format!("Unknown enum variant `{}`", variant),
+            ))
+        }
+    }
+
     fn validate_impls(&mut self) {
         for candidate in self.registry.pending_impls.clone() {
             let block = candidate.block.clone();
@@ -769,6 +800,24 @@ impl Checker {
             Expr::StructLiteral { name, fields, span } => {
                 self.check_struct_literal(module, name, fields, *span, returns, env);
                 Some(TypeExpr::Named(name.clone(), Vec::new()))
+            }
+            Expr::EnumLiteral {
+                enum_name,
+                variant,
+                values,
+                span,
+            } => {
+                let info = match self.resolve_enum_literal(module, enum_name.as_deref(), variant, *span) {
+                    Ok(info) => info,
+                    Err(err) => {
+                        self.errors.push(err);
+                        return None;
+                    }
+                };
+                for (field, expr) in info.def.fields.iter().zip(values.iter()) {
+                    self.check_expression(module, expr, Some(&field.ty), returns, env);
+                }
+                Some(TypeExpr::Named(info.enum_name.clone(), Vec::new()))
             }
             Expr::MapLiteral { entries, span } => {
                 self.check_map_literal(module, entries, *span, expected, returns, env)
@@ -3265,6 +3314,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
         Expr::MapLiteral { span, .. } => *span,
+        Expr::EnumLiteral { span, .. } => *span,
         Expr::Block(block) => block.span,
         Expr::If(if_expr) => if_expr.span,
         Expr::Match(m) => m.span,
@@ -3446,6 +3496,7 @@ fn reference_may_dangle(expr: &Expr) -> bool {
         | Expr::TryPropagate { .. }
         | Expr::Range(_) => true,
         Expr::Spawn { .. } => true,
+        Expr::EnumLiteral { .. } => true,
     }
 }
 

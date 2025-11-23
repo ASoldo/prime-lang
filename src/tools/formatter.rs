@@ -655,6 +655,24 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
                 format!("{name}{{ {inner} }}")
             }
         },
+        Expr::EnumLiteral {
+            enum_name,
+            variant,
+            values,
+            ..
+        } => {
+            let prefix = enum_name.clone().unwrap_or_default();
+            let values_str = values
+                .iter()
+                .map(format_expr)
+                .collect::<Vec<_>>()
+                .join(", ");
+            if prefix.is_empty() {
+                format!("{variant}({values_str})")
+            } else {
+                format!("{prefix}:{variant}({values_str})")
+            }
+        }
         Expr::MapLiteral { entries, .. } => format_map_literal(entries),
         Expr::FieldAccess { base, field, .. } => {
             let base_str = format_expr_prec(base, 100);

@@ -234,6 +234,12 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
                 }
             }
         }
+        Expr::EnumLiteral { values, span, .. } => {
+            shift_span(span, delta);
+            for value in values {
+                shift_expr_spans(value, delta);
+            }
+        }
         Expr::MapLiteral { entries, span } => {
             shift_span(span, delta);
             for entry in entries {
@@ -1620,6 +1626,31 @@ impl Parser {
 
     fn parse_identifier_expression(&mut self) -> Result<Expr, SyntaxError> {
         let ident = self.expect_identifier("Expected identifier")?;
+        if self.matches(TokenKind::Colon) || self.matches(TokenKind::ColonColon) {
+            let variant = self.expect_identifier("Expected enum variant name after `:`")?;
+            self.expect(TokenKind::LParen)?;
+            let mut values = Vec::new();
+            if !self.check(TokenKind::RParen) {
+                loop {
+                    values.push(self.parse_expression()?);
+                    if self.matches(TokenKind::Comma) {
+                        if self.check(TokenKind::RParen) {
+                            break;
+                        }
+                        continue;
+                    }
+                    break;
+                }
+            }
+            let end = self.expect(TokenKind::RParen)?.span.end;
+            let span = Span::new(ident.span.start, end);
+            return Ok(Expr::EnumLiteral {
+                enum_name: Some(ident.name),
+                variant: variant.name,
+                values,
+                span,
+            });
+        }
         if self.struct_literals_allowed() && self.matches(TokenKind::LBrace) {
             // struct literal detection
             let mut named_fields = Vec::new();
@@ -1665,6 +1696,45 @@ impl Parser {
             return Ok(Expr::StructLiteral {
                 name: ident.name,
                 fields,
+                span,
+            });
+        } else if (ident.name.contains("::") || ident.name.contains('.'))
+            && self.matches(TokenKind::LParen)
+        {
+            // Enum literal (variant call-like syntax)
+            let mut values = Vec::new();
+            if !self.check(TokenKind::RParen) {
+                loop {
+                    values.push(self.parse_expression()?);
+                    if self.matches(TokenKind::Comma) {
+                        if self.check(TokenKind::RParen) {
+                            break;
+                        }
+                        continue;
+                    }
+                    break;
+                }
+            }
+            let end = self.expect(TokenKind::RParen)?.span.end;
+            let span = Span::new(ident.span.start, end);
+            // Support optional Qualified::Variant syntax
+            let (enum_name, variant) = if ident.name.contains("::") {
+                let mut parts = ident.name.splitn(2, "::");
+                let enum_name = parts.next().unwrap().to_string();
+                let variant = parts.next().unwrap().to_string();
+                (Some(enum_name), variant)
+            } else if ident.name.contains('.') {
+                let mut parts = ident.name.splitn(2, '.');
+                let enum_name = parts.next().unwrap().to_string();
+                let variant = parts.next().unwrap().to_string();
+                (Some(enum_name), variant)
+            } else {
+                (None, ident.name)
+            };
+            return Ok(Expr::EnumLiteral {
+                enum_name,
+                variant,
+                values,
                 span,
             });
         }
@@ -2509,6 +2579,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::FieldAccess { span, .. } => *span,
         Expr::StructLiteral { span, .. } => *span,
         Expr::MapLiteral { span, .. } => *span,
+        Expr::EnumLiteral { span, .. } => *span,
         Expr::Block(block) => block.span,
         Expr::If(expr) => expr.span,
         Expr::Match(expr) => expr.span,
