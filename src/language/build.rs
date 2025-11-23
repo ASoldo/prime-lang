@@ -1,6 +1,6 @@
 use crate::language::ast::{
-    AssignStmt, BinaryOp, Block, Expr, FormatSegment, FormatStringLiteral, Identifier, IfCondition,
-    IfExpr, Literal, MatchExpr, Pattern, RangeExpr, Statement, StructLiteralField,
+    AssignStmt, BinaryOp, Block, Expr, FormatSegment, FormatStringLiteral, FunctionDef, Identifier,
+    IfCondition, IfExpr, Literal, MatchExpr, Pattern, RangeExpr, Statement, StructLiteralField,
     StructLiteralKind, UnaryOp,
 };
 use crate::language::span::Span;
@@ -9,6 +9,7 @@ use crate::runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGene
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -45,6 +46,7 @@ pub enum BuildValue {
         type_args: Vec<TypeExpr>,
         args: Vec<BuildValue>,
     },
+    JoinHandle(BuildJoinHandle),
     Reference(BuildReference),
     Moved,
 }
@@ -75,6 +77,7 @@ impl BuildValue {
             BuildValue::ChannelSender(_) => "channel sender",
             BuildValue::ChannelReceiver(_) => "channel receiver",
             BuildValue::DeferredCall { .. } => "function call",
+            BuildValue::JoinHandle(_) => "join handle",
             BuildValue::Reference(_) => "reference",
             BuildValue::Moved => "moved value",
         }
@@ -88,6 +91,7 @@ pub struct BuildBinding {
     pub mutable: bool,
     pub borrowed_mut: bool,
     pub borrowed_shared: usize,
+    pub borrowed_shared_names: HashSet<String>,
 }
 
 #[allow(dead_code)]
@@ -101,6 +105,8 @@ pub struct BuildScope {
 pub struct BuildSnapshot {
     pub scopes: Vec<BuildScope>,
     pub enum_variants: HashMap<String, BuildEnumVariant>,
+    pub functions: HashMap<BuildFunctionKey, BuildFunction>,
+    pub struct_fields: HashMap<String, Vec<String>>,
 }
 
 #[allow(dead_code)]
@@ -118,19 +124,58 @@ pub type BuildFormatTemplate = FormatTemplateValueGeneric<BuildValue>;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
+pub struct BuildFunction {
+    pub def: FunctionDef,
+    pub receiver: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+pub struct BuildFunctionKey {
+    pub name: String,
+    pub receiver: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildJoinHandle {
+    handle: Arc<Mutex<Option<thread::JoinHandle<Result<BuildEvaluation, String>>>>>,
+}
+
+impl BuildJoinHandle {
+    fn new(handle: thread::JoinHandle<Result<BuildEvaluation, String>>) -> Self {
+        Self {
+            handle: Arc::new(Mutex::new(Some(handle))),
+        }
+    }
+
+    pub fn into_thread(self) -> thread::JoinHandle<Result<BuildEvaluation, String>> {
+        self.handle
+            .lock()
+            .unwrap()
+            .take()
+            .expect("join handle already taken")
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
 pub struct BuildInterpreter {
     scopes: Vec<BuildScope>,
     effects: Vec<BuildEffect>,
     enum_variants: HashMap<String, BuildEnumVariant>,
+    functions: HashMap<BuildFunctionKey, BuildFunction>,
+    struct_fields: HashMap<String, Vec<String>>,
     next_channel_id: u64,
     active_mut_borrows: HashSet<String>,
     borrow_frames: Vec<Vec<BorrowMark>>,
+    defer_stack: Vec<Vec<Expr>>,
 }
 
 #[derive(Clone, Debug)]
 struct BorrowMark {
     name: String,
     kind: BorrowKind,
+    borrower: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,10 +276,22 @@ impl BuildInterpreter {
             scopes: snapshot.scopes,
             effects: Vec::new(),
             enum_variants: snapshot.enum_variants,
+            functions: snapshot.functions,
+            struct_fields: snapshot.struct_fields,
             next_channel_id: 0,
             active_mut_borrows: HashSet::new(),
             borrow_frames: vec![Vec::new(); scope_frames],
+            defer_stack: vec![Vec::new(); scope_frames],
         }
+    }
+
+    fn clone_for_spawn(&self) -> Self {
+        let mut clone = self.clone();
+        clone.effects = Vec::new();
+        clone.active_mut_borrows = HashSet::new();
+        clone.borrow_frames = vec![Vec::new(); clone.scopes.len()];
+        clone.defer_stack = vec![Vec::new(); clone.scopes.len().max(1)];
+        clone
     }
 
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<BuildValue, String> {
@@ -254,6 +311,9 @@ impl BuildInterpreter {
         let binding = self
             .find_binding_mut(name)
             .ok_or_else(|| format!("Unknown identifier `{}` in build spawn", name))?;
+        if binding.borrowed_mut {
+            return Err(format!("Identifier `{}` is mutably borrowed", name));
+        }
         let guard = binding.cell.lock().unwrap();
         if let BuildValue::Moved = *guard {
             return Err(format!("Identifier `{}` has been moved", name));
@@ -335,12 +395,12 @@ impl BuildInterpreter {
                                 .ok_or_else(|| {
                                     format!("Unknown identifier `{}` for reference", ident.name)
                                 })?;
-                            (
-                                binding.cell.clone(),
-                                binding.mutable,
-                                binding.borrowed_mut,
-                                binding.borrowed_shared,
-                            )
+                           (
+                               binding.cell.clone(),
+                               binding.mutable,
+                               binding.borrowed_mut,
+                               binding.borrowed_shared,
+                           )
                         };
                         if *mutable && !mutable_flag {
                             return Err(format!("Identifier `{}` is immutable", ident.name));
@@ -363,7 +423,7 @@ impl BuildInterpreter {
                                 binding.borrowed_mut = true;
                             }
                         } else {
-                            self.begin_shared_borrow(&ident.name)?;
+                            self.begin_shared_borrow(&ident.name, &ident.name)?;
                         }
                         Ok(BuildValue::Reference(BuildReference {
                             cell,
@@ -388,7 +448,15 @@ impl BuildInterpreter {
             Expr::Try { block, .. } => self.eval_try(block),
             Expr::TryPropagate { expr, .. } => self.eval_try_propagate(expr),
             Expr::Move { expr, .. } => self.eval_move(expr),
-            Expr::Spawn { .. } => Err("nested spawn not supported in build interpreter".into()),
+            Expr::Spawn { expr, .. } => {
+                let child = self.clone_for_spawn();
+                let expr_clone = expr.clone();
+                let handle = thread::spawn(move || {
+                    let interp = child;
+                    interp.eval_with_effects(&expr_clone)
+                });
+                Ok(BuildValue::JoinHandle(BuildJoinHandle::new(handle)))
+            }
         }
     }
 
@@ -398,7 +466,7 @@ impl BuildInterpreter {
             Literal::Float(v, _) => Ok(BuildValue::Float(*v)),
             Literal::Bool(v, _) => Ok(BuildValue::Bool(*v)),
             Literal::String(v, _) => Ok(BuildValue::String(v.clone())),
-            Literal::Rune(_, _) => Err("rune literals not yet supported in build spawn".into()),
+            Literal::Rune(v, _) => Ok(BuildValue::Int(*v as i128)),
         }
     }
 
@@ -435,7 +503,7 @@ impl BuildInterpreter {
             match flow {
                 Flow::Value(value) => last_value = value,
                 Flow::Return(_) | Flow::Break | Flow::Continue => {
-                    self.pop_scope();
+                    self.pop_scope()?;
                     return Ok(flow);
                 }
             };
@@ -445,7 +513,7 @@ impl BuildInterpreter {
         } else {
             last_value
         };
-        self.pop_scope();
+        self.pop_scope()?;
         Ok(Flow::Value(result))
     }
 
@@ -483,7 +551,12 @@ impl BuildInterpreter {
             Statement::While(while_stmt) => self.eval_while(while_stmt),
             Statement::Loop(loop_stmt) => self.eval_loop(loop_stmt),
             Statement::For(for_stmt) => self.eval_for(for_stmt),
-            Statement::Defer(_) => Err("defer not supported in build spawn interpreter yet".into()),
+            Statement::Defer(defer_stmt) => {
+                if let Some(frame) = self.defer_stack.last_mut() {
+                    frame.push(defer_stmt.expr.clone());
+                }
+                Ok(Flow::Value(BuildValue::Unit))
+            }
             Statement::Break => Ok(Flow::Break),
             Statement::Continue => Ok(Flow::Continue),
         }
@@ -545,18 +618,18 @@ impl BuildInterpreter {
                     let flow = self.eval_block(&stmt.body)?;
                     match flow {
                         Flow::Value(_) => {
-                            self.pop_scope();
+                            self.pop_scope()?;
                         }
                         Flow::Break => {
-                            self.pop_scope();
+                            self.pop_scope()?;
                             break;
                         }
                         Flow::Continue => {
-                            self.pop_scope();
+                            self.pop_scope()?;
                             continue;
                         }
                         Flow::Return(v) => {
-                            self.pop_scope();
+                            self.pop_scope()?;
                             return Ok(Flow::Return(v));
                         }
                     }
@@ -574,18 +647,18 @@ impl BuildInterpreter {
                     let flow = self.eval_block(&stmt.body)?;
                     match flow {
                         Flow::Value(_) => {
-                            self.pop_scope();
+                            self.pop_scope()?;
                         }
                         Flow::Break => {
-                            self.pop_scope();
+                            self.pop_scope()?;
                             break;
                         }
                         Flow::Continue => {
-                            self.pop_scope();
+                            self.pop_scope()?;
                             continue;
                         }
                         Flow::Return(v) => {
-                            self.pop_scope();
+                            self.pop_scope()?;
                             return Ok(Flow::Return(v));
                         }
                     }
@@ -606,13 +679,115 @@ impl BuildInterpreter {
                 let binding = self.find_binding_mut(name).ok_or_else(|| {
                     format!("Unknown identifier `{}` in assignment", name)
                 })?;
+                if binding.borrowed_mut || binding.borrowed_shared > 0 {
+                    return Err(format!("Identifier `{}` is borrowed", name));
+                }
                 if !binding.mutable {
                     return Err(format!("Identifier `{}` is immutable", name));
                 }
                 *binding.cell.lock().unwrap() = value;
                 Ok(())
             }
-            _ => Err("only simple identifier assignments supported in build spawn".into()),
+            Expr::Deref { expr, .. } => {
+                let value = self.eval_expr_mut(&assign.value)?;
+                match self.eval_expr_mut(expr)? {
+                    BuildValue::Reference(reference) => {
+                        if !reference.mutable {
+                            return Err("Cannot assign through immutable reference".into());
+                        }
+                        *reference.cell.lock().unwrap() = value;
+                        Ok(())
+                    }
+                    other => Err(format!(
+                        "Cannot assign through non-reference value `{}`",
+                        other.kind()
+                    )),
+                }
+            }
+            Expr::FieldAccess { base, field, .. } => {
+                let value = self.eval_expr_mut(&assign.value)?;
+                match base.as_ref() {
+                    Expr::Identifier(Identifier { name, .. }) => {
+                        let binding = self.find_binding_mut(name).ok_or_else(|| {
+                            format!("Unknown identifier `{}` in assignment", name)
+                        })?;
+                        if !binding.mutable {
+                            return Err(format!("Identifier `{}` is immutable", name));
+                        }
+                        if binding.borrowed_mut || binding.borrowed_shared > 0 {
+                            return Err(format!("Identifier `{}` is borrowed", name));
+                        }
+                        let mut guard = binding.cell.lock().unwrap();
+                        match &mut *guard {
+                            BuildValue::Struct { fields, .. } => {
+                                if !fields.contains_key(field) {
+                                    return Err(format!(
+                                        "field `{}` not found in struct `{}`",
+                                        field, name
+                                    ));
+                                }
+                                fields.insert(field.clone(), value);
+                                Ok(())
+                            }
+                            BuildValue::Map(entries) => {
+                                entries.insert(field.clone(), value);
+                                Ok(())
+                            }
+                            BuildValue::Tuple(items) => {
+                                let idx = field
+                                    .parse::<usize>()
+                                    .map_err(|_| "tuple field access expects numeric index".to_string())?;
+                                if let Some(slot) = items.get_mut(idx) {
+                                    *slot = value;
+                                    Ok(())
+                                } else {
+                                    Err(format!("tuple index {} out of bounds", idx))
+                                }
+                            }
+                            other => Err(format!(
+                                "Cannot assign field on {}",
+                                other.kind()
+                            )),
+                        }
+                    }
+                    _ => match self.eval_expr_mut(base)? {
+                        BuildValue::Reference(reference) if reference.mutable => {
+                            let mut guard = reference.cell.lock().unwrap();
+                            match &mut *guard {
+                                BuildValue::Struct { fields, .. } => {
+                                    fields.insert(field.clone(), value);
+                                    Ok(())
+                                }
+                                BuildValue::Map(entries) => {
+                                    entries.insert(field.clone(), value);
+                                    Ok(())
+                                }
+                                BuildValue::Tuple(items) => {
+                                    let idx = field
+                                        .parse::<usize>()
+                                        .map_err(|_| "tuple field access expects numeric index".to_string())?;
+                                    if let Some(slot) = items.get_mut(idx) {
+                                        *slot = value;
+                                        Ok(())
+                                    } else {
+                                        Err(format!("tuple index {} out of bounds", idx))
+                                    }
+                                }
+                                other => Err(format!("Cannot assign field on {}", other.kind())),
+                            }
+                        }
+                        BuildValue::Reference(reference) => Err(format!(
+                            "Cannot assign field through immutable reference to {}",
+                            reference.cell.lock().unwrap().kind()
+                        )),
+                        BuildValue::Struct { .. } | BuildValue::Map(_) => {
+                            Err("Cannot assign field on temporary value".into())
+                        }
+                        other => Err(format!("Cannot assign field on {}", other.kind())),
+                    },
+                }
+            }
+            _ => Err("assignment target not supported in build spawn".into()),
         }
     }
 
@@ -678,8 +853,28 @@ impl BuildInterpreter {
                     fields: map,
                 })
             }
-            StructLiteralKind::Positional(_) => {
-                Err("positional struct literals not supported in build spawn".into())
+            StructLiteralKind::Positional(values) => {
+                let order = self
+                    .struct_fields
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| format!("Unknown struct `{}` for positional literal", name))?;
+                if order.len() != values.len() {
+                    return Err(format!(
+                        "Struct `{}` expects {} fields, got {}",
+                        name,
+                        order.len(),
+                        values.len()
+                    ));
+                }
+                let mut map = BTreeMap::new();
+                for (field_name, value_expr) in order.into_iter().zip(values.iter()) {
+                    map.insert(field_name, self.eval_expr_mut(value_expr)?);
+                }
+                Ok(BuildValue::Struct {
+                    name: name.to_string(),
+                    fields: map,
+                })
             }
         }
     }
@@ -754,17 +949,8 @@ impl BuildInterpreter {
                 self.eval_builtin_or_deferred(name, None, type_args, args)
             }
             Expr::FieldAccess { base, field, .. } => {
-                // Treat method calls as deferred functions with receiver as first arg.
-                let mut converted = Vec::with_capacity(args.len() + 1);
-                converted.push(self.eval_expr_mut(base)?);
-                for arg in args {
-                    converted.push(self.eval_expr_mut(arg)?);
-                }
-                Ok(BuildValue::DeferredCall {
-                    name: field.to_string(),
-                    type_args: type_args.to_vec(),
-                    args: converted,
-                })
+                let receiver = self.eval_expr_mut(base)?;
+                self.eval_builtin_or_deferred(field, Some(receiver), type_args, args)
             }
             _ => Err("only identifier and method calls supported in build spawn interpreter".into()),
         }
@@ -795,6 +981,9 @@ impl BuildInterpreter {
                 let binding = self
                     .find_binding_mut(&ident.name)
                     .ok_or_else(|| format!("Unknown identifier `{}` for move", ident.name))?;
+                if binding.borrowed_mut || binding.borrowed_shared > 0 {
+                    return Err(format!("Identifier `{}` is borrowed", ident.name));
+                }
                 let mut cell = binding.cell.lock().unwrap();
                 if let BuildValue::Moved = *cell {
                     return Err(format!("Identifier `{}` already moved", ident.name));
@@ -840,6 +1029,9 @@ impl BuildInterpreter {
                     BinaryOp::Mul => BuildValue::Int(l * r),
                     BinaryOp::Div => BuildValue::Int(l / r),
                     BinaryOp::Rem => BuildValue::Int(l % r),
+                    BinaryOp::BitAnd => BuildValue::Int(l & r),
+                    BinaryOp::BitOr => BuildValue::Int(l | r),
+                    BinaryOp::BitXor => BuildValue::Int(l ^ r),
                     BinaryOp::Eq => BuildValue::Bool(l == r),
                     BinaryOp::NotEq => BuildValue::Bool(l != r),
                     BinaryOp::Lt => BuildValue::Bool(l < r),
@@ -849,6 +1041,12 @@ impl BuildInterpreter {
                     _ => return Err("unsupported integer binary operation in build spawn".into()),
                 };
                 Ok(value)
+            }
+            (BuildValue::Int(l), BuildValue::Float(r)) => {
+                self.eval_binary(op, BuildValue::Float(l as f64), BuildValue::Float(r))
+            }
+            (BuildValue::Float(l), BuildValue::Int(r)) => {
+                self.eval_binary(op, BuildValue::Float(l), BuildValue::Float(r as f64))
             }
             (BuildValue::Float(l), BuildValue::Float(r)) => {
                 let value = match op {
@@ -888,12 +1086,18 @@ impl BuildInterpreter {
                 };
                 Ok(value)
             }
-            (l, r) => Err(format!(
-                "Binary op {:?} not supported for {} and {}",
-                op,
-                l.kind(),
-                r.kind()
-            )),
+            (l, r) => {
+                if op == BinaryOp::Eq || op == BinaryOp::NotEq {
+                    let eq = self.values_equal(&l, &r)?;
+                    return Ok(BuildValue::Bool(if op == BinaryOp::Eq { eq } else { !eq }));
+                }
+                Err(format!(
+                    "Binary op {:?} not supported for {} and {}",
+                    op,
+                    l.kind(),
+                    r.kind()
+                ))
+            }
         }
     }
 
@@ -904,6 +1108,97 @@ impl BuildInterpreter {
             (UnaryOp::Not, BuildValue::Bool(v)) => Ok(BuildValue::Bool(!v)),
             (_, other) => Err(format!("Unary op {:?} not supported for {}", op, other.kind())),
         }
+    }
+
+    fn values_equal(&self, left: &BuildValue, right: &BuildValue) -> Result<bool, String> {
+        Ok(match (left, right) {
+            (BuildValue::Unit, BuildValue::Unit) => true,
+            (BuildValue::Bool(l), BuildValue::Bool(r)) => l == r,
+            (BuildValue::Int(l), BuildValue::Int(r)) => l == r,
+            (BuildValue::Float(l), BuildValue::Float(r)) => (*l - r).abs() < f64::EPSILON,
+            (BuildValue::String(l), BuildValue::String(r)) => l == r,
+            (
+                BuildValue::Range {
+                    start: ls,
+                    end: le,
+                    inclusive: li,
+                },
+                BuildValue::Range {
+                    start: rs,
+                    end: re,
+                    inclusive: ri,
+                },
+            ) => ls == rs && le == re && li == ri,
+            (BuildValue::Tuple(l), BuildValue::Tuple(r)) => {
+                l.len() == r.len()
+                    && l
+                        .iter()
+                        .zip(r.iter())
+                        .all(|(a, b)| self.values_equal(a, b).unwrap_or(false))
+            }
+            (BuildValue::Slice(l), BuildValue::Slice(r)) => {
+                l.len() == r.len()
+                && l
+                    .iter()
+                    .zip(r.iter())
+                    .all(|(a, b)| self.values_equal(a, b).unwrap_or(false))
+            }
+            (
+                BuildValue::Struct {
+                    name: ln,
+                    fields: lf,
+                },
+                BuildValue::Struct {
+                    name: rn,
+                    fields: rf,
+                },
+            ) => {
+                ln == rn
+                    && lf.len() == rf.len()
+                    && lf.iter().all(|(k, v)| {
+                        rf.get(k)
+                            .map(|other| self.values_equal(v, other).unwrap_or(false))
+                            .unwrap_or(false)
+                    })
+            }
+            (BuildValue::Map(lm), BuildValue::Map(rm)) => {
+                lm.len() == rm.len()
+                    && lm.iter().all(|(k, v)| {
+                        rm.get(k)
+                            .map(|other| self.values_equal(v, other).unwrap_or(false))
+                            .unwrap_or(false)
+                    })
+            }
+            (
+                BuildValue::Enum {
+                    enum_name: le,
+                    variant: lv,
+                    values: lv_vals,
+                    variant_index: l_idx,
+                },
+                BuildValue::Enum {
+                    enum_name: re,
+                    variant: rv,
+                    values: rv_vals,
+                    variant_index: r_idx,
+                },
+            ) => {
+                le == re
+                    && lv == rv
+                    && l_idx == r_idx
+                    && lv_vals.len() == rv_vals.len()
+                    && lv_vals
+                        .iter()
+                        .zip(rv_vals.iter())
+                        .all(|(a, b)| self.values_equal(a, b).unwrap_or(false))
+            }
+            (BuildValue::Reference(lref), BuildValue::Reference(rref)) => {
+                let l = lref.cell.lock().unwrap().clone();
+                let r = rref.cell.lock().unwrap().clone();
+                self.values_equal(&l, &r)?
+            }
+            _ => false,
+        })
     }
 
     fn find_binding_mut(&mut self, name: &str) -> Option<&mut BuildBinding> {
@@ -936,22 +1231,25 @@ impl BuildInterpreter {
             frame.push(BorrowMark {
                 name: name.to_string(),
                 kind: BorrowKind::Mutable,
+                borrower: None,
             });
         }
         Ok(())
     }
 
-    fn begin_shared_borrow(&mut self, name: &str) -> Result<(), String> {
+    fn begin_shared_borrow(&mut self, name: &str, borrower: &str) -> Result<(), String> {
         if self.active_mut_borrows.contains(name) {
             return Err(format!("`{}` has an active mutable borrow", name));
         }
         if let Some(binding) = self.find_binding_mut(name) {
             binding.borrowed_shared = binding.borrowed_shared.saturating_add(1);
+            binding.borrowed_shared_names.insert(borrower.to_string());
         }
         if let Some(frame) = self.borrow_frames.last_mut() {
             frame.push(BorrowMark {
                 name: name.to_string(),
                 kind: BorrowKind::Shared,
+                borrower: Some(borrower.to_string()),
             });
         }
         Ok(())
@@ -962,9 +1260,24 @@ impl BuildInterpreter {
             bindings: HashMap::new(),
         });
         self.borrow_frames.push(Vec::new());
+        self.defer_stack.push(Vec::new());
     }
 
-    fn pop_scope(&mut self) {
+    fn run_defers(&mut self) -> Result<(), String> {
+        if let Some(defers) = self.defer_stack.last_mut() {
+            let mut pending = Vec::new();
+            while let Some(expr) = defers.pop() {
+                pending.push(expr);
+            }
+            for expr in pending {
+                self.eval_expr_mut(&expr)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn pop_scope(&mut self) -> Result<(), String> {
+        self.run_defers()?;
         self.scopes.pop();
         if let Some(frame) = self.borrow_frames.pop() {
             for mark in frame {
@@ -978,14 +1291,22 @@ impl BuildInterpreter {
                     BorrowKind::Shared => {
                         if let Some(binding) = self.find_binding_mut(&mark.name) {
                             binding.borrowed_shared = binding.borrowed_shared.saturating_sub(1);
+                            if let Some(borrower) = mark.borrower.as_ref() {
+                                binding.borrowed_shared_names.remove(borrower);
+                            }
                         }
                     }
                 }
             }
         }
+        self.defer_stack.pop();
         if self.borrow_frames.is_empty() {
             self.borrow_frames.push(Vec::new());
         }
+        if self.defer_stack.is_empty() {
+            self.defer_stack.push(Vec::new());
+        }
+        Ok(())
     }
 
     fn bind_pattern(
@@ -1012,6 +1333,9 @@ impl BuildInterpreter {
             Pattern::Identifier(name, _) => {
                 let mutable = mutability == Mutability::Mutable;
                 if let Some(scope) = self.scopes.last_mut() {
+                    if mutable && self.active_mut_borrows.contains(name) {
+                        return Err(format!("`{}` is already mutably borrowed", name));
+                    }
                     scope.bindings.insert(
                         name.clone(),
                         BuildBinding {
@@ -1019,11 +1343,9 @@ impl BuildInterpreter {
                             mutable,
                             borrowed_mut: false,
                             borrowed_shared: 0,
+                            borrowed_shared_names: HashSet::new(),
                         },
                     );
-                    if mutable {
-                        self.begin_mut_borrow(name)?;
-                    }
                     Ok(true)
                 } else {
                     Ok(false)
@@ -1204,6 +1526,17 @@ impl BuildInterpreter {
         type_args: &[TypeExpr],
         args: &[Expr],
     ) -> Result<BuildValue, String> {
+        if self.is_user_function(name, &receiver) {
+            let mut evaluated = Vec::with_capacity(args.len() + receiver.is_some() as usize);
+            let receiver_value = receiver;
+            if let Some(recv) = receiver_value.clone() {
+                evaluated.push(recv);
+            }
+            for arg in args {
+                evaluated.push(self.eval_expr_mut(arg)?);
+            }
+            return self.call_user_function(name, &receiver_value, evaluated, type_args);
+        }
         match name {
             "len" => {
                 if args.len() != 1 {
@@ -1309,8 +1642,49 @@ impl BuildInterpreter {
                 }
                 Ok(BuildValue::Unit)
             }
-            name if self.is_user_function(name) => {
-                Err(format!("call to `{}` not supported in build spawn interpreter yet", name))
+            "get" => {
+                if args.len() != 2 {
+                    return Err("get expects 2 arguments".into());
+                }
+                let mut evaluated = Vec::with_capacity(2);
+                if let Some(recv) = receiver {
+                    evaluated.push(recv);
+                } else {
+                    evaluated.push(self.eval_expr_mut(&args[0])?);
+                }
+                if evaluated.len() == 1 {
+                    evaluated.push(self.eval_expr_mut(&args[1])?);
+                } else {
+                    evaluated.push(self.eval_expr_mut(&args[0])?);
+                }
+                match (&evaluated[0], &evaluated[1]) {
+                    (BuildValue::Slice(items), BuildValue::Int(idx)) => {
+                        if *idx < 0 {
+                            return Ok(self.wrap_enum("None", vec![]));
+                        }
+                        let idx_usize = *idx as usize;
+                        match items.get(idx_usize) {
+                            Some(value) => Ok(self.wrap_enum("Some", vec![value.clone()])),
+                            None => Ok(self.wrap_enum("None", vec![])),
+                        }
+                    }
+                    (BuildValue::Map(entries), BuildValue::String(key)) => {
+                        match entries.get(key) {
+                            Some(value) => Ok(self.wrap_enum("Some", vec![value.clone()])),
+                            None => Ok(self.wrap_enum("None", vec![])),
+                        }
+                    }
+                    (BuildValue::Reference(reference), _) => {
+                        let inner = reference.cell.lock().unwrap().clone();
+                        self.eval_builtin_or_deferred(
+                            name,
+                            Some(inner),
+                            type_args,
+                            &args[1..],
+                        )
+                    }
+                    (receiver, _) => Err(format!("get expects slice or map, found {}", receiver.kind())),
+                }
             }
             other => {
                 let mut converted = Vec::with_capacity(args.len());
@@ -1329,8 +1703,60 @@ impl BuildInterpreter {
         }
     }
 
-    fn is_user_function(&self, _name: &str) -> bool {
-        true
+    fn receiver_key(receiver: &Option<BuildValue>) -> Option<String> {
+        match receiver {
+            Some(BuildValue::Struct { name, .. }) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
+    fn is_user_function(&self, name: &str, receiver: &Option<BuildValue>) -> bool {
+        let key = BuildFunctionKey {
+            name: name.to_string(),
+            receiver: Self::receiver_key(receiver),
+        };
+        self.functions.contains_key(&key)
+    }
+
+    fn call_user_function(
+        &mut self,
+        name: &str,
+        receiver: &Option<BuildValue>,
+        args: Vec<BuildValue>,
+        _type_args: &[TypeExpr],
+    ) -> Result<BuildValue, String> {
+        let receiver_key = Self::receiver_key(receiver);
+        let key = BuildFunctionKey {
+            name: name.to_string(),
+            receiver: receiver_key,
+        };
+        let func = self
+            .functions
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| format!("Unknown function `{}`", name))?;
+        if func.def.params.len() != args.len() {
+            return Err(format!(
+                "Function `{}` expects {} arguments, got {}",
+                name,
+                func.def.params.len(),
+                args.len()
+            ));
+        }
+        self.push_scope();
+        for (param, value) in func.def.params.iter().zip(args.into_iter()) {
+            let pattern = Pattern::Identifier(param.name.clone(), param.span);
+            self.bind_pattern(&pattern, value, param.mutability)?;
+        }
+        let result = match &func.def.body {
+            crate::language::ast::FunctionBody::Block(block) => match self.eval_block(block)? {
+                Flow::Value(v) | Flow::Return(v) => Ok(v),
+                Flow::Break | Flow::Continue => Err("Control flow cannot escape function body in build mode".into()),
+            },
+            crate::language::ast::FunctionBody::Expr(expr) => self.eval_expr_mut(&expr.node),
+        };
+        self.pop_scope()?;
+        result
     }
 
     fn wrap_enum(&self, variant: &str, values: Vec<BuildValue>) -> BuildValue {
@@ -1366,6 +1792,9 @@ mod tests {
     use super::*;
     use crate::language::ast::{LetStmt, Block, MatchArmExpr, MatchExpr};
     use crate::language::span::Span;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     fn empty_snapshot() -> BuildSnapshot {
         BuildSnapshot {
@@ -1373,11 +1802,40 @@ mod tests {
                 bindings: HashMap::new(),
             }],
             enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
         }
     }
 
     fn span() -> Span {
         Span::new(0, 0)
+    }
+
+    fn build_channel_pair() -> (BuildChannelSender, BuildChannelReceiver) {
+        let s = span();
+        let expr = Expr::Call {
+            callee: Box::new(Expr::Identifier(Identifier {
+                name: "channel".into(),
+                span: s,
+            })),
+            type_args: Vec::new(),
+            args: Vec::new(),
+            span: s,
+        };
+        match BuildInterpreter::new(empty_snapshot())
+            .eval_expr(&expr)
+            .expect("channel evaluates")
+        {
+            BuildValue::Tuple(mut items) if items.len() == 2 => {
+                let rx = items.pop().unwrap();
+                let tx = items.pop().unwrap();
+                match (tx, rx) {
+                    (BuildValue::ChannelSender(tx), BuildValue::ChannelReceiver(rx)) => (tx, rx),
+                    other => panic!("unexpected channel pair: {:?}", other),
+                }
+            }
+            other => panic!("unexpected channel value: {:?}", other),
+        }
     }
 
     #[test]
@@ -1426,11 +1884,14 @@ mod tests {
                 mutable: true,
                 borrowed_mut: false,
                 borrowed_shared: 0,
+                borrowed_shared_names: HashSet::new(),
             },
         );
         let snapshot = BuildSnapshot {
             scopes: vec![scope],
             enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
         };
         let block = Block {
             statements: vec![Statement::Assign(AssignStmt {
@@ -1468,7 +1929,7 @@ mod tests {
             args: vec![Expr::Literal(Literal::String("hi".into(), s))],
             span: s,
         };
-        let mut interpreter = BuildInterpreter::new(empty_snapshot());
+        let interpreter = BuildInterpreter::new(empty_snapshot());
         let result = interpreter
             .eval_with_effects(&expr)
             .expect("out call evaluates");
@@ -1853,6 +2314,46 @@ mod tests {
             .expect("channel roundtrip");
         assert!(matches!(result, BuildValue::Int(42)));
     }
+
+    #[test]
+    fn channel_recv_blocks_until_send() {
+        let (tx, rx) = build_channel_pair();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let start = Instant::now();
+            let value = rx.recv();
+            (value, start.elapsed())
+        });
+        ready_rx.recv().unwrap();
+        thread::sleep(Duration::from_millis(20));
+        tx.send(BuildValue::Int(7)).expect("send succeeds");
+        let (value, elapsed) = handle.join().expect("recv thread joins");
+        match value {
+            Some(BuildValue::Int(v)) => assert_eq!(v, 7),
+            other => panic!("unexpected recv value: {:?}", other),
+        }
+        assert!(
+            elapsed >= Duration::from_millis(10),
+            "recv returned too early: {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn channel_close_unblocks_recv() {
+        let (tx, rx) = build_channel_pair();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            rx.recv()
+        });
+        ready_rx.recv().unwrap();
+        thread::sleep(Duration::from_millis(20));
+        tx.close();
+        let value = handle.join().expect("recv thread joins");
+        assert!(value.is_none());
+    }
     #[test]
     fn match_enum_variant_extracts_value() {
         let s = span();
@@ -1939,11 +2440,14 @@ mod tests {
                 mutable: true,
                 borrowed_mut: false,
                 borrowed_shared: 0,
+                borrowed_shared_names: HashSet::new(),
             },
         );
         let snapshot = BuildSnapshot {
             scopes: vec![scope],
             enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter
@@ -1970,11 +2474,14 @@ mod tests {
                 mutable: true,
                 borrowed_mut: false,
                 borrowed_shared: 0,
+                borrowed_shared_names: HashSet::new(),
             },
         );
         let snapshot = BuildSnapshot {
             scopes: vec![scope],
             enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter.eval_expr(&Expr::Reference {
@@ -1989,6 +2496,265 @@ mod tests {
             span: s,
         });
         assert!(second.is_err(), "second mutable borrow should fail");
+        // Reading while mutably borrowed should also fail.
+        let third = interpreter.eval_expr(&Expr::Identifier(Identifier { name: "y".into(), span: s }));
+        assert!(third.is_err(), "read during mutable borrow should fail");
+    }
+
+    #[test]
+    fn deref_assignment_updates_reference() {
+        let s = span();
+        let mut scope = BuildScope {
+            bindings: HashMap::new(),
+        };
+        scope.bindings.insert(
+            "x".into(),
+            BuildBinding {
+                cell: Arc::new(Mutex::new(BuildValue::Int(1))),
+                mutable: true,
+                borrowed_mut: false,
+                borrowed_shared: 0,
+                borrowed_shared_names: HashSet::new(),
+            },
+        );
+        let snapshot = BuildSnapshot {
+            scopes: vec![scope],
+            enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        let block = Block {
+            statements: vec![Statement::Assign(AssignStmt {
+                target: Expr::Deref {
+                    expr: Box::new(Expr::Reference {
+                        mutable: true,
+                        expr: Box::new(Expr::Identifier(Identifier { name: "x".into(), span: s })),
+                        span: s,
+                    }),
+                    span: s,
+                },
+                value: Expr::Literal(Literal::Int(9, s)),
+            })],
+            tail: None,
+            span: s,
+        };
+        interpreter
+            .eval_expr(&Expr::Block(Box::new(block)))
+            .expect("deref assignment succeeds");
+        let result = interpreter
+            .eval_expr(&Expr::Identifier(Identifier { name: "x".into(), span: s }))
+            .expect("load x");
+        assert!(matches!(result, BuildValue::Int(9)));
+    }
+
+    #[test]
+    fn field_assignment_updates_struct() {
+        let s = span();
+        let mut scope = BuildScope {
+            bindings: HashMap::new(),
+        };
+        scope.bindings.insert(
+            "p".into(),
+            BuildBinding {
+                cell: Arc::new(Mutex::new(BuildValue::Struct {
+                    name: "Point".into(),
+                    fields: [("x".into(), BuildValue::Int(1)), ("y".into(), BuildValue::Int(2))]
+                        .into_iter()
+                        .collect(),
+                })),
+                mutable: true,
+                borrowed_mut: false,
+                borrowed_shared: 0,
+                borrowed_shared_names: HashSet::new(),
+            },
+        );
+        let snapshot = BuildSnapshot {
+            scopes: vec![scope],
+            enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        let block = Block {
+            statements: vec![Statement::Assign(AssignStmt {
+                target: Expr::FieldAccess {
+                    base: Box::new(Expr::Identifier(Identifier { name: "p".into(), span: s })),
+                    field: "x".into(),
+                    span: s,
+                },
+                value: Expr::Literal(Literal::Int(5, s)),
+            })],
+            tail: None,
+            span: s,
+        };
+        interpreter
+            .eval_expr(&Expr::Block(Box::new(block)))
+            .expect("field assignment");
+        let updated = interpreter
+            .eval_expr(&Expr::FieldAccess {
+                base: Box::new(Expr::Identifier(Identifier { name: "p".into(), span: s })),
+                field: "x".into(),
+                span: s,
+            })
+            .expect("read field");
+        assert!(matches!(updated, BuildValue::Int(5)));
+    }
+
+    #[test]
+    fn rune_literal_is_accepted() {
+        let s = span();
+        let result = BuildInterpreter::new(empty_snapshot())
+            .eval_expr(&Expr::Literal(Literal::Rune('a', s)))
+            .expect("rune literal");
+        assert!(matches!(result, BuildValue::Int(v) if v == 'a' as i128));
+    }
+
+    #[test]
+    fn get_fetches_slice_elements() {
+        let s = span();
+        let expr = Expr::Call {
+            callee: Box::new(Expr::Identifier(Identifier {
+                name: "get".into(),
+                span: s,
+            })),
+            type_args: Vec::new(),
+            args: vec![
+                Expr::ArrayLiteral(
+                    vec![
+                        Expr::Literal(Literal::Int(1, s)),
+                        Expr::Literal(Literal::Int(2, s)),
+                    ],
+                    s,
+                ),
+                Expr::Literal(Literal::Int(1, s)),
+            ],
+            span: s,
+        };
+        let mut snapshot = empty_snapshot();
+        snapshot.enum_variants.insert(
+            "Some".into(),
+            BuildEnumVariant {
+                enum_name: "Option".into(),
+                variant_index: 0,
+                fields: 1,
+            },
+        );
+        snapshot.enum_variants.insert(
+            "None".into(),
+            BuildEnumVariant {
+                enum_name: "Option".into(),
+                variant_index: 1,
+                fields: 0,
+            },
+        );
+        let result = BuildInterpreter::new(snapshot)
+            .eval_expr(&expr)
+            .expect("get evaluates");
+        match result {
+            BuildValue::Enum { variant, values, .. } if variant == "Some" => {
+                assert!(matches!(values.as_slice(), [BuildValue::Int(2)]));
+            }
+            other => panic!("unexpected result: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bitwise_int_operations_work() {
+        let s = span();
+        let expr = Expr::Binary {
+            op: BinaryOp::BitAnd,
+            left: Box::new(Expr::Literal(Literal::Int(6, s))),  // 110
+            right: Box::new(Expr::Literal(Literal::Int(3, s))), // 011
+            span: s,
+        };
+        let result = BuildInterpreter::new(empty_snapshot())
+            .eval_expr(&expr)
+            .expect("bitwise and");
+        assert!(matches!(result, BuildValue::Int(v) if v == 2));
+    }
+
+    #[test]
+    fn mixed_numeric_operations_promote_to_float() {
+        let s = span();
+        let expr = Expr::Binary {
+            op: BinaryOp::Div,
+            left: Box::new(Expr::Literal(Literal::Int(7, s))),
+            right: Box::new(Expr::Literal(Literal::Float(2.0, s))),
+            span: s,
+        };
+        let result = BuildInterpreter::new(empty_snapshot())
+            .eval_expr(&expr)
+            .expect("mixed numeric division");
+        assert!(matches!(result, BuildValue::Float(v) if (v - 3.5).abs() < f64::EPSILON));
+    }
+
+    #[test]
+    fn deep_struct_equality_matches() {
+        let s = span();
+        let expr = Expr::Binary {
+            op: BinaryOp::Eq,
+            left: Box::new(Expr::StructLiteral {
+                name: "Point".into(),
+                fields: StructLiteralKind::Named(vec![
+                    StructLiteralField { name: "x".into(), value: Expr::Literal(Literal::Int(1, s)) },
+                    StructLiteralField { name: "y".into(), value: Expr::Literal(Literal::Int(2, s)) },
+                ]),
+                span: s,
+            }),
+            right: Box::new(Expr::StructLiteral {
+                name: "Point".into(),
+                fields: StructLiteralKind::Named(vec![
+                    StructLiteralField { name: "y".into(), value: Expr::Literal(Literal::Int(2, s)) },
+                    StructLiteralField { name: "x".into(), value: Expr::Literal(Literal::Int(1, s)) },
+                ]),
+                span: s,
+            }),
+            span: s,
+        };
+        let result = BuildInterpreter::new(empty_snapshot())
+            .eval_expr(&expr)
+            .expect("struct equality");
+        assert!(matches!(result, BuildValue::Bool(true)));
+    }
+
+    #[test]
+    fn map_equality_matches_keys_and_values() {
+        let s = span();
+        let expr = Expr::Binary {
+            op: BinaryOp::Eq,
+            left: Box::new(Expr::MapLiteral {
+                entries: vec![
+                    crate::language::ast::MapLiteralEntry {
+                        key: Expr::Literal(Literal::String("a".into(), s)),
+                        value: Expr::Literal(Literal::Int(1, s)),
+                    },
+                    crate::language::ast::MapLiteralEntry {
+                        key: Expr::Literal(Literal::String("b".into(), s)),
+                        value: Expr::Literal(Literal::Int(2, s)),
+                    },
+                ],
+                span: s,
+            }),
+            right: Box::new(Expr::MapLiteral {
+                entries: vec![
+                    crate::language::ast::MapLiteralEntry {
+                        key: Expr::Literal(Literal::String("b".into(), s)),
+                        value: Expr::Literal(Literal::Int(2, s)),
+                    },
+                    crate::language::ast::MapLiteralEntry {
+                        key: Expr::Literal(Literal::String("a".into(), s)),
+                        value: Expr::Literal(Literal::Int(1, s)),
+                    },
+                ],
+                span: s,
+            }),
+            span: s,
+        };
+        let result = BuildInterpreter::new(empty_snapshot())
+            .eval_expr(&expr)
+            .expect("map equality");
+        assert!(matches!(result, BuildValue::Bool(true)));
     }
 
     #[test]

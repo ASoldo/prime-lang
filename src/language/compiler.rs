@@ -7,6 +7,8 @@ use crate::{
             BuildEffect,
             BuildEvaluation,
             BuildFormatTemplate,
+            BuildFunction,
+            BuildFunctionKey,
             BuildInterpreter,
             BuildScope,
             BuildSnapshot,
@@ -943,6 +945,11 @@ impl Compiler {
                     converted.push((key, self.build_value_to_value(value, channels)?));
                 }
                 Ok(Value::Map(MapValue::from_entries(converted)))
+            }
+            BuildValue::JoinHandle(handle) => {
+                Ok(Value::JoinHandle(Box::new(JoinHandleValue::new_build(
+                    handle.into_thread(),
+                ))))
             }
             BuildValue::Reference(reference) => {
                 let inner = self.build_value_to_value(
@@ -4379,6 +4386,7 @@ impl Compiler {
                         mutable: binding.mutable,
                         borrowed_mut: false,
                         borrowed_shared: 0,
+                        borrowed_shared_names: HashSet::new(),
                     },
                 );
             }
@@ -4395,7 +4403,36 @@ impl Compiler {
                 },
             );
         }
-        Ok(BuildSnapshot { scopes, enum_variants })
+        let mut functions: HashMap<BuildFunctionKey, BuildFunction> = HashMap::new();
+        for (key, entry) in &self.functions {
+            let build_key = BuildFunctionKey {
+                name: key.name.clone(),
+                receiver: key.receiver.clone(),
+            };
+            functions.insert(
+                build_key,
+                BuildFunction {
+                    def: entry.def.clone(),
+                    receiver: key.receiver.clone(),
+                },
+            );
+        }
+        let mut struct_fields = HashMap::new();
+        for (name, entry) in &self.structs {
+            let field_names = entry
+                .def
+                .fields
+                .iter()
+                .filter_map(|f| f.name.clone())
+                .collect();
+            struct_fields.insert(name.clone(), field_names);
+        }
+        Ok(BuildSnapshot {
+            scopes,
+            enum_variants,
+            functions,
+            struct_fields,
+        })
     }
 
     fn push_scope(&mut self) {
@@ -4677,12 +4714,15 @@ fn describe_value(value: &Value) -> &'static str {
 mod tests {
     use super::*;
     use crate::language::{ast::Program, parser::parse_module};
+    use crate::language::span::Span;
     use crate::project::load_package;
     use std::{
+        collections::HashMap,
         env,
         path::{Path, PathBuf},
         ptr,
         sync::{Arc, Mutex, OnceLock},
+        thread,
     };
 
     fn compile_source(source: &str) -> Result<(), String> {
@@ -4710,6 +4750,27 @@ mod tests {
         } else {
             unsafe {
                 env::remove_var("PRIME_ENABLE_RT_HANDLES");
+            }
+        }
+        drop(guard);
+        result
+    }
+
+    fn with_build_parallel<T>(f: impl FnOnce() -> T) -> T {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let prior = env::var("PRIME_BUILD_PARALLEL").ok();
+        unsafe {
+            env::set_var("PRIME_BUILD_PARALLEL", "1");
+        }
+        let result = f();
+        if let Some(val) = prior {
+            unsafe {
+                env::set_var("PRIME_BUILD_PARALLEL", val);
+            }
+        } else {
+            unsafe {
+                env::remove_var("PRIME_BUILD_PARALLEL");
             }
         }
         drop(guard);
@@ -5024,6 +5085,203 @@ fn main() {
 }
 "#;
         compile_source(source).expect("format string calls should compile");
+    }
+
+    #[test]
+    fn build_spawn_join_returns_value() {
+        with_build_parallel(|| {
+            let mut compiler = Compiler::new();
+            let expr = Expr::Spawn {
+                expr: Box::new(Expr::Literal(Literal::Int(9, Span::new(0, 0)))),
+                span: Span::new(0, 0),
+            };
+            let handle = match compiler.emit_expression(&expr).expect("spawn evaluates") {
+                EvalOutcome::Value(value) => value.into_value(),
+                EvalOutcome::Flow(_) => panic!("unexpected flow from spawn"),
+            };
+            let joined = compiler
+                .builtin_join(vec![handle])
+                .expect("join returns");
+            assert!(matches!(joined, Value::Int(v) if v.constant() == Some(9)));
+        });
+    }
+
+    #[test]
+    fn build_nested_spawn_join_roundtrips() {
+        with_build_parallel(|| {
+            let mut compiler = Compiler::new();
+            let span = Span::new(0, 0);
+            let expr = Expr::Spawn {
+                expr: Box::new(Expr::Spawn {
+                    expr: Box::new(Expr::Literal(Literal::Int(3, span))),
+                    span,
+                }),
+                span,
+            };
+            let outer = match compiler.emit_expression(&expr).expect("outer spawn evaluates") {
+                EvalOutcome::Value(value) => value.into_value(),
+                EvalOutcome::Flow(_) => panic!("unexpected flow from outer spawn"),
+            };
+            let inner_handle = compiler
+                .builtin_join(vec![outer])
+                .expect("outer join returns inner handle");
+            let result = compiler
+                .builtin_join(vec![inner_handle])
+                .expect("inner join returns value");
+            assert!(matches!(result, Value::Int(v) if v.constant() == Some(3)));
+        });
+    }
+
+    #[test]
+    fn build_spawn_channel_effects_bridge_to_runtime_handles() {
+        let mut compiler = Compiler::new();
+        let effects = vec![
+            BuildEffect::ChannelCreate { id: 1 },
+            BuildEffect::ChannelSend {
+                id: 1,
+                value: BuildValue::Int(12),
+            },
+            BuildEffect::ChannelClose { id: 1 },
+        ];
+        let channels = compiler
+            .apply_build_effects(effects)
+            .expect("channel effects apply");
+        let inner = channels.get(&1).cloned().expect("channel present");
+        let receiver = ChannelReceiver::new_with_state(inner);
+        match receiver.recv() {
+            Some(Value::Int(v)) => assert_eq!(v.constant(), Some(12)),
+            _ => panic!("unexpected channel payload"),
+        }
+        assert!(receiver.recv().is_none(), "channel should be closed");
+    }
+
+    #[test]
+    fn build_spawn_channel_enums_roundtrip() {
+        let mut compiler = Compiler::new();
+        let effects = vec![
+            BuildEffect::ChannelCreate { id: 7 },
+            BuildEffect::ChannelSend {
+                id: 7,
+                value: BuildValue::Enum {
+                    enum_name: "Option".into(),
+                    variant: "Some".into(),
+                    values: vec![BuildValue::Int(21)],
+                    variant_index: 0,
+                },
+            },
+            BuildEffect::ChannelClose { id: 7 },
+        ];
+        let channels = compiler
+            .apply_build_effects(effects)
+            .expect("channel effects apply");
+        let rx = ChannelReceiver::new_with_state(
+            channels.get(&7).cloned().expect("channel present"),
+        );
+        match rx.recv() {
+            Some(Value::Enum(enum_value)) => {
+                assert_eq!(enum_value.enum_name, "Option");
+                assert_eq!(enum_value.variant, "Some");
+                assert_eq!(enum_value.variant_index, 0);
+                assert!(
+                    matches!(enum_value.values.as_slice(), [Value::Int(v)] if v.constant() == Some(21))
+                );
+            }
+            _ => panic!("unexpected channel payload"),
+        }
+        assert!(rx.recv().is_none(), "channel should be closed");
+    }
+
+    #[test]
+    fn build_spawn_join_applies_channel_effects_and_value() {
+        let span = Span::new(0, 0);
+        let block = Block {
+            statements: vec![
+                Statement::Let(LetStmt {
+                    pattern: Pattern::Tuple(
+                        vec![
+                            Pattern::Identifier("tx".into(), span),
+                            Pattern::Identifier("rx".into(), span),
+                        ],
+                        span,
+                    ),
+                    ty: None,
+                    value: Some(Expr::Call {
+                        callee: Box::new(Expr::Identifier(Identifier {
+                            name: "channel".into(),
+                            span,
+                        })),
+                        type_args: Vec::new(),
+                        args: Vec::new(),
+                        span,
+                    }),
+                    mutability: Mutability::Immutable,
+                    span,
+                }),
+                Statement::Expr(ExprStmt {
+                    expr: Expr::Call {
+                        callee: Box::new(Expr::Identifier(Identifier {
+                            name: "send".into(),
+                            span,
+                        })),
+                        type_args: Vec::new(),
+                        args: vec![
+                            Expr::Identifier(Identifier {
+                                name: "tx".into(),
+                                span,
+                            }),
+                            Expr::Literal(Literal::Int(4, span)),
+                        ],
+                        span,
+                    },
+                }),
+                Statement::Expr(ExprStmt {
+                    expr: Expr::Call {
+                        callee: Box::new(Expr::Identifier(Identifier {
+                            name: "close".into(),
+                            span,
+                        })),
+                        type_args: Vec::new(),
+                        args: vec![Expr::Identifier(Identifier {
+                            name: "tx".into(),
+                            span,
+                        })],
+                        span,
+                    },
+                }),
+            ],
+            tail: Some(Box::new(Expr::Identifier(Identifier {
+                name: "rx".into(),
+                span,
+            }))),
+            span,
+        };
+        let snapshot = BuildSnapshot {
+            scopes: vec![BuildScope {
+                bindings: HashMap::new(),
+            }],
+            enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
+        };
+        let handle = thread::spawn(move || {
+            let interpreter = BuildInterpreter::new(snapshot);
+            interpreter.eval_with_effects(&Expr::Block(Box::new(block)))
+        });
+        let join_handle = JoinHandleValue::new_build(handle);
+        let mut compiler = Compiler::new();
+        let joined = join_handle
+            .join_with(&mut compiler)
+            .expect("join applies effects");
+        match joined {
+            Value::Receiver(rx) => {
+                match rx.recv() {
+                    Some(Value::Int(v)) => assert_eq!(v.constant(), Some(4)),
+                    _ => panic!("unexpected channel payload"),
+                }
+                assert!(rx.recv().is_none(), "channel should be closed");
+            }
+            _ => panic!("unexpected join value"),
+        }
     }
 
     fn compile_entry(entry: &str) -> Result<(), String> {

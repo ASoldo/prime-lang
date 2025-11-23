@@ -681,8 +681,9 @@ fn bad() {
                 title: "Iterable ranges & threaded spawn (current)",
                 snippet: r#"- `Range[T]` bounds stay typed; stored ranges can be iterated later
 - `for` accepts anything implementing `iter()` (`Iterable[T]`)
-- Interpreter spawn/channel now run on OS threads; `recv` blocks until close"#,
-                explanation: "Ranges now carry their element type, `for` loops consult an `iter()` method when present, and run-mode concurrency uses real threads with blocking channel semantics. Build mode mirrors the same blocking semantics during compilation so spawn/send/recv/join behave uniformly, even though execution is deterministic.",
+- Interpreter spawn/channel now run on OS threads; `recv` blocks until close
+- Build mode mirrors blocking semantics; set `PRIME_BUILD_PARALLEL=1` for threaded build spawn"#,
+                explanation: "Ranges now carry their element type, `for` loops consult an `iter()` method when present, and run-mode concurrency uses real threads with blocking channel semantics. Build mode defaults to deterministic evaluation but uses the same blocking rules; exporting `PRIME_BUILD_PARALLEL=1` runs build-mode `spawn` on threads while preserving `send/recv/join` parity with runtime.",
             },
             TopicSection {
                 title: "November 2025 release notes placeholder",
