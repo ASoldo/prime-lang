@@ -11,6 +11,17 @@ use tower_lsp_server::lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionTextEdit, Range, TextEdit,
 };
 
+const BUILTIN_TYPES: &[&str] = &[
+    // Integers
+    "int8", "int16", "int32", "int64", "isize", "uint8", "uint16", "uint32", "uint64", "usize",
+    // Floats
+    "float32", "float64",
+    // Other primitives
+    "bool", "string", "rune",
+    // Containers / std types
+    "Option", "Result", "Range", "Box", "Map", "Slice", "JoinHandle",
+];
+
 use super::{
     analysis::{find_local_decl, receiver_type_name, visible_locals},
     text::{
@@ -1164,7 +1175,7 @@ pub fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
         "break",
         "continue",
     ];
-    KEYWORDS
+    let mut items: Vec<CompletionItem> = KEYWORDS
         .iter()
         .filter(|kw| prefix_matches(kw, prefix))
         .map(|kw| CompletionItem {
@@ -1172,7 +1183,18 @@ pub fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
             kind: Some(CompletionItemKind::KEYWORD),
             ..Default::default()
         })
-        .collect()
+        .collect();
+
+    // Built-in/primitive types
+    for ty in BUILTIN_TYPES.iter().filter(|ty| prefix_matches(ty, prefix)) {
+        items.push(CompletionItem {
+            label: ty.to_string(),
+            kind: Some(CompletionItemKind::TYPE_PARAMETER),
+            ..Default::default()
+        });
+    }
+
+    items
 }
 
 pub fn format_function_signature(func: &FunctionDef) -> String {
