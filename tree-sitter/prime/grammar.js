@@ -76,6 +76,7 @@ module.exports = grammar({
     item: $ => seq(
       optional('pub'),
       choice(
+        $.macro_definition,
         $.function_definition,
         $.struct_definition,
         $.enum_definition,
@@ -83,6 +84,14 @@ module.exports = grammar({
         $.impl_definition,
         $.const_definition
       )
+    ),
+
+    macro_definition: $ => seq(
+      'macro',
+      field('name', $.identifier),
+      field('parameters', $.macro_parameter_list),
+      optional(field('returns', $.return_type)),
+      field('body', choice($.block, $.expression_body))
     ),
 
     struct_definition: $ => seq(
@@ -182,11 +191,22 @@ module.exports = grammar({
       ')'
     ),
 
+    macro_parameter_list: $ => seq(
+      '(',
+      commaSep($.macro_parameter),
+      ')'
+    ),
+
     parameter: $ => seq(
       optional('mut'),
       field('name', $.identifier),
       ':',
       field('type', $.type_expression)
+    ),
+
+    macro_parameter: $ => seq(
+      field('name', $.identifier),
+      optional(seq(':', field('type', $.type_expression)))
     ),
 
     return_type: $ => seq(
@@ -291,6 +311,7 @@ module.exports = grammar({
       $.try_expression,
       $.match_expression,
       $.if_expression,
+      $.macro_call_expression,
       $.range_expression,
       $.simple_field_expression,
       $.simple_method_call,
@@ -430,6 +451,14 @@ module.exports = grammar({
       seq(
         field('value', $.expression),
         '?'
+      )
+    ),
+
+    macro_call_expression: $ => prec.left(PREC.call,
+      seq(
+        '~',
+        field('name', $.identifier),
+        field('arguments', $.argument_list)
       )
     ),
 
