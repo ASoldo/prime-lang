@@ -1758,6 +1758,21 @@ impl BuildInterpreter {
                 }
                 Ok(BuildValue::Unit)
             }
+            "join" => {
+                if args.len() != 1 {
+                    return Err("join expects 1 argument".into());
+                }
+                let handle = match self.eval_expr_mut(&args[0])? {
+                    BuildValue::JoinHandle(handle) => handle,
+                    other => return Err(format!("join expects join handle, found {}", other.kind())),
+                };
+                let evaluation = handle
+                    .into_thread()
+                    .join()
+                    .map_err(|_| "join handle panicked".to_string())??;
+                self.effects.extend(evaluation.effects);
+                Ok(evaluation.value)
+            }
             "get" => {
                 if args.len() != 2 {
                     return Err("get expects 2 arguments".into());
