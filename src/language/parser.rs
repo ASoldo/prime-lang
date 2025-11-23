@@ -484,7 +484,7 @@ impl Parser {
         let first = self.expect_identifier(msg)?;
         segments.push(first.name);
         loop {
-            if self.matches(TokenKind::Colon) || self.matches(TokenKind::Dot) {
+            if self.matches(TokenKind::ColonColon) || self.matches(TokenKind::Dot) {
                 let ident = self.expect_identifier("Expected segment after separator")?;
                 segments.push(ident.name);
             } else {
@@ -1719,7 +1719,7 @@ impl Parser {
 
     fn parse_identifier_expression(&mut self) -> Result<Expr, SyntaxError> {
         let ident = self.expect_identifier("Expected identifier")?;
-        if self.matches(TokenKind::Colon) || self.matches(TokenKind::Colon) {
+        if self.matches(TokenKind::Colon) || self.matches(TokenKind::ColonColon) {
             let variant = self.expect_identifier("Expected enum variant name after `:`")?;
             self.expect(TokenKind::LParen)?;
             let mut values = Vec::new();
@@ -1906,7 +1906,7 @@ impl Parser {
             };
             if let Pattern::Identifier(enum_name, _) = &pattern {
                 if self.matches(TokenKind::Dot)
-                    || self.matches(TokenKind::Colon)
+                    || self.matches(TokenKind::ColonColon)
                     || self.matches(TokenKind::Colon)
                 {
                     let variant = self.expect_identifier("Expected enum variant name")?;
@@ -2011,33 +2011,44 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, SyntaxError> {
-        // Enum variant with qualified name using '.' or ':'
+        // Enum variant with qualified name using '.' or '::'
         if matches!(self.peek_kind(), Some(TokenKind::Identifier(_))) {
-            let sep = self.peek_kind_n(1);
-            let after = self.peek_kind_n(3);
-            let is_enum_sep = match sep {
-                Some(TokenKind::Dot) => true,
-                Some(TokenKind::Colon) => {
-                    // Avoid mistaking type annotations (`name: Type`) for enum qualifiers.
-                    !matches!(after, Some(TokenKind::Eq | TokenKind::Semi))
-                }
-                _ => false,
-            };
-            if is_enum_sep {
-                let enum_ident = self.expect_identifier("Expected enum name")?;
-                self.advance(); // consume separator
-                let variant_ident =
-                    self.expect_identifier("Expected enum variant name after enum qualifier")?;
-                let bindings = if self.matches(TokenKind::LParen) {
-                    self.parse_pattern_bindings()?
-                } else {
-                    Vec::new()
+            if let Some(sep) = self.peek_kind_n(1) {
+                let is_qualified_enum = match sep {
+                    TokenKind::Dot | TokenKind::ColonColon => true,
+                    TokenKind::Colon => {
+                        let next = self.peek_kind_n(2);
+                        let after = self.peek_kind_n(3);
+                        matches!(next, Some(TokenKind::Identifier(_)))
+                            && matches!(
+                                after,
+                                Some(
+                                    TokenKind::LParen
+                                        | TokenKind::FatArrow
+                                        | TokenKind::Comma
+                                        | TokenKind::RBrace
+                                        | TokenKind::RParen
+                                )
+                            )
+                    }
+                    _ => false,
                 };
-                return Ok(Pattern::EnumVariant {
-                    enum_name: Some(enum_ident.name),
-                    variant: variant_ident.name,
-                    bindings,
-                });
+                if is_qualified_enum {
+                    let enum_ident = self.expect_identifier("Expected enum name")?;
+                    self.advance(); // consume separator
+                    let variant_ident =
+                        self.expect_identifier("Expected enum variant name after enum qualifier")?;
+                    let bindings = if self.matches(TokenKind::LParen) {
+                        self.parse_pattern_bindings()?
+                    } else {
+                        Vec::new()
+                    };
+                    return Ok(Pattern::EnumVariant {
+                        enum_name: Some(enum_ident.name),
+                        variant: variant_ident.name,
+                        bindings,
+                    });
+                }
             }
         }
         if self.matches(TokenKind::Identifier("_".into())) {
@@ -2107,7 +2118,7 @@ impl Parser {
 
     fn parse_named_pattern(&mut self) -> Result<Pattern, SyntaxError> {
         let ident = self.expect_identifier("Expected pattern identifier")?;
-        if self.check(TokenKind::Colon) || self.check(TokenKind::Dot) || self.check(TokenKind::Colon) {
+        if self.check(TokenKind::ColonColon) || self.check(TokenKind::Dot) || self.check(TokenKind::Colon) {
             // Avoid misinterpreting type annotations (`name: Type`) as enum qualifiers.
             if self.check(TokenKind::Colon) && matches!(self.peek_kind_n(2), Some(TokenKind::Eq)) {
                 // fall through to treat as identifier pattern

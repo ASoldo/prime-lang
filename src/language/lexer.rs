@@ -358,8 +358,7 @@ impl<'a> Lexer<'a> {
                 self.bump();
                 if self.current == Some(':') {
                     self.bump();
-                    // Treat '::' the same as ':' to keep enum qualification simple
-                    self.push_token(TokenKind::Colon, start, self.offset);
+                    self.push_token(TokenKind::ColonColon, start, self.offset);
                 } else {
                     self.push_token(TokenKind::Colon, start, self.offset);
                 }
