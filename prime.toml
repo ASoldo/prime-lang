@@ -102,3 +102,8 @@ visibility = "pub"
 name = "tests.basic"
 path = "tests/basic.prime"
 visibility = "pub"
+
+[[tests]]
+name = "tests.types_numeric"
+path = "tests/types_numeric.prime"
+visibility = "pub"

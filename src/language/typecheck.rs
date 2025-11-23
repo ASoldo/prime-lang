@@ -6,6 +6,7 @@ use crate::language::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    mem,
     path::PathBuf,
 };
 
@@ -879,7 +880,7 @@ impl Checker {
                 ));
                 None
             }
-            Expr::Literal(lit) => Some(literal_type(lit)),
+            Expr::Literal(lit) => Some(literal_type(lit, expected)),
             Expr::FormatString(literal) => {
                 self.validate_format_string(module, literal, env);
                 Some(string_type())
@@ -889,9 +890,9 @@ impl Checker {
                 left,
                 right,
                 span,
-            } => self.check_binary(module, *op, left, right, *span, returns, env),
+            } => self.check_binary(module, *op, left, right, *span, expected, returns, env),
             Expr::Unary { op, expr, span } => {
-                self.check_unary(module, *op, expr, *span, returns, env)
+                self.check_unary(module, *op, expr, *span, expected, returns, env)
             }
             Expr::Call {
                 callee,
@@ -2240,7 +2241,7 @@ impl Checker {
             }
             Pattern::Literal(lit) => {
                 if let Some(actual) = ty {
-                    let literal_ty = literal_type(lit);
+                    let literal_ty = literal_type(lit, ty);
                     if &literal_ty != actual {
                         self.errors.push(TypeError::new(
                             &module.path,
@@ -2546,8 +2547,8 @@ impl Checker {
 
         if let Some(ref ty) = candidate {
             match numeric_kind(ty) {
-                Some(NumericKind::Int) => {}
-                Some(NumericKind::Float) => {
+                Some(NumericKind::Signed(_, _)) | Some(NumericKind::Unsigned(_, _)) => {}
+                Some(NumericKind::Float(_, _)) => {
                     self.errors.push(TypeError::new(
                         &module.path,
                         span,
@@ -2952,19 +2953,175 @@ impl Checker {
         &mut self,
         module: &Module,
         span: Span,
+        expected: Option<&TypeExpr>,
         left: Option<&TypeExpr>,
         right: Option<&TypeExpr>,
     ) -> Option<TypeExpr> {
+        let expected_kind = expected.and_then(numeric_kind);
         let left_kind = left.and_then(numeric_kind);
         let right_kind = right.and_then(numeric_kind);
+
+        if let Some(target) = expected_kind {
+            let left_ok = self.numeric_operand_matches(module, span, left, left_kind, target);
+            let right_ok = self.numeric_operand_matches(module, span, right, right_kind, target);
+            if left_ok && right_ok {
+                return Some(numeric_type_from_kind(target));
+            }
+            return None;
+        }
+
+        let Some(kind) =
+            self.unify_numeric_kinds(module, span, left, right, left_kind, right_kind)
+        else {
+            return None;
+        };
+        Some(numeric_type_from_kind(kind))
+    }
+
+    fn resolve_integer_type(
+        &mut self,
+        module: &Module,
+        span: Span,
+        expected: Option<&TypeExpr>,
+        left: Option<&TypeExpr>,
+        right: Option<&TypeExpr>,
+    ) -> Option<TypeExpr> {
+        if matches!(expected.and_then(numeric_kind), Some(NumericKind::Float(_, _))) {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                "bitwise operations require integer operands",
+            ));
+            return None;
+        }
+
+        let left_kind = left.and_then(numeric_kind);
+        let right_kind = right.and_then(numeric_kind);
+
+        if matches!(left_kind, Some(NumericKind::Float(_, _)))
+            || matches!(right_kind, Some(NumericKind::Float(_, _)))
+        {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                "bitwise operations require integer operands",
+            ));
+            return None;
+        }
+
+        let kind = if let Some(target) = expected.and_then(numeric_kind) {
+            let left_ok = self.numeric_operand_matches(module, span, left, left_kind, target);
+            let right_ok = self.numeric_operand_matches(module, span, right, right_kind, target);
+            if left_ok && right_ok {
+                Some(target)
+            } else {
+                None
+            }
+        } else {
+            self.unify_numeric_kinds(module, span, left, right, left_kind, right_kind)
+        };
+
+        match kind {
+            Some(NumericKind::Float(_, _)) => {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "bitwise operations require integer operands",
+                ));
+                None
+            }
+            Some(other) => Some(numeric_type_from_kind(other)),
+            None => None,
+        }
+    }
+
+    fn numeric_operand_matches(
+        &mut self,
+        module: &Module,
+        span: Span,
+        operand_ty: Option<&TypeExpr>,
+        operand_kind: Option<NumericKind>,
+        expected_kind: NumericKind,
+    ) -> bool {
+        match operand_kind {
+            Some(kind) if self.numeric_kinds_compatible(expected_kind, kind) => true,
+            Some(_) => {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    format!(
+                        "expected `{}`, found `{}`",
+                        numeric_type_from_kind(expected_kind).canonical_name(),
+                        describe_type(operand_ty)
+                    ),
+                ));
+                false
+            }
+            None => {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "numeric operations require int or float operands",
+                ));
+                false
+            }
+        }
+    }
+
+    fn numeric_kinds_compatible(&self, expected: NumericKind, actual: NumericKind) -> bool {
+        match (expected, actual) {
+            (NumericKind::Float(_, _), NumericKind::Float(_, _))
+            | (NumericKind::Float(_, _), NumericKind::Signed(_, _))
+            | (NumericKind::Float(_, _), NumericKind::Unsigned(_, _)) => true,
+            (NumericKind::Signed(_, exp_bits), NumericKind::Signed(_, act_bits)) => {
+                exp_bits == act_bits
+            }
+            (NumericKind::Unsigned(_, exp_bits), NumericKind::Unsigned(_, act_bits)) => {
+                exp_bits == act_bits
+            }
+            _ => false,
+        }
+    }
+
+    fn unify_numeric_kinds(
+        &mut self,
+        module: &Module,
+        span: Span,
+        left_ty: Option<&TypeExpr>,
+        right_ty: Option<&TypeExpr>,
+        left_kind: Option<NumericKind>,
+        right_kind: Option<NumericKind>,
+    ) -> Option<NumericKind> {
+        let mut had_error = false;
+        if let (Some(ty), None) = (left_ty, left_kind) {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!(
+                    "numeric operations require numeric operands (found `{}`)",
+                    ty.canonical_name()
+                ),
+            ));
+            had_error = true;
+        }
+        if let (Some(ty), None) = (right_ty, right_kind) {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!(
+                    "numeric operations require numeric operands (found `{}`)",
+                    ty.canonical_name()
+                ),
+            ));
+            had_error = true;
+        }
+        if had_error {
+            return None;
+        }
+
         match (left_kind, right_kind) {
-            (Some(NumericKind::Float), _) | (_, Some(NumericKind::Float)) => Some(float_type()),
-            (Some(NumericKind::Int), Some(NumericKind::Int)) => Some(int_type()),
-            (Some(kind), None) | (None, Some(kind)) => match kind {
-                NumericKind::Float => Some(float_type()),
-                NumericKind::Int => Some(int_type()),
-            },
-            _ => {
+            (Some(kind), None) | (None, Some(kind)) => Some(kind),
+            (None, None) => {
                 self.errors.push(TypeError::new(
                     &module.path,
                     span,
@@ -2972,7 +3129,50 @@ impl Checker {
                 ));
                 None
             }
+            (Some(NumericKind::Float(_, left_bits)), Some(NumericKind::Float(_, right_bits))) => {
+                Some(float_kind(left_bits.max(right_bits)))
+            }
+            (Some(NumericKind::Float(_, bits)), Some(_))
+            | (Some(_), Some(NumericKind::Float(_, bits))) => Some(float_kind(bits)),
+            (Some(NumericKind::Signed(left_name, left_bits)), Some(NumericKind::Signed(_, right_bits))) => {
+                if left_bits == right_bits {
+                    Some(NumericKind::Signed(left_name, left_bits))
+                } else {
+                    self.emit_numeric_mismatch(module, span, left_ty, right_ty);
+                    None
+                }
+            }
+            (Some(NumericKind::Unsigned(left_name, left_bits)), Some(NumericKind::Unsigned(_, right_bits))) => {
+                if left_bits == right_bits {
+                    Some(NumericKind::Unsigned(left_name, left_bits))
+                } else {
+                    self.emit_numeric_mismatch(module, span, left_ty, right_ty);
+                    None
+                }
+            }
+            _ => {
+                self.emit_numeric_mismatch(module, span, left_ty, right_ty);
+                None
+            }
         }
+    }
+
+    fn emit_numeric_mismatch(
+        &mut self,
+        module: &Module,
+        span: Span,
+        left_ty: Option<&TypeExpr>,
+        right_ty: Option<&TypeExpr>,
+    ) {
+        self.errors.push(TypeError::new(
+            &module.path,
+            span,
+            format!(
+                "numeric operands must share a type (found `{}` and `{}`)",
+                describe_type(left_ty),
+                describe_type(right_ty)
+            ),
+        ));
     }
 
     fn check_binary(
@@ -2982,19 +3182,46 @@ impl Checker {
         left: &Expr,
         right: &Expr,
         span: Span,
+        expected: Option<&TypeExpr>,
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
         match op {
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
-                let left_ty = self.check_expression(module, left, None, returns, env);
-                let right_ty = self.check_expression(module, right, None, returns, env);
-                self.resolve_numeric_type(module, span, left_ty.as_ref(), right_ty.as_ref())
+                let numeric_expected = expected.and_then(|ty| numeric_kind(ty).map(|_| ty));
+                let left_ty = self.check_expression(module, left, numeric_expected, returns, env);
+                let right_ty = self.check_expression(
+                    module,
+                    right,
+                    numeric_expected.or(left_ty.as_ref()),
+                    returns,
+                    env,
+                );
+                self.resolve_numeric_type(
+                    module,
+                    span,
+                    numeric_expected,
+                    left_ty.as_ref(),
+                    right_ty.as_ref(),
+                )
             }
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
-                self.check_expression(module, left, Some(&int_type()), returns, env);
-                self.check_expression(module, right, Some(&int_type()), returns, env);
-                Some(int_type())
+                let numeric_expected = expected.and_then(|ty| numeric_kind(ty).map(|_| ty));
+                let left_ty = self.check_expression(module, left, numeric_expected, returns, env);
+                let right_ty = self.check_expression(
+                    module,
+                    right,
+                    numeric_expected.or(left_ty.as_ref()),
+                    returns,
+                    env,
+                );
+                self.resolve_integer_type(
+                    module,
+                    span,
+                    numeric_expected,
+                    left_ty.as_ref(),
+                    right_ty.as_ref(),
+                )
             }
             BinaryOp::And | BinaryOp::Or => {
                 self.check_expression(module, left, Some(&bool_type()), returns, env);
@@ -3010,9 +3237,22 @@ impl Checker {
                 Some(bool_type())
             }
             BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
-                let left_ty = self.check_expression(module, left, None, returns, env);
-                let right_ty = self.check_expression(module, right, None, returns, env);
-                self.resolve_numeric_type(module, span, left_ty.as_ref(), right_ty.as_ref());
+                let numeric_expected = expected.and_then(|ty| numeric_kind(ty).map(|_| ty));
+                let left_ty = self.check_expression(module, left, numeric_expected, returns, env);
+                let right_ty = self.check_expression(
+                    module,
+                    right,
+                    numeric_expected.or(left_ty.as_ref()),
+                    returns,
+                    env,
+                );
+                self.resolve_numeric_type(
+                    module,
+                    span,
+                    numeric_expected,
+                    left_ty.as_ref(),
+                    right_ty.as_ref(),
+                );
                 Some(bool_type())
             }
         }
@@ -3023,14 +3263,26 @@ impl Checker {
         module: &Module,
         op: UnaryOp,
         expr: &Expr,
-        _span: Span,
+        span: Span,
+        expected: Option<&TypeExpr>,
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
         match op {
             UnaryOp::Neg => {
-                self.check_expression(module, expr, Some(&int_type()), returns, env);
-                Some(int_type())
+                let numeric_expected = expected.and_then(|ty| numeric_kind(ty).map(|_| ty));
+                let ty = self.check_expression(module, expr, numeric_expected, returns, env);
+                match ty.as_ref().and_then(numeric_kind) {
+                    Some(NumericKind::Unsigned(_, _)) | None => {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            span,
+                            "unary `-` requires a signed or floating-point type",
+                        ));
+                        None
+                    }
+                    Some(kind) => Some(numeric_type_from_kind(kind)),
+                }
             }
             UnaryOp::Not => {
                 self.check_expression(module, expr, Some(&bool_type()), returns, env);
@@ -3457,10 +3709,24 @@ fn lookup_struct_field(registry: &TypeRegistry, def: &StructDef, field: &str) ->
     None
 }
 
-fn literal_type(lit: &Literal) -> TypeExpr {
+fn literal_type(lit: &Literal, expected: Option<&TypeExpr>) -> TypeExpr {
     match lit {
-        Literal::Int(_, _) => int_type(),
-        Literal::Float(_, _) => float_type(),
+        Literal::Int(_, _) => {
+            if let Some(exp) = expected {
+                if numeric_kind(exp).is_some() {
+                    return exp.clone();
+                }
+            }
+            int_type()
+        }
+        Literal::Float(_, _) => {
+            if let Some(exp) = expected {
+                if let Some(NumericKind::Float(_, _)) = numeric_kind(exp) {
+                    return exp.clone();
+                }
+            }
+            float_type()
+        }
         Literal::Bool(_, _) => bool_type(),
         Literal::String(_, _) => string_type(),
         Literal::Rune(_, _) => TypeExpr::Named("rune".into(), Vec::new()),
@@ -3569,16 +3835,55 @@ fn stmt_span(statement: &Statement) -> Span {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NumericKind {
-    Int,
-    Float,
+    Signed(&'static str, u32),
+    Unsigned(&'static str, u32),
+    Float(&'static str, u32),
+}
+
+fn pointer_width_bits() -> u32 {
+    (mem::size_of::<usize>() * 8) as u32
+}
+
+fn numeric_kind_from_name(name: &str) -> Option<NumericKind> {
+    match name {
+        "int8" => Some(NumericKind::Signed("int8", 8)),
+        "int16" => Some(NumericKind::Signed("int16", 16)),
+        "int32" => Some(NumericKind::Signed("int32", 32)),
+        "int64" => Some(NumericKind::Signed("int64", 64)),
+        "isize" => Some(NumericKind::Signed("isize", pointer_width_bits())),
+        "uint8" => Some(NumericKind::Unsigned("uint8", 8)),
+        "uint16" => Some(NumericKind::Unsigned("uint16", 16)),
+        "uint32" => Some(NumericKind::Unsigned("uint32", 32)),
+        "uint64" => Some(NumericKind::Unsigned("uint64", 64)),
+        "usize" => Some(NumericKind::Unsigned("usize", pointer_width_bits())),
+        "float32" => Some(NumericKind::Float("float32", 32)),
+        "float64" => Some(NumericKind::Float("float64", 64)),
+        _ => None,
+    }
 }
 
 fn numeric_kind(ty: &TypeExpr) -> Option<NumericKind> {
     match ty {
-        TypeExpr::Named(name, _) if name == "int32" => Some(NumericKind::Int),
-        TypeExpr::Named(name, _) if name == "float32" => Some(NumericKind::Float),
+        TypeExpr::Named(name, _) => numeric_kind_from_name(name),
         _ => None,
+    }
+}
+
+fn numeric_type_from_kind(kind: NumericKind) -> TypeExpr {
+    match kind {
+        NumericKind::Signed(name, _) | NumericKind::Unsigned(name, _) | NumericKind::Float(name, _) => {
+            TypeExpr::Named(name.into(), Vec::new())
+        }
+    }
+}
+
+fn float_kind(bits: u32) -> NumericKind {
+    if bits >= 64 {
+        NumericKind::Float("float64", 64)
+    } else {
+        NumericKind::Float("float32", 32)
     }
 }
 
@@ -3595,6 +3900,11 @@ fn literal_span(lit: &Literal) -> Span {
         | Literal::String(_, span)
         | Literal::Rune(_, span) => *span,
     }
+}
+
+fn describe_type(ty: Option<&TypeExpr>) -> String {
+    ty.map(|t| t.canonical_name())
+        .unwrap_or_else(|| "unknown".into())
 }
 
 fn pattern_span(pattern: &Pattern) -> Span {

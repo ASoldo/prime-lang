@@ -1,0 +1,27 @@
+test tests.types_numeric;
+
+fn accepts_all_numeric_types() -> bool {
+  let int8 a = 0;
+  let int16 b = 0;
+  let int32 c = 0;
+  let int64 d = 0;
+  let isize e = 0;
+
+  let uint8 f = 0;
+  let uint16 g = 0;
+  let uint32 h = 0;
+  let uint64 i = 0;
+  let usize j = 0;
+
+  let float32 k = 0.0;
+  let float64 l = 0.0;
+
+  let int64 sum = d + 1;
+  let int16 narrow = b + 1;
+  let uint32 u_sum = h + 1;
+  let float32 mixed = k + 1;
+  let float64 wide = l + 1.0;
+  let uint8 mask = f | 1;
+
+  sum > 0 && narrow >= 0 && u_sum > 0 && mixed > 0.0 && wide > 0.0 && mask >= 1 && e == 0 && j == 0
+}
