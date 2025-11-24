@@ -1211,6 +1211,7 @@ pub fn find_module_item_span(module: &Module, name: &str) -> Option<Span> {
             Item::Enum(def) if def.name == name => return Some(def.span),
             Item::Interface(def) if def.name == name => return Some(def.span),
             Item::Const(def) if def.name == name => return Some(def.span),
+            Item::Macro(def) if def.name == name => return Some(def.span),
             Item::Impl(_) => {}
             _ => {}
         }

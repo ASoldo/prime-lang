@@ -246,7 +246,13 @@ fn module_symbol_definitions(
                 def.visibility,
                 module.kind,
             )),
-            Item::Macro(_) => {}
+            Item::Macro(def) => defs.push((
+                def.name.clone(),
+                def.span,
+                SymbolKind::FUNCTION,
+                def.visibility,
+                module.kind,
+            )),
             Item::Impl(_) => {}
             Item::MacroInvocation(_) => {}
         }
@@ -1467,7 +1473,13 @@ fn collect_symbols(uri: &Uri, text: &str, module: &Module) -> Vec<SymbolInformat
                 SymbolKind::CONSTANT,
                 def.span,
             )),
-            Item::Macro(_) => {}
+            Item::Macro(def) => symbols.push(make_symbol(
+                uri,
+                text,
+                &def.name,
+                SymbolKind::FUNCTION,
+                def.span,
+            )),
             Item::Impl(block) => {
                 if let Some(first) = block.methods.first() {
                     symbols.push(make_symbol(
