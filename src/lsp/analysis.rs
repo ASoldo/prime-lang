@@ -216,7 +216,7 @@ fn collect_decl_from_expr(expr: &Expr, module: &Module, decls: &mut Vec<DeclInfo
         Expr::Unary { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
         Expr::MacroCall { args, .. } => {
             for arg in args {
-                collect_decl_from_expr(arg, module, decls);
+                collect_decl_from_expr(&arg.expr, module, decls);
             }
         }
         Expr::Call { callee, args, .. } => {
@@ -684,7 +684,7 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
         Expr::Literal(_) => {}
         Expr::MacroCall { args, .. } => {
             for arg in args {
-                collect_expr_idents(arg, used);
+                collect_expr_idents(&arg.expr, used);
             }
         }
         Expr::Try { block, .. } => collect_used_in_block(block, used),

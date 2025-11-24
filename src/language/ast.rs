@@ -1,5 +1,6 @@
 use crate::language::{
     span::{Span, Spanned},
+    token::Token,
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
 use std::path::PathBuf;
@@ -159,12 +160,13 @@ pub struct MacroParam {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MacroParamKind {
     Expr,
     Block,
     Pattern,
     Tokens,
+    Repeat,
 }
 
 #[derive(Clone, Debug)]
@@ -177,8 +179,14 @@ pub enum MacroBody {
 #[derive(Clone, Debug)]
 pub struct MacroInvocation {
     pub name: Identifier,
-    pub args: Vec<Expr>,
+    pub args: Vec<MacroArg>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct MacroArg {
+    pub expr: Expr,
+    pub tokens: Option<Vec<Token>>,
 }
 
 #[derive(Clone, Debug)]
@@ -418,7 +426,7 @@ pub enum Expr {
     },
     MacroCall {
         name: Identifier,
-        args: Vec<Expr>,
+        args: Vec<MacroArg>,
         span: Span,
     },
 }

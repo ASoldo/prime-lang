@@ -33,13 +33,21 @@ macro match_literal(pat: pattern, value: int32) -> int32 {
   }
 }
 
+macro collect(values: repeat) -> (int32, int32, int32) {
+  values
+}
+
 fn statement_macro_executes() -> bool {
   ~assert_positive(2);
   true
 }
 
 fn statement_macro_runs_inside_loop() -> bool {
-  let []int32 values = [1, 2, 3];
+  let []int32 values = [
+    1,
+    2,
+    3,
+  ];
   let mut int32 total = 0;
   for value in values {
     ~assert_positive(value);
@@ -75,11 +83,16 @@ fn tokens_param_inlines_without_binding() -> bool {
 fn block_param_runs_multiple_times() -> bool {
   let mut int32 seen = 0;
   ~apply_twice({
-    seen = seen + 1;
-  });
+  seen = seen + 1;
+});
   seen == 2
 }
 
 fn pattern_param_expands_into_match() -> bool {
   ~match_literal(0, 0) == 7 && ~match_literal(1, 0) == 0
+}
+
+fn repeat_param_expands_tuple() -> bool {
+  let (a, b, c) = ~collect(@sep = , 1, 2, 3);
+  a == 1 && b == 2 && c == 3
 }

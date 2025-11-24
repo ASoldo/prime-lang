@@ -46,6 +46,40 @@ pub fn parse_expression_snippet(path: PathBuf, source: &str) -> Result<Expr, Syn
     Ok(expr)
 }
 
+pub fn parse_expression_from_tokens(
+    path: PathBuf,
+    tokens: Vec<Token>,
+) -> Result<Expr, SyntaxErrors> {
+    let mut parser = Parser::new("macro_arg", path, tokens);
+    let expr = parser
+        .parse_expression()
+        .map_err(|err| SyntaxErrors::new(vec![err]))?;
+    if !parser.is_eof() {
+        return Err(SyntaxErrors::new(vec![SyntaxError::new(
+            "Unexpected tokens after expression",
+            Span::new(0, 0),
+        )]));
+    }
+    Ok(expr)
+}
+
+pub fn parse_pattern_from_tokens(
+    path: PathBuf,
+    tokens: Vec<Token>,
+) -> Result<Pattern, SyntaxErrors> {
+    let mut parser = Parser::new("macro_pattern", path, tokens);
+    let pat = parser
+        .parse_pattern()
+        .map_err(|err| SyntaxErrors::new(vec![err]))?;
+    if !parser.is_eof() {
+        return Err(SyntaxErrors::new(vec![SyntaxError::new(
+            "Unexpected tokens after pattern",
+            Span::new(0, 0),
+        )]));
+    }
+    Ok(pat)
+}
+
 fn shift_span(span: &mut Span, delta: isize) {
     span.start = ((span.start as isize) + delta) as usize;
     span.end = ((span.end as isize) + delta) as usize;
@@ -220,7 +254,12 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
             shift_span(&mut name.span, delta);
             shift_span(span, delta);
             for arg in args {
-                shift_expr_spans(arg, delta);
+                shift_expr_spans(&mut arg.expr, delta);
+                if let Some(tokens) = &mut arg.tokens {
+                    for tok in tokens {
+                        shift_span(&mut tok.span, delta);
+                    }
+                }
             }
         }
         Expr::FieldAccess { base, span, .. } => {
@@ -866,12 +905,13 @@ impl Parser {
         if self.matches(TokenKind::Colon) {
             if let Some(TokenKind::Identifier(raw_kind)) = self.peek_kind() {
                 let lower = raw_kind.to_ascii_lowercase();
-                if lower == "block" || lower == "pattern" || lower == "tokens" {
+                if lower == "block" || lower == "pattern" || lower == "tokens" || lower == "repeat" {
                     self.advance();
                     kind = match lower.as_str() {
                         "block" => MacroParamKind::Block,
                         "pattern" => MacroParamKind::Pattern,
-                        _ => MacroParamKind::Tokens,
+                        "tokens" => MacroParamKind::Tokens,
+                        _ => MacroParamKind::Repeat,
                     };
                 } else {
                     ty = Some(self.parse_type_annotation()?);
@@ -916,19 +956,7 @@ impl Parser {
         let name = self.expect_identifier("Expected macro name after '~'")?;
         self.expect(TokenKind::LParen)?;
         self.enter_paren();
-        let mut args = Vec::new();
-        if !self.check(TokenKind::RParen) {
-            loop {
-                args.push(self.parse_expression()?);
-                if self.matches(TokenKind::Comma) {
-                    if self.check(TokenKind::RParen) {
-                        break;
-                    }
-                    continue;
-                }
-                break;
-            }
-        }
+        let args = self.parse_macro_call_args()?;
         let end = match self.expect(TokenKind::RParen) {
             Ok(token) => token.span.end,
             Err(err) => {
@@ -980,6 +1008,67 @@ impl Parser {
             ) => true,
             _ => false,
         }
+    }
+
+    fn parse_macro_call_args(&mut self) -> Result<Vec<MacroArg>, SyntaxError> {
+        let mut args = Vec::new();
+        let mut repeat_prefix = self.consume_repeat_separator_prefix();
+        if !self.check(TokenKind::RParen) {
+            loop {
+                let mut arg = self.parse_macro_arg()?;
+                if let Some(prefix_tokens) = repeat_prefix.take() {
+                    if let Some(tokens) = arg.tokens.as_mut() {
+                        let mut merged = prefix_tokens;
+                        merged.extend(tokens.drain(..));
+                        *tokens = merged;
+                    } else {
+                        arg.tokens = Some(prefix_tokens);
+                    }
+                }
+                args.push(arg);
+                if self.matches(TokenKind::Comma) {
+                    if self.check(TokenKind::RParen) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        Ok(args)
+    }
+
+    fn consume_repeat_separator_prefix(&mut self) -> Option<Vec<Token>> {
+        let start_pos = self.pos;
+        if self.peek_kind() != Some(TokenKind::At) {
+            return None;
+        }
+        let Some(TokenKind::Identifier(name)) = self.peek_kind_n(1) else {
+            return None;
+        };
+        if name != "sep" || self.peek_kind_n(2) != Some(TokenKind::Eq) {
+            return None;
+        }
+        let Some(sep) = self.peek_kind_n(3) else {
+            return None;
+        };
+        if !matches!(sep, TokenKind::Comma | TokenKind::Semi) {
+            return None;
+        }
+        for _ in 0..4 {
+            self.advance();
+        }
+        Some(self.tokens[start_pos..self.pos].to_vec())
+    }
+
+    fn parse_macro_arg(&mut self) -> Result<MacroArg, SyntaxError> {
+        let start_idx = self.pos;
+        let expr = self.parse_expression()?;
+        let tokens = self.tokens[start_idx..self.pos].to_vec();
+        Ok(MacroArg {
+            expr,
+            tokens: Some(tokens),
+        })
     }
 
     fn parse_const(&mut self, visibility: Visibility) -> Result<ConstDef, SyntaxError> {
@@ -1817,19 +1906,7 @@ impl Parser {
             let name = self.expect_identifier("Expected macro name after '~'")?;
             self.expect(TokenKind::LParen)?;
             self.enter_paren();
-            let mut args = Vec::new();
-            if !self.check(TokenKind::RParen) {
-                loop {
-                    args.push(self.parse_expression()?);
-                    if self.matches(TokenKind::Comma) {
-                        if self.check(TokenKind::RParen) {
-                            break;
-                        }
-                        continue;
-                    }
-                    break;
-                }
-            }
+            let args = self.parse_macro_call_args()?;
             let end = match self.expect(TokenKind::RParen) {
                 Ok(token) => token.span.end,
                 Err(err) => {

@@ -218,6 +218,7 @@ fn format_macro_param(param: &MacroParam) -> String {
         MacroParamKind::Block => Some("block"),
         MacroParamKind::Pattern => Some("pattern"),
         MacroParamKind::Tokens => Some("tokens"),
+        MacroParamKind::Repeat => Some("repeat"),
         MacroParamKind::Expr => None,
     };
     if let Some(kind) = kind {
@@ -253,7 +254,7 @@ fn format_macro_invocation(out: &mut String, inv: &MacroInvocation) {
         if idx > 0 {
             out.push_str(", ");
         }
-        out.push_str(&format_expr(arg));
+        out.push_str(&format_expr(&arg.expr));
     }
     out.push_str(");\n");
 }
@@ -741,7 +742,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         Expr::MacroCall { name, args, .. } => {
             let args = args
                 .iter()
-                .map(|expr| format_expr(expr))
+                .map(|arg| format_expr(&arg.expr))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("~{}({})", name.name, args)
