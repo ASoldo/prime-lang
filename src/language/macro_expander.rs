@@ -119,22 +119,22 @@ struct RepeatFragments {
     span: Span,
 }
 
-fn validate_no_duplicate_items(items: &[Item]) -> Vec<SyntaxError> {
-    let mut seen_funcs: HashMap<String, Span> = HashMap::new();
-    let mut seen_structs: HashMap<String, Span> = HashMap::new();
-    let mut seen_enums: HashMap<String, Span> = HashMap::new();
-    let mut seen_interfaces: HashMap<String, Span> = HashMap::new();
-    let mut seen_macros: HashMap<String, Span> = HashMap::new();
-    let mut seen_consts: HashMap<String, Span> = HashMap::new();
+fn validate_no_duplicate_items(items: &[(Item, Option<String>)]) -> Vec<SyntaxError> {
+    let mut seen_funcs: HashMap<String, (Span, Option<String>)> = HashMap::new();
+    let mut seen_structs: HashMap<String, (Span, Option<String>)> = HashMap::new();
+    let mut seen_enums: HashMap<String, (Span, Option<String>)> = HashMap::new();
+    let mut seen_interfaces: HashMap<String, (Span, Option<String>)> = HashMap::new();
+    let mut seen_macros: HashMap<String, (Span, Option<String>)> = HashMap::new();
+    let mut seen_consts: HashMap<String, (Span, Option<String>)> = HashMap::new();
     let mut errors = Vec::new();
-    for item in items {
+    for (item, origin) in items {
         match item {
-            Item::Function(def) => push_dup(&mut seen_funcs, &mut errors, &def.name, def.name_span, "function"),
-            Item::Struct(def) => push_dup(&mut seen_structs, &mut errors, &def.name, def.span, "struct"),
-            Item::Enum(def) => push_dup(&mut seen_enums, &mut errors, &def.name, def.span, "enum"),
-            Item::Interface(def) => push_dup(&mut seen_interfaces, &mut errors, &def.name, def.span, "interface"),
-            Item::Macro(def) => push_dup(&mut seen_macros, &mut errors, &def.name, def.name_span, "macro"),
-            Item::Const(def) => push_dup(&mut seen_consts, &mut errors, &def.name, def.span, "const"),
+            Item::Function(def) => push_dup(&mut seen_funcs, &mut errors, &def.name, def.name_span, "function", origin.clone()),
+            Item::Struct(def) => push_dup(&mut seen_structs, &mut errors, &def.name, def.span, "struct", origin.clone()),
+            Item::Enum(def) => push_dup(&mut seen_enums, &mut errors, &def.name, def.span, "enum", origin.clone()),
+            Item::Interface(def) => push_dup(&mut seen_interfaces, &mut errors, &def.name, def.span, "interface", origin.clone()),
+            Item::Macro(def) => push_dup(&mut seen_macros, &mut errors, &def.name, def.name_span, "macro", origin.clone()),
+            Item::Const(def) => push_dup(&mut seen_consts, &mut errors, &def.name, def.span, "const", origin.clone()),
             Item::Impl(_) | Item::MacroInvocation(_) => {}
         }
     }
@@ -142,23 +142,24 @@ fn validate_no_duplicate_items(items: &[Item]) -> Vec<SyntaxError> {
 }
 
 fn push_dup(
-    map: &mut HashMap<String, Span>,
+    map: &mut HashMap<String, (Span, Option<String>)>,
     errors: &mut Vec<SyntaxError>,
     name: &str,
     span: Span,
     kind: &str,
+    origin: Option<String>,
 ) {
-    if let Some(prev) = map.get(name) {
-        let line_info = format!(
-            "lines: {}..{}, bytes: {}..{}",
-            prev.start, prev.end, prev.start, prev.end
-        );
+    if let Some((prev, prev_origin)) = map.get(name) {
+        let origin_desc = match prev_origin {
+            Some(src) => format!("first from macro `{}`", src),
+            None => "first defined earlier in module".to_string(),
+        };
         errors.push(SyntaxError::new(
-            format!("duplicate {} `{}` ({})", kind, name, line_info),
+            format!("duplicate {} `{}` ({})", kind, name, origin_desc),
             span,
         ));
     } else {
-        map.insert(name.to_string(), span);
+        map.insert(name.to_string(), (span, origin));
     }
 }
 
@@ -289,7 +290,7 @@ impl<'a> Expander<'a> {
         for module in &program.modules {
             self.current_path = Some(module.path.clone());
             let mut module_errors = Vec::new();
-            let mut expanded_items = Vec::new();
+            let mut expanded_items: Vec<(Item, Option<String>)> = Vec::new();
             for item in &module.items {
                 self.expand_item(item, &mut module_errors, &mut expanded_items);
             }
@@ -300,6 +301,7 @@ impl<'a> Expander<'a> {
                     errors: module_errors,
                 });
             }
+            let items = expanded_items.into_iter().map(|(item, _)| item).collect();
             expanded_modules.push(Module {
                 name: module.name.clone(),
                 kind: module.kind,
@@ -308,7 +310,7 @@ impl<'a> Expander<'a> {
                 declared_span: module.declared_span,
                 redundant_module_spans: module.redundant_module_spans.clone(),
                 imports: module.imports.clone(),
-                items: expanded_items,
+                items,
             });
         }
         self.current_path = None;
@@ -321,13 +323,19 @@ impl<'a> Expander<'a> {
         }
     }
 
-    fn expand_item(&mut self, item: &Item, errors: &mut Vec<SyntaxError>, out: &mut Vec<Item>) {
+    fn expand_item(
+        &mut self,
+        item: &Item,
+        errors: &mut Vec<SyntaxError>,
+        out: &mut Vec<(Item, Option<String>)>,
+    ) {
+        let origin = self.stack.last().map(|f| f.name.clone());
         match item {
-            Item::Function(def) => out.push(Item::Function(self.expand_function(def, errors))),
-            Item::Const(def) => out.push(Item::Const(self.expand_const(def, errors))),
-            Item::Impl(block) => out.push(Item::Impl(self.expand_impl(block, errors))),
+            Item::Function(def) => out.push((Item::Function(self.expand_function(def, errors)), origin)),
+            Item::Const(def) => out.push((Item::Const(self.expand_const(def, errors)), origin)),
+            Item::Impl(block) => out.push((Item::Impl(self.expand_impl(block, errors)), origin)),
             Item::Struct(_) | Item::Enum(_) | Item::Interface(_) | Item::Macro(_) => {
-                out.push(item.clone())
+                out.push((item.clone(), origin))
             }
             Item::MacroInvocation(invocation) => {
                 let expanded = self.expand_item_macro(invocation, errors);
@@ -340,7 +348,7 @@ impl<'a> Expander<'a> {
         &mut self,
         invocation: &MacroInvocation,
         errors: &mut Vec<SyntaxError>,
-    ) -> Vec<Item> {
+    ) -> Vec<(Item, Option<String>)> {
         self.stack.push(MacroFrame {
             name: invocation.name.name.clone(),
             call_span: invocation.span,
@@ -361,11 +369,11 @@ impl<'a> Expander<'a> {
             err.help = self.trace_help();
             errors.push(err);
             self.stack.pop();
-            return vec![Item::MacroInvocation(MacroInvocation {
+            return vec![(Item::MacroInvocation(MacroInvocation {
                 name: invocation.name.clone(),
                 args: expanded_args,
                 span: invocation.span,
-            })];
+            }), None)];
         };
         let expanded_args = coalesce_repeat_args(&def.params, expanded_args, invocation.span);
         if !arity_matches(def, &expanded_args) {
@@ -381,11 +389,11 @@ impl<'a> Expander<'a> {
             err.help = self.trace_help();
             errors.push(err);
             self.stack.pop();
-            return vec![Item::MacroInvocation(MacroInvocation {
+            return vec![(Item::MacroInvocation(MacroInvocation {
                 name: invocation.name.clone(),
                 args: expanded_args,
                 span: invocation.span,
-            })];
+            }), None)];
         }
 
         let MacroBody::Items(items, body_span) = &def.body else {
@@ -396,11 +404,11 @@ impl<'a> Expander<'a> {
             err.help = self.trace_help();
             errors.push(err);
             self.stack.pop();
-            return vec![Item::MacroInvocation(MacroInvocation {
+            return vec![(Item::MacroInvocation(MacroInvocation {
                 name: invocation.name.clone(),
                 args: expanded_args,
                 span: invocation.span,
-            })];
+            }), None)];
         };
 
         let mut substitution_map = HashMap::new();
