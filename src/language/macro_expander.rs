@@ -149,8 +149,12 @@ fn push_dup(
     kind: &str,
 ) {
     if let Some(prev) = map.get(name) {
+        let line_info = format!(
+            "lines: {}..{}, bytes: {}..{}",
+            prev.start, prev.end, prev.start, prev.end
+        );
         errors.push(SyntaxError::new(
-            format!("duplicate {} `{}` (also at {}..{})", kind, name, prev.start, prev.end),
+            format!("duplicate {} `{}` ({})", kind, name, line_info),
             span,
         ));
     } else {
