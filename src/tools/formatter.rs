@@ -743,6 +743,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             let args = args
                 .iter()
                 .map(|arg| format_expr(&arg.expr))
+                .map(indent_multiline_arg)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("~{}({})", name.name, args)
@@ -851,6 +852,23 @@ fn precedence(op: BinaryOp) -> u8 {
         BinaryOp::And => 20,
         BinaryOp::Or => 18,
     }
+}
+
+fn indent_multiline_arg(arg: String) -> String {
+    if !arg.contains('\n') {
+        return arg;
+    }
+    let mut parts = arg.split('\n').peekable();
+    let mut out = String::new();
+    if let Some(first) = parts.next() {
+        out.push_str(first);
+    }
+    while let Some(line) = parts.next() {
+        out.push('\n');
+        out.push_str("  ");
+        out.push_str(line);
+    }
+    out
 }
 
 fn format_struct_literal_inline(
@@ -1383,5 +1401,40 @@ mod tests {
             .expect("fixture out");
         let formatted = format_fixture(&input);
         assert_eq!(formatted, output);
+    }
+
+    #[test]
+    fn formatter_macro_call_blocks_indent() {
+        let input = r#"test tests.formatter_macro_call;
+
+macro tally(values: repeat) -> int32 {
+  values
+}
+
+fn repeat_param_supports_semicolon_separator() -> bool {
+  let mut int32 seen = 0;
+  let int32 result = ~tally({ seen = seen + 1; }, { seen = seen + 2; }, seen);
+  seen == 3 && result == 3
+}
+"#;
+        let expected = r#"test tests.formatter_macro_call;
+
+macro tally(values: repeat) -> int32 {
+  values
+}
+
+fn repeat_param_supports_semicolon_separator() -> bool {
+  let mut int32 seen = 0;
+  let int32 result = ~tally({
+    seen = seen + 1;
+  }, {
+    seen = seen + 2;
+  }, seen);
+  seen == 3 && result == 3
+}
+"#;
+
+        let formatted = format_fixture(input);
+        assert_eq!(formatted, expected);
     }
 }

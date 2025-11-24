@@ -87,7 +87,7 @@ Validated outputs (fresh run, current syntax):
 - Item macros are allowed: write a macro body as a block of items and invoke it at module scope with `~macro_name(...);` to splice structs/functions/consts into the module.
 - Macro parameters can opt into richer shapes with `: block`, `: pattern`, or `: tokens` annotations (defaults to expression); block/tokens arguments are inlined without extra bindings, and pattern args can be dropped directly into match/let patterns.
  - `: tokens` args preserve the original token stream for re-parsing or re-emitting; this underpins repetition/fragment matching.
- - `: repeat` args now split on the first top-level separator (comma or semicolon); comma-joined fragments become a tuple, and semicolon-joined fragments become a block with sequential expressions, making it easy to splice repeated inputs.
+ - `: repeat` args now split on the first top-level separator (comma or semicolon); comma-joined fragments become a tuple, and semicolon-joined fragments become a block with sequential expressions, making it easy to splice repeated inputs. If you need a custom separator, add it immediately after `(` as `@sep = ,` or `@sep = ;` (an optional comma after the prefix is accepted), and keep it at most once per macro call.
 
 ### Collections and Indexing
 

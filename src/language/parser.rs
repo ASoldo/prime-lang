@@ -1013,10 +1013,18 @@ impl Parser {
     fn parse_macro_call_args(&mut self) -> Result<Vec<MacroArg>, SyntaxError> {
         let mut args = Vec::new();
         let mut repeat_prefix = self.consume_repeat_separator_prefix();
+        let allow_semicolon_sep = repeat_prefix
+            .as_ref()
+            .map(|(_, kind)| *kind == TokenKind::Semi)
+            .unwrap_or(false);
+        if repeat_prefix.is_some() {
+            // Allow but do not require a comma after the prefix for readability.
+            let _ = self.matches(TokenKind::Comma);
+        }
         if !self.check(TokenKind::RParen) {
             loop {
                 let mut arg = self.parse_macro_arg()?;
-                if let Some(prefix_tokens) = repeat_prefix.take() {
+                let prefix_attached = if let Some((prefix_tokens, _)) = repeat_prefix.take() {
                     if let Some(tokens) = arg.tokens.as_mut() {
                         let mut merged = prefix_tokens;
                         merged.extend(tokens.drain(..));
@@ -1024,9 +1032,20 @@ impl Parser {
                     } else {
                         arg.tokens = Some(prefix_tokens);
                     }
+                    true
+                } else {
+                    false
+                };
+                if let Some(span) = Self::sep_prefix_span(arg.tokens.as_deref().unwrap_or(&[])) {
+                    if !prefix_attached {
+                        return Err(self.error_at(
+                            span,
+                            "separator prefix `@sep =` must appear immediately after '(' and only once",
+                        ));
+                    }
                 }
                 args.push(arg);
-                if self.matches(TokenKind::Comma) {
+                if self.matches(TokenKind::Comma) || (allow_semicolon_sep && self.matches(TokenKind::Semi)) {
                     if self.check(TokenKind::RParen) {
                         break;
                     }
@@ -1038,7 +1057,7 @@ impl Parser {
         Ok(args)
     }
 
-    fn consume_repeat_separator_prefix(&mut self) -> Option<Vec<Token>> {
+    fn consume_repeat_separator_prefix(&mut self) -> Option<(Vec<Token>, TokenKind)> {
         let start_pos = self.pos;
         if self.peek_kind() != Some(TokenKind::At) {
             return None;
@@ -1058,7 +1077,24 @@ impl Parser {
         for _ in 0..4 {
             self.advance();
         }
-        Some(self.tokens[start_pos..self.pos].to_vec())
+        Some((self.tokens[start_pos..self.pos].to_vec(), sep))
+    }
+
+    fn sep_prefix_span(tokens: &[Token]) -> Option<Span> {
+        for window in tokens.windows(4) {
+            if let [first, second, third, fourth] = window {
+                if first.kind == TokenKind::At {
+                    if let TokenKind::Identifier(name) = &second.kind {
+                        if name == "sep" && matches!(third.kind, TokenKind::Eq) {
+                            if matches!(fourth.kind, TokenKind::Comma | TokenKind::Semi) {
+                                return Some(Span::new(first.span.start, fourth.span.end));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn parse_macro_arg(&mut self) -> Result<MacroArg, SyntaxError> {

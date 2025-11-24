@@ -83,8 +83,8 @@ fn tokens_param_inlines_without_binding() -> bool {
 fn block_param_runs_multiple_times() -> bool {
   let mut int32 seen = 0;
   ~apply_twice({
-  seen = seen + 1;
-});
+    seen = seen + 1;
+  });
   seen == 2
 }
 
@@ -93,6 +93,20 @@ fn pattern_param_expands_into_match() -> bool {
 }
 
 fn repeat_param_expands_tuple() -> bool {
-  let (a, b, c) = ~collect(@sep = , 1, 2, 3);
+  let (a, b, c) = ~collect(1, 2, 3);
   a == 1 && b == 2 && c == 3
+}
+
+macro tally(values: repeat) -> int32 {
+  values
+}
+
+fn repeat_param_supports_semicolon_separator() -> bool {
+  let mut int32 seen = 0;
+  let int32 result = ~tally({
+    seen = seen + 1;
+  }, {
+    seen = seen + 2;
+  }, seen);
+  seen == 3 && result == 3
 }

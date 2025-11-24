@@ -154,7 +154,7 @@ fn coalesce_repeat_args(params: &[MacroParam], args: Vec<MacroArg>, call_span: S
         _ => call_span,
     };
     let combined_expr = Expr::Tuple(exprs, span);
-    let combined_tokens = merge_tokens_with_commas(repeat_slice);
+    let combined_tokens = merge_tokens_with_separator(repeat_slice, repeat_separator_hint(repeat_slice));
     out.push(MacroArg {
         expr: combined_expr,
         tokens: combined_tokens,
@@ -162,7 +162,7 @@ fn coalesce_repeat_args(params: &[MacroParam], args: Vec<MacroArg>, call_span: S
     out
 }
 
-fn merge_tokens_with_commas(args: &[MacroArg]) -> Option<Vec<Token>> {
+fn merge_tokens_with_separator(args: &[MacroArg], separator: TokenKind) -> Option<Vec<Token>> {
     let mut merged: Vec<Token> = Vec::new();
     for (idx, arg) in args.iter().enumerate() {
         let Some(tokens) = &arg.tokens else {
@@ -174,7 +174,7 @@ fn merge_tokens_with_commas(args: &[MacroArg]) -> Option<Vec<Token>> {
                 tokens.first().map(|t| t.span.start),
             ) {
                 merged.push(Token {
-                    kind: TokenKind::Comma,
+                    kind: separator.clone(),
                     span: Span::new(prev_end, next_start.max(prev_end + 1)),
                 });
             }
@@ -182,6 +182,16 @@ fn merge_tokens_with_commas(args: &[MacroArg]) -> Option<Vec<Token>> {
         merged.extend_from_slice(tokens);
     }
     Some(merged)
+}
+
+fn repeat_separator_hint(args: &[MacroArg]) -> TokenKind {
+    args.iter()
+        .find_map(|arg| arg.tokens.as_ref().and_then(|tokens| match find_repeat_spec(tokens).separator {
+            Some(TokenKind::Semi) => Some(TokenKind::Semi),
+            Some(TokenKind::Comma) => Some(TokenKind::Comma),
+            _ => None,
+        }))
+        .unwrap_or(TokenKind::Comma)
 }
 
 
