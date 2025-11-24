@@ -102,6 +102,9 @@ pub fn hover_for_token(
     let span = token.span;
     let hover = match &token.kind {
         TokenKind::Identifier(name) => {
+            if let Some(md) = primitive_type_docs(name) {
+                return Some(markdown_hover(text, span, md));
+            }
             if let Some(struct_info_map) = struct_info {
                 let module_hint = module.map(|m| m.name.as_str());
                 if let Some(info) = select_struct_info(struct_info_map, name, module_hint) {
@@ -162,43 +165,57 @@ pub fn hover_for_token(
                 Some(identifier_hover(name, None))
             }
         }
-        TokenKind::Let => Some("Keyword **let**\n\nIntroduces a new binding.".to_string()),
-        TokenKind::Fn => Some("Keyword **fn**\n\nDefines a function.".to_string()),
-        TokenKind::Struct => Some("Keyword **struct**\n\nDeclares a structure.".to_string()),
-        TokenKind::Enum => Some("Keyword **enum**\n\nDeclares an enum.".to_string()),
+        TokenKind::Let => Some(keyword_doc("let", "Introduces a new binding.")),
+        TokenKind::Fn => Some(keyword_doc(
+            "fn",
+            "Defines a function. Functions are hygienic; hovers display params and returns.",
+        )),
+        TokenKind::Struct => Some(keyword_doc("struct", "Declares a structure.")),
+        TokenKind::Enum => Some(keyword_doc("enum", "Declares an enum.")),
         TokenKind::Interface => {
-            Some("Keyword **interface**\n\nDeclares an interface of required methods.".to_string())
+            Some(keyword_doc("interface", "Declares an interface of required methods."))
         }
-        TokenKind::Impl => {
-            Some("Keyword **impl**\n\nImplements an interface for a concrete struct.".to_string())
+        TokenKind::Impl => Some(keyword_doc(
+            "impl",
+            "Implements an interface for a concrete struct.",
+        )),
+        TokenKind::Macro => Some(keyword_doc(
+            "macro",
+            "Declares a macro. Supports hygiene escape with `@ident`, repeat params with optional `@sep = ,|;`, and item macros spliced with `~call();` at module scope.",
+        )),
+        TokenKind::Pub => Some(keyword_doc("pub", "Marks an item as public.")),
+        TokenKind::Const => Some(keyword_doc("const", "Declares a constant.")),
+        TokenKind::Return => Some(keyword_doc("return", "Exits the current function.")),
+        TokenKind::If => Some(keyword_doc("if", "Conditional execution.")),
+        TokenKind::Else => Some(keyword_doc("else", "Alternate branch for `if`.")),
+        TokenKind::While => Some(keyword_doc("while", "Loop while the condition holds.")),
+        TokenKind::Loop => Some(keyword_doc("loop", "Infinite loop until `break` is reached.")),
+        TokenKind::For => Some(keyword_doc("for", "Range-based loop.")),
+        TokenKind::Match => Some(keyword_doc("match", "Pattern matching expression.")),
+        TokenKind::Defer => Some(keyword_doc("defer", "Run code when leaving scope.")),
+        TokenKind::Spawn => Some(keyword_doc(
+            "spawn",
+            "Evaluates an expression concurrently and returns `JoinHandle[T]`.",
+        )),
+        TokenKind::Import => Some(keyword_doc("import", "Bring another module into scope.")),
+        TokenKind::Using => Some(keyword_doc("using", "Re-export or alias imported symbols.")),
+        TokenKind::True | TokenKind::False => {
+            Some(keyword_doc("bool", "Boolean literal values `true`/`false`."))
         }
-        TokenKind::Pub => Some("Keyword **pub**\n\nMarks an item as public.".to_string()),
-        TokenKind::Const => Some("Keyword **const**\n\nDeclares a constant.".to_string()),
-        TokenKind::Return => Some("Keyword **return**\n\nExits the current function.".to_string()),
-        TokenKind::If => Some("Keyword **if**\n\nConditional execution.".to_string()),
-        TokenKind::Else => Some("Keyword **else**\n\nAlternate branch for `if`.".to_string()),
-        TokenKind::While => {
-            Some("Keyword **while**\n\nLoop while the condition holds.".to_string())
+        TokenKind::Integer(value) => {
+            Some(keyword_doc("int literal", &format!("Integer literal `{value}`")))
         }
-        TokenKind::Loop => Some("Keyword **loop**\n\nInfinite loop until `break` is reached.".to_string()),
-        TokenKind::For => Some("Keyword **for**\n\nRange-based loop.".to_string()),
-        TokenKind::Match => Some("Keyword **match**\n\nPattern matching expression.".to_string()),
-        TokenKind::Defer => Some("Keyword **defer**\n\nRun code when leaving scope.".to_string()),
-        TokenKind::Spawn => Some(
-            "Keyword **spawn**\n\nEvaluates an expression concurrently and returns `JoinHandle[T]`."
-                .to_string(),
-        ),
-        TokenKind::Import => {
-            Some("Keyword **import**\n\nBring another module into scope.".to_string())
+        TokenKind::Float(value) => {
+            Some(keyword_doc("float literal", &format!("Float literal `{value}`")))
         }
-        TokenKind::Using => {
-            Some("Keyword **using**\n\nRe-export or alias imported symbols.".to_string())
-        }
-        TokenKind::True | TokenKind::False => Some("Boolean literal.".to_string()),
-        TokenKind::Integer(value) => Some(format!("Integer literal `{value}`")),
-        TokenKind::Float(value) => Some(format!("Float literal `{value}`")),
-        TokenKind::String(value) => Some(format!("String literal \"{value}\"")),
-        TokenKind::Rune(value) => Some(format!("Rune literal `'{}'`", value)),
+        TokenKind::String(value) => Some(keyword_doc(
+            "string literal",
+            &format!("String literal \"{value}\""),
+        )),
+        TokenKind::Rune(value) => Some(keyword_doc(
+            "rune literal",
+            &format!("Rune literal `'{}'`", value),
+        )),
         _ => None,
     }?;
     Some(markdown_hover(text, span, hover))
@@ -825,7 +842,7 @@ fn format_function_hover(def: &FunctionDef) -> String {
         content.push_str(
             &def.params
                 .iter()
-                .map(|p| format!("{}: {}", p.name, format_type_expr(&p.ty.ty)))
+                .map(|p| format!("`{}`: `{}`", p.name, format_type_expr(&p.ty.ty)))
                 .collect::<Vec<_>>()
                 .join(", "),
         );
@@ -834,7 +851,7 @@ fn format_function_hover(def: &FunctionDef) -> String {
         let returns = def
             .returns
             .iter()
-            .map(|ret| format_type_expr(&ret.ty))
+            .map(|ret| format!("`{}`", format_type_expr(&ret.ty)))
             .collect::<Vec<_>>()
             .join(", ");
         content.push_str("\nReturns: ");
@@ -870,14 +887,14 @@ fn format_macro_hover(text: &str, def: &MacroDef) -> String {
         content.push_str(
             &def.params
                 .iter()
-                .map(|p| format!("{} ({})", p.name, macro_param_kind_name(p.kind)))
+                .map(|p| format!("`{}` ({})", p.name, macro_param_kind_name(p.kind)))
                 .collect::<Vec<_>>()
                 .join(", "),
         );
     }
     if let Some(ret) = &def.return_ty {
         content.push_str("\nReturns: ");
-        content.push_str(&format_type_expr(&ret.ty));
+        content.push_str(&format!("`{}`", format_type_expr(&ret.ty)));
     }
     content.push_str("\n```\n");
     content
@@ -885,11 +902,11 @@ fn format_macro_hover(text: &str, def: &MacroDef) -> String {
 
 fn macro_param_kind_name(kind: MacroParamKind) -> &'static str {
     match kind {
-        MacroParamKind::Expr => "expr",
-        MacroParamKind::Block => "block",
-        MacroParamKind::Pattern => "pattern",
-        MacroParamKind::Tokens => "tokens",
-        MacroParamKind::Repeat => "repeat",
+        MacroParamKind::Expr => "`expr`",
+        MacroParamKind::Block => "`block`",
+        MacroParamKind::Pattern => "`pattern`",
+        MacroParamKind::Tokens => "`tokens`",
+        MacroParamKind::Repeat => "`repeat`",
     }
 }
 
@@ -926,16 +943,68 @@ fn identifier_hover(name: &str, ty: Option<&TypeExpr>) -> String {
 fn normalize_spacing(value: String) -> String {
     let mut fixed = value.replace("```\n```md", "```\n\n```md");
     fixed = fixed.replace("```\n```", "```\n\n```");
-    // ensure a blank line between any code fence and following non-fence text
-    if let Some(idx) = fixed.find("```\n") {
-        let after = idx + 4;
-        if let Some(rest) = fixed.get(after..) {
-            if !rest.starts_with('\n') && !rest.starts_with("```") {
-                fixed.insert_str(after, "\n");
-            }
+    fixed
+}
+
+fn keyword_doc(keyword: &str, detail: &str) -> String {
+    format!(
+        "```md\nKeyword: `{keyword}`\n{}\n```",
+        wrap_md(detail, 48)
+    )
+}
+
+fn primitive_type_docs(name: &str) -> Option<String> {
+    let desc = match name {
+        "int8" => "8-bit signed integer",
+        "int16" => "16-bit signed integer",
+        "int32" => "32-bit signed integer",
+        "int64" => "64-bit signed integer",
+        "uint8" => "8-bit unsigned integer",
+        "uint16" => "16-bit unsigned integer",
+        "uint32" => "32-bit unsigned integer",
+        "uint64" => "64-bit unsigned integer",
+        "float32" => "32-bit floating point",
+        "float64" => "64-bit floating point",
+        "bool" => "Boolean value",
+        "string" => "UTF-8 string slice",
+        "Rune" => "Unicode scalar (rune) type",
+        "Range" => "Half-open or inclusive range over bounds",
+        "Box" => "Heap-allocated wrapper around a value",
+        "Map" => "Hash map keyed by strings",
+        "Sender" => "Channel sender end",
+        "Receiver" => "Channel receiver end",
+        "Option" => "`Some(T)` or `None`",
+        "Result" => "`Ok(T)` or `Err(E)`",
+        "JoinHandle" => "Handle returned from `spawn`",
+        _ => return None,
+    };
+    Some(format!(
+        "```md\nType: `{name}`\n{}\n```",
+        wrap_md(desc, 48)
+    ))
+}
+
+fn wrap_md(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut line_len = 0usize;
+    for word in text.split_whitespace() {
+        let word_len = word.len();
+        if line_len == 0 {
+            out.push_str(word);
+            line_len = word_len;
+            continue;
+        }
+        if line_len + 1 + word_len > width {
+            out.push('\n');
+            out.push_str(word);
+            line_len = word_len;
+        } else {
+            out.push(' ');
+            out.push_str(word);
+            line_len += 1 + word_len;
         }
     }
-    fixed
+    out
 }
 
 fn is_simple_literal(snippet: &str) -> bool {
