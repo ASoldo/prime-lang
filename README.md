@@ -642,7 +642,7 @@ VS Code, Helix, and any other LSP client can plug in. Capabilities include:
 
 - diagnostics with ranges, severity, and warnings for unused bindings
 - hover, and signature help
-- structured completions (locals, structs, enums, constants, keywords)
+- structured completions (locals, structs, enums, constants, keywords, macro param kinds like `tokens`/`repeat`/`block` plus hygiene escape `@`)
 - `textDocument/formatting` via the built-in formatter
 - document symbols
 - method completions include interface impls, so `hero.label()` (from

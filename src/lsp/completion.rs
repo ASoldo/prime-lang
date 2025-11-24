@@ -71,9 +71,9 @@ pub fn module_path_completion_context(
 }
 
 pub fn completion_trigger_characters() -> Vec<String> {
-    // Trigger on identifiers, qualification separators, and macro sigils.
+    // Trigger on identifiers, qualification separators, macro sigils, and hygiene escapes.
     // `:` is kept so the LSP can fire on the second colon in `::`.
-    const TRIGGER_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.~";
+    const TRIGGER_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.~@";
     TRIGGER_CHARS.chars().map(|ch| ch.to_string()).collect()
 }
 
@@ -186,16 +186,25 @@ pub fn completion_prefix(
         _ => None,
     };
 
-    // If the cursor is immediately after a '~', treat it as part of the prefix so macro
-    // completions (labels like "~foo") match.
+    // If the cursor is immediately after a '~' or '@', treat it as part of the prefix so macro
+    // completions (labels like "~foo" or hygiene escapes) match.
     if let Some(ref prefix) = base {
         let start = offset.saturating_sub(prefix.len());
-        if start > 0 && text.as_bytes().get(start - 1) == Some(&b'~') && !prefix.starts_with('~')
-        {
-            base = Some(format!("~{}", prefix));
+        if start > 0 {
+            let prev = text.as_bytes().get(start - 1).copied();
+            if prev == Some(b'~') && !prefix.starts_with('~') {
+                base = Some(format!("~{}", prefix));
+            } else if prev == Some(b'@') && !prefix.starts_with('@') {
+                base = Some(format!("@{}", prefix));
+            }
         }
-    } else if offset > 0 && text.as_bytes().get(offset - 1) == Some(&b'~') {
-        base = Some("~".to_string());
+    } else if offset > 0 {
+        let prev = text.as_bytes().get(offset - 1).copied();
+        if prev == Some(b'~') {
+            base = Some("~".to_string());
+        } else if prev == Some(b'@') {
+            base = Some("@".to_string());
+        }
     }
 
     base
@@ -1235,6 +1244,27 @@ pub fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
         items.push(CompletionItem {
             label: ty.to_string(),
             kind: Some(CompletionItemKind::TYPE_PARAMETER),
+            ..Default::default()
+        });
+    }
+
+    const MACRO_HELPERS: &[(&str, &str)] = &[
+        ("expr", "macro param kind"),
+        ("block", "macro param kind"),
+        ("pattern", "macro param kind"),
+        ("tokens", "macro param kind"),
+        ("repeat", "macro param kind (use with @sep)"),
+        ("@sep", "macro repeat separator hint (use `@sep = ,` or `@sep = ;`)"),
+        ("@", "hygiene escape for outer bindings"),
+    ];
+    for (label, detail) in MACRO_HELPERS
+        .iter()
+        .filter(|(name, _)| prefix_matches(name, prefix))
+    {
+        items.push(CompletionItem {
+            label: (*label).to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some((*detail).to_string()),
             ..Default::default()
         });
     }

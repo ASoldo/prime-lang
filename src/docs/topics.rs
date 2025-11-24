@@ -667,7 +667,7 @@ tree-sitter init   # if ABI warnings appear"#,
         key: "macros",
         title: "Macros & hygiene",
         category: "Language Features",
-        summary: "Macro parameters, hygiene escapes with `@`, repeat separators, and hover support that shows full macro declarations.",
+        summary: "Macro parameters, hygiene escapes with `@`, repeat separators, macro-aware completions, and hover support that shows full macro declarations.",
         aliases: &["macro", "macro-hygiene"],
         sections: &[
             TopicSection {
