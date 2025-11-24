@@ -107,6 +107,7 @@ fn shift_statement_spans(stmt: &mut Statement, delta: isize) {
         Statement::Expr(expr) => {
             shift_expr_spans(&mut expr.expr, delta);
         }
+        Statement::MacroSemi(expr) => shift_expr_spans(&mut expr.node, delta),
         Statement::Return(ret) => {
             for value in &mut ret.values {
                 shift_expr_spans(value, delta);
@@ -1053,9 +1054,10 @@ impl Parser {
     ) -> Result<StatementOrTail, SyntaxError> {
         let expr = self.parse_expression()?;
         if self.matches(TokenKind::Semi) {
-            return Ok(StatementOrTail::Statement(Statement::Expr(ExprStmt {
-                expr,
-            })));
+            return Ok(StatementOrTail::Statement(match expr {
+                Expr::MacroCall { span, .. } => Statement::MacroSemi(Spanned::new(expr, span)),
+                _ => Statement::Expr(ExprStmt { expr }),
+            }));
         }
 
         let next_is_rbrace = matches!(self.peek_kind(), Some(TokenKind::RBrace));

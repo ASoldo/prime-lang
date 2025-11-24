@@ -363,11 +363,18 @@ fn type_error_to_lsp(text: &str, err: TypeError) -> Diagnostic {
     } else {
         err.span
     };
+    let mut message = err.display_message();
+    if let Some(help) = &err.help {
+        if !help.is_empty() {
+            message.push_str("\n\n");
+            message.push_str(help);
+        }
+    }
     Diagnostic {
         range: span_to_range(text, span),
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some("prime-lang".into()),
-        message: err.display_message(),
+        message,
         code: err.code.clone().map(NumberOrString::String),
         ..Default::default()
     }

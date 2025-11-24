@@ -210,6 +210,7 @@ pub enum Statement {
     Assign(AssignStmt),
     Expr(ExprStmt),
     Return(ReturnStmt),
+    MacroSemi(Spanned<Expr>),
     While(WhileStmt),
     Loop(LoopStmt),
     For(ForStmt),

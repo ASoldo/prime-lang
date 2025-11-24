@@ -604,6 +604,10 @@ impl BuildInterpreter {
                 Ok(Flow::Value(BuildValue::Unit))
             }
             Statement::Expr(expr_stmt) => Ok(Flow::Value(self.eval_expr_mut(&expr_stmt.expr)?)),
+            Statement::MacroSemi(expr) => {
+                let _ = self.eval_expr_mut(&expr.node)?;
+                Ok(Flow::Value(BuildValue::Unit))
+            }
             Statement::Block(block) => self.eval_block(block),
             Statement::Return(ret) => {
                 let value = if ret.values.is_empty() {

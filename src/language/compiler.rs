@@ -1786,6 +1786,7 @@ impl Compiler {
                     }
                 }
             },
+            Statement::MacroSemi(_) => {}
             Statement::Expr(expr_stmt) => {
                 if let Some(flow) = self.eval_expression_statement(&expr_stmt.expr)? {
                     return Ok(Some(flow));

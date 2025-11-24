@@ -4,7 +4,16 @@ use crate::language::{
     span::{Span, Spanned},
     types::Mutability,
 };
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+};
+
+#[derive(Debug, Clone)]
+pub struct ExpandedProgram {
+    pub program: Program,
+    pub traces: ExpansionTraces,
+}
 
 #[derive(Debug, Clone)]
 pub struct MacroExpansionError {
@@ -12,13 +21,28 @@ pub struct MacroExpansionError {
     pub errors: Vec<SyntaxError>,
 }
 
-pub fn expand_program(program: &Program) -> Result<Program, Vec<MacroExpansionError>> {
+#[derive(Debug, Clone, Default)]
+pub struct ExpansionTraces {
+    entries: HashMap<PathBuf, Vec<TraceEntry>>,
+}
+
+#[derive(Debug, Clone)]
+struct TraceEntry {
+    span: Span,
+    frames: Vec<MacroFrame>,
+}
+
+pub fn expand_program(program: &Program) -> Result<ExpandedProgram, Vec<MacroExpansionError>> {
     let registry = MacroRegistry::build(program);
     if !registry.errors.is_empty() {
         return Err(registry.errors);
     }
     let mut expander = Expander::new(registry);
-    expander.expand_program(program)
+    let program = expander.expand_program(program)?;
+    Ok(ExpandedProgram {
+        program,
+        traces: expander.traces,
+    })
 }
 
 struct MacroRegistry<'a> {
@@ -70,17 +94,67 @@ impl<'a> MacroRegistry<'a> {
 struct Expander<'a> {
     registry: MacroRegistry<'a>,
     gensym: usize,
+    stack: Vec<MacroFrame>,
+    traces: ExpansionTraces,
+    current_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct MacroFrame {
+    name: String,
+    call_span: Span,
+}
+
+impl ExpansionTraces {
+    fn record(&mut self, path: &Path, span: Span, frames: &[MacroFrame]) {
+        if frames.is_empty() {
+            return;
+        }
+        let entry = TraceEntry {
+            span,
+            frames: frames.to_vec(),
+        };
+        self.entries.entry(path.to_path_buf()).or_default().push(entry);
+    }
+
+    pub fn help_for(&self, path: &Path, span: Span) -> Option<String> {
+        let entries = self.entries.get(path)?;
+        let mut best: Option<&TraceEntry> = None;
+        for entry in entries {
+            if entry.span.start <= span.start && entry.span.end >= span.end {
+                let is_narrower = best
+                    .map(|best| {
+                        let current_len = entry.span.len();
+                        let best_len = best.span.len();
+                        current_len < best_len || (current_len == best_len && entry.span.end < best.span.end)
+                    })
+                    .unwrap_or(true);
+                if is_narrower {
+                    best = Some(entry);
+                }
+            }
+        }
+        let entry = best.or_else(|| entries.iter().find(|e| spans_overlap(e.span, span)))?;
+        Some(format_trace(&entry.frames))
+    }
 }
 
 impl<'a> Expander<'a> {
     fn new(registry: MacroRegistry<'a>) -> Self {
-        Self { registry, gensym: 0 }
+        Self {
+            registry,
+            gensym: 0,
+            stack: Vec::new(),
+            traces: ExpansionTraces::default(),
+            current_path: None,
+        }
     }
 
     fn expand_program(&mut self, program: &Program) -> Result<Program, Vec<MacroExpansionError>> {
         let mut expanded_modules = Vec::new();
         let mut errors = Vec::new();
         for module in &program.modules {
+            self.current_path = Some(module.path.clone());
             let mut module_errors = Vec::new();
             let expanded_items = module
                 .items
@@ -104,6 +178,7 @@ impl<'a> Expander<'a> {
                 items: expanded_items,
             });
         }
+        self.current_path = None;
         if errors.is_empty() {
             Ok(Program {
                 modules: expanded_modules,
@@ -185,6 +260,10 @@ impl<'a> Expander<'a> {
                     ..let_stmt.clone()
                 })
             }
+            Statement::MacroSemi(expr) => Statement::MacroSemi(Spanned::new(
+                self.expand_expr(&expr.node, 0, _scope_span, errors),
+                expr.span,
+            )),
             Statement::Assign(assign) => Statement::Assign(AssignStmt {
                 target: self.expand_expr(&assign.target, 0, _scope_span, errors),
                 value: self.expand_expr(&assign.value, 0, _scope_span, errors),
@@ -259,113 +338,129 @@ impl<'a> Expander<'a> {
     ) -> Expr {
         if depth > 32 {
             if let Expr::MacroCall { span, .. } = expr {
-                errors.push(SyntaxError::new(
+                let mut err = SyntaxError::new(
                     "macro expansion exceeded recursion limit",
                     *span,
-                ));
+                );
+                err.help = self.trace_help();
+                errors.push(err);
             }
             return expr.clone();
         }
         match expr {
             Expr::MacroCall { name, args, span } => {
+                self.stack.push(MacroFrame {
+                    name: name.name.clone(),
+                    call_span: *span,
+                });
                 let expanded_args: Vec<Expr> = args
                     .iter()
                     .map(|arg| self.expand_expr(arg, depth + 1, scope_span, errors))
                     .collect();
-                let Some((def, _)) = self.registry.get(&name.name) else {
-                    errors.push(SyntaxError::new(
-                        format!("unknown macro `{}`", name.name),
-                        *span,
-                    ));
-                    return Expr::MacroCall {
-                        name: name.clone(),
-                        args: expanded_args,
-                        span: *span,
-                    };
+                let result = match self.registry.get(&name.name) {
+                    None => {
+                        let mut err = SyntaxError::new(
+                            format!("unknown macro `{}`", name.name),
+                            *span,
+                        );
+                        err.help = self.trace_help();
+                        errors.push(err);
+                        Expr::MacroCall {
+                            name: name.clone(),
+                            args: expanded_args,
+                            span: *span,
+                        }
+                    }
+                    Some((def, _)) if def.params.len() != expanded_args.len() => {
+                        let mut err = SyntaxError::new(
+                            format!(
+                                "macro `{}` expects {} argument(s), found {}",
+                                def.name,
+                                def.params.len(),
+                                expanded_args.len()
+                            ),
+                            *span,
+                        );
+                        err.help = self.trace_help();
+                        errors.push(err);
+                        Expr::MacroCall {
+                            name: name.clone(),
+                            args: expanded_args,
+                            span: *span,
+                        }
+                    }
+                    Some((def, _)) => {
+                        // Evaluate arguments once into fresh bindings to avoid double evaluation and
+                        // reduce capture.
+                        self.gensym += 1;
+                        let call_id = self.gensym;
+                        let mut param_bindings = Vec::new();
+                        for (idx, (param, arg)) in def.params.iter().zip(expanded_args.iter()).enumerate()
+                        {
+                            let binding_name = format!("__macro_arg_{call_id}_{idx}");
+                            param_bindings.push((
+                                param,
+                                arg.clone(),
+                                binding_name.clone(),
+                                expr_span_local(arg),
+                            ));
+                        }
+
+                        let mut substitution_map = HashMap::new();
+                        for (param, _, binding_name, _arg_span) in &param_bindings {
+                            substitution_map.insert(
+                                param.name.clone(),
+                                Expr::Identifier(Identifier {
+                                    name: binding_name.clone(),
+                                    span: *span,
+                                }),
+                            );
+                        }
+
+                        let inlined_body = match &def.body {
+                            MacroBody::Expr(expr) => substitute_expr(expr.node.clone(), &substitution_map),
+                            MacroBody::Block(block) => substitute_expr(Expr::Block(block.clone()), &substitution_map),
+                        };
+                        let macro_locals = collect_bindings_from_body(&def.body);
+                        let renamed_body = rename_macro_locals(&inlined_body, call_id, &macro_locals);
+                        let expanded_body = self.expand_expr(&renamed_body, depth + 1, scope_span, errors);
+
+                        let mut statements = Vec::new();
+                        for (param, arg_expr, binding_name, _arg_span) in param_bindings {
+                            let let_span = *span;
+                            statements.push(Statement::Let(LetStmt {
+                                pattern: Pattern::Identifier(binding_name, let_span),
+                                ty: param.ty.clone(),
+                                value: Some(arg_expr),
+                                mutability: Mutability::Immutable,
+                                span: let_span,
+                            }));
+                        }
+
+                        let mut block_span_end = span.end;
+                        let (statements, tail) = if let Expr::Block(body_block) = &expanded_body {
+                            block_span_end = body_block.span.end.max(block_span_end);
+                            let mut merged_stmts = statements;
+                            merged_stmts.extend(body_block.statements.clone());
+                            (merged_stmts, body_block.tail.clone())
+                        } else {
+                            let tail_span = expr_span_local(&expanded_body);
+                            block_span_end = block_span_end.max(tail_span.end);
+                            (statements, Some(Box::new(expanded_body)))
+                        };
+
+                        let block_span = Span::new(span.start, block_span_end);
+                        let block = Block {
+                            statements,
+                            tail,
+                            span: block_span,
+                        };
+                        self.record_macro_trace(block_span);
+                        Expr::Block(Box::new(block))
+                    }
                 };
-                if def.params.len() != expanded_args.len() {
-                    errors.push(SyntaxError::new(
-                        format!(
-                            "macro `{}` expects {} argument(s), found {}",
-                            def.name,
-                            def.params.len(),
-                            expanded_args.len()
-                        ),
-                        *span,
-                    ));
-                    return Expr::MacroCall {
-                        name: name.clone(),
-                        args: expanded_args,
-                        span: *span,
-                    };
-                }
-
-                // Evaluate arguments once into fresh bindings to avoid double evaluation and
-                // reduce capture.
-                self.gensym += 1;
-                let call_id = self.gensym;
-                let mut param_bindings = Vec::new();
-                for (idx, (param, arg)) in def.params.iter().zip(expanded_args.iter()).enumerate()
-                {
-                    let binding_name = format!("__macro_arg_{call_id}_{idx}");
-                    param_bindings.push((
-                        param,
-                        arg.clone(),
-                        binding_name.clone(),
-                        expr_span_local(arg),
-                    ));
-                }
-
-                let mut substitution_map = HashMap::new();
-                for (param, _, binding_name, arg_span) in &param_bindings {
-                    substitution_map.insert(
-                        param.name.clone(),
-                        Expr::Identifier(Identifier {
-                            name: binding_name.clone(),
-                            span: *arg_span,
-                        }),
-                    );
-                }
-
-                let inlined_body = match &def.body {
-                    MacroBody::Expr(expr) => substitute_expr(expr.node.clone(), &substitution_map),
-                    MacroBody::Block(block) => substitute_expr(Expr::Block(block.clone()), &substitution_map),
-                };
-                let expanded_body = self.expand_expr(&inlined_body, depth + 1, scope_span, errors);
-
-                let mut statements = Vec::new();
-                for (param, arg_expr, binding_name, arg_span) in param_bindings {
-                    let let_span = Span::new(span.start, arg_span.end.max(span.end));
-                    statements.push(Statement::Let(LetStmt {
-                        pattern: Pattern::Identifier(binding_name, arg_span),
-                        ty: param.ty.clone(),
-                        value: Some(arg_expr),
-                        mutability: Mutability::Immutable,
-                        span: let_span,
-                    }));
-                }
-
-                let mut block_span_end = span.end;
-                if let Expr::Block(body_block) = &expanded_body {
-                    block_span_end = body_block.span.end.max(block_span_end);
-                    let mut merged_stmts = statements;
-                    merged_stmts.extend(body_block.statements.clone());
-                    let tail = body_block.tail.clone();
-                    return Expr::Block(Box::new(Block {
-                        statements: merged_stmts,
-                        tail,
-                        span: Span::new(span.start, block_span_end),
-                    }));
-                }
-
-                let tail_span = expr_span_local(&expanded_body);
-                block_span_end = block_span_end.max(tail_span.end);
-                let block = Block {
-                    statements,
-                    tail: Some(Box::new(expanded_body)),
-                    span: Span::new(span.start, block_span_end),
-                };
-                Expr::Block(Box::new(block))
+                self.stack.pop();
+                result
             }
         Expr::Call {
             callee,
@@ -714,6 +809,10 @@ fn substitute_statement(stmt: Statement, map: &HashMap<String, Expr>) -> Stateme
             value: let_stmt.value.map(|expr| substitute_expr(expr, map)),
             ..let_stmt
         }),
+        Statement::MacroSemi(expr) => Statement::MacroSemi(Spanned::new(
+            substitute_expr(expr.node, map),
+            expr.span,
+        )),
         Statement::Assign(assign) => Statement::Assign(AssignStmt {
             target: substitute_expr(assign.target, map),
             value: substitute_expr(assign.value, map),
@@ -790,6 +889,518 @@ fn substitute_if(if_expr: IfExpr, map: &HashMap<String, Expr>) -> IfExpr {
     }
 }
 
+fn collect_bindings_from_body(body: &MacroBody) -> HashSet<String> {
+    match body {
+        MacroBody::Expr(expr) => collect_bindings_expr(&expr.node),
+        MacroBody::Block(block) => collect_bindings_block(block),
+    }
+}
+
+fn collect_bindings_block(block: &Block) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for stmt in &block.statements {
+        set.extend(collect_bindings_statement(stmt));
+    }
+    if let Some(tail) = &block.tail {
+        set.extend(collect_bindings_expr(tail));
+    }
+    set
+}
+
+fn collect_bindings_statement(stmt: &Statement) -> HashSet<String> {
+    let mut set = HashSet::new();
+    match stmt {
+        Statement::Let(let_stmt) => set.extend(collect_bindings_pattern(&let_stmt.pattern)),
+        Statement::MacroSemi(expr) => set.extend(collect_bindings_expr(&expr.node)),
+        Statement::For(for_stmt) => {
+            set.insert(for_stmt.binding.clone());
+            match &for_stmt.target {
+                ForTarget::Range(range) => {
+                    set.extend(collect_bindings_expr(&range.start));
+                    set.extend(collect_bindings_expr(&range.end));
+                }
+                ForTarget::Collection(expr) => {
+                    set.extend(collect_bindings_expr(expr));
+                }
+            }
+            set.extend(collect_bindings_block(&for_stmt.body));
+        }
+        Statement::While(while_stmt) => match &while_stmt.condition {
+            WhileCondition::Expr(expr) => set.extend(collect_bindings_expr(expr)),
+            WhileCondition::Let { pattern, value } => {
+                set.extend(collect_bindings_pattern(pattern));
+                set.extend(collect_bindings_expr(value));
+            }
+        },
+        Statement::Loop(loop_stmt) => set.extend(collect_bindings_block(&loop_stmt.body)),
+        Statement::Defer(defer_stmt) => set.extend(collect_bindings_expr(&defer_stmt.expr)),
+        Statement::Assign(assign) => {
+            set.extend(collect_bindings_expr(&assign.target));
+            set.extend(collect_bindings_expr(&assign.value));
+        }
+        Statement::Expr(expr) => set.extend(collect_bindings_expr(&expr.expr)),
+        Statement::Return(ret) => {
+            for value in &ret.values {
+                set.extend(collect_bindings_expr(value));
+            }
+        }
+        Statement::Block(block) => set.extend(collect_bindings_block(block)),
+        Statement::Break | Statement::Continue => {}
+    }
+    set
+}
+
+fn collect_bindings_expr(expr: &Expr) -> HashSet<String> {
+    let mut set = HashSet::new();
+    match expr {
+        Expr::Identifier(_) | Expr::Literal(_) | Expr::FormatString(_) => {}
+        Expr::Try { block, .. } => set.extend(collect_bindings_block(block)),
+        Expr::TryPropagate { expr, .. } => set.extend(collect_bindings_expr(expr)),
+        Expr::Binary { left, right, .. } => {
+            set.extend(collect_bindings_expr(left));
+            set.extend(collect_bindings_expr(right));
+        }
+        Expr::Unary { expr, .. } => set.extend(collect_bindings_expr(expr)),
+        Expr::Call { callee, args, .. } => {
+            set.extend(collect_bindings_expr(callee));
+            for arg in args {
+                set.extend(collect_bindings_expr(arg));
+            }
+        }
+        Expr::MacroCall { args, .. } => {
+            for arg in args {
+                set.extend(collect_bindings_expr(arg));
+            }
+        }
+        Expr::FieldAccess { base, .. } => set.extend(collect_bindings_expr(base)),
+        Expr::Index { base, index, .. } => {
+            set.extend(collect_bindings_expr(base));
+            set.extend(collect_bindings_expr(index));
+        }
+        Expr::StructLiteral { fields, .. } => match fields {
+            StructLiteralKind::Named(named) => {
+                for field in named {
+                    set.extend(collect_bindings_expr(&field.value));
+                }
+            }
+            StructLiteralKind::Positional(values) => {
+                for value in values {
+                    set.extend(collect_bindings_expr(value));
+                }
+            }
+        },
+        Expr::EnumLiteral { values, .. } => {
+            for value in values {
+                set.extend(collect_bindings_expr(value));
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for entry in entries {
+                set.extend(collect_bindings_expr(&entry.key));
+                set.extend(collect_bindings_expr(&entry.value));
+            }
+        }
+        Expr::Block(block) => set.extend(collect_bindings_block(block)),
+        Expr::If(if_expr) => {
+            match &if_expr.condition {
+                IfCondition::Expr(condition) => set.extend(collect_bindings_expr(condition)),
+                IfCondition::Let { pattern, value } => {
+                    set.extend(collect_bindings_pattern(pattern));
+                    set.extend(collect_bindings_expr(value));
+                }
+            }
+            set.extend(collect_bindings_block(&if_expr.then_branch));
+            if let Some(else_branch) = &if_expr.else_branch {
+                match else_branch {
+                    ElseBranch::Block(block) => set.extend(collect_bindings_block(block)),
+                    ElseBranch::ElseIf(inner) => {
+                        let expr = Expr::If(inner.clone());
+                        set.extend(collect_bindings_expr(&expr));
+                    }
+                }
+            }
+        }
+        Expr::Match(match_expr) => {
+            set.extend(collect_bindings_expr(&match_expr.expr));
+            for arm in &match_expr.arms {
+                set.extend(collect_bindings_pattern(&arm.pattern));
+                if let Some(guard) = &arm.guard {
+                    set.extend(collect_bindings_expr(guard));
+                }
+                set.extend(collect_bindings_expr(&arm.value));
+            }
+        }
+        Expr::Tuple(values, _) => {
+            for value in values {
+                set.extend(collect_bindings_expr(value));
+            }
+        }
+        Expr::ArrayLiteral(values, _) => {
+            for value in values {
+                set.extend(collect_bindings_expr(value));
+            }
+        }
+        Expr::Range(range) => {
+            set.extend(collect_bindings_expr(&range.start));
+            set.extend(collect_bindings_expr(&range.end));
+        }
+        Expr::Reference { expr, .. }
+        | Expr::Deref { expr, .. }
+        | Expr::Move { expr, .. }
+        | Expr::Spawn { expr, .. } => set.extend(collect_bindings_expr(expr)),
+    }
+    set
+}
+
+fn collect_bindings_pattern(pattern: &Pattern) -> HashSet<String> {
+    let mut set = HashSet::new();
+    match pattern {
+        Pattern::Identifier(name, _) => {
+            if name != "_" {
+                set.insert(name.clone());
+            }
+        }
+        Pattern::EnumVariant { bindings, .. } => {
+            for b in bindings {
+                set.extend(collect_bindings_pattern(b));
+            }
+        }
+        Pattern::Tuple(bindings, _) => {
+            for b in bindings {
+                set.extend(collect_bindings_pattern(b));
+            }
+        }
+        Pattern::Map(entries, _) => {
+            for entry in entries {
+                set.extend(collect_bindings_pattern(&entry.pattern));
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for field in fields {
+                set.extend(collect_bindings_pattern(&field.pattern));
+            }
+        }
+        Pattern::Slice { prefix, rest, suffix, .. } => {
+            for p in prefix {
+                set.extend(collect_bindings_pattern(p));
+            }
+            if let Some(rest) = rest {
+                set.extend(collect_bindings_pattern(rest));
+            }
+            for p in suffix {
+                set.extend(collect_bindings_pattern(p));
+            }
+        }
+        Pattern::Literal(_) | Pattern::Wildcard => {}
+    }
+    set
+}
+
+fn rename_macro_locals(expr: &Expr, call_id: usize, locals: &HashSet<String>) -> Expr {
+    if locals.is_empty() {
+        return expr.clone();
+    }
+    let mut map = HashMap::new();
+    for (idx, name) in locals.iter().enumerate() {
+        map.insert(name.clone(), format!("__macro_local_{call_id}_{idx}"));
+    }
+    rename_expr(expr.clone(), &map)
+}
+
+fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
+    match expr {
+        Expr::Identifier(mut ident) => {
+            if let Some(new) = map.get(&ident.name) {
+                ident.name = new.clone();
+            }
+            Expr::Identifier(ident)
+        }
+        Expr::Literal(_) => expr,
+        Expr::FormatString(mut lit) => {
+            for seg in &mut lit.segments {
+                if let FormatSegment::Expr { expr, .. } = seg {
+                    *expr = rename_expr(expr.clone(), map);
+                }
+            }
+            Expr::FormatString(lit)
+        }
+        Expr::Try { block, span } => Expr::Try {
+            block: Box::new(rename_block(*block, map)),
+            span,
+        },
+        Expr::TryPropagate { expr, span } => Expr::TryPropagate {
+            expr: Box::new(rename_expr(*expr, map)),
+            span,
+        },
+        Expr::Binary { op, left, right, span } => Expr::Binary {
+            op,
+            left: Box::new(rename_expr(*left, map)),
+            right: Box::new(rename_expr(*right, map)),
+            span,
+        },
+        Expr::Unary { op, expr, span } => Expr::Unary {
+            op,
+            expr: Box::new(rename_expr(*expr, map)),
+            span,
+        },
+        Expr::Call { callee, type_args, args, span } => Expr::Call {
+            callee: Box::new(rename_expr(*callee, map)),
+            type_args,
+            args: args.into_iter().map(|arg| rename_expr(arg, map)).collect(),
+            span,
+        },
+        Expr::MacroCall { name, args, span } => Expr::MacroCall {
+            name,
+            args: args.into_iter().map(|arg| rename_expr(arg, map)).collect(),
+            span,
+        },
+        Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
+            base: Box::new(rename_expr(*base, map)),
+            field,
+            span,
+        },
+        Expr::StructLiteral { name, fields, span } => Expr::StructLiteral {
+            name,
+            fields: match fields {
+                StructLiteralKind::Named(entries) => StructLiteralKind::Named(
+                    entries
+                        .into_iter()
+                        .map(|entry| StructLiteralField {
+                            name: entry.name,
+                            value: rename_expr(entry.value, map),
+                        })
+                        .collect(),
+                ),
+                StructLiteralKind::Positional(values) => StructLiteralKind::Positional(
+                    values.into_iter().map(|v| rename_expr(v, map)).collect(),
+                ),
+            },
+            span,
+        },
+        Expr::EnumLiteral { enum_name, variant, values, span } => Expr::EnumLiteral {
+            enum_name,
+            variant,
+            values: values.into_iter().map(|v| rename_expr(v, map)).collect(),
+            span,
+        },
+        Expr::MapLiteral { entries, span } => Expr::MapLiteral {
+            entries: entries
+                .into_iter()
+                .map(|entry| MapLiteralEntry {
+                    key: rename_expr(entry.key, map),
+                    value: rename_expr(entry.value, map),
+                })
+                .collect(),
+            span,
+        },
+        Expr::Block(block) => Expr::Block(Box::new(rename_block(*block, map))),
+        Expr::If(if_expr) => Expr::If(Box::new(rename_if(*if_expr, map))),
+        Expr::Match(match_expr) => Expr::Match(rename_match(match_expr, map)),
+        Expr::Tuple(values, span) => Expr::Tuple(
+            values.into_iter().map(|v| rename_expr(v, map)).collect(),
+            span,
+        ),
+        Expr::ArrayLiteral(values, span) => Expr::ArrayLiteral(
+            values.into_iter().map(|v| rename_expr(v, map)).collect(),
+            span,
+        ),
+        Expr::Range(range) => Expr::Range(RangeExpr {
+            start: Box::new(rename_expr(*range.start, map)),
+            end: Box::new(rename_expr(*range.end, map)),
+            inclusive: range.inclusive,
+            span: range.span,
+        }),
+        Expr::Index { base, index, span } => Expr::Index {
+            base: Box::new(rename_expr(*base, map)),
+            index: Box::new(rename_expr(*index, map)),
+            span,
+        },
+        Expr::Reference { mutable, expr, span } => Expr::Reference {
+            mutable,
+            expr: Box::new(rename_expr(*expr, map)),
+            span,
+        },
+        Expr::Deref { expr, span } => Expr::Deref {
+            expr: Box::new(rename_expr(*expr, map)),
+            span,
+        },
+        Expr::Move { expr, span } => Expr::Move {
+            expr: Box::new(rename_expr(*expr, map)),
+            span,
+        },
+        Expr::Spawn { expr, span } => Expr::Spawn {
+            expr: Box::new(rename_expr(*expr, map)),
+            span,
+        },
+    }
+}
+
+fn rename_block(block: Block, map: &HashMap<String, String>) -> Block {
+    Block {
+        statements: block
+            .statements
+            .into_iter()
+            .map(|stmt| rename_statement(stmt, map))
+            .collect(),
+        tail: block.tail.map(|expr| Box::new(rename_expr(*expr, map))),
+        span: block.span,
+    }
+}
+
+fn rename_statement(stmt: Statement, map: &HashMap<String, String>) -> Statement {
+    match stmt {
+        Statement::Let(let_stmt) => Statement::Let(LetStmt {
+            pattern: rename_pattern(let_stmt.pattern, map),
+            value: let_stmt.value.map(|expr| rename_expr(expr, map)),
+            ..let_stmt
+        }),
+        Statement::MacroSemi(expr) => Statement::MacroSemi(Spanned::new(
+            rename_expr(expr.node, map),
+            expr.span,
+        )),
+        Statement::Assign(assign) => Statement::Assign(AssignStmt {
+            target: rename_expr(assign.target, map),
+            value: rename_expr(assign.value, map),
+        }),
+        Statement::Expr(expr) => Statement::Expr(ExprStmt {
+            expr: rename_expr(expr.expr, map),
+        }),
+        Statement::Return(ret) => Statement::Return(ReturnStmt {
+            values: ret
+                .values
+                .into_iter()
+                .map(|expr| rename_expr(expr, map))
+                .collect(),
+        }),
+        Statement::While(while_stmt) => Statement::While(WhileStmt {
+            condition: match while_stmt.condition {
+                WhileCondition::Expr(expr) => WhileCondition::Expr(rename_expr(expr, map)),
+                WhileCondition::Let { pattern, value } => WhileCondition::Let {
+                    pattern: rename_pattern(pattern, map),
+                    value: rename_expr(value, map),
+                },
+            },
+            body: rename_block(while_stmt.body, map),
+        }),
+        Statement::Loop(loop_stmt) => Statement::Loop(LoopStmt {
+            body: rename_block(loop_stmt.body, map),
+            span: loop_stmt.span,
+        }),
+        Statement::For(for_stmt) => {
+            let new_binding = map.get(&for_stmt.binding).cloned().unwrap_or(for_stmt.binding);
+            Statement::For(ForStmt {
+                binding: new_binding,
+                target: match for_stmt.target {
+                    ForTarget::Range(range) => ForTarget::Range(RangeExpr {
+                        start: Box::new(rename_expr(*range.start, map)),
+                        end: Box::new(rename_expr(*range.end, map)),
+                        inclusive: range.inclusive,
+                        span: range.span,
+                    }),
+                    ForTarget::Collection(expr) => ForTarget::Collection(rename_expr(expr, map)),
+                },
+                body: rename_block(for_stmt.body, map),
+                span: for_stmt.span,
+            })
+        }
+        Statement::Defer(defer_stmt) => Statement::Defer(DeferStmt {
+            expr: rename_expr(defer_stmt.expr, map),
+        }),
+        Statement::Block(block) => Statement::Block(Box::new(rename_block(*block, map))),
+        Statement::Break | Statement::Continue => stmt,
+    }
+}
+
+fn rename_if(if_expr: IfExpr, map: &HashMap<String, String>) -> IfExpr {
+    IfExpr {
+        condition: match if_expr.condition {
+            IfCondition::Expr(expr) => IfCondition::Expr(rename_expr(expr, map)),
+            IfCondition::Let { pattern, value } => IfCondition::Let {
+                pattern: rename_pattern(pattern, map),
+                value: rename_expr(value, map),
+            },
+        },
+        then_branch: rename_block(if_expr.then_branch, map),
+        else_branch: if_expr
+            .else_branch
+            .map(|branch| match branch {
+                ElseBranch::Block(block) => ElseBranch::Block(rename_block(block, map)),
+                ElseBranch::ElseIf(inner) => {
+                    ElseBranch::ElseIf(Box::new(rename_if(*inner, map)))
+                }
+            }),
+        span: if_expr.span,
+    }
+}
+
+fn rename_match(expr: MatchExpr, map: &HashMap<String, String>) -> MatchExpr {
+    MatchExpr {
+        expr: Box::new(rename_expr(*expr.expr, map)),
+        arms: expr
+            .arms
+            .into_iter()
+            .map(|arm| MatchArmExpr {
+                pattern: rename_pattern(arm.pattern, map),
+                guard: arm.guard.map(|g| rename_expr(g, map)),
+                value: rename_expr(arm.value, map),
+            })
+            .collect(),
+        span: expr.span,
+    }
+}
+
+fn rename_pattern(pattern: Pattern, map: &HashMap<String, String>) -> Pattern {
+    match pattern {
+        Pattern::Identifier(mut name, span) => {
+            if let Some(new) = map.get(&name) {
+                name = new.clone();
+            }
+            Pattern::Identifier(name, span)
+        }
+        Pattern::EnumVariant { enum_name, variant, bindings } => Pattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings: bindings.into_iter().map(|b| rename_pattern(b, map)).collect(),
+        },
+        Pattern::Tuple(bindings, span) => Pattern::Tuple(
+            bindings
+                .into_iter()
+                .map(|b| rename_pattern(b, map))
+                .collect(),
+            span,
+        ),
+        Pattern::Map(entries, span) => Pattern::Map(
+            entries
+                .into_iter()
+                .map(|entry| MapPatternEntry {
+                    key: entry.key,
+                    pattern: rename_pattern(entry.pattern, map),
+                })
+                .collect(),
+            span,
+        ),
+        Pattern::Struct { struct_name, fields, has_spread, span } => Pattern::Struct {
+            struct_name,
+            fields: fields
+                .into_iter()
+                .map(|field| StructPatternField {
+                    name: field.name,
+                    pattern: rename_pattern(field.pattern, map),
+                })
+                .collect(),
+            has_spread,
+            span,
+        },
+        Pattern::Slice { prefix, rest, suffix, span } => Pattern::Slice {
+            prefix: prefix.into_iter().map(|p| rename_pattern(p, map)).collect(),
+            rest: rest.map(|p| Box::new(rename_pattern(*p, map))),
+            suffix: suffix.into_iter().map(|p| rename_pattern(p, map)).collect(),
+            span,
+        },
+        Pattern::Literal(_) | Pattern::Wildcard => pattern,
+    }
+}
+
 fn expr_span_local(expr: &Expr) -> Span {
     match expr {
         Expr::Identifier(ident) => ident.span,
@@ -821,4 +1432,37 @@ fn expr_span_local(expr: &Expr) -> Span {
         Expr::If(expr) => expr.span,
         Expr::Match(expr) => expr.span,
     }
+}
+
+impl<'a> Expander<'a> {
+    fn record_macro_trace(&mut self, span: Span) {
+        if self.stack.is_empty() {
+            return;
+        }
+        if let Some(path) = &self.current_path {
+            self.traces.record(path, span, &self.stack);
+        }
+    }
+
+    fn trace_help(&self) -> Option<String> {
+        if self.stack.is_empty() {
+            return None;
+        }
+        Some(format_trace(&self.stack))
+    }
+}
+
+fn spans_overlap(a: Span, b: Span) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
+fn format_trace(frames: &[MacroFrame]) -> String {
+    let mut parts = Vec::new();
+    for frame in frames.iter().rev() {
+        parts.push(format!(
+            "in expansion of `{}` at {}..{}",
+            frame.name, frame.call_span.start, frame.call_span.end
+        ));
+    }
+    parts.join(" -> ")
 }

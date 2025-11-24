@@ -1715,6 +1715,10 @@ impl Interpreter {
                 EvalOutcome::Value(_) => Ok(None),
                 EvalOutcome::Flow(flow) => Ok(Some(flow)),
             },
+            Statement::MacroSemi(stmt) => match self.eval_expression(&stmt.node)? {
+                EvalOutcome::Value(_) => Ok(None),
+                EvalOutcome::Flow(flow) => Ok(Some(flow)),
+            },
             Statement::Return(stmt) => {
                 let mut values = Vec::new();
                 for expr in &stmt.values {

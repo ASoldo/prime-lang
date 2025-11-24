@@ -3,7 +3,7 @@ struct Vec2 {
   y: int32;
 }
 
-macro dbg(value: int32) -> int32 {
+pub macro dbg(value: int32) -> int32 {
   out(`DBG: {value}`);
   value
 }

@@ -87,6 +87,8 @@ pub struct TypeDiagnostic {
     span: SourceSpan,
     message: String,
     label: String,
+    #[help]
+    help: Option<String>,
 }
 
 pub fn emit_type_errors(errors: &[TypeError]) {
@@ -99,6 +101,7 @@ pub fn emit_type_errors(errors: &[TypeError]) {
                     message: err.display_message(),
                     label: err.label.clone(),
                     src: named,
+                    help: err.help.clone(),
                 };
                 eprintln!("{:?}", Report::new(diagnostic));
             }

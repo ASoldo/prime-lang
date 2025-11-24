@@ -149,6 +149,7 @@ fn collect_decl_from_block(block: &Block, module: &Module, decls: &mut Vec<DeclI
                     );
                 }
             }
+            Statement::MacroSemi(expr) => collect_decl_from_expr(&expr.node, module, decls),
             Statement::Assign(stmt) => {
                 collect_decl_from_expr(&stmt.target, module, decls);
                 collect_decl_from_expr(&stmt.value, module, decls);
@@ -213,13 +214,13 @@ fn collect_decl_from_expr(expr: &Expr, module: &Module, decls: &mut Vec<DeclInfo
             collect_decl_from_expr(right, module, decls);
         }
         Expr::Unary { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
-        Expr::Call { callee, args, .. } => {
-            collect_decl_from_expr(callee, module, decls);
+        Expr::MacroCall { args, .. } => {
             for arg in args {
                 collect_decl_from_expr(arg, module, decls);
             }
         }
-        Expr::MacroCall { args, .. } => {
+        Expr::Call { callee, args, .. } => {
+            collect_decl_from_expr(callee, module, decls);
             for arg in args {
                 collect_decl_from_expr(arg, module, decls);
             }
@@ -641,6 +642,7 @@ fn collect_used_in_statement(statement: &Statement, used: &mut HashSet<String>) 
                 collect_expr_idents(value, used);
             }
         }
+        Statement::MacroSemi(expr) => collect_expr_idents(&expr.node, used),
         Statement::Assign(stmt) => {
             collect_expr_idents(&stmt.target, used);
             collect_expr_idents(&stmt.value, used);
@@ -680,6 +682,11 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
             used.insert(ident.name.clone());
         }
         Expr::Literal(_) => {}
+        Expr::MacroCall { args, .. } => {
+            for arg in args {
+                collect_expr_idents(arg, used);
+            }
+        }
         Expr::Try { block, .. } => collect_used_in_block(block, used),
         Expr::TryPropagate { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Binary { left, right, .. } => {
@@ -689,11 +696,6 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
         Expr::Unary { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Call { callee, args, .. } => {
             collect_expr_idents(callee, used);
-            for arg in args {
-                collect_expr_idents(arg, used);
-            }
-        }
-        Expr::MacroCall { args, .. } => {
             for arg in args {
                 collect_expr_idents(arg, used);
             }
@@ -831,6 +833,7 @@ fn find_in_statement(stmt: &Statement, offset: usize) -> Option<(String, Span)> 
         Statement::Assign(assign) => {
             find_in_expr(&assign.target, offset).or_else(|| find_in_expr(&assign.value, offset))
         }
+        Statement::MacroSemi(expr) => find_in_expr(&expr.node, offset),
         Statement::Expr(expr) => find_in_expr(&expr.expr, offset),
         Statement::Return(ret) => {
             for value in &ret.values {

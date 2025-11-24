@@ -340,6 +340,11 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
     match statement {
         Statement::Let(stmt) => format_let_statement(out, stmt, indent),
         Statement::Assign(stmt) => format_assign_statement(out, stmt, indent),
+        Statement::MacroSemi(expr) => {
+            write_indent(out, indent);
+            out.push_str(&format!("{};\n", format_expr(&expr.node)));
+            false
+        }
         Statement::Expr(expr) => {
             match &expr.expr {
                 Expr::Match(match_expr) => {

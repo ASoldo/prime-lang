@@ -207,9 +207,16 @@ fn run_entry(path: &Path) {
     match load_package(path) {
         Ok(package) => {
             let expanded_program = expand_or_report(&package.program);
+            let expanded_modules = expanded_program
+                .program
+                .modules
+                .iter()
+                .cloned()
+                .map(|module| project::ModuleUnit { module })
+                .collect();
             let expanded_package = project::Package {
-                program: expanded_program.clone(),
-                modules: package.modules.clone(),
+                program: expanded_program.program.clone(),
+                modules: expanded_modules,
             };
             if let Err(errors) = typecheck::check_program(&expanded_program) {
                 emit_type_errors(&errors);
@@ -256,7 +263,7 @@ fn build_entry(path: &Path, name: &str) {
                 std::process::exit(1);
             }
             let mut compiler = Compiler::new();
-            if let Err(err) = compiler.compile_program(&expanded_program) {
+            if let Err(err) = compiler.compile_program(&expanded_program.program) {
                 eprintln!("Build failed: {err}");
                 std::process::exit(1);
             }
@@ -431,7 +438,7 @@ fn reject_library_entry(path: &Path) {
     }
 }
 
-fn expand_or_report(program: &language::ast::Program) -> language::ast::Program {
+fn expand_or_report(program: &language::ast::Program) -> macro_expander::ExpandedProgram {
     match macro_expander::expand_program(program) {
         Ok(expanded) => expanded,
         Err(errors) => {

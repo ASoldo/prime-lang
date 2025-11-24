@@ -1,0 +1,30 @@
+test tests.macros;
+
+macro assert_positive(value: int32) {
+  expect(value > 0, "value should stay positive");
+}
+
+macro sum_label(a: int32, b: int32) -> int32 {
+  out(`sum {a + b}`);
+  a + b
+}
+
+fn statement_macro_executes() -> bool {
+  ~assert_positive(2);
+  true
+}
+
+fn statement_macro_runs_inside_loop() -> bool {
+  let []int32 values = [1, 2, 3];
+  let mut int32 total = 0;
+  for value in values {
+    ~assert_positive(value);
+    total = total + value;
+  }
+  total == 6
+}
+
+fn expression_macro_in_statement_context() -> bool {
+  let int32 value = ~sum_label(3, 4);
+  value == 7
+}

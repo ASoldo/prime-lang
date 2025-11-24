@@ -1,6 +1,7 @@
 use crate::language::{
     ast::*,
     enum_utils::find_variant,
+    macro_expander::ExpandedProgram,
     span::Span,
     types::{TypeAnnotation, TypeExpr},
 };
@@ -17,6 +18,7 @@ pub struct TypeError {
     pub message: String,
     pub label: String,
     pub code: Option<String>,
+    pub help: Option<String>,
 }
 
 impl TypeError {
@@ -28,6 +30,7 @@ impl TypeError {
             label: message.clone(),
             message,
             code: None,
+            help: None,
         }
     }
 
@@ -146,7 +149,8 @@ struct ImplCandidate {
     block: ImplBlock,
 }
 
-pub fn check_program(program: &Program) -> Result<(), Vec<TypeError>> {
+pub fn check_program(expanded: &ExpandedProgram) -> Result<(), Vec<TypeError>> {
+    let program = &expanded.program;
     let mut registry = TypeRegistry::default();
     for module in &program.modules {
         collect_definitions(&mut registry, module);
@@ -159,10 +163,16 @@ pub fn check_program(program: &Program) -> Result<(), Vec<TypeError>> {
     checker.validate_impls();
     checker.check_program(program);
     if checker.errors.is_empty() {
-        Ok(())
-    } else {
-        Err(checker.errors)
+        return Ok(());
     }
+
+    let mut errors = checker.errors;
+    for err in &mut errors {
+        if err.help.is_none() {
+            err.help = expanded.traces.help_for(&err.path, err.span);
+        }
+    }
+    Err(errors)
 }
 
 fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
@@ -755,6 +765,9 @@ impl Checker {
             }
             Statement::Expr(expr) => {
                 self.check_expression(module, &expr.expr, None, returns, env);
+            }
+            Statement::MacroSemi(expr) => {
+                self.check_expression(module, &expr.node, None, returns, env);
             }
             Statement::Return(ret) => {
                 if returns.is_empty() && !ret.values.is_empty() {
@@ -4026,11 +4039,12 @@ fn expr_span(expr: &Expr) -> Span {
     }
 }
 
-fn stmt_span(statement: &Statement) -> Span {
+    fn stmt_span(statement: &Statement) -> Span {
     match statement {
         Statement::Let(stmt) => stmt.span,
         Statement::Assign(AssignStmt { target, .. }) => expr_span(target),
         Statement::Expr(expr) => expr_span(&expr.expr),
+        Statement::MacroSemi(expr) => expr.span,
         Statement::Return(_) => Span::new(0, 0),
         Statement::While(while_stmt) => while_stmt.body.span,
         Statement::Loop(stmt) => stmt.span,
@@ -4293,16 +4307,57 @@ fn named_type_name<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::check_program;
-    use crate::language::{ast::Program, parser::parse_module};
+    use crate::language::{
+        ast::Program,
+        macro_expander::{self, ExpandedProgram, ExpansionTraces},
+        parser::parse_module,
+    };
     use std::path::PathBuf;
 
     fn typecheck_source(source: &str) -> Result<(), Vec<super::TypeError>> {
         let module =
             parse_module("tests::module", PathBuf::from("test.prime"), source).expect("parse");
-        let program = Program {
-            modules: vec![module],
+        let program = Program { modules: vec![module] };
+        let expanded = ExpandedProgram {
+            program,
+            traces: ExpansionTraces::default(),
         };
-        check_program(&program)
+        check_program(&expanded)
+    }
+
+    #[test]
+    fn type_errors_include_macro_trace() {
+        let module =
+            parse_module(
+                "tests::macro_trace",
+                PathBuf::from("test.prime"),
+                r#"
+module tests::macro_trace;
+
+macro make_value() -> int32 {
+  "oops"
+}
+
+fn use_it() {
+  let int32 value = ~make_value();
+}
+"#,
+            )
+            .expect("parse macro test");
+        let program = Program { modules: vec![module] };
+        let expanded = macro_expander::expand_program(&program).expect("expand macros");
+        let Err(errors) = check_program(&expanded) else {
+            panic!("expected a type error for macro output");
+        };
+        let help = errors[0].help.clone().unwrap_or_default();
+        assert!(
+            help.contains("make_value"),
+            "missing macro name in trace help: {help}"
+        );
+        assert!(
+            help.contains("expansion"),
+            "missing expansion wording in trace help: {help}"
+        );
     }
 
     #[test]

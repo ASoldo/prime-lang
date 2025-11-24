@@ -1,5 +1,5 @@
 use crate::{
-    language::typecheck,
+    language::{macro_expander, typecheck},
     project,
     project::manifest::{PackageManifest, canonical_module_name},
     runtime::{Interpreter, value::Value},
@@ -121,19 +121,47 @@ fn run_test_file(root: &Path, path: &Path) -> Result<(), String> {
         }
     };
 
-    if let Err(errors) = typecheck::check_program(&package.program) {
+    let expanded_program = match macro_expander::expand_program(&package.program) {
+        Ok(program) => program,
+        Err(errors) => {
+            let file_errors: Vec<project::FileErrors> = errors
+                .into_iter()
+                .map(|err| project::FileErrors {
+                    source: fs::read_to_string(&err.path).unwrap_or_default(),
+                    path: err.path,
+                    errors: err.errors,
+                })
+                .collect();
+            emit_syntax_errors(&file_errors);
+            return Err("macro expansion failed".into());
+        }
+    };
+
+    if let Err(errors) = typecheck::check_program(&expanded_program) {
         emit_type_errors(&errors);
         return Err("typechecking failed".into());
     }
 
-    let mut interpreter = Interpreter::new(package.clone());
+    let expanded_modules = expanded_program
+        .program
+        .modules
+        .iter()
+        .cloned()
+        .map(|module| project::ModuleUnit { module })
+        .collect();
+    let expanded_package = project::Package {
+        program: expanded_program.program.clone(),
+        modules: expanded_modules,
+    };
+
+    let mut interpreter = Interpreter::new(expanded_package.clone());
     if let Err(err) = interpreter.bootstrap() {
         report_runtime_error(&err);
         return Err("bootstrap failed".into());
     }
 
     let mut failures = Vec::new();
-    let test_module = package
+    let test_module = expanded_package
         .modules
         .iter()
         .find(|unit| unit.module.path == canonical)
