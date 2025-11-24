@@ -248,6 +248,7 @@ fn module_symbol_definitions(
             )),
             Item::Macro(_) => {}
             Item::Impl(_) => {}
+            Item::MacroInvocation(_) => {}
         }
     }
     defs
@@ -1487,6 +1488,7 @@ fn collect_symbols(uri: &Uri, text: &str, module: &Module) -> Vec<SymbolInformat
                     ));
                 }
             }
+            Item::MacroInvocation(_) => {}
         }
     }
     symbols

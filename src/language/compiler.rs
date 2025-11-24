@@ -1143,6 +1143,7 @@ impl Compiler {
                         self.register_impl_block(&module.name, block)?;
                     }
                     Item::Macro(_) => {}
+                    Item::MacroInvocation(_) => {}
                     Item::Function(func) => {
                         self.register_function(func, &module.name)?;
                     }

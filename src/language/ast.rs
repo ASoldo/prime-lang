@@ -80,6 +80,7 @@ pub enum Item {
     Function(FunctionDef),
     Macro(MacroDef),
     Const(ConstDef),
+    MacroInvocation(MacroInvocation),
 }
 
 #[derive(Clone, Debug)]
@@ -161,6 +162,14 @@ pub struct MacroParam {
 pub enum MacroBody {
     Block(Box<Block>),
     Expr(Spanned<Expr>),
+    Items(Vec<Item>, Span),
+}
+
+#[derive(Clone, Debug)]
+pub struct MacroInvocation {
+    pub name: Identifier,
+    pub args: Vec<Expr>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]

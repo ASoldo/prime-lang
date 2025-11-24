@@ -217,6 +217,7 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
                 );
             }
             Item::Macro(_) => {}
+            Item::MacroInvocation(_) => {}
             Item::Impl(block) => {
                 for method in &block.methods {
                     let mut method_def = method.clone();

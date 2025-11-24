@@ -156,11 +156,10 @@ impl<'a> Expander<'a> {
         for module in &program.modules {
             self.current_path = Some(module.path.clone());
             let mut module_errors = Vec::new();
-            let expanded_items = module
-                .items
-                .iter()
-                .map(|item| self.expand_item(item, &mut module_errors))
-                .collect();
+            let mut expanded_items = Vec::new();
+            for item in &module.items {
+                self.expand_item(item, &mut module_errors, &mut expanded_items);
+            }
             if !module_errors.is_empty() {
                 errors.push(MacroExpansionError {
                     path: module.path.clone(),
@@ -188,13 +187,109 @@ impl<'a> Expander<'a> {
         }
     }
 
-    fn expand_item(&mut self, item: &Item, errors: &mut Vec<SyntaxError>) -> Item {
+    fn expand_item(&mut self, item: &Item, errors: &mut Vec<SyntaxError>, out: &mut Vec<Item>) {
         match item {
-            Item::Function(def) => Item::Function(self.expand_function(def, errors)),
-            Item::Const(def) => Item::Const(self.expand_const(def, errors)),
-            Item::Impl(block) => Item::Impl(self.expand_impl(block, errors)),
-            Item::Struct(_) | Item::Enum(_) | Item::Interface(_) | Item::Macro(_) => item.clone(),
+            Item::Function(def) => out.push(Item::Function(self.expand_function(def, errors))),
+            Item::Const(def) => out.push(Item::Const(self.expand_const(def, errors))),
+            Item::Impl(block) => out.push(Item::Impl(self.expand_impl(block, errors))),
+            Item::Struct(_) | Item::Enum(_) | Item::Interface(_) | Item::Macro(_) => {
+                out.push(item.clone())
+            }
+            Item::MacroInvocation(invocation) => {
+                let expanded = self.expand_item_macro(invocation, errors);
+                out.extend(expanded);
+            }
         }
+    }
+
+    fn expand_item_macro(
+        &mut self,
+        invocation: &MacroInvocation,
+        errors: &mut Vec<SyntaxError>,
+    ) -> Vec<Item> {
+        self.stack.push(MacroFrame {
+            name: invocation.name.name.clone(),
+            call_span: invocation.span,
+        });
+        let expanded_args: Vec<Expr> = invocation
+            .args
+            .iter()
+            .map(|arg| self.expand_expr(arg, 1, invocation.span, errors))
+            .collect();
+        let Some((def, _module)) = self.registry.get(&invocation.name.name) else {
+            let mut err = SyntaxError::new(
+                format!("unknown macro `{}`", invocation.name.name),
+                invocation.span,
+            );
+            err.help = self.trace_help();
+            errors.push(err);
+            self.stack.pop();
+            return vec![Item::MacroInvocation(MacroInvocation {
+                name: invocation.name.clone(),
+                args: expanded_args,
+                span: invocation.span,
+            })];
+        };
+        if def.params.len() != expanded_args.len() {
+            let mut err = SyntaxError::new(
+                format!(
+                    "macro `{}` expects {} argument(s), found {}",
+                    def.name,
+                    def.params.len(),
+                    expanded_args.len()
+                ),
+                invocation.span,
+            );
+            err.help = self.trace_help();
+            errors.push(err);
+            self.stack.pop();
+            return vec![Item::MacroInvocation(MacroInvocation {
+                name: invocation.name.clone(),
+                args: expanded_args,
+                span: invocation.span,
+            })];
+        }
+
+        let MacroBody::Items(items, body_span) = &def.body else {
+            let mut err = SyntaxError::new(
+                format!("macro `{}` cannot be used as an item macro", def.name),
+                invocation.span,
+            );
+            err.help = self.trace_help();
+            errors.push(err);
+            self.stack.pop();
+            return vec![Item::MacroInvocation(MacroInvocation {
+                name: invocation.name.clone(),
+                args: expanded_args,
+                span: invocation.span,
+            })];
+        };
+
+        let mut substitution_map = HashMap::new();
+        for (param, arg) in def.params.iter().zip(expanded_args.iter()) {
+            substitution_map.insert(param.name.clone(), arg.clone());
+        }
+
+        self.gensym += 1;
+        let call_id = self.gensym;
+
+        let mut substituted: Vec<Item> = items
+            .iter()
+            .cloned()
+            .map(|item| substitute_item(item, &substitution_map))
+            .collect();
+
+        let macro_locals = collect_bindings_from_body(&def.body);
+        substituted = rename_macro_locals_items(substituted, call_id, &macro_locals);
+
+        let mut output = Vec::new();
+        for item in substituted {
+            self.expand_item(&item, errors, &mut output);
+        }
+
+        self.record_macro_trace(invocation.span.union(*body_span));
+        self.stack.pop();
+        output
     }
 
     fn expand_function(&mut self, def: &FunctionDef, errors: &mut Vec<SyntaxError>) -> FunctionDef {
@@ -420,6 +515,20 @@ impl<'a> Expander<'a> {
                         let inlined_body = match &def.body {
                             MacroBody::Expr(expr) => substitute_expr(expr.node.clone(), &substitution_map),
                             MacroBody::Block(block) => substitute_expr(Expr::Block(block.clone()), &substitution_map),
+                            MacroBody::Items(_, _) => {
+                                let mut err = SyntaxError::new(
+                                    format!("macro `{}` cannot be used as an expression macro", def.name),
+                                    *span,
+                                );
+                                err.help = self.trace_help();
+                                errors.push(err);
+                                self.stack.pop();
+                                return Expr::MacroCall {
+                                    name: name.clone(),
+                                    args: expanded_args,
+                                    span: *span,
+                                };
+                            }
                         };
                         let macro_locals = collect_bindings_from_body(&def.body);
                         let renamed_body = rename_macro_locals(&inlined_body, call_id, &macro_locals);
@@ -659,7 +768,13 @@ impl<'a> Expander<'a> {
 
 fn substitute_expr(expr: Expr, map: &HashMap<String, Expr>) -> Expr {
     match expr {
-        Expr::Identifier(ident) => map.get(&ident.name).cloned().unwrap_or(Expr::Identifier(ident)),
+        Expr::Identifier(mut ident) => {
+            if let Some(raw) = ident.name.strip_prefix('@') {
+                ident.name = raw.to_string();
+                return Expr::Identifier(ident);
+            }
+            map.get(&ident.name).cloned().unwrap_or(Expr::Identifier(ident))
+        }
         Expr::Binary { op, left, right, span } => Expr::Binary {
             op,
             left: Box::new(substitute_expr(*left, map)),
@@ -867,6 +982,44 @@ fn substitute_statement(stmt: Statement, map: &HashMap<String, Expr>) -> Stateme
     }
 }
 
+fn substitute_item(item: Item, map: &HashMap<String, Expr>) -> Item {
+    match item {
+        Item::Function(def) => Item::Function(substitute_function(def, map)),
+        Item::Const(def) => Item::Const(ConstDef {
+            value: substitute_expr(def.value, map),
+            ..def
+        }),
+        Item::Impl(block) => Item::Impl(ImplBlock {
+            methods: block
+                .methods
+                .into_iter()
+                .map(|method| substitute_function(method, map))
+                .collect(),
+            ..block
+        }),
+        Item::MacroInvocation(inv) => Item::MacroInvocation(MacroInvocation {
+            args: inv
+                .args
+                .into_iter()
+                .map(|expr| substitute_expr(expr, map))
+                .collect(),
+            ..inv
+        }),
+        other => other,
+    }
+}
+
+fn substitute_function(def: FunctionDef, map: &HashMap<String, Expr>) -> FunctionDef {
+    let body = match def.body {
+        FunctionBody::Expr(expr) => FunctionBody::Expr(Spanned::new(
+            substitute_expr(expr.node, map),
+            expr.span,
+        )),
+        FunctionBody::Block(block) => FunctionBody::Block(Box::new(substitute_block(*block, map))),
+    };
+    FunctionDef { body, ..def }
+}
+
 fn substitute_if(if_expr: IfExpr, map: &HashMap<String, Expr>) -> IfExpr {
     IfExpr {
         condition: match if_expr.condition {
@@ -893,6 +1046,13 @@ fn collect_bindings_from_body(body: &MacroBody) -> HashSet<String> {
     match body {
         MacroBody::Expr(expr) => collect_bindings_expr(&expr.node),
         MacroBody::Block(block) => collect_bindings_block(block),
+        MacroBody::Items(items, _) => {
+            let mut set = HashSet::new();
+            for item in items {
+                set.extend(collect_bindings_item(item));
+            }
+            set
+        }
     }
 }
 
@@ -1107,9 +1267,31 @@ fn rename_macro_locals(expr: &Expr, call_id: usize, locals: &HashSet<String>) ->
     rename_expr(expr.clone(), &map)
 }
 
+fn rename_macro_locals_items(
+    items: Vec<Item>,
+    call_id: usize,
+    locals: &HashSet<String>,
+) -> Vec<Item> {
+    if locals.is_empty() {
+        return items;
+    }
+    let mut map = HashMap::new();
+    for (idx, name) in locals.iter().enumerate() {
+        map.insert(name.clone(), format!("__macro_local_{call_id}_{idx}"));
+    }
+    items
+        .into_iter()
+        .map(|item| rename_item(item, &map))
+        .collect()
+}
+
 fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
     match expr {
         Expr::Identifier(mut ident) => {
+            if let Some(raw) = ident.name.strip_prefix('@') {
+                ident.name = raw.to_string();
+                return Expr::Identifier(ident);
+            }
             if let Some(new) = map.get(&ident.name) {
                 ident.name = new.clone();
             }
@@ -1244,6 +1426,54 @@ fn rename_block(block: Block, map: &HashMap<String, String>) -> Block {
             .collect(),
         tail: block.tail.map(|expr| Box::new(rename_expr(*expr, map))),
         span: block.span,
+    }
+}
+
+fn rename_function(def: FunctionDef, map: &HashMap<String, String>) -> FunctionDef {
+    let params: Vec<FunctionParam> = def
+        .params
+        .into_iter()
+        .map(|mut param| {
+            if let Some(new) = map.get(&param.name) {
+                param.name = new.clone();
+            }
+            param
+        })
+        .collect();
+    let body = match def.body {
+        FunctionBody::Expr(expr) => FunctionBody::Expr(Spanned::new(
+            rename_expr(expr.node, map),
+            expr.span,
+        )),
+        FunctionBody::Block(block) => FunctionBody::Block(Box::new(rename_block(*block, map))),
+    };
+    FunctionDef { params, body, ..def }
+}
+
+fn rename_item(item: Item, map: &HashMap<String, String>) -> Item {
+    match item {
+        Item::Function(def) => Item::Function(rename_function(def, map)),
+        Item::Const(def) => Item::Const(ConstDef {
+            value: rename_expr(def.value, map),
+            ..def
+        }),
+        Item::Impl(block) => Item::Impl(ImplBlock {
+            methods: block
+                .methods
+                .into_iter()
+                .map(|method| rename_function(method, map))
+                .collect(),
+            ..block
+        }),
+        Item::MacroInvocation(inv) => Item::MacroInvocation(MacroInvocation {
+            args: inv
+                .args
+                .into_iter()
+                .map(|expr| rename_expr(expr, map))
+                .collect(),
+            ..inv
+        }),
+        other => other,
     }
 }
 
@@ -1399,6 +1629,40 @@ fn rename_pattern(pattern: Pattern, map: &HashMap<String, String>) -> Pattern {
         },
         Pattern::Literal(_) | Pattern::Wildcard => pattern,
     }
+}
+
+fn collect_bindings_item(item: &Item) -> HashSet<String> {
+    let mut set = HashSet::new();
+    match item {
+        Item::Function(def) => {
+            for param in &def.params {
+                set.insert(param.name.clone());
+            }
+            match &def.body {
+                FunctionBody::Expr(expr) => set.extend(collect_bindings_expr(&expr.node)),
+                FunctionBody::Block(block) => set.extend(collect_bindings_block(block)),
+            }
+        }
+        Item::Const(def) => set.extend(collect_bindings_expr(&def.value)),
+        Item::Impl(block) => {
+            for method in &block.methods {
+                for param in &method.params {
+                    set.insert(param.name.clone());
+                }
+                match &method.body {
+                    FunctionBody::Expr(expr) => set.extend(collect_bindings_expr(&expr.node)),
+                    FunctionBody::Block(block) => set.extend(collect_bindings_block(block)),
+                }
+            }
+        }
+        Item::MacroInvocation(inv) => {
+            for arg in &inv.args {
+                set.extend(collect_bindings_expr(arg));
+            }
+        }
+        Item::Struct(_) | Item::Enum(_) | Item::Interface(_) | Item::Macro(_) => {}
+    }
+    set
 }
 
 fn expr_span_local(expr: &Expr) -> Span {

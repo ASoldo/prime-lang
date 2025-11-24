@@ -516,6 +516,9 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> Result<Item, SyntaxError> {
+        if self.matches(TokenKind::Tilde) {
+            return self.parse_item_macro_invocation();
+        }
         let mut visibility = Visibility::Private;
         if self.matches(TokenKind::Pub) {
             visibility = Visibility::Public;
@@ -834,12 +837,16 @@ impl Parser {
             let span = expr_span(&expr);
             self.expect(TokenKind::Semi)?;
             MacroBody::Expr(Spanned::new(expr, span))
+        } else if self.check(TokenKind::LBrace) && self.macro_body_looks_like_items() {
+            let (items, span) = self.parse_macro_items()?;
+            MacroBody::Items(items, span)
         } else {
             MacroBody::Block(Box::new(self.parse_block()?))
         };
         let end = match &body {
             MacroBody::Block(block) => block.span.end,
             MacroBody::Expr(expr) => expr.span.end,
+            MacroBody::Items(_, span) => span.end,
         };
         Ok(MacroDef {
             name: name.name,
@@ -865,6 +872,99 @@ impl Parser {
             ty,
             span: Span::new(start, end),
         })
+    }
+
+    fn parse_macro_items(&mut self) -> Result<(Vec<Item>, Span), SyntaxError> {
+        let start = self.expect(TokenKind::LBrace)?.span.start;
+        let mut items = Vec::new();
+        while !self.check(TokenKind::RBrace) && !self.is_eof() {
+            if self.matches(TokenKind::Semi) {
+                continue;
+            }
+            match self.parse_item() {
+                Ok(item) => items.push(item),
+                Err(err) => {
+                    self.report(err);
+                    self.synchronize_item();
+                }
+            }
+        }
+        let end = self.expect(TokenKind::RBrace)?.span.end;
+        Ok((items, Span::new(start, end)))
+    }
+
+    fn parse_item_macro_invocation(&mut self) -> Result<Item, SyntaxError> {
+        let start = self
+            .previous_span()
+            .map(|s| s.start)
+            .unwrap_or_else(|| self.current_span_start());
+        let name = self.expect_identifier("Expected macro name after '~'")?;
+        self.expect(TokenKind::LParen)?;
+        self.enter_paren();
+        let mut args = Vec::new();
+        if !self.check(TokenKind::RParen) {
+            loop {
+                args.push(self.parse_expression()?);
+                if self.matches(TokenKind::Comma) {
+                    if self.check(TokenKind::RParen) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        let end = match self.expect(TokenKind::RParen) {
+            Ok(token) => token.span.end,
+            Err(err) => {
+                self.exit_paren();
+                return Err(err);
+            }
+        };
+        self.exit_paren();
+        self.expect(TokenKind::Semi)?;
+        Ok(Item::MacroInvocation(MacroInvocation {
+            name,
+            args,
+            span: Span::new(start, end),
+        }))
+    }
+
+    fn macro_body_looks_like_items(&self) -> bool {
+        let mut idx = 1; // look after '{'
+        while matches!(self.peek_kind_n(idx), Some(TokenKind::Semi)) {
+            idx += 1;
+        }
+        let next = self.peek_kind_n(idx);
+        match next {
+            Some(TokenKind::Pub) => matches!(
+                self.peek_kind_n(idx + 1),
+                Some(
+                    TokenKind::Struct
+                        | TokenKind::Enum
+                        | TokenKind::Interface
+                        | TokenKind::Impl
+                        | TokenKind::Macro
+                        | TokenKind::Fn
+                        | TokenKind::Const
+                        | TokenKind::Tilde
+                )
+            ),
+            Some(
+                TokenKind::Struct
+                | TokenKind::Enum
+                | TokenKind::Interface
+                | TokenKind::Impl
+                | TokenKind::Macro
+                | TokenKind::Fn
+                | TokenKind::Const
+                | TokenKind::ModuleKw
+                | TokenKind::LibraryKw
+                | TokenKind::TestKw
+                | TokenKind::Tilde,
+            ) => true,
+            _ => false,
+        }
     }
 
     fn parse_const(&mut self, visibility: Visibility) -> Result<ConstDef, SyntaxError> {
@@ -1684,6 +1784,15 @@ impl Parser {
             self.rewind();
             let block = self.parse_block()?;
             return Ok(Expr::Block(Box::new(block)));
+        }
+        if self.matches(TokenKind::At) {
+            let at_start = self.previous_span().map(|s| s.start).unwrap_or_else(|| self.current_span_start());
+            let ident = self.expect_identifier("Expected identifier after '@'")?;
+            let span = Span::new(at_start, ident.span.end);
+            return Ok(Expr::Identifier(Identifier {
+                name: format!("@{}", ident.name),
+                span,
+            }));
         }
         if self.matches(TokenKind::Tilde) {
             let start = self

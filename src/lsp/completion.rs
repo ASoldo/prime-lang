@@ -1032,6 +1032,7 @@ pub fn general_completion_items(
                 });
             }
             Item::Impl(_) => {}
+            Item::MacroInvocation(_) => {}
         }
     }
 
@@ -1133,6 +1134,7 @@ pub fn general_completion_items(
                         });
                     }
                     Item::Impl(_) => {}
+                    Item::MacroInvocation(_) => {}
                 }
             }
         }

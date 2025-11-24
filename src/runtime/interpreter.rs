@@ -177,6 +177,7 @@ impl Interpreter {
                         self.register_impl(&module.name, block.clone())?;
                     }
                     Item::Macro(_) => {}
+                    Item::MacroInvocation(_) => {}
                     Item::Function(def) => {
                         self.register_function(&module.name, def.clone())?;
                     }

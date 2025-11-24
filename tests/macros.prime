@@ -9,6 +9,14 @@ macro sum_label(a: int32, b: int32) -> int32 {
   a + b
 }
 
+macro add_item() {
+  fn generated_value() -> int32 {
+    42
+  }
+}
+
+~add_item();
+
 fn statement_macro_executes() -> bool {
   ~assert_positive(2);
   true
@@ -27,4 +35,18 @@ fn statement_macro_runs_inside_loop() -> bool {
 fn expression_macro_in_statement_context() -> bool {
   let int32 value = ~sum_label(3, 4);
   value == 7
+}
+
+macro capture_outer() -> int32 {
+  @value + 1
+}
+
+fn capture_escape_opt_in() -> bool {
+  let int32 value = 5;
+  let int32 bumped = ~capture_outer();
+  bumped == 6
+}
+
+fn item_macro_generates_function() -> bool {
+  generated_value() == 42
 }

@@ -35,6 +35,7 @@ pub fn format_module(module: &Module) -> String {
             Item::Function(def) => format_function(&mut out, def),
             Item::Macro(def) => format_macro(&mut out, def),
             Item::Const(def) => format_const(&mut out, def),
+            Item::MacroInvocation(inv) => format_macro_invocation(&mut out, inv),
         }
     }
 
@@ -201,6 +202,11 @@ fn format_macro(out: &mut String, def: &MacroDef) {
             out.push_str(&format_expr(&expr.node));
             out.push_str(";\n");
         }
+        MacroBody::Items(items, _) => {
+            out.push_str(" {\n");
+            format_macro_items(out, items);
+            out.push_str("}\n");
+        }
     }
 }
 
@@ -208,6 +214,47 @@ fn format_macro_param(param: &MacroParam) -> String {
     match &param.ty {
         Some(ty) => format!("{}: {}", param.name, format_type(&ty.ty)),
         None => param.name.clone(),
+    }
+}
+
+fn format_macro_items(out: &mut String, items: &[Item]) {
+    for (idx, item) in items.iter().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        let mut buf = String::new();
+        match item {
+            Item::Struct(def) => format_struct(&mut buf, def),
+            Item::Enum(def) => format_enum(&mut buf, def),
+            Item::Interface(def) => format_interface(&mut buf, def),
+            Item::Impl(def) => format_impl(&mut buf, def),
+            Item::Function(def) => format_function(&mut buf, def),
+            Item::Macro(def) => format_macro(&mut buf, def),
+            Item::Const(def) => format_const(&mut buf, def),
+            Item::MacroInvocation(inv) => format_macro_invocation(&mut buf, inv),
+        }
+        push_indented(out, &buf, 2);
+    }
+}
+
+fn format_macro_invocation(out: &mut String, inv: &MacroInvocation) {
+    out.push_str(&format!("~{}(", inv.name.name));
+    for (idx, arg) in inv.args.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&format_expr(arg));
+    }
+    out.push_str(");\n");
+}
+
+fn push_indented(out: &mut String, text: &str, indent: usize) {
+    for line in text.lines() {
+        for _ in 0..indent {
+            out.push(' ');
+        }
+        out.push_str(line);
+        out.push('\n');
     }
 }
 
