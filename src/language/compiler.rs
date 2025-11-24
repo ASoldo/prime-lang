@@ -1104,6 +1104,7 @@ impl Compiler {
         self.interfaces.clear();
         self.impls.clear();
         self.consts.clear();
+        // First collect types and interfaces so impls are validated without depending on module order.
         for module in &program.modules {
             for item in &module.items {
                 match item {
@@ -1139,17 +1140,25 @@ impl Compiler {
                             },
                         );
                     }
+                    Item::Macro(_) | Item::MacroInvocation(_) | Item::Impl(_) | Item::Function(_) | Item::Const(_) => {}
+                }
+            }
+        }
+
+        // With interfaces/types present, register impls, functions, and consts.
+        for module in &program.modules {
+            for item in &module.items {
+                match item {
                     Item::Impl(block) => {
                         self.register_impl_block(&module.name, block)?;
                     }
-                    Item::Macro(_) => {}
-                    Item::MacroInvocation(_) => {}
                     Item::Function(func) => {
                         self.register_function(func, &module.name)?;
                     }
                     Item::Const(const_def) => {
                         self.consts.push((module.name.clone(), const_def.clone()));
                     }
+                    Item::Struct(_) | Item::Enum(_) | Item::Interface(_) | Item::Macro(_) | Item::MacroInvocation(_) => {}
                 }
             }
         }

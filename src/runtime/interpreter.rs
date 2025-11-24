@@ -131,6 +131,7 @@ impl Interpreter {
         if self.bootstrapped {
             return Ok(());
         }
+        // First collect types and interfaces so impl blocks do not depend on module order.
         for module in self.package.program.modules.clone() {
             for item in &module.items {
                 match item {
@@ -173,17 +174,25 @@ impl Interpreter {
                     Item::Interface(def) => {
                         self.register_interface(&module.name, def.clone())?;
                     }
+                    Item::Macro(_) | Item::MacroInvocation(_) | Item::Impl(_) | Item::Function(_) | Item::Const(_) => {}
+                }
+            }
+        }
+
+        // Now that interfaces/types exist, register impls, functions, and consts.
+        for module in self.package.program.modules.clone() {
+            for item in &module.items {
+                match item {
                     Item::Impl(block) => {
                         self.register_impl(&module.name, block.clone())?;
                     }
-                    Item::Macro(_) => {}
-                    Item::MacroInvocation(_) => {}
                     Item::Function(def) => {
                         self.register_function(&module.name, def.clone())?;
                     }
                     Item::Const(const_def) => {
                         self.consts.push((module.name.clone(), const_def.clone()));
                     }
+                    Item::Struct(_) | Item::Enum(_) | Item::Interface(_) | Item::Macro(_) | Item::MacroInvocation(_) => {}
                 }
             }
         }
