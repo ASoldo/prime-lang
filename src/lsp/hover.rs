@@ -1,6 +1,5 @@
 use crate::language::{
     ast::{ConstDef, EnumDef, EnumVariant, FunctionDef, InterfaceDef, Item, MacroDef, MacroParamKind, Module, StructDef, Visibility},
-    lexer::lex,
     span::Span,
     token::{Token, TokenKind},
     types::{Mutability, TypeExpr},
@@ -155,9 +154,11 @@ pub fn hover_for_token(
                 let ty = decl_info.ty.as_ref();
                 let mut content = identifier_hover(name, ty);
                 if let Some(value_span) = decl_info.value_span {
-                    content.push_str("\nPattern:\n```prime\n");
-                    content.push_str(&extract_text(text, value_span.start, value_span.end));
-                    content.push_str("\n```");
+                    content.push_str("\nPattern:\n\n");
+                    content.push_str(&code_block(
+                        "md",
+                        &extract_text(text, value_span.start, value_span.end),
+                    ));
                 }
                 Some(content)
             } else if let Some(info) = vars.iter().rev().find(|var| var.name == *name) {
@@ -224,89 +225,132 @@ pub fn hover_for_token(
 
 fn builtin_function_docs(name: &str) -> Option<String> {
     match name {
-        "box_new" => Some("Built-in heap helper\n```prime\nfn box_new[T](value: T) -> Box[T]\n```"
-            .into()),
-        "box_get" => Some(
-            "Built-in heap helper\n```prime\nfn box_get[T](value: Box[T]) -> T\n```".into(),
-        ),
-        "box_set" => Some(
-            "Built-in heap helper\n```prime\nfn box_set[T](value: Box[T], new_value: T) -> ()\n```"
-                .into(),
-        ),
-        "box_take" => Some(
-            "Built-in heap helper\n```prime\nfn box_take[T](value: Box[T]) -> T\n```".into(),
-        ),
-        "slice_new" => Some(
-            "Built-in slice helper\n```prime\nfn slice_new[T]() -> []T\n```".into(),
-        ),
-        "slice_push" => Some(
-            "Built-in slice helper\n```prime\nfn slice_push[T](slice: []T, value: T) -> ()\n```"
-                .into(),
-        ),
-        "slice_len" => Some(
-            "Built-in slice helper\n```prime\nfn slice_len[T](slice: []T) -> int32\n```".into(),
-        ),
-        "slice_get" => Some(
-            "Built-in slice helper\n```prime\nfn slice_get[T](slice: []T, index: int32) -> Option[T]\n```"
-                .into(),
-        ),
-        "map_new" => Some(
-            "Built-in map helper\n```prime\nfn map_new[V]() -> Map[string, V]\n```".into(),
-        ),
-        "map_insert" => Some(
-            "Built-in map helper\n```prime\nfn map_insert[V](map: Map[string, V], key: string, value: V) -> ()\n```"
-                .into(),
-        ),
-        "map_get" => Some(
-            "Built-in map helper\n```prime\nfn map_get[V](map: Map[string, V], key: string) -> Option[V]\n```\nEquivalent available via `map.get(key)`"
-                .into(),
-        ),
-        "assert" => Some("Built-in test helper\n```prime\nfn assert(cond: bool) -> ()\n```\nPanics if `cond` is false.".into()),
-        "expect" => Some("Built-in test helper\n```prime\nfn expect(cond: bool, message: string) -> ()\n```\nPanics with `message` if `cond` is false.".into()),
-        "str_len" => Some("Built-in string helper\n```prime\nfn str_len(input: string) -> int32\n```".into()),
-        "str_contains" => Some("Built-in string helper\n```prime\nfn str_contains(haystack: string, needle: string) -> bool\n```".into()),
-        "str_trim" => Some("Built-in string helper\n```prime\nfn str_trim(input: string) -> string\n```".into()),
-        "str_split" => Some("Built-in string helper\n```prime\nfn str_split(input: string, delim: string) -> []string\n```".into()),
-        "min" => Some("Built-in math helper\n```prime\nfn min(a: int32, b: int32) -> int32\n```\nWorks on integer values.".into()),
-        "max" => Some("Built-in math helper\n```prime\nfn max(a: int32, b: int32) -> int32\n```\nWorks on integer values.".into()),
-        "abs" => Some("Built-in math helper\n```prime\nfn abs(value: int32) -> int32\n```".into()),
-        "channel" => Some(
-            "Built-in concurrency helper\n```prime\nfn channel[T]() -> (Sender[T], Receiver[T])\n```\nCreates a paired sender/receiver.".into(),
-        ),
-        "send" => Some(
-            "Built-in concurrency helper\n```prime\nfn send[T](tx: Sender[T], value: T) -> Result[(), string]\n```\nReturns `Err` when the channel is closed.".into(),
-        ),
-        "recv" => Some(
-            "Built-in concurrency helper\n```prime\nfn recv[T](rx: Receiver[T]) -> Option[T]\n```\nReturns `None` after the channel closes and drains.".into(),
-        ),
-        "close" => Some(
-            "Built-in concurrency helper\n```prime\nfn close[T](tx: Sender[T]) -> ()\n```\nCompletes the sender; receivers will observe `None` once drained.".into(),
-        ),
-        "join" => Some(
-            "Built-in concurrency helper\n```prime\nfn join[T](handle: JoinHandle[T]) -> T\n```\nWaits for `spawn` to finish and produces its value.".into(),
-        ),
-        "ptr" => Some(
-            "Built-in pointer helper\n```prime\nfn ptr[T](value: &T) -> *T\n```\nCreates a raw pointer from an existing reference without changing ownership.".into(),
-        ),
-        "ptr_mut" => Some(
-            "Built-in pointer helper\n```prime\nfn ptr_mut[T](value: &mut T) -> *mut T\n```\nCreates a mutable raw pointer from an existing mutable reference.".into(),
-        ),
+        "box_new" => Some(format!(
+            "Built-in heap helper\n{}",
+            code_block("prime", "fn box_new[T](value: T) -> Box[T]")
+        )),
+        "box_get" => Some(format!(
+            "Built-in heap helper\n{}",
+            code_block("prime", "fn box_get[T](value: Box[T]) -> T")
+        )),
+        "box_set" => Some(format!(
+            "Built-in heap helper\n{}",
+            code_block("prime", "fn box_set[T](value: Box[T], new_value: T) -> ()")
+        )),
+        "box_take" => Some(format!(
+            "Built-in heap helper\n{}",
+            code_block("prime", "fn box_take[T](value: Box[T]) -> T")
+        )),
+        "slice_new" => Some(format!(
+            "Built-in slice helper\n{}",
+            code_block("prime", "fn slice_new[T]() -> []T")
+        )),
+        "slice_push" => Some(format!(
+            "Built-in slice helper\n{}",
+            code_block("prime", "fn slice_push[T](slice: []T, value: T) -> ()")
+        )),
+        "slice_len" => Some(format!(
+            "Built-in slice helper\n{}",
+            code_block("prime", "fn slice_len[T](slice: []T) -> int32")
+        )),
+        "slice_get" => Some(format!(
+            "Built-in slice helper\n{}",
+            code_block("prime", "fn slice_get[T](slice: []T, index: int32) -> Option[T]")
+        )),
+        "map_new" => Some(format!(
+            "Built-in map helper\n{}",
+            code_block("prime", "fn map_new[V]() -> Map[string, V]")
+        )),
+        "map_insert" => Some(format!(
+            "Built-in map helper\n{}",
+            code_block("prime", "fn map_insert[V](map: Map[string, V], key: string, value: V) -> ()")
+        )),
+        "map_get" => Some(format!(
+            "Built-in map helper\n{}\nEquivalent available via `map.get(key)`",
+            code_block("prime", "fn map_get[V](map: Map[string, V], key: string) -> Option[V]")
+        )),
+        "assert" => Some(format!(
+            "Built-in test helper\n{}\nPanics if `cond` is false.",
+            code_block("prime", "fn assert(cond: bool) -> ()")
+        )),
+        "expect" => Some(format!(
+            "Built-in test helper\n{}\nPanics with `message` if `cond` is false.",
+            code_block("prime", "fn expect(cond: bool, message: string) -> ()")
+        )),
+        "str_len" => Some(format!(
+            "Built-in string helper\n{}",
+            code_block("prime", "fn str_len(input: string) -> int32")
+        )),
+        "str_contains" => Some(format!(
+            "Built-in string helper\n{}",
+            code_block("prime", "fn str_contains(haystack: string, needle: string) -> bool")
+        )),
+        "str_trim" => Some(format!(
+            "Built-in string helper\n{}",
+            code_block("prime", "fn str_trim(input: string) -> string")
+        )),
+        "str_split" => Some(format!(
+            "Built-in string helper\n{}",
+            code_block("prime", "fn str_split(input: string, delim: string) -> []string")
+        )),
+        "min" => Some(format!(
+            "Built-in math helper\n{}\nWorks on integer values.",
+            code_block("prime", "fn min(a: int32, b: int32) -> int32")
+        )),
+        "max" => Some(format!(
+            "Built-in math helper\n{}\nWorks on integer values.",
+            code_block("prime", "fn max(a: int32, b: int32) -> int32")
+        )),
+        "abs" => Some(format!(
+            "Built-in math helper\n{}",
+            code_block("prime", "fn abs(value: int32) -> int32")
+        )),
+        "channel" => Some(format!(
+            "Built-in concurrency helper\n{}\nCreates a paired sender/receiver.",
+            code_block("prime", "fn channel[T]() -> (Sender[T], Receiver[T])")
+        )),
+        "send" => Some(format!(
+            "Built-in concurrency helper\n{}\nReturns `Err` when the channel is closed.",
+            code_block("prime", "fn send[T](tx: Sender[T], value: T) -> Result[(), string]")
+        )),
+        "recv" => Some(format!(
+            "Built-in concurrency helper\n{}\nReturns `None` after the channel closes and drains.",
+            code_block("prime", "fn recv[T](rx: Receiver[T]) -> Option[T]")
+        )),
+        "close" => Some(format!(
+            "Built-in concurrency helper\n{}\nCompletes the sender; receivers will observe `None` once drained.",
+            code_block("prime", "fn close[T](tx: Sender[T]) -> ()")
+        )),
+        "join" => Some(format!(
+            "Built-in concurrency helper\n{}\nWaits for `spawn` to finish and produces its value.",
+            code_block("prime", "fn join[T](handle: JoinHandle[T]) -> T")
+        )),
+        "ptr" => Some(format!(
+            "Built-in pointer helper\n{}\nCreates a raw pointer from an existing reference without changing ownership.",
+            code_block("prime", "fn ptr[T](value: &T) -> *T")
+        )),
+        "ptr_mut" => Some(format!(
+            "Built-in pointer helper\n{}\nCreates a mutable raw pointer from an existing mutable reference.",
+            code_block("prime", "fn ptr_mut[T](value: &mut T) -> *mut T")
+        )),
         _ => None,
     }
 }
 
 fn markdown_var_info(text: &str, span: Span, info: &VarInfo) -> Hover {
-    let mut value = String::from("```prime\nlet ");
-    value.push_str(&info.name);
+    let mut header = String::from("let ");
     if let Some(ty) = &info.ty {
-        value.push_str(": ");
-        value.push_str(ty);
+        header.push_str(ty);
+        header.push(' ');
     }
+    header.push_str(&info.name);
     if let Some(expr) = &info.expr_text {
-        value.push_str(" = ");
-        value.push_str(expr);
+        header.push_str(" = ");
+        header.push_str(expr);
     }
-    value.push_str(";\n```\n");
+    header.push(';');
+    let mut value = code_block("prime", &header);
+    value.push_str("\n\n");
     value.push_str("```md\n");
     value.push_str("Kind: local binding\n");
     match &info.ty {
@@ -360,12 +404,8 @@ fn hover_for_module_symbol(
                 if let Some(variant) = def.variants.iter().find(|variant| variant.name == name) {
                     let signature = format_enum_variant_signature(variant);
                     let params = format_type_params(&def.type_params);
-                    let mut value = String::from("```prime\n");
-                    value.push_str(&def.name);
-                    value.push_str(&params);
-                    value.push_str(" :: ");
-                    value.push_str(&signature);
-                    value.push_str("\n```");
+                    let body = format!("{}{} :: {}", def.name, params, signature);
+                    let value = code_block("prime", &body);
                     return Some(markdown_hover(text, usage_span, value));
                 }
             }
@@ -383,7 +423,7 @@ fn hover_for_module_symbol(
                             format_type_arguments(&block.type_args),
                             block.target
                         );
-                        let value = format!("```prime\n{}\n{}\n```", header, signature);
+                        let value = code_block("prime", &format!("{header}\n{signature}"));
                         return Some(markdown_hover(text, usage_span, value));
                     }
                 }
@@ -445,13 +485,16 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
     let mut value = String::new();
     let decl_snippet = extract_text(text, decl.span.start, decl.span.end);
     let decl_header = match decl.kind {
-        DeclKind::Pattern => code_block("md", &decorate_pattern_snippet(decl_snippet.trim())),
+        DeclKind::Pattern => code_block("md", decl_snippet.trim()),
         DeclKind::Param => code_block("md", &format!("`{}`", decl_snippet.trim())),
+        DeclKind::Let => {
+            let snippet = decl_snippet.trim_end_matches(';').trim();
+            code_block("prime", &format!("{snippet};"))
+        }
         _ => code_block("prime", &decl_snippet),
     };
     value.push_str(&decl_header);
-    value.push('\n');
-    value.push_str("```md\n");
+    value.push_str("\n\n```md\n");
     value.push_str("Kind: ");
     value.push_str(format_decl_kind(decl.kind));
     value.push('\n');
@@ -478,8 +521,7 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
     if decl.kind == DeclKind::Pattern {
         if let Some(span) = decl.value_span {
             value.push_str("\nPattern:\n\n");
-            let pattern = decorate_pattern_snippet(&extract_text(text, span.start, span.end));
-            value.push_str(&code_block("md", &pattern));
+            value.push_str(&code_block("md", &extract_text(text, span.start, span.end)));
         }
     }
     markdown_hover(text, usage_span, value.trim_end().to_string())
@@ -546,9 +588,11 @@ fn hover_for_builtin_method(
 ) -> Option<Hover> {
     let stripped = strip_type_refs(ty);
     let (kind, signature) = builtin_method_signature(stripped, method)?;
-    let mut value = String::new();
-    value.push_str(&format!("Built-in {kind}\n```prime\n{signature}\n```\n"));
-    value.push_str(&format!("Receiver: `{}`", format_type_expr(stripped)));
+    let value = format!(
+        "Built-in {kind}\n{}\nReceiver: `{}`",
+        code_block("prime", &signature),
+        format_type_expr(stripped)
+    );
     Some(markdown_hover(text, usage_span, value))
 }
 
@@ -640,19 +684,19 @@ fn strip_type_refs<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
 }
 
 fn markdown_struct_info(text: &str, usage_span: Span, name: &str, info: &StructInfo) -> Hover {
-    let mut value = String::new();
-    value.push_str("```prime\nstruct ");
-    value.push_str(name);
-    value.push_str(" {\n");
+    let mut body = String::new();
+    body.push_str("struct ");
+    body.push_str(name);
+    body.push_str(" {\n");
     for field in &info.fields {
-        value.push_str("  ");
-        value.push_str(&field.name);
-        value.push_str(": ");
-        value.push_str(&format_type_expr(&field.ty));
-        value.push_str(";\n");
+        body.push_str("  ");
+        body.push_str(&field.name);
+        body.push_str(": ");
+        body.push_str(&format_type_expr(&field.ty));
+        body.push_str(";\n");
     }
-    value.push_str("}\n```\n");
-    markdown_hover(text, usage_span, value)
+    body.push('}');
+    markdown_hover(text, usage_span, code_block("prime", &body))
 }
 
 fn hover_for_struct_field_definition(
@@ -695,13 +739,15 @@ fn hover_for_interface_method_definition(
     module: &Module,
 ) -> Option<Hover> {
     for item in &module.items {
-        if let Item::Interface(def) = item {
+                if let Item::Interface(def) = item {
             for method in &def.methods {
                 if method.name == name && span_contains(method.span, usage_span.start) {
                     let mut value = String::new();
-                    value.push_str("```prime\n");
-                    value.push_str(&format_interface_method_signature(method, None));
-                    value.push_str("\n```\n");
+                    value.push_str(&code_block(
+                        "prime",
+                        &format_interface_method_signature(method, None),
+                    ));
+                    value.push('\n');
                     value.push_str(&format!(
                         "Interface: `{}`{}",
                         def.name,
@@ -725,62 +771,59 @@ fn format_decl_kind(kind: DeclKind) -> &'static str {
 }
 
 fn format_struct_hover(def: &StructDef) -> String {
-    let mut value = String::new();
-    value.push_str("```prime\n");
-    value.push_str(&format!(
+    let mut body = String::new();
+    body.push_str(&format!(
         "struct {}{}",
         def.name,
         format_type_params(&def.type_params)
     ));
-    value.push_str(" {\n");
+    body.push_str(" {\n");
     for field in &def.fields {
         if let Some(name) = &field.name {
-            value.push_str(&format!(
+            body.push_str(&format!(
                 "  {}: {},\n",
                 name,
                 format_type_expr(&field.ty.ty)
             ));
         } else {
-            value.push_str(&format!("  {};\n", format_type_expr(&field.ty.ty)));
+            body.push_str(&format!("  {};\n", format_type_expr(&field.ty.ty)));
         }
     }
-    value.push_str("}\n```\n");
-    value
+    body.push('}');
+    code_block("prime", &body)
 }
 
 fn format_enum_hover(def: &EnumDef) -> String {
-    let mut value = String::new();
-    value.push_str("```prime\n");
-    value.push_str(&format!(
+    let mut body = String::new();
+    body.push_str(&format!(
         "enum {}{}",
         def.name,
         format_type_params(&def.type_params)
     ));
-    value.push_str(" {\n");
+    body.push_str(" {\n");
     for variant in &def.variants {
-        value.push_str(&format!("  {},\n", format_enum_variant_signature(variant)));
+        body.push_str(&format!("  {},\n", format_enum_variant_signature(variant)));
     }
-    value.push_str("}\n```\n");
-    value
+    body.push('}');
+    code_block("prime", &body)
 }
 
 fn format_interface_hover(def: &InterfaceDef) -> String {
-    let mut value = String::new();
-    value.push_str("```prime\n");
-    value.push_str(&format!(
+    let mut body = String::new();
+    body.push_str(&format!(
         "interface {}{}",
         def.name,
         format_type_params(&def.type_params)
     ));
-    value.push_str(" {\n");
+    body.push_str(" {\n");
     for method in &def.methods {
-        value.push_str(&format!(
+        body.push_str(&format!(
             "  {};\n",
             format_interface_method_signature(method, None)
         ));
     }
-    value.push_str("}\n```\n");
-    value
+    body.push('}');
+    code_block("prime", &body)
 }
 
 fn format_enum_variant_signature(variant: &EnumVariant) -> String {
@@ -949,34 +992,6 @@ fn normalize_spacing(value: String) -> String {
     let mut fixed = value.replace("```\n```md", "```\n\n```md");
     fixed = fixed.replace("```\n```", "```\n\n```");
     fixed
-}
-
-fn decorate_pattern_snippet(snippet: &str) -> String {
-    if let Ok(tokens) = lex(snippet) {
-        let mut out = String::new();
-        let mut cursor = 0usize;
-        for token in tokens {
-            let start = token.span.start.min(snippet.len());
-            let end = token.span.end.min(snippet.len());
-            if start > cursor {
-                out.push_str(&snippet[cursor..start]);
-            }
-            match token.kind {
-                TokenKind::Identifier(name) => {
-                    out.push('`');
-                    out.push_str(&name);
-                    out.push('`');
-                }
-                _ => out.push_str(&snippet[start..end]),
-            }
-            cursor = end;
-        }
-        if cursor < snippet.len() {
-            out.push_str(&snippet[cursor..]);
-        }
-        return out;
-    }
-    snippet.to_string()
 }
 
 fn keyword_doc(keyword: &str, detail: &str) -> String {
