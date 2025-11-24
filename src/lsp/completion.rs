@@ -1188,6 +1188,48 @@ pub fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
         })
         .collect();
 
+    const BUILTIN_FUNCS: &[(&str, &str)] = &[
+        ("assert", "Built-in test helper"),
+        ("expect", "Built-in test helper"),
+        ("out", "Built-in output helper"),
+        ("channel", "Built-in concurrency helper"),
+        ("send", "Built-in concurrency helper"),
+        ("recv", "Built-in concurrency helper"),
+        ("close", "Built-in concurrency helper"),
+        ("join", "Built-in concurrency helper"),
+        ("ptr", "Built-in pointer helper"),
+        ("ptr_mut", "Built-in pointer helper"),
+        ("box_new", "Built-in heap helper"),
+        ("box_get", "Built-in heap helper"),
+        ("box_set", "Built-in heap helper"),
+        ("box_take", "Built-in heap helper"),
+        ("slice_new", "Built-in slice helper"),
+        ("slice_push", "Built-in slice helper"),
+        ("slice_len", "Built-in slice helper"),
+        ("slice_get", "Built-in slice helper"),
+        ("map_new", "Built-in map helper"),
+        ("map_insert", "Built-in map helper"),
+        ("map_get", "Built-in map helper"),
+        ("str_len", "Built-in string helper"),
+        ("str_contains", "Built-in string helper"),
+        ("str_trim", "Built-in string helper"),
+        ("str_split", "Built-in string helper"),
+        ("min", "Built-in math helper"),
+        ("max", "Built-in math helper"),
+        ("abs", "Built-in math helper"),
+    ];
+    for (label, detail) in BUILTIN_FUNCS
+        .iter()
+        .filter(|(name, _)| prefix_matches(name, prefix))
+    {
+        items.push(CompletionItem {
+            label: (*label).to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some((*detail).to_string()),
+            ..Default::default()
+        });
+    }
+
     // Built-in/primitive types
     for ty in BUILTIN_TYPES.iter().filter(|ty| prefix_matches(ty, prefix)) {
         items.push(CompletionItem {

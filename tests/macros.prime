@@ -15,6 +15,12 @@ macro add_item() {
   }
 }
 
+macro add_itemz() {
+  fn generated_value() -> int32 {
+    43
+  }
+}
+
 ~add_item();
 
 macro repeat(expr: tokens) -> int32 {
