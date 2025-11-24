@@ -19,7 +19,7 @@ const BUILTIN_TYPES: &[&str] = &[
     // Other primitives
     "bool", "string", "rune",
     // Containers / std types
-    "Option", "Result", "Range", "Box", "Map", "Slice", "JoinHandle",
+    "Option", "Result", "Range", "Box", "Map", "Slice", "JoinHandle", "Sender", "Receiver",
 ];
 
 use super::{
@@ -1159,6 +1159,7 @@ fn import_module_from_snapshot<'a>(
 pub fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
     const KEYWORDS: &[&str] = &[
         "fn",
+        "macro",
         "let",
         "mut",
         "struct",
