@@ -1,4 +1,4 @@
-use crate::language::{ast::*, types::TypeExpr};
+use crate::language::{ast::*, token::{Token, TokenKind}, types::TypeExpr};
 pub fn format_module(module: &Module) -> String {
     let mut out = String::new();
     if let Some(name) = module.declared_name.as_ref() {
@@ -742,7 +742,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         Expr::MacroCall { name, args, .. } => {
             let args = args
                 .iter()
-                .map(|arg| format_expr(&arg.expr))
+                .map(|arg| format_macro_arg(arg))
                 .map(indent_multiline_arg)
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -852,6 +852,35 @@ fn precedence(op: BinaryOp) -> u8 {
         BinaryOp::And => 20,
         BinaryOp::Or => 18,
     }
+}
+
+fn format_macro_arg(arg: &MacroArg) -> String {
+    let inner = format_expr(&arg.expr);
+    if let Some(tokens) = &arg.tokens {
+        if let Some(sep) = macro_sep_prefix(tokens) {
+            return format!("@sep = {} {}", sep, inner);
+        }
+    }
+    inner
+}
+
+fn macro_sep_prefix(tokens: &[Token]) -> Option<&'static str> {
+    for window in tokens.windows(4) {
+        if let [first, second, third, fourth] = window {
+            if first.kind == TokenKind::At {
+                if let TokenKind::Identifier(name) = &second.kind {
+                    if name == "sep" && matches!(third.kind, TokenKind::Eq) {
+                        return match fourth.kind {
+                            TokenKind::Comma => Some(","),
+                            TokenKind::Semi => Some(";"),
+                            _ => None,
+                        };
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn indent_multiline_arg(arg: String) -> String {

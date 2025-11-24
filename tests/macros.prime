@@ -93,7 +93,7 @@ fn pattern_param_expands_into_match() -> bool {
 }
 
 fn repeat_param_expands_tuple() -> bool {
-  let (a, b, c) = ~collect(1, 2, 3);
+  let (a, b, c) = ~collect(@sep = , 1, 2, 3);
   a == 1 && b == 2 && c == 3
 }
 

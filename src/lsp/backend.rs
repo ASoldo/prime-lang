@@ -200,7 +200,7 @@ fn module_symbol_definitions(
         match item {
             Item::Function(func) => defs.push((
                 func.name.clone(),
-                func.span,
+                func.name_span,
                 SymbolKind::FUNCTION,
                 func.visibility,
                 module.kind,
@@ -233,7 +233,7 @@ fn module_symbol_definitions(
             Item::Interface(def) => {
                 defs.push((
                     def.name.clone(),
-                    def.span,
+                    def.span, // keep full span for interface keyword+name
                     SymbolKind::INTERFACE,
                     def.visibility,
                     module.kind,
@@ -248,7 +248,7 @@ fn module_symbol_definitions(
             )),
             Item::Macro(def) => defs.push((
                 def.name.clone(),
-                def.span,
+                def.name_span,
                 SymbolKind::FUNCTION,
                 def.visibility,
                 module.kind,
@@ -1432,7 +1432,7 @@ fn collect_symbols(uri: &Uri, text: &str, module: &Module) -> Vec<SymbolInformat
                 text,
                 &func.name,
                 SymbolKind::FUNCTION,
-                func.span,
+                func.name_span,
             )),
             Item::Struct(def) => symbols.push(make_symbol(
                 uri,
@@ -1478,7 +1478,7 @@ fn collect_symbols(uri: &Uri, text: &str, module: &Module) -> Vec<SymbolInformat
                 text,
                 &def.name,
                 SymbolKind::FUNCTION,
-                def.span,
+                def.name_span,
             )),
             Item::Impl(block) => {
                 if let Some(first) = block.methods.first() {

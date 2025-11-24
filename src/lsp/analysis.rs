@@ -1206,12 +1206,12 @@ pub fn find_local_definition_span(module: &Module, name: &str, offset: usize) ->
 pub fn find_module_item_span(module: &Module, name: &str) -> Option<Span> {
     for item in &module.items {
         match item {
-            Item::Function(func) if func.name == name => return Some(func.span),
+            Item::Function(func) if func.name == name => return Some(func.name_span),
             Item::Struct(def) if def.name == name => return Some(def.span),
             Item::Enum(def) if def.name == name => return Some(def.span),
             Item::Interface(def) if def.name == name => return Some(def.span),
             Item::Const(def) if def.name == name => return Some(def.span),
-            Item::Macro(def) if def.name == name => return Some(def.span),
+            Item::Macro(def) if def.name == name => return Some(def.name_span),
             Item::Impl(_) => {}
             _ => {}
         }

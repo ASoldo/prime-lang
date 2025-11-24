@@ -145,6 +145,7 @@ pub struct ImplBlock {
 #[derive(Clone, Debug)]
 pub struct MacroDef {
     pub name: String,
+    pub name_span: Span,
     pub params: Vec<MacroParam>,
     pub return_ty: Option<TypeAnnotation>,
     pub body: MacroBody,
@@ -192,6 +193,7 @@ pub struct MacroArg {
 #[derive(Clone, Debug)]
 pub struct FunctionDef {
     pub name: String,
+    pub name_span: Span,
     pub type_params: Vec<String>,
     pub params: Vec<FunctionParam>,
     pub returns: Vec<TypeAnnotation>,

@@ -839,6 +839,7 @@ impl Parser {
 
         Ok(FunctionDef {
             name: name.name,
+            name_span: name.span,
             type_params,
             params,
             returns,
@@ -889,6 +890,7 @@ impl Parser {
         };
         Ok(MacroDef {
             name: name.name,
+            name_span: name.span,
             params,
             return_ty,
             body,
