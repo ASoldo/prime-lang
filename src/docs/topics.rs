@@ -664,6 +664,39 @@ tree-sitter init   # if ABI warnings appear"#,
         ],
     },
     Topic {
+        key: "macros",
+        title: "Macros & hygiene",
+        category: "Language Features",
+        summary: "Macro parameters, hygiene escapes with `@`, repeat separators, and hover support that shows full macro declarations.",
+        aliases: &["macro", "macro-hygiene"],
+        sections: &[
+            TopicSection {
+                title: "Hygiene & explicit capture",
+                snippet: r#"macro capture_outer() -> int32 {
+  @value + 1
+}"#,
+                explanation: "Macro identifiers are hygienic by default. Prefix with `@` to intentionally capture a caller binding (e.g., `@value` reads the call-site `value`).",
+            },
+            TopicSection {
+                title: "Repeat params & separators",
+                snippet: r#"macro collect(values: repeat) -> (int32, int32, int32) {
+  values
+}
+
+let (a, b, c) = ~collect(@sep = , 1, 2, 3);
+let int32 total = ~collect(@sep = ;, { 1; }, { 2; }, 3);"#,
+                explanation: "Repeat params split on the first top-level separator: comma joins into a tuple, semicolon joins into a sequential block. Place `@sep = ,` or `@sep = ;` immediately after the opening `(` (an optional comma after the prefix is accepted).",
+            },
+            TopicSection {
+                title: "LSP hover for macros",
+                snippet: r#"macro tally(values: repeat) -> int32 {
+  values
+}"#,
+                explanation: "Hover on macro names to see the full declaration (including body) and parameter kinds. Macros participate in navigation and rename alongside functions.",
+            },
+        ],
+    },
+    Topic {
         key: "ownership",
         title: "Ownership, Moves, and Borrows",
         category: "Type System",

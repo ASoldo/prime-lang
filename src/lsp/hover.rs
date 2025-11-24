@@ -1,5 +1,5 @@
 use crate::language::{
-    ast::{ConstDef, EnumDef, EnumVariant, InterfaceDef, Item, Module, StructDef, Visibility},
+    ast::{ConstDef, EnumDef, EnumVariant, InterfaceDef, Item, MacroDef, MacroParamKind, Module, StructDef, Visibility},
     span::Span,
     token::{Token, TokenKind},
     types::{Mutability, TypeExpr},
@@ -126,11 +126,11 @@ pub fn hover_for_token(
                 {
                     return Some(method_hover);
                 }
-                if let Some(mods) = modules {
-                    if let Some(hover) = hover_for_imported_symbol(text, span, name, module, mods) {
-                        return Some(hover);
-                    }
-                }
+        if let Some(mods) = modules {
+            if let Some(hover) = hover_for_imported_symbol(text, span, name, module, mods) {
+                return Some(hover);
+            }
+        }
                 if let Some(struct_info) = struct_info {
                     if let Some(hover) =
                         hover_for_field_usage(text, span, struct_info, module, span.start)
@@ -331,6 +331,10 @@ fn hover_for_module_symbol(
                 let snippet = format_interface_hover(def);
                 return Some(markdown_hover(text, usage_span, snippet));
             }
+            Item::Macro(def) if def.name == name => {
+                let snippet = format_macro_hover(text, def);
+                return Some(markdown_hover(text, usage_span, snippet));
+            }
             Item::Enum(def) => {
                 if def.name == name {
                     let snippet = format_enum_hover(def);
@@ -404,6 +408,10 @@ fn hover_for_imported_symbol(
                     if def.visibility == Visibility::Public && def.name == name =>
                 {
                     let snippet = format_interface_hover(def);
+                    return Some(markdown_hover(text, usage_span, snippet));
+                }
+                Item::Macro(def) if def.visibility == Visibility::Public && def.name == name => {
+                    let snippet = format_macro_signature_block(def);
                     return Some(markdown_hover(text, usage_span, snippet));
                 }
                 Item::Const(def) if def.visibility == Visibility::Public && def.name == name => {
@@ -783,7 +791,74 @@ fn format_const_snippet(text: &str, def: &ConstDef) -> String {
     }
 }
 
+fn format_macro_signature(def: &MacroDef) -> String {
+    let params = def
+        .params
+        .iter()
+        .map(|param| match (&param.ty, param.kind) {
+            (Some(ty), _) => format!("{}: {}", param.name, format_type_expr(&ty.ty)),
+            (None, kind) => format!("{}: {}", param.name, macro_param_kind_name(kind)),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut signature = format!("macro {}({})", def.name, params);
+    if let Some(ret) = &def.return_ty {
+        signature.push_str(" -> ");
+        signature.push_str(&format_type_expr(&ret.ty));
+    }
+    signature
+}
+
+fn format_macro_signature_block(def: &MacroDef) -> String {
+    let signature = format_macro_signature(def);
+    format!("```prime\n{}\n```", signature)
+}
+
+fn format_macro_hover(text: &str, def: &MacroDef) -> String {
+    let snippet = extract_text(text, def.span.start, def.span.end)
+        .trim()
+        .to_string();
+    let mut content = String::new();
+    if snippet.is_empty() {
+        content.push_str(&format_macro_signature_block(def));
+    } else {
+        content.push_str("```prime\n");
+        content.push_str(&snippet);
+        content.push_str("\n```");
+    }
+    content.push_str("\n\n```md\nKind: macro\n");
+    content.push_str("Params: ");
+    if def.params.is_empty() {
+        content.push_str("none");
+    } else {
+        content.push_str(
+            &def.params
+                .iter()
+                .map(|p| format!("{} ({})", p.name, macro_param_kind_name(p.kind)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    if let Some(ret) = &def.return_ty {
+        content.push_str("\nReturns: ");
+        content.push_str(&format_type_expr(&ret.ty));
+    }
+    content.push_str("\n```\n");
+    content
+}
+
+fn macro_param_kind_name(kind: MacroParamKind) -> &'static str {
+    match kind {
+        MacroParamKind::Expr => "expr",
+        MacroParamKind::Block => "block",
+        MacroParamKind::Pattern => "pattern",
+        MacroParamKind::Tokens => "tokens",
+        MacroParamKind::Repeat => "repeat",
+    }
+}
+
 fn markdown_hover(text: &str, span: Span, value: String) -> Hover {
+    let value = normalize_spacing(value);
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
@@ -800,7 +875,7 @@ fn span_contains(span: Span, offset: usize) -> bool {
 fn identifier_hover(name: &str, ty: Option<&TypeExpr>) -> String {
     let mut content = String::from("```prime\n");
     content.push_str(name);
-    content.push_str("\n```\n");
+    content.push_str("\n```\n\n");
     content.push_str("```md\n");
     content.push_str("Kind: identifier\n");
     if let Some(ty) = ty {
@@ -810,6 +885,21 @@ fn identifier_hover(name: &str, ty: Option<&TypeExpr>) -> String {
     }
     content.push_str("```\n");
     content
+}
+
+fn normalize_spacing(value: String) -> String {
+    let mut fixed = value.replace("```\n```md", "```\n\n```md");
+    fixed = fixed.replace("```\n```", "```\n\n```");
+    // ensure a blank line between any code fence and following non-fence text
+    if let Some(idx) = fixed.find("```\n") {
+        let after = idx + 4;
+        if let Some(rest) = fixed.get(after..) {
+            if !rest.starts_with('\n') && !rest.starts_with("```") {
+                fixed.insert_str(after, "\n");
+            }
+        }
+    }
+    fixed
 }
 
 fn is_simple_literal(snippet: &str) -> bool {
