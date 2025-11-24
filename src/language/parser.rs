@@ -810,7 +810,10 @@ impl Parser {
             if self.matches(TokenKind::LParen) {
                 if !self.check(TokenKind::RParen) {
                     loop {
-                        returns.push(self.parse_type_annotation()?);
+                        returns.push(self.parse_type_annotation().map_err(|mut err| {
+                            err.message = "Expected return type".into();
+                            err
+                        })?);
                         if self.matches(TokenKind::Comma) {
                             continue;
                         }
@@ -819,7 +822,10 @@ impl Parser {
                 }
                 self.expect(TokenKind::RParen)?;
             } else {
-                returns.push(self.parse_type_annotation()?);
+                returns.push(self.parse_type_annotation().map_err(|mut err| {
+                    err.message = "Expected return type".into();
+                    err
+                })?);
             }
         }
 

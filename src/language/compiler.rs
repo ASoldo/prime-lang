@@ -3444,7 +3444,7 @@ impl Compiler {
         };
         if self.functions.contains_key(&key) {
             return Err(format!(
-                "Duplicate function `{}` for receiver `{:?}`",
+                "Duplicate function `{}` for receiver `{:?}` (possible multiple definitions or macro expansion)",
                 func.name, receiver
             ));
         }
