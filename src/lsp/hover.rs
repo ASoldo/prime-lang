@@ -926,16 +926,17 @@ fn span_contains(span: Span, offset: usize) -> bool {
 }
 
 fn identifier_hover(name: &str, ty: Option<&TypeExpr>) -> String {
-    let mut content = String::from("```prime\n");
-    content.push_str(name);
-    content.push_str("\n```\n\n");
+    let mut content = String::new();
     content.push_str("```md\n");
-    content.push_str("Kind: identifier\n");
+    content.push_str(&format!("Identifier: `{}`\n", name));
     if let Some(ty) = ty {
-        content.push_str("Type: ");
+        content.push_str("Type: `");
         content.push_str(&format_type_expr(ty));
-        content.push('\n');
+        content.push_str("`\n");
+    } else {
+        content.push_str("Type: inferred\n");
     }
+    content.push_str("Usage: local binding or parameter in scope\n");
     content.push_str("```\n");
     content
 }
