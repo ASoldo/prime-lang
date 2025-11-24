@@ -105,6 +105,11 @@ struct MacroFrame {
     call_span: Span,
 }
 
+struct Substitution {
+    exprs: HashMap<String, Expr>,
+    pattern_params: HashSet<String>,
+}
+
 impl ExpansionTraces {
     fn record(&mut self, path: &Path, span: Span, frames: &[MacroFrame]) {
         if frames.is_empty() {
@@ -266,9 +271,17 @@ impl<'a> Expander<'a> {
         };
 
         let mut substitution_map = HashMap::new();
+        let mut pattern_params = HashSet::new();
         for (param, arg) in def.params.iter().zip(expanded_args.iter()) {
+            if matches!(param.kind, MacroParamKind::Pattern) {
+                pattern_params.insert(param.name.clone());
+            }
             substitution_map.insert(param.name.clone(), arg.clone());
         }
+        let subst = Substitution {
+            exprs: substitution_map,
+            pattern_params,
+        };
 
         self.gensym += 1;
         let call_id = self.gensym;
@@ -276,7 +289,7 @@ impl<'a> Expander<'a> {
         let mut substituted: Vec<Item> = items
             .iter()
             .cloned()
-            .map(|item| substitute_item(item, &substitution_map))
+            .map(|item| substitute_item(item, &subst))
             .collect();
 
         let macro_locals = collect_bindings_from_body(&def.body);
@@ -490,31 +503,39 @@ impl<'a> Expander<'a> {
                         self.gensym += 1;
                         let call_id = self.gensym;
                         let mut param_bindings = Vec::new();
+                        let mut substitution_map = HashMap::new();
+                        let mut pattern_params = HashSet::new();
                         for (idx, (param, arg)) in def.params.iter().zip(expanded_args.iter()).enumerate()
                         {
-                            let binding_name = format!("__macro_arg_{call_id}_{idx}");
-                            param_bindings.push((
-                                param,
-                                arg.clone(),
-                                binding_name.clone(),
-                                expr_span_local(arg),
-                            ));
+                            match param.kind {
+                                MacroParamKind::Expr => {
+                                    let binding_name = format!("__macro_arg_{call_id}_{idx}");
+                                    param_bindings.push((param, arg.clone(), binding_name.clone()));
+                                    substitution_map.insert(
+                                        param.name.clone(),
+                                        Expr::Identifier(Identifier {
+                                            name: binding_name,
+                                            span: *span,
+                                        }),
+                                    );
+                                }
+                                MacroParamKind::Block | MacroParamKind::Tokens => {
+                                    substitution_map.insert(param.name.clone(), arg.clone());
+                                }
+                                MacroParamKind::Pattern => {
+                                    pattern_params.insert(param.name.clone());
+                                    substitution_map.insert(param.name.clone(), arg.clone());
+                                }
+                            }
                         }
-
-                        let mut substitution_map = HashMap::new();
-                        for (param, _, binding_name, _arg_span) in &param_bindings {
-                            substitution_map.insert(
-                                param.name.clone(),
-                                Expr::Identifier(Identifier {
-                                    name: binding_name.clone(),
-                                    span: *span,
-                                }),
-                            );
-                        }
+                        let subst = Substitution {
+                            exprs: substitution_map,
+                            pattern_params,
+                        };
 
                         let inlined_body = match &def.body {
-                            MacroBody::Expr(expr) => substitute_expr(expr.node.clone(), &substitution_map),
-                            MacroBody::Block(block) => substitute_expr(Expr::Block(block.clone()), &substitution_map),
+                            MacroBody::Expr(expr) => substitute_expr(expr.node.clone(), &subst),
+                            MacroBody::Block(block) => substitute_expr(Expr::Block(block.clone()), &subst),
                             MacroBody::Items(_, _) => {
                                 let mut err = SyntaxError::new(
                                     format!("macro `{}` cannot be used as an expression macro", def.name),
@@ -535,7 +556,7 @@ impl<'a> Expander<'a> {
                         let expanded_body = self.expand_expr(&renamed_body, depth + 1, scope_span, errors);
 
                         let mut statements = Vec::new();
-                        for (param, arg_expr, binding_name, _arg_span) in param_bindings {
+                        for (param, arg_expr, binding_name) in param_bindings {
                             let let_span = *span;
                             statements.push(Statement::Let(LetStmt {
                                 pattern: Pattern::Identifier(binding_name, let_span),
@@ -766,34 +787,38 @@ impl<'a> Expander<'a> {
 
 }
 
-fn substitute_expr(expr: Expr, map: &HashMap<String, Expr>) -> Expr {
+fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
     match expr {
         Expr::Identifier(mut ident) => {
             if let Some(raw) = ident.name.strip_prefix('@') {
                 ident.name = raw.to_string();
                 return Expr::Identifier(ident);
             }
-            map.get(&ident.name).cloned().unwrap_or(Expr::Identifier(ident))
+            subst
+                .exprs
+                .get(&ident.name)
+                .cloned()
+                .unwrap_or(Expr::Identifier(ident))
         }
         Expr::Binary { op, left, right, span } => Expr::Binary {
             op,
-            left: Box::new(substitute_expr(*left, map)),
-            right: Box::new(substitute_expr(*right, map)),
+            left: Box::new(substitute_expr(*left, subst)),
+            right: Box::new(substitute_expr(*right, subst)),
             span,
         },
         Expr::Unary { op, expr, span } => Expr::Unary {
             op,
-            expr: Box::new(substitute_expr(*expr, map)),
+            expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
         Expr::Call { callee, type_args, args, span } => Expr::Call {
-            callee: Box::new(substitute_expr(*callee, map)),
+            callee: Box::new(substitute_expr(*callee, subst)),
             type_args,
-            args: args.into_iter().map(|arg| substitute_expr(arg, map)).collect(),
+            args: args.into_iter().map(|arg| substitute_expr(arg, subst)).collect(),
             span,
         },
         Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
-            base: Box::new(substitute_expr(*base, map)),
+            base: Box::new(substitute_expr(*base, subst)),
             field,
             span,
         },
@@ -805,12 +830,12 @@ fn substitute_expr(expr: Expr, map: &HashMap<String, Expr>) -> Expr {
                         .into_iter()
                         .map(|entry| StructLiteralField {
                             name: entry.name,
-                            value: substitute_expr(entry.value, map),
+                            value: substitute_expr(entry.value, subst),
                         })
                         .collect(),
                 ),
                 StructLiteralKind::Positional(values) => StructLiteralKind::Positional(
-                    values.into_iter().map(|v| substitute_expr(v, map)).collect(),
+                    values.into_iter().map(|v| substitute_expr(v, subst)).collect(),
                 ),
             },
             span,
@@ -818,68 +843,68 @@ fn substitute_expr(expr: Expr, map: &HashMap<String, Expr>) -> Expr {
         Expr::EnumLiteral { enum_name, variant, values, span } => Expr::EnumLiteral {
             enum_name,
             variant,
-            values: values.into_iter().map(|v| substitute_expr(v, map)).collect(),
+            values: values.into_iter().map(|v| substitute_expr(v, subst)).collect(),
             span,
         },
         Expr::MapLiteral { entries, span } => Expr::MapLiteral {
             entries: entries
                 .into_iter()
                 .map(|entry| MapLiteralEntry {
-                    key: substitute_expr(entry.key, map),
-                    value: substitute_expr(entry.value, map),
+                    key: substitute_expr(entry.key, subst),
+                    value: substitute_expr(entry.value, subst),
                 })
                 .collect(),
             span,
         },
-        Expr::Block(block) => Expr::Block(Box::new(substitute_block(*block, map))),
-        Expr::If(if_expr) => Expr::If(Box::new(substitute_if(*if_expr, map))),
+        Expr::Block(block) => Expr::Block(Box::new(substitute_block(*block, subst))),
+        Expr::If(if_expr) => Expr::If(Box::new(substitute_if(*if_expr, subst))),
         Expr::Match(match_expr) => Expr::Match(MatchExpr {
-            expr: Box::new(substitute_expr(*match_expr.expr, map)),
+            expr: Box::new(substitute_expr(*match_expr.expr, subst)),
             arms: match_expr
                 .arms
                 .into_iter()
                 .map(|arm| MatchArmExpr {
-                    pattern: arm.pattern,
-                    guard: arm.guard.map(|g| substitute_expr(g, map)),
-                    value: substitute_expr(arm.value, map),
+                    pattern: substitute_pattern(arm.pattern, subst),
+                    guard: arm.guard.map(|g| substitute_expr(g, subst)),
+                    value: substitute_expr(arm.value, subst),
                 })
                 .collect(),
             span: match_expr.span,
         }),
         Expr::Tuple(values, span) => Expr::Tuple(
-            values.into_iter().map(|v| substitute_expr(v, map)).collect(),
+            values.into_iter().map(|v| substitute_expr(v, subst)).collect(),
             span,
         ),
         Expr::ArrayLiteral(values, span) => Expr::ArrayLiteral(
-            values.into_iter().map(|v| substitute_expr(v, map)).collect(),
+            values.into_iter().map(|v| substitute_expr(v, subst)).collect(),
             span,
         ),
         Expr::Range(range) => Expr::Range(RangeExpr {
-            start: Box::new(substitute_expr(*range.start, map)),
-            end: Box::new(substitute_expr(*range.end, map)),
+            start: Box::new(substitute_expr(*range.start, subst)),
+            end: Box::new(substitute_expr(*range.end, subst)),
             inclusive: range.inclusive,
             span: range.span,
         }),
         Expr::Index { base, index, span } => Expr::Index {
-            base: Box::new(substitute_expr(*base, map)),
-            index: Box::new(substitute_expr(*index, map)),
+            base: Box::new(substitute_expr(*base, subst)),
+            index: Box::new(substitute_expr(*index, subst)),
             span,
         },
         Expr::Reference { mutable, expr, span } => Expr::Reference {
             mutable,
-            expr: Box::new(substitute_expr(*expr, map)),
+            expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
         Expr::Deref { expr, span } => Expr::Deref {
-            expr: Box::new(substitute_expr(*expr, map)),
+            expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
         Expr::Move { expr, span } => Expr::Move {
-            expr: Box::new(substitute_expr(*expr, map)),
+            expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
         Expr::Spawn { expr, span } => Expr::Spawn {
-            expr: Box::new(substitute_expr(*expr, map)),
+            expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
         Expr::FormatString(literal) => Expr::FormatString(FormatStringLiteral {
@@ -890,7 +915,7 @@ fn substitute_expr(expr: Expr, map: &HashMap<String, Expr>) -> Expr {
                     FormatSegment::Literal(text) => FormatSegment::Literal(text),
                     FormatSegment::Implicit(span) => FormatSegment::Implicit(span),
                     FormatSegment::Expr { expr, span } => FormatSegment::Expr {
-                        expr: substitute_expr(expr, map),
+                        expr: substitute_expr(expr, subst),
                         span,
                     },
                 })
@@ -899,101 +924,124 @@ fn substitute_expr(expr: Expr, map: &HashMap<String, Expr>) -> Expr {
         }),
         Expr::MacroCall { name, args, span } => Expr::MacroCall {
             name,
-            args: args.into_iter().map(|a| substitute_expr(a, map)).collect(),
+            args: args.into_iter().map(|a| substitute_expr(a, subst)).collect(),
             span,
         },
         Expr::Literal(_) | Expr::Try { .. } | Expr::TryPropagate { .. } => expr,
     }
 }
 
-fn substitute_block(block: Block, map: &HashMap<String, Expr>) -> Block {
+fn substitute_block(block: Block, subst: &Substitution) -> Block {
     Block {
         statements: block
             .statements
             .into_iter()
-            .map(|stmt| substitute_statement(stmt, map))
+            .map(|stmt| substitute_statement(stmt, subst))
             .collect(),
-        tail: block.tail.map(|expr| Box::new(substitute_expr(*expr, map))),
+        tail: block.tail.map(|expr| Box::new(substitute_expr(*expr, subst))),
         span: block.span,
     }
 }
 
-fn substitute_statement(stmt: Statement, map: &HashMap<String, Expr>) -> Statement {
+fn substitute_statement(stmt: Statement, subst: &Substitution) -> Statement {
     match stmt {
         Statement::Let(let_stmt) => Statement::Let(LetStmt {
-            value: let_stmt.value.map(|expr| substitute_expr(expr, map)),
+            value: let_stmt.value.map(|expr| substitute_expr(expr, subst)),
+            pattern: substitute_pattern(let_stmt.pattern, subst),
             ..let_stmt
         }),
         Statement::MacroSemi(expr) => Statement::MacroSemi(Spanned::new(
-            substitute_expr(expr.node, map),
+            substitute_expr(expr.node, subst),
             expr.span,
         )),
         Statement::Assign(assign) => Statement::Assign(AssignStmt {
-            target: substitute_expr(assign.target, map),
-            value: substitute_expr(assign.value, map),
+            target: substitute_expr(assign.target, subst),
+            value: substitute_expr(assign.value, subst),
         }),
         Statement::Expr(expr) => Statement::Expr(ExprStmt {
-            expr: substitute_expr(expr.expr, map),
+            expr: substitute_expr(expr.expr, subst),
         }),
         Statement::Return(ret) => Statement::Return(ReturnStmt {
             values: ret
                 .values
                 .into_iter()
-                .map(|expr| substitute_expr(expr, map))
+                .map(|expr| substitute_expr(expr, subst))
                 .collect(),
         }),
         Statement::While(while_stmt) => Statement::While(WhileStmt {
             condition: match while_stmt.condition {
                 WhileCondition::Expr(expr) => {
-                    WhileCondition::Expr(substitute_expr(expr, map))
+                    WhileCondition::Expr(substitute_expr(expr, subst))
                 }
                 WhileCondition::Let { pattern, value } => WhileCondition::Let {
-                    pattern,
-                    value: substitute_expr(value, map),
+                    pattern: substitute_pattern(pattern, subst),
+                    value: substitute_expr(value, subst),
                 },
             },
-            body: substitute_block(while_stmt.body, map),
+            body: substitute_block(while_stmt.body, subst),
         }),
         Statement::Loop(loop_stmt) => Statement::Loop(LoopStmt {
-            body: substitute_block(loop_stmt.body, map),
+            body: substitute_block(loop_stmt.body, subst),
             span: loop_stmt.span,
         }),
         Statement::For(for_stmt) => Statement::For(ForStmt {
             binding: for_stmt.binding,
             target: match for_stmt.target {
                 ForTarget::Range(range) => ForTarget::Range(RangeExpr {
-                    start: Box::new(substitute_expr(*range.start, map)),
-                    end: Box::new(substitute_expr(*range.end, map)),
+                    start: Box::new(substitute_expr(*range.start, subst)),
+                    end: Box::new(substitute_expr(*range.end, subst)),
                     inclusive: range.inclusive,
                     span: range.span,
                 }),
                 ForTarget::Collection(expr) => {
-                    ForTarget::Collection(substitute_expr(expr, map))
+                    ForTarget::Collection(substitute_expr(expr, subst))
                 }
             },
-            body: substitute_block(for_stmt.body, map),
+            body: substitute_block(for_stmt.body, subst),
             span: for_stmt.span,
         }),
         Statement::Defer(defer_stmt) => Statement::Defer(DeferStmt {
-            expr: substitute_expr(defer_stmt.expr, map),
+            expr: substitute_expr(defer_stmt.expr, subst),
         }),
-        Statement::Block(block) => Statement::Block(Box::new(substitute_block(*block, map))),
+        Statement::Block(block) => Statement::Block(Box::new(substitute_block(*block, subst))),
         Statement::Break | Statement::Continue => stmt,
     }
 }
 
-fn substitute_item(item: Item, map: &HashMap<String, Expr>) -> Item {
+fn substitute_if(if_expr: IfExpr, subst: &Substitution) -> IfExpr {
+    IfExpr {
+        condition: match if_expr.condition {
+            IfCondition::Expr(expr) => IfCondition::Expr(substitute_expr(expr, subst)),
+            IfCondition::Let { pattern, value } => IfCondition::Let {
+                pattern: substitute_pattern(pattern, subst),
+                value: substitute_expr(value, subst),
+            },
+        },
+        then_branch: substitute_block(if_expr.then_branch, subst),
+        else_branch: if_expr
+            .else_branch
+            .map(|branch| match branch {
+                ElseBranch::Block(block) => ElseBranch::Block(substitute_block(block, subst)),
+                ElseBranch::ElseIf(inner) => {
+                    ElseBranch::ElseIf(Box::new(substitute_if(*inner, subst)))
+                }
+            }),
+        span: if_expr.span,
+    }
+}
+
+fn substitute_item(item: Item, subst: &Substitution) -> Item {
     match item {
-        Item::Function(def) => Item::Function(substitute_function(def, map)),
+        Item::Function(def) => Item::Function(substitute_function(def, subst)),
         Item::Const(def) => Item::Const(ConstDef {
-            value: substitute_expr(def.value, map),
+            value: substitute_expr(def.value, subst),
             ..def
         }),
         Item::Impl(block) => Item::Impl(ImplBlock {
             methods: block
                 .methods
                 .into_iter()
-                .map(|method| substitute_function(method, map))
+                .map(|method| substitute_function(method, subst))
                 .collect(),
             ..block
         }),
@@ -1001,7 +1049,7 @@ fn substitute_item(item: Item, map: &HashMap<String, Expr>) -> Item {
             args: inv
                 .args
                 .into_iter()
-                .map(|expr| substitute_expr(expr, map))
+                .map(|expr| substitute_expr(expr, subst))
                 .collect(),
             ..inv
         }),
@@ -1009,39 +1057,115 @@ fn substitute_item(item: Item, map: &HashMap<String, Expr>) -> Item {
     }
 }
 
-fn substitute_function(def: FunctionDef, map: &HashMap<String, Expr>) -> FunctionDef {
+fn substitute_function(def: FunctionDef, subst: &Substitution) -> FunctionDef {
     let body = match def.body {
         FunctionBody::Expr(expr) => FunctionBody::Expr(Spanned::new(
-            substitute_expr(expr.node, map),
+            substitute_expr(expr.node, subst),
             expr.span,
         )),
-        FunctionBody::Block(block) => FunctionBody::Block(Box::new(substitute_block(*block, map))),
+        FunctionBody::Block(block) => FunctionBody::Block(Box::new(substitute_block(*block, subst))),
     };
     FunctionDef { body, ..def }
 }
 
-fn substitute_if(if_expr: IfExpr, map: &HashMap<String, Expr>) -> IfExpr {
-    IfExpr {
-        condition: match if_expr.condition {
-            IfCondition::Expr(expr) => IfCondition::Expr(substitute_expr(expr, map)),
-            IfCondition::Let { pattern, value } => IfCondition::Let {
-                pattern,
-                value: substitute_expr(value, map),
-            },
-        },
-        then_branch: substitute_block(if_expr.then_branch, map),
-        else_branch: if_expr
-            .else_branch
-            .map(|branch| match branch {
-                ElseBranch::Block(block) => ElseBranch::Block(substitute_block(block, map)),
-                ElseBranch::ElseIf(inner) => {
-                    ElseBranch::ElseIf(Box::new(substitute_if(*inner, map)))
+fn substitute_pattern(pattern: Pattern, subst: &Substitution) -> Pattern {
+    match pattern {
+        Pattern::Identifier(name, span) => {
+            if subst.pattern_params.contains(&name) {
+                if let Some(expr) = subst.exprs.get(&name) {
+                    if let Some(pat) = expr_to_pattern(expr) {
+                        return pat;
+                    }
                 }
-            }),
-        span: if_expr.span,
+            }
+            Pattern::Identifier(name, span)
+        }
+        Pattern::EnumVariant { enum_name, variant, bindings } => Pattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings: bindings
+                .into_iter()
+                .map(|b| substitute_pattern(b, subst))
+                .collect(),
+        },
+        Pattern::Tuple(bindings, span) => Pattern::Tuple(
+            bindings
+                .into_iter()
+                .map(|b| substitute_pattern(b, subst))
+                .collect(),
+            span,
+        ),
+        Pattern::Map(entries, span) => Pattern::Map(
+            entries
+                .into_iter()
+                .map(|entry| MapPatternEntry {
+                    key: entry.key,
+                    pattern: substitute_pattern(entry.pattern, subst),
+                })
+                .collect(),
+            span,
+        ),
+        Pattern::Struct { struct_name, fields, has_spread, span } => Pattern::Struct {
+            struct_name,
+            fields: fields
+                .into_iter()
+                .map(|field| StructPatternField {
+                    name: field.name,
+                    pattern: substitute_pattern(field.pattern, subst),
+                })
+                .collect(),
+            has_spread,
+            span,
+        },
+        Pattern::Slice { prefix, rest, suffix, span } => Pattern::Slice {
+            prefix: prefix
+                .into_iter()
+                .map(|p| substitute_pattern(p, subst))
+                .collect(),
+            rest: rest.map(|p| Box::new(substitute_pattern(*p, subst))),
+            suffix: suffix
+                .into_iter()
+                .map(|p| substitute_pattern(p, subst))
+                .collect(),
+            span,
+        },
+        Pattern::Literal(_) | Pattern::Wildcard => pattern,
     }
 }
 
+fn expr_to_pattern(expr: &Expr) -> Option<Pattern> {
+    match expr {
+        Expr::Identifier(ident) => Some(Pattern::Identifier(ident.name.clone(), ident.span)),
+        Expr::Literal(lit) => Some(Pattern::Literal(lit.clone())),
+        Expr::Tuple(values, span) => {
+            let mut bindings = Vec::new();
+            for v in values {
+                bindings.push(expr_to_pattern(v)?);
+            }
+            Some(Pattern::Tuple(bindings, *span))
+        }
+        Expr::StructLiteral { name, fields, span } => {
+            let mut pat_fields = Vec::new();
+            if let StructLiteralKind::Named(entries) = fields {
+                for entry in entries {
+                    pat_fields.push(StructPatternField {
+                        name: entry.name.clone(),
+                        pattern: expr_to_pattern(&entry.value)?,
+                    });
+                }
+                Some(Pattern::Struct {
+                    struct_name: Some(name.clone()),
+                    fields: pat_fields,
+                    has_spread: false,
+                    span: *span,
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
 fn collect_bindings_from_body(body: &MacroBody) -> HashSet<String> {
     match body {
         MacroBody::Expr(expr) => collect_bindings_expr(&expr.node),

@@ -85,6 +85,7 @@ Validated outputs (fresh run, current syntax):
 - Expansion traces are carried into type errors, so diagnostics from generated code include the macro call stack (e.g., `in expansion of \`foo\` at …`).
 - Use `@ident` inside a macro body to intentionally capture an outer binding without hygiene renaming.
 - Item macros are allowed: write a macro body as a block of items and invoke it at module scope with `~macro_name(...);` to splice structs/functions/consts into the module.
+- Macro parameters can opt into richer shapes with `: block`, `: pattern`, or `: tokens` annotations (defaults to expression); block/tokens arguments are inlined without extra bindings, and pattern args can be dropped directly into match/let patterns.
 
 ### Collections and Indexing
 

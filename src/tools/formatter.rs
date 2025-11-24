@@ -211,9 +211,19 @@ fn format_macro(out: &mut String, def: &MacroDef) {
 }
 
 fn format_macro_param(param: &MacroParam) -> String {
-    match &param.ty {
-        Some(ty) => format!("{}: {}", param.name, format_type(&ty.ty)),
-        None => param.name.clone(),
+    if let Some(ty) = &param.ty {
+        return format!("{}: {}", param.name, format_type(&ty.ty));
+    }
+    let kind = match param.kind {
+        MacroParamKind::Block => Some("block"),
+        MacroParamKind::Pattern => Some("pattern"),
+        MacroParamKind::Tokens => Some("tokens"),
+        MacroParamKind::Expr => None,
+    };
+    if let Some(kind) = kind {
+        format!("{}: {}", param.name, kind)
+    } else {
+        param.name.clone()
     }
 }
 

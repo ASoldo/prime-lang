@@ -861,15 +861,30 @@ impl Parser {
     fn parse_macro_param(&mut self) -> Result<MacroParam, SyntaxError> {
         let start = self.current_span_start();
         let name = self.expect_identifier("Expected macro parameter name")?;
-        let ty = if self.matches(TokenKind::Colon) {
-            Some(self.parse_type_annotation()?)
-        } else {
-            None
-        };
+        let mut kind = MacroParamKind::Expr;
+        let mut ty = None;
+        if self.matches(TokenKind::Colon) {
+            if let Some(TokenKind::Identifier(raw_kind)) = self.peek_kind() {
+                let lower = raw_kind.to_ascii_lowercase();
+                if lower == "block" || lower == "pattern" || lower == "tokens" {
+                    self.advance();
+                    kind = match lower.as_str() {
+                        "block" => MacroParamKind::Block,
+                        "pattern" => MacroParamKind::Pattern,
+                        _ => MacroParamKind::Tokens,
+                    };
+                } else {
+                    ty = Some(self.parse_type_annotation()?);
+                }
+            } else {
+                ty = Some(self.parse_type_annotation()?);
+            }
+        }
         let end = ty.as_ref().map(|ty| ty.span.end).unwrap_or(name.span.end);
         Ok(MacroParam {
             name: name.name,
             ty,
+            kind,
             span: Span::new(start, end),
         })
     }

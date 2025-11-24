@@ -17,6 +17,22 @@ macro add_item() {
 
 ~add_item();
 
+macro repeat(expr: tokens) -> int32 {
+  expr + expr
+}
+
+macro apply_twice(body: block) {
+  body;
+  body;
+}
+
+macro match_literal(pat: pattern, value: int32) -> int32 {
+  match value {
+    pat => 7,
+    _ => 0,
+  }
+}
+
 fn statement_macro_executes() -> bool {
   ~assert_positive(2);
   true
@@ -49,4 +65,21 @@ fn capture_escape_opt_in() -> bool {
 
 fn item_macro_generates_function() -> bool {
   generated_value() == 42
+}
+
+fn tokens_param_inlines_without_binding() -> bool {
+  let int32 sum = ~repeat(2 + 3);
+  sum == 10
+}
+
+fn block_param_runs_multiple_times() -> bool {
+  let mut int32 seen = 0;
+  ~apply_twice({
+    seen = seen + 1;
+  });
+  seen == 2
+}
+
+fn pattern_param_expands_into_match() -> bool {
+  ~match_literal(0, 0) == 7 && ~match_literal(1, 0) == 0
 }

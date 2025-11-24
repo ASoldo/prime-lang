@@ -155,7 +155,16 @@ pub struct MacroDef {
 pub struct MacroParam {
     pub name: String,
     pub ty: Option<TypeAnnotation>,
+    pub kind: MacroParamKind,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MacroParamKind {
+    Expr,
+    Block,
+    Pattern,
+    Tokens,
 }
 
 #[derive(Clone, Debug)]
