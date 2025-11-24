@@ -442,16 +442,25 @@ fn hover_for_imported_symbol(
 
 fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover {
     let mut value = String::new();
-    value.push_str("```prime\n");
-    value.push_str(&extract_text(text, decl.span.start, decl.span.end));
-    value.push_str("\n```\n");
+    let decl_snippet = extract_text(text, decl.span.start, decl.span.end);
+    if decl.kind == DeclKind::Pattern {
+        value.push_str("```md\n");
+        value.push('`');
+        value.push_str(&decl_snippet.trim());
+        value.push_str("`\n```\n");
+    } else {
+        value.push_str("```prime\n");
+        value.push_str(&decl_snippet);
+        value.push_str("\n```\n");
+    }
     value.push_str("```md\n");
     value.push_str("Kind: ");
     value.push_str(format_decl_kind(decl.kind));
     value.push('\n');
     if let Some(ty) = &decl.ty {
-        value.push_str("Type: ");
+        value.push_str("Type: `");
         value.push_str(&format_type_expr(ty));
+        value.push_str("`");
         value.push('\n');
     }
     if decl.mutability.is_mutable() {
@@ -470,7 +479,7 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
     value.push_str("```\n");
     if decl.kind == DeclKind::Pattern {
         if let Some(span) = decl.value_span {
-            value.push_str("\nPattern:\n```prime\n");
+            value.push_str("\nPattern:\n\n```md\n");
             value.push_str(&extract_text(text, span.start, span.end));
             value.push_str("\n```");
         }
