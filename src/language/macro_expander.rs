@@ -119,6 +119,45 @@ struct RepeatFragments {
     span: Span,
 }
 
+fn validate_no_duplicate_items(items: &[Item]) -> Vec<SyntaxError> {
+    let mut seen_funcs: HashMap<String, Span> = HashMap::new();
+    let mut seen_structs: HashMap<String, Span> = HashMap::new();
+    let mut seen_enums: HashMap<String, Span> = HashMap::new();
+    let mut seen_interfaces: HashMap<String, Span> = HashMap::new();
+    let mut seen_macros: HashMap<String, Span> = HashMap::new();
+    let mut seen_consts: HashMap<String, Span> = HashMap::new();
+    let mut errors = Vec::new();
+    for item in items {
+        match item {
+            Item::Function(def) => push_dup(&mut seen_funcs, &mut errors, &def.name, def.name_span, "function"),
+            Item::Struct(def) => push_dup(&mut seen_structs, &mut errors, &def.name, def.span, "struct"),
+            Item::Enum(def) => push_dup(&mut seen_enums, &mut errors, &def.name, def.span, "enum"),
+            Item::Interface(def) => push_dup(&mut seen_interfaces, &mut errors, &def.name, def.span, "interface"),
+            Item::Macro(def) => push_dup(&mut seen_macros, &mut errors, &def.name, def.name_span, "macro"),
+            Item::Const(def) => push_dup(&mut seen_consts, &mut errors, &def.name, def.span, "const"),
+            Item::Impl(_) | Item::MacroInvocation(_) => {}
+        }
+    }
+    errors
+}
+
+fn push_dup(
+    map: &mut HashMap<String, Span>,
+    errors: &mut Vec<SyntaxError>,
+    name: &str,
+    span: Span,
+    kind: &str,
+) {
+    if let Some(prev) = map.get(name) {
+        errors.push(SyntaxError::new(
+            format!("duplicate {} `{}` (also at {}..{})", kind, name, prev.start, prev.end),
+            span,
+        ));
+    } else {
+        map.insert(name.to_string(), span);
+    }
+}
+
 struct RepeatSpec {
     separator: Option<TokenKind>,
     skip: usize,
@@ -250,6 +289,7 @@ impl<'a> Expander<'a> {
             for item in &module.items {
                 self.expand_item(item, &mut module_errors, &mut expanded_items);
             }
+            module_errors.extend(validate_no_duplicate_items(&expanded_items));
             if !module_errors.is_empty() {
                 errors.push(MacroExpansionError {
                     path: module.path.clone(),

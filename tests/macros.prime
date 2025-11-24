@@ -23,6 +23,8 @@ macro add_itemz() {
 
 ~add_item();
 
+~add_itemz();
+
 macro repeat(expr: tokens) -> int32 {
   expr + expr
 }
