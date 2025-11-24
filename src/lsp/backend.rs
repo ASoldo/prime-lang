@@ -1,6 +1,7 @@
 use super::{
     analysis::{
-        find_local_decl, find_local_definition_span, find_module_item_span, identifier_at_offset,
+        collect_identifier_spans as collect_identifier_spans_ast, find_local_decl,
+        find_local_definition_span, find_module_item_span, identifier_at_offset,
         unused_variable_diagnostics,
     },
     completion::{
@@ -1100,7 +1101,13 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let offset = position_to_offset(&text, position);
-        let Some((target_name, _)) = identifier_at(&tokens, offset) else {
+        let module = self.parse_cached_module(&uri, &text).await;
+        let target = identifier_at(&tokens, offset).or_else(|| {
+            module
+                .as_ref()
+                .and_then(|module| identifier_at_offset(module, offset))
+        });
+        let Some((target_name, _)) = target else {
             return Ok(None);
         };
         let module = self.parse_cached_module(&uri, &text).await;
@@ -1115,7 +1122,15 @@ impl LanguageServer for Backend {
                 spans
             }
         } else {
-            collect_identifier_spans(&tokens, &target_name)
+            let token_spans = collect_identifier_spans(&tokens, &target_name);
+            if token_spans.is_empty() {
+                module
+                    .as_ref()
+                    .map(|m| collect_identifier_spans_ast(m, &target_name))
+                    .unwrap_or_default()
+            } else {
+                token_spans
+            }
         };
         if spans.is_empty() {
             return Ok(None);

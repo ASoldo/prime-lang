@@ -149,7 +149,7 @@ fn push_dup(
     kind: &str,
     origin: Option<String>,
 ) {
-    if let Some((prev, prev_origin)) = map.get(name) {
+    if let Some((_prev, prev_origin)) = map.get(name) {
         let origin_desc = match prev_origin {
             Some(src) => format!("first from macro `{}`", src),
             None => "first defined earlier in module".to_string(),

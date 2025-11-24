@@ -1,9 +1,9 @@
 use crate::language::{
     ast::{
         Block, ElseBranch, Expr, ForTarget, FormatSegment, FormatStringLiteral, FunctionBody,
-        FunctionDef, IfCondition, IfExpr, Item, LetStmt, Literal, MatchExpr, Module, Pattern,
-        RangeExpr,
-        Statement, StructLiteralKind, WhileCondition,
+        FunctionDef, IfCondition, IfExpr, Item, LetStmt, Literal, MacroBody, MacroDef,
+        MacroInvocation, MatchExpr, Module, Pattern, RangeExpr, Statement, StructLiteralKind,
+        WhileCondition,
     },
     span::Span,
     types::{Mutability, TypeAnnotation, TypeExpr},
@@ -780,6 +780,266 @@ pub fn identifier_at_offset(module: &Module, offset: usize) -> Option<(String, S
     None
 }
 
+pub fn collect_identifier_spans(module: &Module, name: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    for item in &module.items {
+        collect_spans_in_item(item, name, &mut spans);
+    }
+    spans
+}
+
+fn collect_spans_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {
+    match item {
+        Item::Function(func) => collect_spans_in_function(func, name, spans),
+        Item::Const(def) => collect_spans_in_expr(&def.value, name, spans),
+        Item::Impl(block) => {
+            for method in &block.methods {
+                collect_spans_in_function(method, name, spans);
+            }
+        }
+        Item::MacroInvocation(inv) => collect_spans_in_macro_invocation(inv, name, spans),
+        Item::Macro(def) => collect_spans_in_macro(def, name, spans),
+        Item::Struct(_) | Item::Enum(_) | Item::Interface(_) => {}
+    }
+}
+
+fn collect_spans_in_function(func: &FunctionDef, name: &str, spans: &mut Vec<Span>) {
+    for param in &func.params {
+        if param.name == name {
+            spans.push(param.span);
+        }
+    }
+    match &func.body {
+        FunctionBody::Expr(expr) => collect_spans_in_expr(&expr.node, name, spans),
+        FunctionBody::Block(block) => collect_spans_in_block(block, name, spans),
+    }
+}
+
+fn collect_spans_in_macro_invocation(inv: &MacroInvocation, name: &str, spans: &mut Vec<Span>) {
+    if inv.name.name == name {
+        spans.push(inv.name.span);
+    }
+    for arg in &inv.args {
+        collect_spans_in_expr(&arg.expr, name, spans);
+    }
+}
+
+fn collect_spans_in_block(block: &Block, name: &str, spans: &mut Vec<Span>) {
+    for stmt in &block.statements {
+        collect_spans_in_statement(stmt, name, spans);
+    }
+    if let Some(tail) = &block.tail {
+        collect_spans_in_expr(tail, name, spans);
+    }
+}
+
+fn collect_spans_in_statement(stmt: &Statement, name: &str, spans: &mut Vec<Span>) {
+    match stmt {
+        Statement::Let(let_stmt) => {
+            collect_spans_in_pattern(&let_stmt.pattern, name, spans);
+            if let Some(expr) = &let_stmt.value {
+                collect_spans_in_expr(expr, name, spans);
+            }
+        }
+        Statement::Assign(assign) => {
+            collect_spans_in_expr(&assign.target, name, spans);
+            collect_spans_in_expr(&assign.value, name, spans);
+        }
+        Statement::Expr(expr) => collect_spans_in_expr(&expr.expr, name, spans),
+        Statement::Return(ret) => {
+            for value in &ret.values {
+                collect_spans_in_expr(value, name, spans);
+            }
+        }
+        Statement::While(while_stmt) => {
+            match &while_stmt.condition {
+                WhileCondition::Expr(expr) => collect_spans_in_expr(expr, name, spans),
+                WhileCondition::Let { pattern, value } => {
+                    collect_spans_in_pattern(pattern, name, spans);
+                    collect_spans_in_expr(value, name, spans);
+                }
+            }
+            collect_spans_in_block(&while_stmt.body, name, spans);
+        }
+        Statement::Loop(loop_stmt) => collect_spans_in_block(&loop_stmt.body, name, spans),
+        Statement::For(for_stmt) => {
+            if for_stmt.binding == name {
+                spans.push(for_stmt.span);
+            }
+            match &for_stmt.target {
+                ForTarget::Range(range) => {
+                    collect_spans_in_expr(&range.start, name, spans);
+                    collect_spans_in_expr(&range.end, name, spans);
+                }
+                ForTarget::Collection(expr) => collect_spans_in_expr(expr, name, spans),
+            }
+            collect_spans_in_block(&for_stmt.body, name, spans);
+        }
+        Statement::Defer(defer_stmt) => collect_spans_in_expr(&defer_stmt.expr, name, spans),
+        Statement::Block(block) => collect_spans_in_block(block, name, spans),
+        Statement::MacroSemi(expr) => collect_spans_in_expr(&expr.node, name, spans),
+        Statement::Break | Statement::Continue => {}
+    }
+}
+
+fn collect_spans_in_pattern(pattern: &Pattern, name: &str, spans: &mut Vec<Span>) {
+    match pattern {
+        Pattern::Identifier(ident, span) => {
+            if ident == name {
+                spans.push(*span);
+            }
+        }
+        Pattern::Tuple(bindings, _) => {
+            for b in bindings {
+                collect_spans_in_pattern(b, name, spans);
+            }
+        }
+        Pattern::Map(entries, _) => {
+            for entry in entries {
+                collect_spans_in_pattern(&entry.pattern, name, spans);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for field in fields {
+                collect_spans_in_pattern(&field.pattern, name, spans);
+            }
+        }
+        Pattern::Slice { prefix, rest, suffix, .. } => {
+            for p in prefix {
+                collect_spans_in_pattern(p, name, spans);
+            }
+            if let Some(rest) = rest {
+                collect_spans_in_pattern(rest, name, spans);
+            }
+            for p in suffix {
+                collect_spans_in_pattern(p, name, spans);
+            }
+        }
+        Pattern::EnumVariant { bindings, .. } => {
+            for b in bindings {
+                collect_spans_in_pattern(b, name, spans);
+            }
+        }
+        Pattern::Literal(_) | Pattern::Wildcard => {}
+    }
+}
+
+fn collect_spans_in_format_string(literal: &FormatStringLiteral, name: &str, spans: &mut Vec<Span>) {
+    for segment in &literal.segments {
+        if let FormatSegment::Expr { expr, span } = segment {
+            if let Some((found, s)) = find_in_expr(expr, span.start) {
+                if found == name && span_contains(s, span.start) {
+                    spans.push(s);
+                }
+            }
+            collect_spans_in_expr(expr, name, spans);
+        }
+    }
+}
+
+fn collect_spans_in_expr(expr: &Expr, name: &str, spans: &mut Vec<Span>) {
+    match expr {
+        Expr::Identifier(ident) => {
+            if ident.name == name {
+                spans.push(ident.span);
+            }
+        }
+        Expr::Literal(_) => {}
+        Expr::FormatString(literal) => collect_spans_in_format_string(literal, name, spans),
+        Expr::Try { block, .. } => collect_spans_in_block(block, name, spans),
+        Expr::TryPropagate { expr, .. }
+        | Expr::Reference { expr, .. }
+        | Expr::Deref { expr, .. }
+        | Expr::Move { expr, .. }
+        | Expr::Spawn { expr, .. } => collect_spans_in_expr(expr, name, spans),
+        Expr::Binary { left, right, .. } => {
+            collect_spans_in_expr(left, name, spans);
+            collect_spans_in_expr(right, name, spans);
+        }
+        Expr::Unary { expr, .. } => collect_spans_in_expr(expr, name, spans),
+        Expr::Call { callee, args, .. } => {
+            collect_spans_in_expr(callee, name, spans);
+            for arg in args {
+                collect_spans_in_expr(arg, name, spans);
+            }
+        }
+        Expr::FieldAccess { base, .. } => collect_spans_in_expr(base, name, spans),
+        Expr::Index { base, index, .. } => {
+            collect_spans_in_expr(base, name, spans);
+            collect_spans_in_expr(index, name, spans);
+        }
+        Expr::StructLiteral { fields, .. } => match fields {
+            StructLiteralKind::Named(entries) => {
+                for entry in entries {
+                    collect_spans_in_expr(&entry.value, name, spans);
+                }
+            }
+            StructLiteralKind::Positional(values) => {
+                for value in values {
+                    collect_spans_in_expr(value, name, spans);
+                }
+            }
+        },
+        Expr::EnumLiteral { values, .. } => {
+            for value in values {
+                collect_spans_in_expr(value, name, spans);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for entry in entries {
+                collect_spans_in_expr(&entry.key, name, spans);
+                collect_spans_in_expr(&entry.value, name, spans);
+            }
+        }
+        Expr::Block(block) => collect_spans_in_block(block, name, spans),
+        Expr::If(if_expr) => {
+            match &if_expr.condition {
+                IfCondition::Expr(expr) => collect_spans_in_expr(expr, name, spans),
+                IfCondition::Let { pattern, value } => {
+                    collect_spans_in_pattern(pattern, name, spans);
+                    collect_spans_in_expr(value, name, spans);
+                }
+            }
+            collect_spans_in_block(&if_expr.then_branch, name, spans);
+            if let Some(else_branch) = &if_expr.else_branch {
+                match else_branch {
+                    ElseBranch::Block(block) => collect_spans_in_block(block, name, spans),
+                    ElseBranch::ElseIf(expr) => collect_spans_in_expr(&Expr::If(Box::new((**expr).clone())), name, spans),
+                }
+            }
+        }
+        Expr::Match(match_expr) => {
+            collect_spans_in_expr(&match_expr.expr, name, spans);
+            for arm in &match_expr.arms {
+                collect_spans_in_pattern(&arm.pattern, name, spans);
+                if let Some(guard) = &arm.guard {
+                    collect_spans_in_expr(guard, name, spans);
+                }
+                collect_spans_in_expr(&arm.value, name, spans);
+            }
+        }
+        Expr::Tuple(values, _) => {
+            for value in values {
+                collect_spans_in_expr(value, name, spans);
+            }
+        }
+        Expr::ArrayLiteral(values, _) => {
+            for value in values {
+                collect_spans_in_expr(value, name, spans);
+            }
+        }
+        Expr::Range(range) => {
+            collect_spans_in_expr(&range.start, name, spans);
+            collect_spans_in_expr(&range.end, name, spans);
+        }
+        Expr::MacroCall { args, .. } => {
+            for arg in args {
+                collect_spans_in_expr(&arg.expr, name, spans);
+            }
+        }
+    }
+}
+
 fn find_in_item(item: &Item, offset: usize) -> Option<(String, Span)> {
     match item {
         Item::Function(func) => find_in_function(func, offset),
@@ -792,7 +1052,28 @@ fn find_in_item(item: &Item, offset: usize) -> Option<(String, Span)> {
             None
         }
         Item::Const(def) => find_in_expr(&def.value, offset),
+        Item::Macro(def) => find_in_macro(def, offset),
         _ => None,
+    }
+}
+
+fn find_in_macro(def: &MacroDef, offset: usize) -> Option<(String, Span)> {
+    match &def.body {
+        MacroBody::Block(block) => find_in_block(block, offset),
+        MacroBody::Expr(expr) => find_in_expr(&expr.node, offset),
+        MacroBody::Items(items, _) => items.iter().find_map(|item| find_in_item(item, offset)),
+    }
+}
+
+fn collect_spans_in_macro(def: &MacroDef, name: &str, spans: &mut Vec<Span>) {
+    match &def.body {
+        MacroBody::Block(block) => collect_spans_in_block(block, name, spans),
+        MacroBody::Expr(expr) => collect_spans_in_expr(&expr.node, name, spans),
+        MacroBody::Items(items, _) => {
+            for item in items {
+                collect_spans_in_item(item, name, spans);
+            }
+        }
     }
 }
 
