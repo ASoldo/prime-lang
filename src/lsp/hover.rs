@@ -1,5 +1,5 @@
 use crate::language::{
-    ast::{ConstDef, EnumDef, EnumVariant, InterfaceDef, Item, MacroDef, MacroParamKind, Module, StructDef, Visibility},
+    ast::{ConstDef, EnumDef, EnumVariant, FunctionDef, InterfaceDef, Item, MacroDef, MacroParamKind, Module, StructDef, Visibility},
     span::Span,
     token::{Token, TokenKind},
     types::{Mutability, TypeExpr},
@@ -319,8 +319,7 @@ fn hover_for_module_symbol(
     for item in &module.items {
         match item {
             Item::Function(func) if func.name == name => {
-                let signature = format_function_signature(func);
-                let value = format!("```prime\n{}\n```", signature);
+                let value = format_function_hover(func);
                 return Some(markdown_hover(text, usage_span, value));
             }
             Item::Struct(def) if def.name == name => {
@@ -392,8 +391,7 @@ fn hover_for_imported_symbol(
                 Item::Function(func)
                     if func.visibility == Visibility::Public && func.name == name =>
                 {
-                    let signature = format_function_signature(func);
-                    let value = format!("```prime\n{}\n```", signature);
+                    let value = format_function_hover(func);
                     return Some(markdown_hover(text, usage_span, value));
                 }
                 Item::Struct(def) if def.visibility == Visibility::Public && def.name == name => {
@@ -812,6 +810,44 @@ fn format_macro_signature(def: &MacroDef) -> String {
 fn format_macro_signature_block(def: &MacroDef) -> String {
     let signature = format_macro_signature(def);
     format!("```prime\n{}\n```", signature)
+}
+
+fn format_function_hover(def: &FunctionDef) -> String {
+    let signature = format_function_signature(def);
+    let mut content = String::new();
+    content.push_str("```prime\n");
+    content.push_str(&signature);
+    content.push_str(" {}\n```\n\n```md\n");
+    content.push_str("Params: ");
+    if def.params.is_empty() {
+        content.push_str("none");
+    } else {
+        content.push_str(
+            &def.params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, format_type_expr(&p.ty.ty)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    if !def.returns.is_empty() {
+        let returns = def
+            .returns
+            .iter()
+            .map(|ret| format_type_expr(&ret.ty))
+            .collect::<Vec<_>>()
+            .join(", ");
+        content.push_str("\nReturns: ");
+        if def.returns.len() > 1 {
+            content.push('(');
+            content.push_str(&returns);
+            content.push(')');
+        } else {
+            content.push_str(&returns);
+        }
+    }
+    content.push_str("\n```\n");
+    content
 }
 
 fn format_macro_hover(text: &str, def: &MacroDef) -> String {
