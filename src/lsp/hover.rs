@@ -416,7 +416,7 @@ fn hover_for_module_symbol(
             Item::Impl(block) => {
                 for method in &block.methods {
                     if method.name == name {
-                        let signature = format_function_signature(method);
+                        let signature = format!("{} {{}}", format_function_signature(method));
                         let header = format!(
                             "impl {}{} for {}",
                             block.interface,
@@ -745,14 +745,15 @@ fn hover_for_interface_method_definition(
                     let mut value = String::new();
                     value.push_str(&code_block(
                         "prime",
-                        &format_interface_method_signature(method, None),
+                        &format!("{} {{}}", format_interface_method_signature(method, None)),
                     ));
-                    value.push('\n');
+                    value.push_str("\n\n```md\n");
                     value.push_str(&format!(
-                        "Interface: `{}`{}",
+                        "Interface: `{}`{}\n",
                         def.name,
                         format_type_params(&def.type_params)
                     ));
+                    value.push_str("```\n");
                     return Some(markdown_hover(text, usage_span, value));
                 }
             }
@@ -818,7 +819,7 @@ fn format_interface_hover(def: &InterfaceDef) -> String {
     body.push_str(" {\n");
     for method in &def.methods {
         body.push_str(&format!(
-            "  {};\n",
+            "  {} {{}};\n",
             format_interface_method_signature(method, None)
         ));
     }
