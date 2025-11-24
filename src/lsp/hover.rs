@@ -1,5 +1,6 @@
 use crate::language::{
     ast::{ConstDef, EnumDef, EnumVariant, FunctionDef, InterfaceDef, Item, MacroDef, MacroParamKind, Module, StructDef, Visibility},
+    lexer::lex,
     span::Span,
     token::{Token, TokenKind},
     types::{Mutability, TypeExpr},
@@ -443,16 +444,13 @@ fn hover_for_imported_symbol(
 fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover {
     let mut value = String::new();
     let decl_snippet = extract_text(text, decl.span.start, decl.span.end);
-    if decl.kind == DeclKind::Pattern {
-        value.push_str("```md\n");
-        value.push('`');
-        value.push_str(&decl_snippet.trim());
-        value.push_str("`\n```\n");
-    } else {
-        value.push_str("```prime\n");
-        value.push_str(&decl_snippet);
-        value.push_str("\n```\n");
-    }
+    let decl_header = match decl.kind {
+        DeclKind::Pattern => code_block("md", &decorate_pattern_snippet(decl_snippet.trim())),
+        DeclKind::Param => code_block("md", &format!("`{}`", decl_snippet.trim())),
+        _ => code_block("prime", &decl_snippet),
+    };
+    value.push_str(&decl_header);
+    value.push('\n');
     value.push_str("```md\n");
     value.push_str("Kind: ");
     value.push_str(format_decl_kind(decl.kind));
@@ -479,9 +477,9 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
     value.push_str("```\n");
     if decl.kind == DeclKind::Pattern {
         if let Some(span) = decl.value_span {
-            value.push_str("\nPattern:\n\n```md\n");
-            value.push_str(&extract_text(text, span.start, span.end));
-            value.push_str("\n```");
+            value.push_str("\nPattern:\n\n");
+            let pattern = decorate_pattern_snippet(&extract_text(text, span.start, span.end));
+            value.push_str(&code_block("md", &pattern));
         }
     }
     markdown_hover(text, usage_span, value.trim_end().to_string())
@@ -835,15 +833,14 @@ fn format_macro_signature(def: &MacroDef) -> String {
 
 fn format_macro_signature_block(def: &MacroDef) -> String {
     let signature = format_macro_signature(def);
-    format!("```prime\n{}\n```", signature)
+    code_block("md", &signature)
 }
 
 fn format_function_hover(def: &FunctionDef) -> String {
     let signature = format_function_signature(def);
     let mut content = String::new();
-    content.push_str("```prime\n");
-    content.push_str(&signature);
-    content.push_str(" {}\n```\n\n```md\n");
+    content.push_str(&code_block("prime", &format!("{signature} {{}}")));
+    content.push_str("\n\n```md\n");
     content.push_str("Params: ");
     if def.params.is_empty() {
         content.push_str("none");
@@ -884,9 +881,7 @@ fn format_macro_hover(text: &str, def: &MacroDef) -> String {
     if snippet.is_empty() {
         content.push_str(&format_macro_signature_block(def));
     } else {
-        content.push_str("```prime\n");
-        content.push_str(&snippet);
-        content.push_str("\n```");
+        content.push_str(&code_block("md", &snippet));
     }
     content.push_str("\n\n```md\nKind: macro\n");
     content.push_str("Params: ");
@@ -956,11 +951,43 @@ fn normalize_spacing(value: String) -> String {
     fixed
 }
 
+fn decorate_pattern_snippet(snippet: &str) -> String {
+    if let Ok(tokens) = lex(snippet) {
+        let mut out = String::new();
+        let mut cursor = 0usize;
+        for token in tokens {
+            let start = token.span.start.min(snippet.len());
+            let end = token.span.end.min(snippet.len());
+            if start > cursor {
+                out.push_str(&snippet[cursor..start]);
+            }
+            match token.kind {
+                TokenKind::Identifier(name) => {
+                    out.push('`');
+                    out.push_str(&name);
+                    out.push('`');
+                }
+                _ => out.push_str(&snippet[start..end]),
+            }
+            cursor = end;
+        }
+        if cursor < snippet.len() {
+            out.push_str(&snippet[cursor..]);
+        }
+        return out;
+    }
+    snippet.to_string()
+}
+
 fn keyword_doc(keyword: &str, detail: &str) -> String {
     format!(
         "```md\nKeyword: `{keyword}`\n{}\n```",
         wrap_md(detail, 48)
     )
+}
+
+fn code_block(lang: &str, body: &str) -> String {
+    format!("```{lang}\n{body}\n```")
 }
 
 fn primitive_type_docs(name: &str) -> Option<String> {
