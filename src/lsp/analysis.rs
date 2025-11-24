@@ -6,12 +6,13 @@ use crate::language::{
         WhileCondition,
     },
     span::Span,
+    token::Token,
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
 use std::collections::HashSet;
 use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
 
-use super::text::span_to_range;
+use super::text::{collect_identifier_spans_in_scope, span_to_range};
 
 #[derive(Debug, Clone)]
 pub struct DeclInfo {
@@ -57,18 +58,23 @@ pub fn unused_variable_diagnostics(module: &Module, text: &str) -> Vec<Diagnosti
 pub fn collect_decl_spans(module: &Module) -> Vec<DeclInfo> {
     let mut decls = Vec::new();
     for item in &module.items {
-        match item {
-            Item::Function(func) => collect_decl_from_function(func, module, None, &mut decls),
-            Item::Impl(block) => {
-                let target_ty = Some(TypeExpr::named(block.target.clone()));
-                for func in &block.methods {
-                    collect_decl_from_function(func, module, target_ty.clone(), &mut decls);
-                }
-            }
-            _ => {}
-        }
+        collect_decl_from_item(item, module, &mut decls);
     }
     decls
+}
+
+fn collect_decl_from_item(item: &Item, module: &Module, decls: &mut Vec<DeclInfo>) {
+    match item {
+        Item::Function(func) => collect_decl_from_function(func, module, None, decls),
+        Item::Impl(block) => {
+            let target_ty = Some(TypeExpr::named(block.target.clone()));
+            for func in &block.methods {
+                collect_decl_from_function(func, module, target_ty.clone(), decls);
+            }
+        }
+        Item::Macro(def) => collect_decl_from_macro(def, module, decls),
+        _ => {}
+    }
 }
 
 fn collect_decl_from_function(
@@ -104,6 +110,36 @@ fn collect_decl_from_function(
     }
     if let FunctionBody::Block(block) = &func.body {
         collect_decl_from_block(block, module, decls);
+    }
+}
+
+fn collect_decl_from_macro(def: &MacroDef, module: &Module, decls: &mut Vec<DeclInfo>) {
+    let body_span = match &def.body {
+        MacroBody::Block(block) => block.span,
+        MacroBody::Expr(expr) => expr.span,
+        MacroBody::Items(_, span) => *span,
+    };
+    let available_from = body_span.start;
+    for param in &def.params {
+        decls.push(DeclInfo {
+            name: param.name.clone(),
+            span: param.span,
+            scope: body_span,
+            available_from,
+            ty: param.ty.as_ref().map(|annotation| annotation.ty.clone()),
+            value_span: None,
+            mutability: Mutability::Immutable,
+            kind: DeclKind::Param,
+        });
+    }
+    match &def.body {
+        MacroBody::Block(block) => collect_decl_from_block(block, module, decls),
+        MacroBody::Expr(expr) => collect_decl_from_expr(&expr.node, module, decls),
+        MacroBody::Items(items, _) => {
+            for item in items {
+                collect_decl_from_item(item, module, decls);
+            }
+        }
     }
 }
 
@@ -615,6 +651,12 @@ fn collect_used_in_item(item: &Item, used: &mut HashSet<String>) {
             }
         }
         Item::Const(def) => collect_expr_idents(&def.value, used),
+        Item::Macro(def) => collect_used_in_macro(def, used),
+        Item::MacroInvocation(inv) => {
+            for arg in &inv.args {
+                collect_expr_idents(&arg.expr, used);
+            }
+        }
         _ => {}
     }
 }
@@ -623,6 +665,297 @@ fn collect_used_in_function(func: &FunctionDef, used: &mut HashSet<String>) {
     match &func.body {
         FunctionBody::Block(block) => collect_used_in_block(block, used),
         FunctionBody::Expr(expr) => collect_expr_idents(&expr.node, used),
+    }
+}
+
+fn collect_used_in_macro(def: &MacroDef, used: &mut HashSet<String>) {
+    let params: HashSet<String> = def.params.iter().map(|p| p.name.clone()).collect();
+    collect_used_in_macro_body(&def.body, &params, used);
+}
+
+fn collect_used_in_macro_body(body: &MacroBody, params: &HashSet<String>, used: &mut HashSet<String>) {
+    match body {
+        MacroBody::Block(block) => collect_macro_used_in_block(block, params, used),
+        MacroBody::Expr(expr) => collect_macro_expr_idents(&expr.node, params, used),
+        MacroBody::Items(items, _) => {
+            for item in items {
+                collect_macro_used_in_item(item, params, used);
+            }
+        }
+    }
+}
+
+fn collect_macro_used_in_item(item: &Item, params: &HashSet<String>, used: &mut HashSet<String>) {
+    match item {
+        Item::Function(func) => collect_macro_used_in_function(func, params, used),
+        Item::Impl(block) => {
+            for method in &block.methods {
+                collect_macro_used_in_function(method, params, used);
+            }
+        }
+        Item::Const(def) => collect_macro_expr_idents(&def.value, params, used),
+        Item::MacroInvocation(inv) => {
+            for arg in &inv.args {
+                collect_macro_expr_idents(&arg.expr, params, used);
+            }
+        }
+        Item::Macro(def) => collect_used_in_macro(def, used),
+        _ => {}
+    }
+}
+
+fn collect_macro_used_in_function(
+    func: &FunctionDef,
+    params: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    match &func.body {
+        FunctionBody::Block(block) => collect_macro_used_in_block(block, params, used),
+        FunctionBody::Expr(expr) => collect_macro_expr_idents(&expr.node, params, used),
+    }
+}
+
+fn collect_macro_used_in_block(
+    block: &Block,
+    params: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    for statement in &block.statements {
+        collect_macro_used_in_statement(statement, params, used);
+    }
+    if let Some(tail) = &block.tail {
+        collect_macro_expr_idents(tail, params, used);
+    }
+}
+
+fn collect_macro_used_in_statement(
+    statement: &Statement,
+    params: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    match statement {
+        Statement::Let(stmt) => {
+            collect_macro_pattern_usage(&stmt.pattern, params, used);
+            if let Some(value) = &stmt.value {
+                collect_macro_expr_idents(value, params, used);
+            }
+        }
+        Statement::MacroSemi(expr) => collect_macro_expr_idents(&expr.node, params, used),
+        Statement::Assign(stmt) => {
+            collect_macro_expr_idents(&stmt.target, params, used);
+            collect_macro_expr_idents(&stmt.value, params, used);
+        }
+        Statement::Expr(expr) => collect_macro_expr_idents(&expr.expr, params, used),
+        Statement::Return(ret) => {
+            for value in &ret.values {
+                collect_macro_expr_idents(value, params, used);
+            }
+        }
+        Statement::While(while_stmt) => {
+            collect_macro_expr_idents_from_while_condition(&while_stmt.condition, params, used);
+            collect_macro_used_in_block(&while_stmt.body, params, used);
+        }
+        Statement::Loop(loop_stmt) => {
+            collect_macro_used_in_block(&loop_stmt.body, params, used);
+        }
+        Statement::For(for_stmt) => {
+            match &for_stmt.target {
+                ForTarget::Range(range) => {
+                    collect_macro_expr_idents(&range.start, params, used);
+                    collect_macro_expr_idents(&range.end, params, used);
+                }
+                ForTarget::Collection(expr) => collect_macro_expr_idents(expr, params, used),
+            }
+            collect_macro_used_in_block(&for_stmt.body, params, used);
+        }
+        Statement::Defer(defer_stmt) => collect_macro_expr_idents(&defer_stmt.expr, params, used),
+        Statement::Block(block) => collect_macro_used_in_block(block, params, used),
+        Statement::Break | Statement::Continue => {}
+    }
+}
+
+fn collect_macro_expr_idents(expr: &Expr, params: &HashSet<String>, used: &mut HashSet<String>) {
+    match expr {
+        Expr::Identifier(ident) => {
+            used.insert(ident.name.clone());
+        }
+        Expr::Literal(_) => {}
+        Expr::MacroCall { args, .. } => {
+            for arg in args {
+                collect_macro_expr_idents(&arg.expr, params, used);
+            }
+        }
+        Expr::Try { block, .. } => collect_macro_used_in_block(block, params, used),
+        Expr::TryPropagate { expr: inner, .. } => collect_macro_expr_idents(inner, params, used),
+        Expr::Binary { left, right, .. } => {
+            collect_macro_expr_idents(left, params, used);
+            collect_macro_expr_idents(right, params, used);
+        }
+        Expr::Unary { expr: inner, .. } => collect_macro_expr_idents(inner, params, used),
+        Expr::Call { callee, args, .. } => {
+            collect_macro_expr_idents(callee, params, used);
+            for arg in args {
+                collect_macro_expr_idents(arg, params, used);
+            }
+        }
+        Expr::FieldAccess { base, .. } => collect_macro_expr_idents(base, params, used),
+        Expr::Index { base, index, .. } => {
+            collect_macro_expr_idents(base, params, used);
+            collect_macro_expr_idents(index, params, used);
+        }
+        Expr::StructLiteral { fields, .. } => match fields {
+            StructLiteralKind::Named(named) => {
+                for field in named {
+                    collect_macro_expr_idents(&field.value, params, used);
+                }
+            }
+            StructLiteralKind::Positional(values) => {
+                for value in values {
+                    collect_macro_expr_idents(value, params, used);
+                }
+            }
+        },
+        Expr::EnumLiteral { values, .. } => {
+            for value in values {
+                collect_macro_expr_idents(value, params, used);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for entry in entries {
+                collect_macro_expr_idents(&entry.key, params, used);
+                collect_macro_expr_idents(&entry.value, params, used);
+            }
+        }
+        Expr::Block(block) => collect_macro_used_in_block(block, params, used),
+        Expr::If(if_expr) => collect_macro_used_in_if_expr(if_expr, params, used),
+        Expr::Match(match_expr) => {
+            collect_macro_expr_idents(&match_expr.expr, params, used);
+            for arm in &match_expr.arms {
+                collect_macro_pattern_usage(&arm.pattern, params, used);
+                if let Some(guard) = &arm.guard {
+                    collect_macro_expr_idents(guard, params, used);
+                }
+                collect_macro_expr_idents(&arm.value, params, used);
+            }
+        }
+        Expr::Tuple(values, _) | Expr::ArrayLiteral(values, _) => {
+            for value in values {
+                collect_macro_expr_idents(value, params, used);
+            }
+        }
+        Expr::Range(range) => collect_macro_range_expr(range, params, used),
+        Expr::Reference { expr: inner, .. } => collect_macro_expr_idents(inner, params, used),
+        Expr::Deref { expr: inner, .. } => collect_macro_expr_idents(inner, params, used),
+        Expr::Move { expr: inner, .. } => collect_macro_expr_idents(inner, params, used),
+        Expr::Spawn { expr, .. } => collect_macro_expr_idents(expr, params, used),
+        Expr::FormatString(literal) => collect_macro_format_string_idents(literal, params, used),
+    }
+}
+
+fn collect_macro_range_expr(range: &RangeExpr, params: &HashSet<String>, used: &mut HashSet<String>) {
+    collect_macro_expr_idents(&range.start, params, used);
+    collect_macro_expr_idents(&range.end, params, used);
+}
+
+fn collect_macro_format_string_idents(
+    literal: &FormatStringLiteral,
+    params: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    for segment in &literal.segments {
+        match segment {
+            FormatSegment::Expr { expr, .. } => collect_macro_expr_idents(expr, params, used),
+            FormatSegment::Literal(_) | FormatSegment::Implicit(_) => {}
+        }
+    }
+}
+
+fn collect_macro_used_in_if_expr(
+    if_expr: &IfExpr,
+    params: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    match &if_expr.condition {
+        IfCondition::Expr(expr) => collect_macro_expr_idents(expr, params, used),
+        IfCondition::Let { pattern, value } => {
+            collect_macro_pattern_usage(pattern, params, used);
+            collect_macro_expr_idents(value, params, used);
+        }
+    }
+    collect_macro_used_in_block(&if_expr.then_branch, params, used);
+    if let Some(else_branch) = &if_expr.else_branch {
+        collect_macro_used_in_else_branch(else_branch, params, used);
+    }
+}
+
+fn collect_macro_used_in_else_branch(
+    else_branch: &ElseBranch,
+    params: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    match else_branch {
+        ElseBranch::Block(block) => collect_macro_used_in_block(block, params, used),
+        ElseBranch::ElseIf(if_expr) => collect_macro_used_in_if_expr(if_expr, params, used),
+    }
+}
+
+fn collect_macro_expr_idents_from_while_condition(
+    condition: &WhileCondition,
+    params: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    match condition {
+        WhileCondition::Expr(expr) => collect_macro_expr_idents(expr, params, used),
+        WhileCondition::Let { pattern, value } => {
+            collect_macro_pattern_usage(pattern, params, used);
+            collect_macro_expr_idents(value, params, used);
+        }
+    }
+}
+
+fn collect_macro_pattern_usage(
+    pattern: &Pattern,
+    params: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    match pattern {
+        Pattern::Identifier(name, _) => {
+            if params.contains(name) {
+                used.insert(name.clone());
+            }
+        }
+        Pattern::Tuple(bindings, _) => {
+            for b in bindings {
+                collect_macro_pattern_usage(b, params, used);
+            }
+        }
+        Pattern::Map(entries, _) => {
+            for entry in entries {
+                collect_macro_pattern_usage(&entry.pattern, params, used);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for field in fields {
+                collect_macro_pattern_usage(&field.pattern, params, used);
+            }
+        }
+        Pattern::Slice { prefix, rest, suffix, .. } => {
+            for p in prefix {
+                collect_macro_pattern_usage(p, params, used);
+            }
+            if let Some(rest) = rest {
+                collect_macro_pattern_usage(rest, params, used);
+            }
+            for p in suffix {
+                collect_macro_pattern_usage(p, params, used);
+            }
+        }
+        Pattern::EnumVariant { bindings, .. } => {
+            for b in bindings {
+                collect_macro_pattern_usage(b, params, used);
+            }
+        }
+        Pattern::Literal(_) | Pattern::Wildcard => {}
     }
 }
 
@@ -788,6 +1121,39 @@ pub fn collect_identifier_spans(module: &Module, name: &str) -> Vec<Span> {
     spans
 }
 
+pub fn collect_identifier_spans_in_scope_ast(
+    module: &Module,
+    name: &str,
+    scope: Span,
+) -> Vec<Span> {
+    collect_identifier_spans(module, name)
+        .into_iter()
+        .filter(|span| span.start >= scope.start && span.start < scope.end)
+        .collect()
+}
+
+pub fn collect_identifier_spans_for_decl(
+    module: &Module,
+    tokens: &[Token],
+    decl: &DeclInfo,
+) -> Vec<Span> {
+    let mut spans = Vec::new();
+    spans.push(decl.span);
+    spans.extend(collect_identifier_spans_in_scope(
+        tokens,
+        &decl.name,
+        decl.scope,
+    ));
+    spans.extend(collect_identifier_spans_in_scope_ast(
+        module,
+        &decl.name,
+        decl.scope,
+    ));
+    spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+    spans.dedup();
+    spans
+}
+
 fn collect_spans_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {
     match item {
         Item::Function(func) => collect_spans_in_function(func, name, spans),
@@ -928,7 +1294,7 @@ fn collect_spans_in_format_string(literal: &FormatStringLiteral, name: &str, spa
     for segment in &literal.segments {
         if let FormatSegment::Expr { expr, span } = segment {
             if let Some((found, s)) = find_in_expr(expr, span.start) {
-                if found == name && span_contains(s, span.start) {
+                if found == name {
                     spans.push(s);
                 }
             }
@@ -1502,8 +1868,11 @@ pub fn find_module_item_span(module: &Module, name: &str) -> Option<Span> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_local_definition_span, unused_variable_diagnostics};
-    use crate::language::parser::parse_module;
+    use super::{
+        collect_identifier_spans_for_decl, collect_identifier_spans_in_scope_ast,
+        find_local_decl, find_local_definition_span, unused_variable_diagnostics,
+    };
+    use crate::language::{lexer::lex, parser::parse_module};
     use std::path::PathBuf;
 
     #[test]
@@ -1521,6 +1890,115 @@ fn main() {
         assert!(
             diags.iter().all(|diag| !diag.message.contains("hp")),
             "expected no unused-variable diagnostic for identifiers referenced in format strings, found {diags:?}"
+        );
+    }
+
+    #[test]
+    fn macro_params_support_definition_lookup() {
+        let source = r#"
+module tests::macro_defs;
+
+macro dbg(label: string) -> string {
+  out(`{label}`);
+  label
+}
+"#;
+        let module =
+            parse_module("tests::macro_defs", PathBuf::from("macros.prime"), source).expect("parse");
+        let offset = source.find("{label}").expect("placeholder") + 1;
+        let span =
+            find_local_definition_span(&module, "label", offset).expect("definition should resolve");
+        let macro_def = match &module.items[0] {
+            crate::language::ast::Item::Macro(def) => def,
+            _ => panic!("expected macro item"),
+        };
+        assert_eq!(span, macro_def.params[0].span);
+    }
+
+    #[test]
+    fn format_placeholders_in_macros_are_in_scope() {
+        let source = r#"
+module tests::macro_fmt;
+
+macro tag(name: string) -> string {
+  let string local = name;
+  `{local} {name}`
+}
+"#;
+        let module =
+            parse_module("tests::macro_fmt", PathBuf::from("macro_fmt.prime"), source).expect("parse");
+        let macro_def = match &module.items[0] {
+            crate::language::ast::Item::Macro(def) => def,
+            _ => panic!("expected macro item"),
+        };
+        let block_span = match &macro_def.body {
+            crate::language::ast::MacroBody::Block(block) => block.span,
+            other => panic!("expected block macro body, found {other:?}"),
+        };
+        let spans = collect_identifier_spans_in_scope_ast(&module, "name", block_span);
+        let placeholder_offset = source.find("{name}").expect("placeholder") + 1;
+        assert!(
+            spans
+                .iter()
+                .any(|span| placeholder_offset >= span.start && placeholder_offset < span.end),
+            "expected format placeholder to be included in scoped identifier spans, got {spans:?}"
+        );
+    }
+
+    #[test]
+    fn rename_spans_include_macro_params() {
+        let source = r#"
+module tests::macro_rename;
+
+macro add_twice(a: int32, b: int32) -> int32 {
+  a + b + b
+}
+"#;
+        let module =
+            parse_module("tests::macro_rename", PathBuf::from("macro_rename.prime"), source)
+                .expect("parse");
+        let tokens = lex(source).expect("lex");
+        let usage_offset = source.find("b + b").expect("usage") + 2;
+        let decl = find_local_decl(&module, "b", usage_offset).expect("decl should resolve");
+        let spans = collect_identifier_spans_for_decl(&module, &tokens, &decl);
+        assert!(
+            spans.iter().any(|span| span == &decl.span),
+            "expected declaration span to be included in rename spans, got {spans:?}"
+        );
+        assert!(
+            spans.len() >= 2,
+            "expected both declaration and usage spans, got {spans:?}"
+        );
+    }
+
+    #[test]
+    fn macro_params_count_as_used() {
+        let source = r#"
+module tests::macro_usage;
+
+macro repeat(expr: tokens) -> int32 {
+  expr + expr
+}
+
+macro apply_twice(body: block) {
+  body;
+  body;
+}
+
+macro match_literal(pat: pattern, value: int32) -> int32 {
+  match value {
+    pat => 7,
+    _ => 0,
+  }
+}
+"#;
+        let module =
+            parse_module("tests::macro_usage", PathBuf::from("macro_usage.prime"), source)
+                .expect("parse");
+        let diags = unused_variable_diagnostics(&module, source);
+        assert!(
+            diags.is_empty(),
+            "expected no unused-variable diagnostics for macro params, got {diags:?}"
         );
     }
 

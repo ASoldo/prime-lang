@@ -1,7 +1,7 @@
 use super::{
     analysis::{
-        collect_identifier_spans as collect_identifier_spans_ast, find_local_decl,
-        find_local_definition_span, find_module_item_span, identifier_at_offset,
+        collect_identifier_spans as collect_identifier_spans_ast, collect_identifier_spans_for_decl,
+        find_local_decl, find_local_definition_span, find_module_item_span, identifier_at_offset,
         unused_variable_diagnostics,
     },
     completion::{
@@ -16,9 +16,9 @@ use super::{
     hover::{collect_var_infos, hover_for_token},
     parser::parse_module_from_uri,
     text::{
-        collect_identifier_spans, collect_identifier_spans_in_scope, full_range, identifier_at,
-        is_valid_identifier, manifest_context_for_uri, position_to_offset, prefix_identifier,
-        span_to_range, token_at, url_to_path,
+        collect_identifier_spans, full_range, identifier_at, is_valid_identifier,
+        manifest_context_for_uri, position_to_offset, prefix_identifier, span_to_range, token_at,
+        url_to_path,
     },
 };
 use crate::project::{
@@ -1072,18 +1072,21 @@ impl LanguageServer for Backend {
         let Some(tokens) = tokens else {
             return Ok(None);
         };
+        let module = self.parse_cached_module(&uri, &text).await;
         let offset = position_to_offset(&text, position);
-        if let Some((name, span)) = identifier_at(&tokens, offset) {
-            if !is_valid_identifier(&name) {
-                return Ok(None);
-            }
-            let range = span_to_range(&text, span);
-            return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                range,
-                placeholder: name,
-            }));
+        let target = identifier_at(&tokens, offset)
+            .or_else(|| module.as_ref().and_then(|module| identifier_at_offset(module, offset)));
+        let Some((name, span)) = target else {
+            return Ok(None);
+        };
+        if !is_valid_identifier(&name) {
+            return Ok(None);
         }
-        Ok(None)
+        let range = span_to_range(&text, span);
+        Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+            range,
+            placeholder: name,
+        }))
     }
 
     async fn rename(&self, params: RenameParams) -> RpcResult<Option<WorkspaceEdit>> {
@@ -1102,36 +1105,25 @@ impl LanguageServer for Backend {
         };
         let offset = position_to_offset(&text, position);
         let module = self.parse_cached_module(&uri, &text).await;
-        let target = identifier_at(&tokens, offset).or_else(|| {
-            module
-                .as_ref()
-                .and_then(|module| identifier_at_offset(module, offset))
-        });
+        let target = identifier_at(&tokens, offset)
+            .or_else(|| module.as_ref().and_then(|module| identifier_at_offset(module, offset)));
         let Some((target_name, _)) = target else {
             return Ok(None);
         };
-        let module = self.parse_cached_module(&uri, &text).await;
-        let scoped_spans = module
-            .as_ref()
-            .and_then(|module| find_local_decl(module, &target_name, offset))
-            .map(|decl| collect_identifier_spans_in_scope(&tokens, &target_name, decl.scope));
-        let spans = if let Some(spans) = scoped_spans {
-            if spans.is_empty() {
-                collect_identifier_spans(&tokens, &target_name)
-            } else {
-                spans
+        let mut spans = Vec::new();
+        if let Some(module) = module.as_ref() {
+            if let Some(decl) = find_local_decl(module, &target_name, offset) {
+                spans.extend(collect_identifier_spans_for_decl(module, &tokens, &decl));
             }
-        } else {
-            let token_spans = collect_identifier_spans(&tokens, &target_name);
-            if token_spans.is_empty() {
-                module
-                    .as_ref()
-                    .map(|m| collect_identifier_spans_ast(m, &target_name))
-                    .unwrap_or_default()
-            } else {
-                token_spans
+        }
+        if spans.is_empty() {
+            spans.extend(collect_identifier_spans(&tokens, &target_name));
+            if let Some(module) = module.as_ref() {
+                spans.extend(collect_identifier_spans_ast(module, &target_name));
             }
-        };
+        }
+        spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+        spans.dedup();
         if spans.is_empty() {
             return Ok(None);
         }
