@@ -489,7 +489,8 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
         DeclKind::Param => code_block("md", &format!("`{}`", decl_snippet.trim())),
         DeclKind::Let => {
             let snippet = decl_snippet.trim_end_matches(';').trim();
-            code_block("prime", &format!("{snippet};"))
+            let wrapped = format!("fn main() {{\n  {snippet};\n}}");
+            code_block("prime", &wrapped)
         }
         _ => code_block("prime", &decl_snippet),
     };
