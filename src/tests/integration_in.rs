@@ -36,7 +36,10 @@ fn prime_tests_support_scripted_input() {
     cmd.current_dir(root())
         .arg("test")
         .arg("tests/input_read.prime")
-        .env("PRIME_TEST_INPUTS", "21|abc")
+        .env(
+            "PRIME_TEST_INPUTS",
+            "21|abc|true|maybe|98.6|nope|Prime|Y|200",
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

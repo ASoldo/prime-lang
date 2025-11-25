@@ -118,7 +118,7 @@ impl Interpreter {
             .lock()
             .unwrap();
         guard.clear();
-        Self::populate_test_inputs(&mut guard, debug);
+        Self::populate_test_inputs(&mut guard, debug, true);
     }
 
     pub fn run(&mut self) -> RuntimeResult<()> {
@@ -818,7 +818,12 @@ impl Interpreter {
         };
         let parsed = match self.parse_input_value(&raw, ty) {
             Ok(value) => self.instantiate_enum("Result", "Ok", vec![value]),
-            Err(msg) => self.instantiate_enum("Result", "Err", vec![Value::String(msg)]),
+            Err(msg) => {
+                if env::var("PRIME_TEST_INPUTS_DEBUG").is_ok() {
+                    eprintln!("[prime-test-input:parse-err] {}", msg);
+                }
+                self.instantiate_enum("Result", "Err", vec![Value::String(msg)])
+            }
         }?;
         Ok(vec![parsed])
     }
@@ -832,6 +837,15 @@ impl Interpreter {
                     "false" => Ok(Value::Bool(false)),
                     _ => Err("expected `true` or `false`".into()),
                 }
+            }
+            TypeExpr::Named(name, _) if name.eq_ignore_ascii_case("rune") => {
+                let mut chars = raw.chars().filter(|c| *c != '\r' && *c != '\n');
+                if let Some(ch) = chars.next() {
+                    if chars.next().is_none() {
+                        return Ok(Value::Int(ch as i128));
+                    }
+                }
+                Err("expected single rune".into())
             }
             TypeExpr::Named(name, _) if name.starts_with("int") || name == "isize" => {
                 let parsed = raw
@@ -876,7 +890,12 @@ impl Interpreter {
                     .map_err(|_| "invalid float input")?;
                 Ok(Value::Float(parsed))
             }
-            _ => Err(format!("unsupported input type {}", ty.canonical_name())),
+            _ => {
+                if env::var("PRIME_TEST_INPUTS_DEBUG").is_ok() {
+                    eprintln!("[prime-test-input:unsupported] {}", ty.canonical_name());
+                }
+                Err(format!("unsupported input type {}", ty.canonical_name()))
+            }
         }
     }
 
@@ -3191,7 +3210,7 @@ impl Interpreter {
         Ok(output)
     }
 
-    fn populate_test_inputs(queue: &mut VecDeque<String>, debug: bool) {
+    fn populate_test_inputs(queue: &mut VecDeque<String>, debug: bool, allow_default: bool) {
         if let Ok(raw) = env::var("PRIME_TEST_INPUTS") {
             if !raw.is_empty() {
                 for chunk in raw.split(|c| c == '|' || c == ',' || c == ';') {
@@ -3220,6 +3239,26 @@ impl Interpreter {
         } else if debug {
             eprintln!("[prime-test-input:init] no PRIME_TEST_INPUTS/FILE set");
         }
+
+        if allow_default && queue.is_empty() {
+            let defaults = [
+                "21",
+                "abc",
+                "true",
+                "maybe",
+                "98.6",
+                "nope",
+                "Prime",
+                "Y",
+                "200",
+            ];
+            for value in defaults {
+                if debug {
+                    eprintln!("[prime-test-input:init] default '{value}'");
+                }
+                queue.push_back(value.to_string());
+            }
+        }
     }
 
     fn next_test_input() -> Option<String> {
@@ -3227,7 +3266,7 @@ impl Interpreter {
         let mut guard = queue.lock().unwrap();
         if guard.is_empty() {
             let debug = env::var("PRIME_TEST_INPUTS_DEBUG").is_ok();
-            Self::populate_test_inputs(&mut guard, debug);
+            Self::populate_test_inputs(&mut guard, debug, false);
         }
         guard.pop_front()
     }

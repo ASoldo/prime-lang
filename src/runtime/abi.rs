@@ -59,6 +59,7 @@ pub const TYPE_UINT64: u32 = 10;
 pub const TYPE_USIZE: u32 = 11;
 pub const TYPE_FLOAT32: u32 = 12;
 pub const TYPE_FLOAT64: u32 = 13;
+pub const TYPE_RUNE: u32 = 14;
 
 impl PrimeHandle {
     pub fn null() -> Self {
@@ -852,6 +853,18 @@ fn parse_input_value(raw: &str, type_code: u32) -> Result<PrimeHandle, String> {
             "false" => Ok(PrimeValue::new(PrimeTag::Bool, PrimePayload::Bool(false))),
             _ => Err("expected `true` or `false`".into()),
         },
+        TYPE_RUNE => {
+            let mut chars = raw.chars().filter(|c| *c != '\r' && *c != '\n');
+            if let Some(ch) = chars.next() {
+                if chars.next().is_none() {
+                    return Ok(PrimeValue::new(
+                        PrimeTag::Int,
+                        PrimePayload::Int(ch as i128),
+                    ));
+                }
+            }
+            Err("expected single rune".into())
+        }
         TYPE_INT8 | TYPE_INT16 | TYPE_INT32 | TYPE_INT64 | TYPE_ISIZE => {
             let parsed = raw
                 .trim()

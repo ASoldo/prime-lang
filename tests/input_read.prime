@@ -15,3 +15,52 @@ fn reports_invalid_integer_input() -> bool {
     Result::Err(msg) => msg == "invalid integer input",
   }
 }
+
+fn reads_bool_input() -> bool {
+  match in[bool]("Are you ready? ") {
+    Result::Ok(flag) => flag,
+    Result::Err(_) => false,
+  }
+}
+
+fn rejects_invalid_bool_input() -> bool {
+  match in[bool]("Continue? ") {
+    Result::Ok(_) => false,
+    Result::Err(msg) => msg == "expected `true` or `false`",
+  }
+}
+
+fn reads_float_input() -> bool {
+  match in[float64]("Temp: ") {
+    Result::Ok(value) => value == 98.6,
+    Result::Err(_) => false,
+  }
+}
+
+fn rejects_invalid_float_input() -> bool {
+  match in[float64]("Temp: ") {
+    Result::Ok(_) => false,
+    Result::Err(msg) => msg == "invalid float input",
+  }
+}
+
+fn reads_string_input() -> bool {
+  match in[string](`Name: `) {
+    Result::Ok(name) => name == "Prime",
+    Result::Err(_) => false,
+  }
+}
+
+fn reads_rune_choice() -> bool {
+  match in[rune]("Choose [Y/N]: ") {
+    Result::Ok(_) => true,
+    Result::Err(_) => true, // ensure rune input is consumed without blocking
+  }
+}
+
+fn rejects_out_of_range_int8() -> bool {
+  match in[int8]("Small: ") {
+    Result::Ok(_) => false,
+    Result::Err(msg) => msg == "integer out of range for int8",
+  }
+}

@@ -1,6 +1,7 @@
 use crate::runtime::abi::{
     TYPE_BOOL, TYPE_FLOAT32, TYPE_FLOAT64, TYPE_INT8, TYPE_INT16, TYPE_INT32, TYPE_INT64,
-    TYPE_ISIZE, TYPE_STRING, TYPE_UINT8, TYPE_UINT16, TYPE_UINT32, TYPE_UINT64, TYPE_USIZE,
+    TYPE_ISIZE, TYPE_RUNE, TYPE_STRING, TYPE_UINT8, TYPE_UINT16, TYPE_UINT32, TYPE_UINT64,
+    TYPE_USIZE,
 };
 use crate::{
     language::{
@@ -1863,6 +1864,7 @@ impl Compiler {
                 "usize" => Ok(TYPE_USIZE),
                 "float32" => Ok(TYPE_FLOAT32),
                 "float64" => Ok(TYPE_FLOAT64),
+                "rune" => Ok(TYPE_RUNE),
                 _ => Err(format!("`in` unsupported for type {}", name)),
             },
             _ => Err("`in` requires a concrete primitive type".into()),
