@@ -373,6 +373,15 @@ impl Interpreter {
             }
             return self.call_out(args);
         }
+        if name == "in" {
+            if type_args.len() != 1 {
+                return Err(RuntimeError::Unsupported {
+                    message: "`in` expects exactly one type argument, e.g. in[int32](\"prompt\")"
+                        .into(),
+                });
+            }
+            return self.call_in(args, &type_args[0]);
+        }
         let allows_type_args = name == "channel";
         if !allows_type_args && !type_args.is_empty() && self.is_builtin_name(name) {
             return Err(RuntimeError::Unsupported {
@@ -731,6 +740,106 @@ impl Interpreter {
             }
         }
         Ok(Vec::new())
+    }
+
+    fn call_in(&mut self, args: Vec<Value>, ty: &TypeExpr) -> RuntimeResult<Vec<Value>> {
+        if args.is_empty() {
+            return Err(RuntimeError::ArityMismatch {
+                name: "in".into(),
+                expected: 1,
+                received: 0,
+            });
+        }
+        let mut iter = args.into_iter();
+        let prompt_value = iter.next().unwrap();
+        let prompt = match prompt_value {
+            Value::FormatTemplate(template) => {
+                let provided: Vec<Value> = iter.collect();
+                if template.implicit_placeholders != provided.len() {
+                    return Err(RuntimeError::ArityMismatch {
+                        name: "in".into(),
+                        expected: template.implicit_placeholders,
+                        received: provided.len(),
+                    });
+                }
+                self.render_format_template(template, provided)?
+            }
+            other => {
+                if iter.next().is_some() {
+                    return Err(RuntimeError::Panic {
+                        message: "`in` with multiple arguments requires a format string literal"
+                            .into(),
+                    });
+                }
+                self.format_value(&other)
+            }
+        };
+
+        use std::io::{self, Write};
+        print!("{prompt}");
+        io::stdout().flush().ok();
+
+        let mut buffer = String::new();
+        io::stdin()
+            .read_line(&mut buffer)
+            .map_err(|err| RuntimeError::Panic {
+                message: format!("failed to read input: {err}"),
+            })?;
+        let raw = buffer.trim_end_matches(&['\n', '\r'][..]).to_string();
+        let parsed = match self.parse_input_value(&raw, ty) {
+            Ok(value) => self.instantiate_enum("Result", "Ok", vec![value]),
+            Err(msg) => self.instantiate_enum("Result", "Err", vec![Value::String(msg)]),
+        }?;
+        Ok(vec![parsed])
+    }
+
+    fn parse_input_value(&self, raw: &str, ty: &TypeExpr) -> Result<Value, String> {
+        match ty {
+            TypeExpr::Named(name, _) if name == "string" => Ok(Value::String(raw.to_string())),
+            TypeExpr::Named(name, _) if name == "bool" => match raw.trim().to_ascii_lowercase().as_str() {
+                "true" => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
+                _ => Err("expected `true` or `false`".into()),
+            },
+            TypeExpr::Named(name, _) if name.starts_with("int") || name == "isize" => {
+                let parsed = raw.trim().parse::<i128>().map_err(|_| "invalid integer input")?;
+                let (min, max) = match name.as_str() {
+                    "int8" => (i8::MIN as i128, i8::MAX as i128),
+                    "int16" => (i16::MIN as i128, i16::MAX as i128),
+                    "int32" => (i32::MIN as i128, i32::MAX as i128),
+                    "int64" => (i64::MIN as i128, i64::MAX as i128),
+                    "isize" => (isize::MIN as i128, isize::MAX as i128),
+                    _ => (i128::MIN, i128::MAX),
+                };
+                if parsed < min || parsed > max {
+                    return Err(format!("integer out of range for {}", name));
+                }
+                Ok(Value::Int(parsed))
+            }
+            TypeExpr::Named(name, _) if name.starts_with("uint") || name == "usize" => {
+                let parsed = raw.trim().parse::<u128>().map_err(|_| "invalid integer input")?;
+                let max = match name.as_str() {
+                    "uint8" => u8::MAX as u128,
+                    "uint16" => u16::MAX as u128,
+                    "uint32" => u32::MAX as u128,
+                    "uint64" => u64::MAX as u128,
+                    "usize" => usize::MAX as u128,
+                    _ => u128::MAX,
+                };
+                if parsed > max {
+                    return Err(format!("integer out of range for {}", name));
+                }
+                Ok(Value::Int(parsed as i128))
+            }
+            TypeExpr::Named(name, _) if name == "float32" || name == "float64" => {
+                let parsed = raw
+                    .trim()
+                    .parse::<f64>()
+                    .map_err(|_| "invalid float input")?;
+                Ok(Value::Float(parsed))
+            }
+            _ => Err(format!("unsupported input type {}", ty.canonical_name())),
+        }
     }
 
     fn warn_deprecated(&mut self, name: &str) {
@@ -3027,6 +3136,27 @@ impl Interpreter {
         }
         println!("{output}");
         Ok(())
+    }
+
+    fn render_format_template(
+        &mut self,
+        template: FormatTemplateValue,
+        mut values: Vec<Value>,
+    ) -> RuntimeResult<String> {
+        let mut value_iter = values.drain(..);
+        let mut output = String::new();
+        for segment in template.segments {
+            match segment {
+                FormatRuntimeSegment::Literal(text) => output.push_str(&text),
+                FormatRuntimeSegment::Named(value) => output.push_str(&self.format_value(&value)),
+                FormatRuntimeSegment::Implicit => {
+                    if let Some(value) = value_iter.next() {
+                        output.push_str(&self.format_value(&value));
+                    }
+                }
+            }
+        }
+        Ok(output)
     }
 
     fn describe_value(&self, value: &Value) -> &'static str {

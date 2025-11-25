@@ -2116,6 +2116,14 @@ impl Parser {
 
         match self.peek_kind() {
             Some(TokenKind::Identifier(_)) => self.parse_identifier_expression(),
+            Some(TokenKind::In) => {
+                let span = self.advance().span;
+                let ident = Identifier {
+                    name: "in".into(),
+                    span,
+                };
+                self.parse_identifier_expression_from(ident)
+            }
             Some(TokenKind::Integer(_)) => self.parse_int_literal(),
             Some(TokenKind::Float(_)) => self.parse_float_literal(),
             Some(TokenKind::String(_)) => self.parse_string_literal(),
@@ -2220,6 +2228,10 @@ impl Parser {
 
     fn parse_identifier_expression(&mut self) -> Result<Expr, SyntaxError> {
         let ident = self.expect_identifier("Expected identifier")?;
+        self.parse_identifier_expression_from(ident)
+    }
+
+    fn parse_identifier_expression_from(&mut self, ident: Identifier) -> Result<Expr, SyntaxError> {
         if self.matches(TokenKind::Colon) || self.matches(TokenKind::ColonColon) {
             let variant = self.expect_identifier("Expected enum variant name after `:`")?;
             self.expect(TokenKind::LParen)?;

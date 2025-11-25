@@ -237,6 +237,13 @@ fn builtin_function_docs(name: &str) -> Option<String> {
             "Built-in heap helper\n{}",
             code_block("prime", "fn box_new[T](value: T) -> Box[T]")
         )),
+        "in" => Some(format!(
+            "Built-in input helper\n{}",
+            code_block(
+                "prime",
+                "fn in[T](prompt: string, ...) -> Result[T, string]\n# With format string:\n# in[int32](`Enter age {label}: `, label)"
+            )
+        )),
         "box_get" => Some(format!(
             "Built-in heap helper\n{}",
             code_block("prime", "fn box_get[T](value: Box[T]) -> T")

@@ -19,15 +19,20 @@ use crate::{
     },
     runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric},
 };
+use crate::runtime::abi::{
+    TYPE_BOOL, TYPE_FLOAT32, TYPE_FLOAT64, TYPE_INT16, TYPE_INT32, TYPE_INT64, TYPE_INT8, TYPE_ISIZE, TYPE_STRING,
+    TYPE_UINT16, TYPE_UINT32, TYPE_UINT64, TYPE_UINT8, TYPE_USIZE,
+};
 use llvm_sys::{
     LLVMLinkage,
     core::{
-        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAlloca, LLVMBuildCall2,
-        LLVMBuildGlobalString, LLVMBuildInBoundsGEP2, LLVMBuildLoad2, LLVMBuildRet, LLVMBuildStore, LLVMConstInt,
+        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAlloca, LLVMBuildBr, LLVMBuildCall2,
+        LLVMBuildCondBr, LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildLoad2, LLVMBuildRet,
+        LLVMBuildStore, LLVMConstInt, LLVMConstNull,
         LLVMConstReal, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
         LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent,
         LLVMGetElementType, LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetLastInstruction, LLVMGetModuleContext,
-        LLVMGetTypeKind, LLVMInt32TypeInContext, LLVMInt8TypeInContext, LLVMIsAFunction,
+        LLVMGetReturnType, LLVMGetTypeKind, LLVMInt32TypeInContext, LLVMInt8TypeInContext, LLVMIsAFunction,
         LLVMModuleCreateWithNameInContext, LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPointerType,
         LLVMPrintModuleToFile, LLVMSetLinkage, LLVMTypeOf,
     },
@@ -115,8 +120,8 @@ struct EnumValue {
     variant_index: u32,
 }
 
-type FormatTemplateValue = FormatTemplateValueGeneric<Value>;
-type FormatRuntimeSegment = FormatRuntimeSegmentGeneric<Value>;
+type FormatTemplateValue = FormatTemplateValueGeneric<EvaluatedValue>;
+type FormatRuntimeSegment = FormatRuntimeSegmentGeneric<EvaluatedValue>;
 
 #[derive(Clone)]
 struct IntValue {
@@ -335,6 +340,11 @@ impl EvaluatedValue {
     fn set_runtime(&mut self, handle: LLVMValueRef) {
         self.runtime = Some(RuntimeValue { handle });
     }
+
+    fn with_runtime(mut self, handle: LLVMValueRef) -> Self {
+        self.set_runtime(handle);
+        self
+    }
 }
 
 impl From<Value> for EvaluatedValue {
@@ -461,7 +471,7 @@ fn format_template_to_build(template: &FormatTemplateValue) -> Result<BuildForma
                 FormatRuntimeSegmentGeneric::Literal(text.clone())
             }
             FormatRuntimeSegment::Named(value) => {
-                FormatRuntimeSegmentGeneric::Named(value_to_build_value(value)?)
+                FormatRuntimeSegmentGeneric::Named(value_to_build_value(value.value())?)
             }
             FormatRuntimeSegment::Implicit => FormatRuntimeSegmentGeneric::Implicit,
         };
@@ -812,8 +822,11 @@ impl Compiler {
                     let first_value = self.build_value_to_value(first, Some(&channel_handles))?;
                     match first_value {
                         Value::FormatTemplate(template) => {
-                            let provided: Result<Vec<Value>, String> = iter
-                                .map(|v| self.build_value_to_value(v, Some(&channel_handles)))
+                            let provided: Result<Vec<EvaluatedValue>, String> = iter
+                                .map(|v| {
+                                    self.build_value_to_value(v, Some(&channel_handles))
+                                        .map(EvaluatedValue::from_value)
+                                })
                                 .collect();
                             let provided = provided?;
                             if template.implicit_placeholders != provided.len() {
@@ -985,8 +998,10 @@ impl Compiler {
                             FormatRuntimeSegmentGeneric::Literal(text)
                         }
                         FormatRuntimeSegmentGeneric::Named(value) => {
+                            let converted_value =
+                                self.build_value_to_value(value, channels)?;
                             FormatRuntimeSegmentGeneric::Named(
-                                self.build_value_to_value(value, channels)?,
+                                EvaluatedValue::from_value(converted_value),
                             )
                         }
                         FormatRuntimeSegmentGeneric::Implicit => {
@@ -1073,7 +1088,7 @@ impl Compiler {
                             return Err("control flow not allowed inside format placeholders".into());
                         }
                     };
-                    segments.push(FormatRuntimeSegment::Named(value.into_value()));
+                    segments.push(FormatRuntimeSegment::Named(value));
                 }
                 FormatSegment::Implicit(_) => {
                     has_placeholders = true;
@@ -1261,7 +1276,7 @@ impl Compiler {
     fn emit_format_template(
         &mut self,
         template: FormatTemplateValue,
-        mut values: Vec<Value>,
+        mut values: Vec<EvaluatedValue>,
     ) -> Result<(), String> {
         let mut args_iter = values.drain(..);
         for segment in template.segments {
@@ -1270,15 +1285,14 @@ impl Compiler {
                     self.emit_printf_call(&text, &mut []);
                 }
                 FormatRuntimeSegment::Named(value) => {
-                    let mut wrapped = EvaluatedValue::from_value(value);
+                    let mut wrapped = value;
                     self.maybe_attach_runtime_handle(&mut wrapped);
                     self.print_value(wrapped)?;
                 }
                 FormatRuntimeSegment::Implicit => {
-                    if let Some(value) = args_iter.next() {
-                        let mut wrapped = EvaluatedValue::from_value(value);
-                        self.maybe_attach_runtime_handle(&mut wrapped);
-                        self.print_value(wrapped)?;
+                    if let Some(mut value) = args_iter.next() {
+                        self.maybe_attach_runtime_handle(&mut value);
+                        self.print_value(value)?;
                     }
                 }
             }
@@ -1381,7 +1395,7 @@ impl Compiler {
 
     fn emit_runtime_print(&mut self, handle: LLVMValueRef) {
         let mut args = [handle];
-        let name = CString::new("prime_print").unwrap();
+        let name = CString::new("").unwrap();
         unsafe {
             LLVMBuildCall2(
                 self.builder,
@@ -1676,7 +1690,15 @@ impl Compiler {
         args: &mut [LLVMValueRef],
         name: &str,
     ) -> LLVMValueRef {
-        let name_c = CString::new(name).unwrap();
+        let is_void = unsafe {
+            let ret = LLVMGetReturnType(func_type);
+            LLVMGetTypeKind(ret) == LLVMTypeKind::LLVMVoidTypeKind
+        };
+        let name_c = if is_void {
+            CString::new("").unwrap()
+        } else {
+            CString::new(name).unwrap()
+        };
         let debug_handles = env::var("PRIME_DEBUG_RT_HANDLES").is_ok();
         assert!(!func.is_null(), "runtime function `{}` is null", name);
         assert!(!self.builder.is_null(), "LLVM builder is not initialized");
@@ -1731,6 +1753,89 @@ impl Compiler {
         let len = unsafe { LLVMConstInt(self.runtime_abi.usize_type, text.len() as u64, 0) };
         Ok((ptr, len))
     }
+
+    fn null_handle_ptr(&self) -> LLVMValueRef {
+        unsafe { LLVMConstNull(LLVMPointerType(self.runtime_abi.handle_type, 0)) }
+    }
+
+    fn render_runtime_value_bytes(&mut self, value: &Value) -> Result<Vec<u8>, String> {
+        let rendered = match value {
+            Value::Int(int_value) => int_value
+                .constant()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "<int>".to_string()),
+            Value::Float(float_value) => float_value
+                .constant()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "<float>".to_string()),
+            Value::Bool(flag) => flag.to_string(),
+            Value::Str(text) => text.text.to_string(),
+            Value::Unit => "()".to_string(),
+            Value::Tuple(values) => {
+                let parts: Vec<String> = values
+                    .iter()
+                    .map(|v| self.render_runtime_value_bytes(v).and_then(|b| String::from_utf8(b).map_err(|_| "invalid utf8".to_string())))
+                    .collect::<Result<_, _>>()?;
+                format!("({})", parts.join(", "))
+            }
+            Value::Enum(e) => {
+                let parts: Vec<String> = e
+                    .values
+                    .iter()
+                    .map(|v| self.render_runtime_value_bytes(v).and_then(|b| String::from_utf8(b).map_err(|_| "invalid utf8".to_string())))
+                    .collect::<Result<_, _>>()?;
+                if parts.is_empty() {
+                    format!("{}::{}", e.enum_name, e.variant)
+                } else {
+                    format!("{}::{}({})", e.enum_name, e.variant, parts.join(", "))
+                }
+            }
+            _ => return Err("unsupported value in prompt formatting".into()),
+        };
+        Ok(rendered.into_bytes())
+    }
+
+    fn render_format_template_bytes(
+        &mut self,
+        template: FormatTemplateValue,
+    ) -> Result<Vec<u8>, String> {
+        let mut output = String::new();
+        for segment in template.segments {
+            match segment {
+                FormatRuntimeSegment::Literal(text) => output.push_str(&text),
+                FormatRuntimeSegment::Named(value) => {
+                    let rendered = self.render_runtime_value_bytes(value.value())?;
+                    output.push_str(&String::from_utf8(rendered).map_err(|_| "invalid utf8")?);
+                }
+                FormatRuntimeSegment::Implicit => output.push_str("{}"),
+            }
+        }
+        Ok(output.into_bytes())
+    }
+
+    fn type_code_for(&self, ty: &TypeExpr) -> Result<u32, String> {
+        match ty {
+            TypeExpr::Named(name, _) => match name.as_str() {
+                "string" => Ok(TYPE_STRING),
+                "bool" => Ok(TYPE_BOOL),
+                "int8" => Ok(TYPE_INT8),
+                "int16" => Ok(TYPE_INT16),
+                "int32" => Ok(TYPE_INT32),
+                "int64" => Ok(TYPE_INT64),
+                "isize" => Ok(TYPE_ISIZE),
+                "uint8" => Ok(TYPE_UINT8),
+                "uint16" => Ok(TYPE_UINT16),
+                "uint32" => Ok(TYPE_UINT32),
+                "uint64" => Ok(TYPE_UINT64),
+                "usize" => Ok(TYPE_USIZE),
+                "float32" => Ok(TYPE_FLOAT32),
+                "float64" => Ok(TYPE_FLOAT64),
+                _ => Err(format!("`in` unsupported for type {}", name)),
+            },
+            _ => Err("`in` requires a concrete primitive type".into()),
+        }
+    }
+
 
     fn alloc_handle_array(&mut self, handles: &[LLVMValueRef]) -> LLVMValueRef {
         if handles.is_empty() {
@@ -2255,6 +2360,9 @@ impl Compiler {
                 if ident.name == "out" {
                     return self.emit_out_call(args);
                 }
+                if ident.name == "in" {
+                    return self.emit_in_call(type_args, args);
+                }
                 if let Some(result) = self.try_builtin_call(&ident.name, args) {
                     return result;
                 }
@@ -2314,9 +2422,9 @@ impl Compiler {
         }
         let mut iter = evaluated.into_iter();
         let first = iter.next().unwrap();
-        match first.into_value() {
+        match first.value() {
             Value::FormatTemplate(template) => {
-                let provided: Vec<Value> = iter.map(EvaluatedValue::into_value).collect();
+                let provided: Vec<EvaluatedValue> = iter.collect();
                 if template.implicit_placeholders != provided.len() {
                     return Err(format!(
                         "Format string expects {} argument(s), got {}",
@@ -2324,21 +2432,120 @@ impl Compiler {
                         provided.len()
                     ));
                 }
-                self.emit_format_template(template, provided)?;
+                self.emit_format_template(template.clone(), provided)?;
                 Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
             }
-            other => {
+            _ => {
                 if iter.next().is_some() {
                     return Err(
                         "out() with multiple arguments requires a format string literal".into(),
                     );
                 }
-                self.emit_out_value(other.into())?;
+                self.emit_out_value(first)?;
                 Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
             }
         }
     }
 
+    fn emit_in_call(
+        &mut self,
+        type_args: &[TypeExpr],
+        args: &[Expr],
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        if type_args.len() != 1 {
+            return Err("`in` expects exactly one type argument, e.g. in[int32](\"prompt\")".into());
+        }
+        if args.is_empty() {
+            return Err("`in` expects at least 1 argument (a prompt, optionally with format placeholders)".into());
+        }
+
+        // Evaluate prompt and arguments
+        let mut evaluated_args = Vec::new();
+        for expr in args {
+            match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => evaluated_args.push(value.into_value()),
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            }
+        }
+
+        // Render prompt and collect format handles
+        let mut arg_iter = evaluated_args.into_iter();
+        let first = arg_iter.next().unwrap();
+        let (prompt_bytes, fmt_handles) = match first {
+            Value::FormatTemplate(template) => {
+                let provided: Vec<Value> = arg_iter.collect();
+                if template.implicit_placeholders != provided.len() {
+                    return Err(format!(
+                        "Format string expects {} argument(s), got {}",
+                        template.implicit_placeholders,
+                        provided.len()
+                    ));
+                }
+                let handles: Vec<LLVMValueRef> = provided
+                    .into_iter()
+                    .map(|v| self.build_runtime_handle(v))
+                    .collect::<Result<_, _>>()?;
+                let prompt = self.render_format_template_bytes(template)?;
+                (prompt, handles)
+            }
+            other => {
+                let prompt = self.render_runtime_value_bytes(&other)?;
+                (prompt, Vec::new())
+            }
+        };
+
+        // Map type to code
+        let type_code = self.type_code_for(&type_args[0])?;
+
+        // Find Result::Ok/Err tags
+        let ok_tag = self.enum_variants.get("Ok").map(|v| v.variant_index).ok_or_else(|| {
+            "Result::Ok variant not found; ensure core.types is available in build mode".to_string()
+        })?;
+        let err_tag = self
+            .enum_variants
+            .get("Err")
+            .map(|v| v.variant_index)
+            .ok_or_else(|| "Result::Err variant not found; ensure core.types is available in build mode".to_string())?;
+
+        // Build runtime arguments
+        let prompt_str = String::from_utf8(prompt_bytes).map_err(|_| "prompt is not valid utf-8")?;
+        let (prompt_ptr, prompt_len) = self.build_runtime_bytes(&prompt_str, "rt_prompt")?;
+        let handles_array = if fmt_handles.is_empty() {
+            self.null_handle_ptr()
+        } else {
+            self.alloc_handle_array(&fmt_handles)
+        };
+        let fmt_len = unsafe { LLVMConstInt(self.runtime_abi.usize_type, fmt_handles.len() as u64, 0) };
+        let type_code_const = unsafe { LLVMConstInt(self.runtime_abi.status_type, type_code as u64, 0) };
+        let ok_tag_const = unsafe { LLVMConstInt(self.runtime_abi.status_type, ok_tag as u64, 0) };
+        let err_tag_const = unsafe { LLVMConstInt(self.runtime_abi.status_type, err_tag as u64, 0) };
+
+        let result_handle = self.call_runtime(
+            self.runtime_abi.prime_read_value,
+            self.runtime_abi.prime_read_value_ty,
+            &mut [
+                type_code_const,
+                ok_tag_const,
+                err_tag_const,
+                prompt_ptr,
+                prompt_len,
+                handles_array,
+                fmt_len,
+            ],
+            "read_value",
+        );
+
+        // Wrap in EvaluatedValue with runtime handle
+        Ok(EvalOutcome::Value(
+            self.evaluated(Value::Enum(EnumValue {
+                enum_name: "Result".into(),
+                variant: "<runtime>".into(),
+                values: Vec::new(),
+                variant_index: 0,
+            }))
+            .with_runtime(result_handle),
+        ))
+    }
     fn try_builtin_call(
         &mut self,
         name: &str,
@@ -2639,6 +2846,15 @@ impl Compiler {
             EvalOutcome::Value(value) => value,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
         };
+        if let Some(runtime_handle) = target.runtime_handle() {
+            if let Value::Enum(enum_value) = target.value() {
+                if let Some(result) =
+                    self.emit_runtime_enum_match(runtime_handle, enum_value, match_expr)?
+                {
+                    return Ok(result);
+                }
+            }
+        }
         for arm in &match_expr.arms {
             self.push_scope();
             if self.match_pattern(target.value(), &arm.pattern, false)? {
@@ -2649,6 +2865,144 @@ impl Compiler {
             self.exit_scope()?;
         }
         Err("No match arm matched in build mode".into())
+    }
+
+    fn emit_runtime_enum_match(
+        &mut self,
+        handle: LLVMValueRef,
+        enum_value: &EnumValue,
+        match_expr: &MatchExpr,
+    ) -> Result<Option<EvalOutcome<EvaluatedValue>>, String> {
+        if enum_value.enum_name != "Result" {
+            return Ok(None);
+        }
+        let ok_tag = self
+            .enum_variants
+            .get("Ok")
+            .map(|v| v.variant_index)
+            .ok_or_else(|| "Result::Ok variant not found in build mode".to_string())?;
+        let err_tag = self
+            .enum_variants
+            .get("Err")
+            .map(|v| v.variant_index)
+            .ok_or_else(|| "Result::Err variant not found in build mode".to_string())?;
+
+        let supported_patterns = match_expr.arms.iter().all(|arm| match &arm.pattern {
+            Pattern::EnumVariant { bindings, .. } => bindings
+                .iter()
+                .all(|b| matches!(b, Pattern::Identifier(_, _))),
+            Pattern::Wildcard => true,
+            _ => false,
+        });
+        if !supported_patterns {
+            return Ok(None);
+        }
+
+        let function = unsafe { LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)) };
+        let merge_block = unsafe {
+            LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("match_merge").unwrap().as_ptr(),
+            )
+        };
+
+        let tag = self.call_runtime(
+            self.runtime_abi.prime_enum_tag,
+            self.runtime_abi.prime_enum_tag_ty,
+            &mut [handle],
+            "enum_tag",
+        );
+
+        let mut current_block = unsafe { LLVMGetInsertBlock(self.builder) };
+        let mut result_value: Option<EvaluatedValue> = None;
+
+        for (idx, arm) in match_expr.arms.iter().enumerate() {
+            let (expected_tag, bindings) = match &arm.pattern {
+                Pattern::EnumVariant {
+                    variant, bindings, ..
+                } => {
+                    let tag = match variant.as_str() {
+                        "Ok" => Some(ok_tag),
+                        "Err" => Some(err_tag),
+                        _ => None,
+                    };
+                    (tag, Some(bindings))
+                }
+                Pattern::Wildcard => (None, None),
+                _ => return Ok(None),
+            };
+
+            let then_block = unsafe {
+                LLVMAppendBasicBlockInContext(
+                    self.context,
+                    function,
+                    CString::new(format!("match_arm_{idx}")).unwrap().as_ptr(),
+                )
+            };
+            let else_block = if idx == match_expr.arms.len() - 1 {
+                merge_block
+            } else {
+                unsafe {
+                    LLVMAppendBasicBlockInContext(
+                        self.context,
+                        function,
+                        CString::new(format!("match_else_{idx}")).unwrap().as_ptr(),
+                    )
+                }
+            };
+
+            unsafe { LLVMPositionBuilderAtEnd(self.builder, current_block) };
+            if let Some(tag_val) = expected_tag {
+                let tag_const = unsafe { LLVMConstInt(LLVMTypeOf(tag), tag_val as u64, 0) };
+                let cond = unsafe {
+                    LLVMBuildICmp(
+                        self.builder,
+                        llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                        tag,
+                        tag_const,
+                        CString::new("match_tag_cmp").unwrap().as_ptr(),
+                    )
+                };
+                unsafe { LLVMBuildCondBr(self.builder, cond, then_block, else_block) };
+            } else {
+                unsafe { LLVMBuildBr(self.builder, then_block) };
+            }
+
+            unsafe { LLVMPositionBuilderAtEnd(self.builder, then_block) };
+            self.push_scope();
+            if let Some(bindings) = bindings {
+                for (field_idx, binding) in bindings.iter().enumerate() {
+                    let Pattern::Identifier(name, _) = binding else {
+                        return Ok(None);
+                    };
+                    let field_handle = self.call_runtime(
+                        self.runtime_abi.prime_enum_get,
+                        self.runtime_abi.prime_enum_get_ty,
+                        &mut [
+                            handle,
+                            unsafe { LLVMConstInt(self.runtime_abi.usize_type, field_idx as u64, 0) },
+                        ],
+                        "enum_get",
+                    );
+                    let mut bound = self.evaluated(Value::Unit);
+                    bound.set_runtime(field_handle);
+                    self.insert_var(name, bound, false)?;
+                }
+            }
+            let arm_value = self.emit_expression(&arm.value)?;
+            self.exit_scope()?;
+            if let EvalOutcome::Value(val) = arm_value {
+                result_value = Some(val);
+            }
+            unsafe { LLVMBuildBr(self.builder, merge_block) };
+            current_block = else_block;
+        }
+
+        unsafe { LLVMPositionBuilderAtEnd(self.builder, merge_block) };
+        Ok(Some(EvalOutcome::Value(
+            result_value.unwrap_or_else(|| self.evaluated(Value::Unit)),
+        )))
     }
 
     fn eval_try_operator(
@@ -3801,7 +4155,7 @@ impl Compiler {
             Value::FormatTemplate(template) => {
                 for segment in &template.segments {
                     if let FormatRuntimeSegment::Named(named) = segment {
-                        self.track_reference_borrow_in_scope(named, scope_index)?;
+                        self.track_reference_borrow_in_scope(named.value(), scope_index)?;
                     }
                 }
             }
@@ -3822,7 +4176,7 @@ impl Compiler {
             Value::FormatTemplate(template) => {
                 for segment in &template.segments {
                     if let FormatRuntimeSegment::Named(named) = segment {
-                        self.release_reference_borrow(named);
+                        self.release_reference_borrow(named.value());
                     }
                 }
             }

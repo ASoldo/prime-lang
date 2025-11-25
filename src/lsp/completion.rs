@@ -1216,6 +1216,7 @@ pub fn keyword_completion_items(
         .collect();
 
     const BUILTIN_FUNCS: &[(&str, &str)] = &[
+        ("in", "Built-in input helper (returns Result[T, string])"),
         ("assert", "Built-in test helper"),
         ("expect", "Built-in test helper"),
         ("out", "Built-in output helper"),

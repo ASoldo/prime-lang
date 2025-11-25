@@ -281,6 +281,28 @@ fn run_entry(path: &Path) {
     }
 }
 
+fn compile_runtime_abi() -> Result<PathBuf, String> {
+    let runtime_dir = PathBuf::from(".build.prime/runtime");
+    if let Err(err) = fs::create_dir_all(&runtime_dir) {
+        return Err(format!("failed to create runtime build dir: {err}"));
+    }
+    let output_lib = runtime_dir.join("libruntime_abi.a");
+    let status = Command::new("rustc")
+        .arg("--crate-type")
+        .arg("staticlib")
+        .arg("--edition")
+        .arg("2021")
+        .arg("src/runtime/abi.rs")
+        .arg("-o")
+        .arg(&output_lib)
+        .status()
+        .map_err(|err| format!("failed to spawn rustc for runtime ABI: {err}"))?;
+    if !status.success() {
+        return Err("rustc failed compiling runtime ABI".into());
+    }
+    Ok(output_lib)
+}
+
 fn build_entry(path: &Path, name: &str) {
     ensure_prime_file(path);
     if is_test_file(path) {
@@ -325,8 +347,15 @@ fn build_entry(path: &Path, name: &str) {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
+            let runtime_lib = match compile_runtime_abi() {
+                Ok(path) => Some(path),
+                Err(err) => {
+                    eprintln!("Failed to compile runtime ABI: {err}");
+                    std::process::exit(1);
+                }
+            };
             let bin_path = artifact_dir.join(name);
-            if let Err(err) = run_gcc(&obj_path, &bin_path) {
+            if let Err(err) = run_gcc_with_runtime(&obj_path, runtime_lib.as_deref(), &bin_path) {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
@@ -403,11 +432,22 @@ fn run_llc(ir_path: &Path, obj_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn run_gcc(obj_path: &Path, bin_path: &Path) -> Result<(), String> {
-    let output = Command::new("gcc")
-        .arg(obj_path)
-        .arg("-o")
+fn run_gcc_with_runtime(
+    obj_path: &Path,
+    runtime_lib: Option<&Path>,
+    bin_path: &Path,
+) -> Result<(), String> {
+    let mut cmd = Command::new("gcc");
+    cmd.arg(obj_path);
+    if let Some(lib) = runtime_lib {
+        cmd.arg(lib);
+    }
+    cmd.arg("-o")
         .arg(bin_path)
+        .arg("-lpthread")
+        .arg("-ldl")
+        .arg("-lm");
+    let output = cmd
         .output()
         .map_err(|err| format!("Failed to execute gcc: {err}"))?;
     if !output.status.success() {

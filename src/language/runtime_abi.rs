@@ -47,6 +47,10 @@ pub struct RuntimeAbi {
     pub prime_map_insert_ty: LLVMTypeRef,
     pub prime_enum_new: LLVMValueRef,
     pub prime_enum_new_ty: LLVMTypeRef,
+    pub prime_enum_tag: LLVMValueRef,
+    pub prime_enum_tag_ty: LLVMTypeRef,
+    pub prime_enum_get: LLVMValueRef,
+    pub prime_enum_get_ty: LLVMTypeRef,
     pub prime_reference_new: LLVMValueRef,
     pub prime_reference_new_ty: LLVMTypeRef,
     pub prime_reference_read: LLVMValueRef,
@@ -65,6 +69,8 @@ pub struct RuntimeAbi {
     pub prime_join_ty: LLVMTypeRef,
     pub prime_print: LLVMValueRef,
     pub prime_print_ty: LLVMTypeRef,
+    pub prime_read_value: LLVMValueRef,
+    pub prime_read_value_ty: LLVMTypeRef,
     pub prime_struct_new: LLVMValueRef,
     pub prime_struct_new_ty: LLVMTypeRef,
     pub prime_struct_insert: LLVMValueRef,
@@ -130,6 +136,14 @@ impl RuntimeAbi {
             handle_type,
             &mut [LLVMPointerType(handle_type, 0), usize_type, LLVMInt32TypeInContext(context)],
         );
+        let (prime_enum_tag, prime_enum_tag_ty) =
+            declare_fn(module, "prime_enum_tag", LLVMInt32TypeInContext(context), &mut [handle_type]);
+        let (prime_enum_get, prime_enum_get_ty) = declare_fn(
+            module,
+            "prime_enum_get",
+            handle_type,
+            &mut [handle_type, usize_type],
+        );
         let (prime_reference_new, prime_reference_new_ty) = declare_fn(
             module,
             "prime_reference_new",
@@ -180,6 +194,20 @@ impl RuntimeAbi {
             void_type,
             &mut [handle_type],
         );
+        let (prime_read_value, prime_read_value_ty) = declare_fn(
+            module,
+            "prime_read_value",
+            handle_type,
+            &mut [
+                status_type,
+                status_type,
+                status_type,
+                string_data_type,
+                usize_type,
+                LLVMPointerType(handle_type, 0),
+                usize_type,
+            ],
+        );
         let (prime_struct_new, prime_struct_new_ty) = declare_fn(
             module,
             "prime_struct_new",
@@ -227,6 +255,10 @@ impl RuntimeAbi {
             prime_map_insert_ty,
             prime_enum_new,
             prime_enum_new_ty,
+            prime_enum_tag,
+            prime_enum_tag_ty,
+            prime_enum_get,
+            prime_enum_get_ty,
             prime_reference_new,
             prime_reference_new_ty,
             prime_reference_read,
@@ -245,6 +277,8 @@ impl RuntimeAbi {
             prime_join_ty,
             prime_print,
             prime_print_ty,
+            prime_read_value,
+            prime_read_value_ty,
             prime_struct_new,
             prime_struct_new_ty,
             prime_struct_insert,
@@ -287,6 +321,10 @@ impl RuntimeAbi {
             prime_map_insert_ty: std::ptr::null_mut(),
             prime_enum_new: std::ptr::null_mut(),
             prime_enum_new_ty: std::ptr::null_mut(),
+            prime_enum_tag: std::ptr::null_mut(),
+            prime_enum_tag_ty: std::ptr::null_mut(),
+            prime_enum_get: std::ptr::null_mut(),
+            prime_enum_get_ty: std::ptr::null_mut(),
             prime_reference_new: std::ptr::null_mut(),
             prime_reference_new_ty: std::ptr::null_mut(),
             prime_reference_read: std::ptr::null_mut(),
@@ -305,6 +343,8 @@ impl RuntimeAbi {
             prime_join_ty: std::ptr::null_mut(),
             prime_print: std::ptr::null_mut(),
             prime_print_ty: std::ptr::null_mut(),
+            prime_read_value: std::ptr::null_mut(),
+            prime_read_value_ty: std::ptr::null_mut(),
             prime_struct_new: std::ptr::null_mut(),
             prime_struct_new_ty: std::ptr::null_mut(),
             prime_struct_insert: std::ptr::null_mut(),

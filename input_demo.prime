@@ -1,0 +1,22 @@
+module demos.input;
+
+import core.types;
+
+fn prompt_age() -> Result[int32, string] {
+  in[int32]("Enter age: ")
+}
+
+fn prompt_temperature(label: string) -> Result[string, string] {
+  in[string](`Temperature for {label}: `)
+}
+
+fn main() {
+  match prompt_age() {
+    Result::Ok(age) => out(`age recorded: {age}`),
+    Result::Err(msg) => out(`input error: {msg}`),
+  }
+  match prompt_temperature("Soldo") {
+    Result::Ok(temp) => out(`Temp is {temp}`),
+    Result::Err(err) => out(`temp is not set for this, so err: {err}`),
+  }
+}

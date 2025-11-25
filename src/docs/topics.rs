@@ -165,6 +165,15 @@ $ prime-lang expand tests/macros.prime --line 24 --column 7"#,
                 explanation: "Each subcommand is wired up in `src/main.rs` via clap. `run` interprets a file after loading the manifest, `build` emits LLVM + native binaries, `lint`/`fmt` offer single-shot or watch modes, `lsp` serves editors, `init` scaffolds a workspace, `add` appends a manifest entry and stub file, `docs` prints these references, and `expand` shows macro expansions at a cursor (or dumps the whole expanded module).",
             },
             TopicSection {
+                title: "Read user input with `in[T]`",
+                snippet: r#"let age = in[int32]("Age: ")?;
+match in[float64](`Temp {label}: `, label) {
+  Ok(temp) => out(`got {temp}`),
+  Err(msg) => out(`input error: {msg}`),
+}"#,
+                explanation: "`in[T](prompt, ...) -> Result[T, string]` reads a line from stdin, parses it to the requested type, and returns `Ok`/`Err` so callers stay in control. Prompts may be format strings; type arguments are required. Currently supported in interpreter mode (compiled binaries reject `in`).",
+            },
+            TopicSection {
                 title: "Example programs",
                 snippet: r#"prime-lang run pattern_demo.prime        # module demos::patterns
 prime-lang run error_handling_demo.prime # demos::error_handling

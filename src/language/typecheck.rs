@@ -1489,7 +1489,7 @@ impl Checker {
         env: &mut FnEnv,
         span: Span,
     ) -> Option<TypeExpr> {
-        let allows_type_args = matches!(name, "channel");
+        let allows_type_args = matches!(name, "channel" | "in");
         if !allows_type_args && !type_args.is_empty() {
             self.errors.push(TypeError::new(
                 &module.path,
@@ -1549,6 +1549,73 @@ impl Checker {
                     self.check_expression(module, &args[0], None, returns, env);
                 }
                 Some(TypeExpr::Unit)
+            }
+            "in" => {
+                if type_args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`in` expects exactly one type argument, e.g. in[int32](\"prompt\")",
+                    ));
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![TypeExpr::Unit, TypeExpr::Named("string".into(), Vec::new())],
+                    ));
+                }
+                if args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`in` expects at least 1 argument (a prompt, optionally with format placeholders)",
+                    ));
+                }
+                if let Some(ty) = type_args.get(0) {
+                    if args.len() == 1 {
+                        self.check_expression(module, &args[0], None, returns, env);
+                    } else if let Expr::FormatString(literal) = &args[0] {
+                        let implicit_spans: Vec<Span> = literal
+                            .segments
+                            .iter()
+                            .filter_map(|seg| {
+                                if let FormatSegment::Implicit(span) = seg {
+                                    Some(*span)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        let implicit = implicit_spans.len();
+                        if args.len() - 1 != implicit {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                span,
+                                format!(
+                                    "`in` expects {} argument(s) to fill format placeholders, got {}",
+                                    implicit,
+                                    args.len().saturating_sub(1)
+                                ),
+                            ));
+                        }
+                        self.check_expression(module, &args[0], None, returns, env);
+                        for arg in args.iter().skip(1) {
+                            self.check_expression(module, arg, None, returns, env);
+                        }
+                    } else {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            span,
+                            "`in` with multiple arguments requires a format string literal",
+                        ));
+                        for arg in args {
+                            self.check_expression(module, arg, None, returns, env);
+                        }
+                    }
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![ty.clone(), TypeExpr::Named("string".into(), Vec::new())],
+                    ));
+                }
+                None
             }
             "box_new" => {
                 if args.len() != 1 {
@@ -2807,6 +2874,7 @@ impl Checker {
         matches!(
             name,
             "out"
+                | "in"
                 | "box_new"
                 | "box_get"
                 | "box_set"
@@ -4309,9 +4377,9 @@ fn named_type_name<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
 mod tests {
     use super::check_program;
     use crate::language::{
-        ast::Program,
+        ast::{Expr, Program},
         macro_expander::{self, ExpandedProgram, ExpansionTraces},
-        parser::parse_module,
+        parser::{parse_expression_snippet, parse_module},
     };
     use std::path::PathBuf;
 
@@ -4360,6 +4428,57 @@ fn use_it() {
             help.contains("expansion"),
             "missing expansion wording in trace help: {help}"
         );
+    }
+
+    #[test]
+fn input_requires_type_argument_and_returns_result() {
+        let ok = r#"
+module tests::input;
+
+enum Result[T, E] {
+  Ok(T),
+  Err(E),
+}
+
+fn main() {
+  let result = in[int32]("Age: ");
+  match result {
+    Result::Ok(val) => out(val),
+    Result::Err(msg) => out(msg),
+  }
+}
+"#;
+        if let Err(errs) = typecheck_source(ok) {
+            panic!("expected in[int32] to typecheck, errors: {:?}", errs);
+        }
+
+        let missing_type_arg = r#"
+module tests::input_missing;
+
+enum Result[T, E] {
+  Ok(T),
+  Err(E),
+}
+
+fn main() {
+  let bad = in("oops");
+  out(bad);
+}
+"#;
+        assert!(
+            typecheck_source(missing_type_arg).is_err(),
+            "expected type error when `in` is missing a type argument"
+        );
+    }
+
+    #[test]
+    fn input_expression_parses_with_type_arg() {
+        let expr = parse_expression_snippet(PathBuf::from("test.prime"), "in[int32](\"Age: \")")
+            .expect("parse in call");
+        if let Expr::Call { .. } = expr {
+        } else {
+            panic!("expected call expression for in[int32], got {:?}", expr);
+        }
     }
 
     #[test]

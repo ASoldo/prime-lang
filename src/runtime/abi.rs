@@ -2,6 +2,8 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
+    io::{self, Write},
+    ffi::c_void,
     os::raw::c_char,
     ptr,
     sync::{
@@ -43,6 +45,22 @@ pub enum PrimeTag {
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct PrimeHandle(*mut PrimeValue);
+
+// Type codes consumed by prime_read_value; must stay in sync with compiler lowering.
+pub const TYPE_STRING: u32 = 0;
+pub const TYPE_BOOL: u32 = 1;
+pub const TYPE_INT8: u32 = 2;
+pub const TYPE_INT16: u32 = 3;
+pub const TYPE_INT32: u32 = 4;
+pub const TYPE_INT64: u32 = 5;
+pub const TYPE_ISIZE: u32 = 6;
+pub const TYPE_UINT8: u32 = 7;
+pub const TYPE_UINT16: u32 = 8;
+pub const TYPE_UINT32: u32 = 9;
+pub const TYPE_UINT64: u32 = 10;
+pub const TYPE_USIZE: u32 = 11;
+pub const TYPE_FLOAT32: u32 = 12;
+pub const TYPE_FLOAT64: u32 = 13;
 
 impl PrimeHandle {
     pub fn null() -> Self {
@@ -532,6 +550,90 @@ pub unsafe extern "C" fn prime_reference_read(target: PrimeHandle) -> PrimeHandl
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_enum_tag(handle: PrimeHandle) -> u32 {
+    match as_payload(handle, PrimeTag::Enum) {
+        Some(PrimePayload::Enum(e)) => e.tag,
+        _ => u32::MAX,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_enum_get(handle: PrimeHandle, idx: usize) -> PrimeHandle {
+    match as_payload(handle, PrimeTag::Enum) {
+        Some(PrimePayload::Enum(e)) => {
+            if let Some(value) = e.values.get(idx) {
+                retain_value(*value)
+            } else {
+                PrimeHandle::null()
+            }
+        }
+        _ => PrimeHandle::null(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_read_value(
+    type_code: u32,
+    ok_tag: u32,
+    err_tag: u32,
+    prompt_ptr: *const u8,
+    prompt_len: usize,
+    fmt_values_ptr: *const PrimeHandle,
+    fmt_values_len: usize,
+) -> PrimeHandle {
+    let prompt = if prompt_ptr.is_null() {
+        String::new()
+    } else {
+        let slice = std::slice::from_raw_parts(prompt_ptr, prompt_len);
+        let mut rendered = String::new();
+        let mut handles = Vec::new();
+        if !fmt_values_ptr.is_null() && fmt_values_len > 0 {
+            handles.extend_from_slice(std::slice::from_raw_parts(fmt_values_ptr, fmt_values_len));
+        }
+        let mut handle_iter = handles.into_iter();
+        // Minimal "{}" replacement to mirror `out` implicit placeholders.
+        let mut idx = 0;
+        while idx < slice.len() {
+            if idx + 1 < slice.len() && slice[idx] == b'{' && slice[idx + 1] == b'}' {
+                if let Some(handle) = handle_iter.next() {
+                    rendered.push_str(&format_value(handle));
+                }
+                idx += 2;
+                continue;
+            }
+            rendered.push(slice[idx] as char);
+            idx += 1;
+        }
+        rendered
+    };
+
+    {
+        let _ = io::stdout().write_all(prompt.as_bytes());
+        let _ = io::stdout().flush();
+    }
+
+    let mut buffer = String::new();
+    if let Err(err) = io::stdin().read_line(&mut buffer) {
+        return build_result_enum(err_tag, vec![PrimeValue::new(
+            PrimeTag::String,
+            PrimePayload::String(format!("failed to read input: {err}")),
+        )]);
+    }
+    let raw = buffer.trim_end_matches(&['\n', '\r'][..]).to_string();
+
+    match parse_input_value(&raw, type_code) {
+        Ok(value) => build_result_enum(ok_tag, vec![value]),
+        Err(msg) => build_result_enum(
+            err_tag,
+            vec![PrimeValue::new(
+                PrimeTag::String,
+                PrimePayload::String(msg),
+            )],
+        ),
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn prime_channel_new(
     sender_out: *mut PrimeHandle,
     receiver_out: *mut PrimeHandle,
@@ -662,8 +764,15 @@ pub unsafe extern "C" fn prime_join(handle: PrimeHandle, result_out: *mut PrimeH
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn prime_print(value: PrimeHandle) {
+    // Flush libc stdout so Rust stdout writes stay ordered relative to `printf` calls.
+    fflush(std::ptr::null_mut());
     let rendered = format_value(value);
-    println!("{rendered}");
+    print!("{rendered}");
+    let _ = io::stdout().flush();
+}
+
+unsafe extern "C" {
+    fn fflush(stream: *mut c_void) -> i32;
 }
 
 fn format_value(handle: PrimeHandle) -> String {
@@ -716,6 +825,65 @@ fn format_value(handle: PrimeHandle) -> String {
                 PrimePayload::JoinHandle(_) => "<join-handle>".to_string(),
             },
         }
+    }
+}
+
+fn build_result_enum(tag: u32, values: Vec<PrimeHandle>) -> PrimeHandle {
+    PrimeValue::new(
+        PrimeTag::Enum,
+        PrimePayload::Enum(PrimeEnum::new(tag, values)),
+    )
+}
+
+fn parse_input_value(raw: &str, type_code: u32) -> Result<PrimeHandle, String> {
+    match type_code {
+        TYPE_STRING => Ok(PrimeValue::new(
+            PrimeTag::String,
+            PrimePayload::String(raw.to_string()),
+        )),
+        TYPE_BOOL => match raw.trim().to_ascii_lowercase().as_str() {
+            "true" => Ok(PrimeValue::new(PrimeTag::Bool, PrimePayload::Bool(true))),
+            "false" => Ok(PrimeValue::new(PrimeTag::Bool, PrimePayload::Bool(false))),
+            _ => Err("expected `true` or `false`".into()),
+        },
+        TYPE_INT8 | TYPE_INT16 | TYPE_INT32 | TYPE_INT64 | TYPE_ISIZE => {
+            let parsed = raw.trim().parse::<i128>().map_err(|_| "invalid integer input")?;
+            let (min, max) = match type_code {
+                TYPE_INT8 => (i8::MIN as i128, i8::MAX as i128),
+                TYPE_INT16 => (i16::MIN as i128, i16::MAX as i128),
+                TYPE_INT32 => (i32::MIN as i128, i32::MAX as i128),
+                TYPE_INT64 => (i64::MIN as i128, i64::MAX as i128),
+                TYPE_ISIZE => (isize::MIN as i128, isize::MAX as i128),
+                _ => (i128::MIN, i128::MAX),
+            };
+            if parsed < min || parsed > max {
+                return Err("integer out of range".into());
+            }
+            Ok(PrimeValue::new(PrimeTag::Int, PrimePayload::Int(parsed)))
+        }
+        TYPE_UINT8 | TYPE_UINT16 | TYPE_UINT32 | TYPE_UINT64 | TYPE_USIZE => {
+            let parsed = raw.trim().parse::<u128>().map_err(|_| "invalid integer input")?;
+            let max = match type_code {
+                TYPE_UINT8 => u8::MAX as u128,
+                TYPE_UINT16 => u16::MAX as u128,
+                TYPE_UINT32 => u32::MAX as u128,
+                TYPE_UINT64 => u64::MAX as u128,
+                TYPE_USIZE => usize::MAX as u128,
+                _ => u128::MAX,
+            };
+            if parsed > max {
+                return Err("integer out of range".into());
+            }
+            Ok(PrimeValue::new(
+                PrimeTag::Int,
+                PrimePayload::Int(parsed as i128),
+            ))
+        }
+        TYPE_FLOAT32 | TYPE_FLOAT64 => {
+            let parsed = raw.trim().parse::<f64>().map_err(|_| "invalid float input")?;
+            Ok(PrimeValue::new(PrimeTag::Float, PrimePayload::Float(parsed)))
+        }
+        _ => Err("unsupported input type".into()),
     }
 }
 
