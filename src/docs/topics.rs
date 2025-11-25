@@ -160,8 +160,9 @@ $ prime-lang fmt main.prime --write
 $ prime-lang lsp
 $ prime-lang init adventure
 $ prime-lang add demos.new --path demos/new_demo.prime
-$ prime-lang docs --query core-syntax"#,
-                explanation: "Each subcommand is wired up in `src/main.rs` via clap. `run` interprets a file after loading the manifest, `build` emits LLVM + native binaries, `lint`/`fmt` offer single-shot or watch modes, `lsp` serves editors, `init` scaffolds a workspace, `add` appends a manifest entry and stub file, and `docs` prints these references.",
+$ prime-lang docs --query core-syntax
+$ prime-lang expand tests/macros.prime --line 24 --column 7"#,
+                explanation: "Each subcommand is wired up in `src/main.rs` via clap. `run` interprets a file after loading the manifest, `build` emits LLVM + native binaries, `lint`/`fmt` offer single-shot or watch modes, `lsp` serves editors, `init` scaffolds a workspace, `add` appends a manifest entry and stub file, `docs` prints these references, and `expand` shows macro expansions at a cursor (or dumps the whole expanded module).",
             },
             TopicSection {
                 title: "Example programs",
@@ -693,6 +694,12 @@ let int32 total = ~collect(@sep = ;, { 1; }, { 2; }, 3);"#,
   values
 }"#,
                 explanation: "Hover on macro names to see the full declaration (including body) and parameter kinds. Macros participate in navigation and rename alongside functions.",
+            },
+            TopicSection {
+                title: "CLI macro expansion",
+                snippet: r#"prime-lang expand tests/macros.prime --line 24 --column 7
+prime-lang expand tests/macros.prime --print-expanded"#,
+                explanation: "Use `prime-lang expand` to inspect generated code. With `--line/--column` (or `--offset`), it prints the macro trace and only the expanded items originating from that call—ideal for editor shortcuts. Without a position or with `--print-expanded`, it emits the fully expanded, formatted module.",
             },
         ],
     },

@@ -83,6 +83,7 @@ Validated outputs (fresh run, current syntax):
 
 - Call macros with `~name(args)`; add `;` to use them as statements alongside regular expression use.
 - Expansion traces are carried into type errors, so diagnostics from generated code include the macro call stack (e.g., `in expansion of \`foo\` at …`).
+- Inspect expansions from the CLI: `prime-lang expand file.prime --line 10 --column 5` prints the macro trace and only the expanded items that originate from that call. Add `--print-expanded` or omit the position flags to dump the whole expanded module after expansion.
 - Use `@ident` inside a macro body to intentionally capture an outer binding without hygiene renaming.
 - Item macros are allowed: write a macro body as a block of items and invoke it at module scope with `~macro_name(...);` to splice structs/functions/consts into the module.
 - Macro parameters can opt into richer shapes with `: block`, `: pattern`, or `: tokens` annotations (defaults to expression); block/tokens arguments are inlined without extra bindings, and pattern args can be dropped directly into match/let patterns.
@@ -115,6 +116,7 @@ fresh. Highlights:
 | `prime-lang add <module> [--path file.prime] [--test|--library]` | Append a module, test, or library entry to the manifest and stub the file with the correct header |
 | `prime-lang test [target,...]` | Run test modules (header `test ...;`) by name or file; discovers tests when no target is provided |
 | `prime-lang docs [--list|--query ...]` | Print the curated reference topics described below |
+| `prime-lang expand <file> [--offset N | --line L --column C] [--print-expanded]` | Show macro expansion trace at a cursor (line/column or byte offset). With a position, prints only the expanded items from that macro; without a position or with `--print-expanded`, prints the fully expanded module. |
 | Concurrency | `spawn expr` → `JoinHandle[T]`; `channel[T]()` → `(Sender[T], Receiver[T])`; `send` returns `Result[(), string]`; `recv` yields `Option[T]` (run uses real threads; build evaluates deterministically with the same blocking semantics) |
 
 ### `prime-lang docs`
