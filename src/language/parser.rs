@@ -244,16 +244,22 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
             shift_span(span, delta);
             shift_expr_spans(inner, delta);
         }
-        Expr::Binary { left, right, span, .. } => {
+        Expr::Binary {
+            left, right, span, ..
+        } => {
             shift_span(span, delta);
             shift_expr_spans(left, delta);
             shift_expr_spans(right, delta);
         }
-        Expr::Unary { expr: inner, span, .. } => {
+        Expr::Unary {
+            expr: inner, span, ..
+        } => {
             shift_span(span, delta);
             shift_expr_spans(inner, delta);
         }
-        Expr::Call { callee, args, span, .. } => {
+        Expr::Call {
+            callee, args, span, ..
+        } => {
             shift_span(span, delta);
             shift_expr_spans(callee, delta);
             for arg in args {
@@ -329,10 +335,18 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
             shift_expr_spans(base, delta);
             shift_expr_spans(index, delta);
         }
-        Expr::Reference { expr: inner, span, .. }
-        | Expr::Deref { expr: inner, span, .. }
-        | Expr::Move { expr: inner, span, .. }
-        | Expr::Spawn { expr: inner, span, .. } => {
+        Expr::Reference {
+            expr: inner, span, ..
+        }
+        | Expr::Deref {
+            expr: inner, span, ..
+        }
+        | Expr::Move {
+            expr: inner, span, ..
+        }
+        | Expr::Spawn {
+            expr: inner, span, ..
+        } => {
             shift_span(span, delta);
             shift_expr_spans(inner, delta);
         }
@@ -936,7 +950,8 @@ impl Parser {
         if self.matches(TokenKind::Colon) {
             if let Some(TokenKind::Identifier(raw_kind)) = self.peek_kind() {
                 let lower = raw_kind.to_ascii_lowercase();
-                if lower == "block" || lower == "pattern" || lower == "tokens" || lower == "repeat" {
+                if lower == "block" || lower == "pattern" || lower == "tokens" || lower == "repeat"
+                {
                     self.advance();
                     kind = match lower.as_str() {
                         "block" => MacroParamKind::Block,
@@ -1166,18 +1181,29 @@ impl Parser {
                                 match tok.kind {
                                     TokenKind::LParen => depth_paren += 1,
                                     TokenKind::RParen => {
-                                        if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 {
+                                        if depth_paren == 0
+                                            && depth_brace == 0
+                                            && depth_bracket == 0
+                                        {
                                             break;
                                         }
                                         depth_paren = depth_paren.saturating_sub(1);
                                     }
                                     TokenKind::LBrace => depth_brace += 1,
-                                    TokenKind::RBrace => depth_brace = depth_brace.saturating_sub(1),
+                                    TokenKind::RBrace => {
+                                        depth_brace = depth_brace.saturating_sub(1)
+                                    }
                                     TokenKind::LBracket => depth_bracket += 1,
-                                    TokenKind::RBracket => depth_bracket = depth_bracket.saturating_sub(1),
+                                    TokenKind::RBracket => {
+                                        depth_bracket = depth_bracket.saturating_sub(1)
+                                    }
                                     _ => {}
                                 }
-                                if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 && tok.kind == sep {
+                                if depth_paren == 0
+                                    && depth_brace == 0
+                                    && depth_bracket == 0
+                                    && tok.kind == sep
+                                {
                                     tok.kind = TokenKind::Comma;
                                 }
                             }
@@ -1216,7 +1242,10 @@ impl Parser {
         })
     }
 
-    fn parse_macro_arg_with_custom_sep(&mut self, separator: TokenKind) -> Result<MacroArg, SyntaxError> {
+    fn parse_macro_arg_with_custom_sep(
+        &mut self,
+        separator: TokenKind,
+    ) -> Result<MacroArg, SyntaxError> {
         let start_idx = self.pos;
         let mut depth_paren: i32 = 0;
         let mut depth_brace: i32 = 0;
@@ -2082,7 +2111,10 @@ impl Parser {
             return Ok(Expr::Block(Box::new(block)));
         }
         if self.matches(TokenKind::At) {
-            let at_start = self.previous_span().map(|s| s.start).unwrap_or_else(|| self.current_span_start());
+            let at_start = self
+                .previous_span()
+                .map(|s| s.start)
+                .unwrap_or_else(|| self.current_span_start());
             let ident = self.expect_identifier("Expected identifier after '@'")?;
             let span = Span::new(at_start, ident.span.end);
             return Ok(Expr::Identifier(Identifier {
@@ -2631,13 +2663,17 @@ impl Parser {
 
     fn parse_named_pattern(&mut self) -> Result<Pattern, SyntaxError> {
         let ident = self.expect_identifier("Expected pattern identifier")?;
-        if self.check(TokenKind::ColonColon) || self.check(TokenKind::Dot) || self.check(TokenKind::Colon) {
+        if self.check(TokenKind::ColonColon)
+            || self.check(TokenKind::Dot)
+            || self.check(TokenKind::Colon)
+        {
             // Avoid misinterpreting type annotations (`name: Type`) as enum qualifiers.
             if self.check(TokenKind::Colon) && matches!(self.peek_kind_n(2), Some(TokenKind::Eq)) {
                 // fall through to treat as identifier pattern
             } else {
                 self.advance();
-                let variant = self.expect_identifier("Expected variant name after enum qualifier")?;
+                let variant =
+                    self.expect_identifier("Expected variant name after enum qualifier")?;
                 let bindings = if self.matches(TokenKind::LParen) {
                     self.parse_pattern_bindings()?
                 } else {

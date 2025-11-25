@@ -113,7 +113,6 @@ impl<'a> MacroRegistry<'a> {
     }
 }
 
-
 struct Expander<'a> {
     registry: MacroRegistry<'a>,
     gensym: usize,
@@ -152,12 +151,54 @@ fn validate_no_duplicate_items(items: &[(Item, Option<String>)]) -> Vec<SyntaxEr
     let mut errors = Vec::new();
     for (item, origin) in items {
         match item {
-            Item::Function(def) => push_dup(&mut seen_funcs, &mut errors, &def.name, def.name_span, "function", origin.clone()),
-            Item::Struct(def) => push_dup(&mut seen_structs, &mut errors, &def.name, def.span, "struct", origin.clone()),
-            Item::Enum(def) => push_dup(&mut seen_enums, &mut errors, &def.name, def.span, "enum", origin.clone()),
-            Item::Interface(def) => push_dup(&mut seen_interfaces, &mut errors, &def.name, def.span, "interface", origin.clone()),
-            Item::Macro(def) => push_dup(&mut seen_macros, &mut errors, &def.name, def.name_span, "macro", origin.clone()),
-            Item::Const(def) => push_dup(&mut seen_consts, &mut errors, &def.name, def.span, "const", origin.clone()),
+            Item::Function(def) => push_dup(
+                &mut seen_funcs,
+                &mut errors,
+                &def.name,
+                def.name_span,
+                "function",
+                origin.clone(),
+            ),
+            Item::Struct(def) => push_dup(
+                &mut seen_structs,
+                &mut errors,
+                &def.name,
+                def.span,
+                "struct",
+                origin.clone(),
+            ),
+            Item::Enum(def) => push_dup(
+                &mut seen_enums,
+                &mut errors,
+                &def.name,
+                def.span,
+                "enum",
+                origin.clone(),
+            ),
+            Item::Interface(def) => push_dup(
+                &mut seen_interfaces,
+                &mut errors,
+                &def.name,
+                def.span,
+                "interface",
+                origin.clone(),
+            ),
+            Item::Macro(def) => push_dup(
+                &mut seen_macros,
+                &mut errors,
+                &def.name,
+                def.name_span,
+                "macro",
+                origin.clone(),
+            ),
+            Item::Const(def) => push_dup(
+                &mut seen_consts,
+                &mut errors,
+                &def.name,
+                def.span,
+                "const",
+                origin.clone(),
+            ),
             Item::Impl(_) | Item::MacroInvocation(_) => {}
         }
     }
@@ -234,14 +275,22 @@ fn arity_error(def: &MacroDef, args_len: usize) -> Option<String> {
     }
 }
 
-fn coalesce_repeat_args(params: &[MacroParam], args: Vec<MacroArg>, call_span: Span) -> Vec<MacroArg> {
+fn coalesce_repeat_args(
+    params: &[MacroParam],
+    args: Vec<MacroArg>,
+    call_span: Span,
+) -> Vec<MacroArg> {
     if params.last().map(|p| p.kind) != Some(MacroParamKind::Repeat) {
         return args;
     }
     let fixed = params.len().saturating_sub(1);
     let mut out = Vec::new();
     out.extend_from_slice(&args[..fixed.min(args.len())]);
-    let repeat_slice = if args.len() > fixed { &args[fixed..] } else { &[] };
+    let repeat_slice = if args.len() > fixed {
+        &args[fixed..]
+    } else {
+        &[]
+    };
     let exprs: Vec<Expr> = repeat_slice.iter().map(|a| a.expr.clone()).collect();
     let span = match (repeat_slice.first(), repeat_slice.last()) {
         (Some(first), Some(last)) => {
@@ -252,7 +301,8 @@ fn coalesce_repeat_args(params: &[MacroParam], args: Vec<MacroArg>, call_span: S
         _ => call_span,
     };
     let combined_expr = Expr::Tuple(exprs, span);
-    let combined_tokens = merge_tokens_with_separator(repeat_slice, repeat_separator_hint(repeat_slice));
+    let combined_tokens =
+        merge_tokens_with_separator(repeat_slice, repeat_separator_hint(repeat_slice));
     out.push(MacroArg {
         expr: combined_expr,
         tokens: combined_tokens,
@@ -284,11 +334,14 @@ fn merge_tokens_with_separator(args: &[MacroArg], separator: TokenKind) -> Optio
 
 fn repeat_separator_hint(args: &[MacroArg]) -> TokenKind {
     args.iter()
-        .find_map(|arg| arg.tokens.as_ref().map(|tokens| find_repeat_spec(tokens).separator.clone()))
+        .find_map(|arg| {
+            arg.tokens
+                .as_ref()
+                .map(|tokens| find_repeat_spec(tokens).separator.clone())
+        })
         .flatten()
         .unwrap_or(TokenKind::Comma)
 }
-
 
 impl ExpansionTraces {
     fn record(&mut self, path: &Path, span: Span, frames: &[MacroFrame]) {
@@ -299,7 +352,10 @@ impl ExpansionTraces {
             span,
             frames: frames.to_vec(),
         };
-        self.entries.entry(path.to_path_buf()).or_default().push(entry);
+        self.entries
+            .entry(path.to_path_buf())
+            .or_default()
+            .push(entry);
     }
 
     pub fn help_for(&self, path: &Path, span: Span) -> Option<String> {
@@ -311,7 +367,8 @@ impl ExpansionTraces {
                     .map(|best| {
                         let current_len = entry.span.len();
                         let best_len = best.span.len();
-                        current_len < best_len || (current_len == best_len && entry.span.end < best.span.end)
+                        current_len < best_len
+                            || (current_len == best_len && entry.span.end < best.span.end)
                     })
                     .unwrap_or(true);
                 if is_narrower {
@@ -332,7 +389,8 @@ impl ExpansionTraces {
                     .map(|best| {
                         let current_len = entry.span.len();
                         let best_len = best.span.len();
-                        current_len < best_len || (current_len == best_len && entry.span.end < best.span.end)
+                        current_len < best_len
+                            || (current_len == best_len && entry.span.end < best.span.end)
                     })
                     .unwrap_or(true);
                 if is_narrower {
@@ -378,7 +436,10 @@ impl<'a> Expander<'a> {
                 .iter()
                 .map(|(item, _)| item.clone())
                 .collect::<Vec<_>>();
-            let origins = expanded_items.iter().map(|(_, origin)| origin.clone()).collect();
+            let origins = expanded_items
+                .iter()
+                .map(|(_, origin)| origin.clone())
+                .collect();
             expanded_modules.push(Module {
                 name: module.name.clone(),
                 kind: module.kind,
@@ -389,8 +450,7 @@ impl<'a> Expander<'a> {
                 imports: module.imports.clone(),
                 items,
             });
-            self.item_origins
-                .insert(module.path.clone(), origins);
+            self.item_origins.insert(module.path.clone(), origins);
         }
         self.current_path = None;
         if errors.is_empty() {
@@ -410,7 +470,9 @@ impl<'a> Expander<'a> {
     ) {
         let origin = self.stack.last().map(|f| f.name.clone());
         match item {
-            Item::Function(def) => out.push((Item::Function(self.expand_function(def, errors)), origin)),
+            Item::Function(def) => {
+                out.push((Item::Function(self.expand_function(def, errors)), origin))
+            }
             Item::Const(def) => out.push((Item::Const(self.expand_const(def, errors)), origin)),
             Item::Impl(block) => out.push((Item::Impl(self.expand_impl(block, errors)), origin)),
             Item::Struct(_) | Item::Enum(_) | Item::Interface(_) | Item::Macro(_) => {
@@ -440,8 +502,9 @@ impl<'a> Expander<'a> {
                 tokens: arg.tokens.clone(),
             })
             .collect();
-        let Some((def, _module)) =
-            self.registry.get(&invocation.name.name, self.current_path.as_deref())
+        let Some((def, _module)) = self
+            .registry
+            .get(&invocation.name.name, self.current_path.as_deref())
         else {
             let mut err = SyntaxError::new(
                 format!("unknown macro `{}`", invocation.name.name),
@@ -450,22 +513,28 @@ impl<'a> Expander<'a> {
             err.help = self.trace_help();
             errors.push(err);
             self.stack.pop();
-            return vec![(Item::MacroInvocation(MacroInvocation {
-                name: invocation.name.clone(),
-                args: expanded_args,
-                span: invocation.span,
-            }), None)];
+            return vec![(
+                Item::MacroInvocation(MacroInvocation {
+                    name: invocation.name.clone(),
+                    args: expanded_args,
+                    span: invocation.span,
+                }),
+                None,
+            )];
         };
         if let Some(msg) = arity_error(def, expanded_args.len()) {
             let mut err = SyntaxError::new(msg, invocation.span);
             err.help = self.trace_help();
             errors.push(err);
             self.stack.pop();
-            return vec![(Item::MacroInvocation(MacroInvocation {
-                name: invocation.name.clone(),
-                args: expanded_args,
-                span: invocation.span,
-            }), None)];
+            return vec![(
+                Item::MacroInvocation(MacroInvocation {
+                    name: invocation.name.clone(),
+                    args: expanded_args,
+                    span: invocation.span,
+                }),
+                None,
+            )];
         }
         let expanded_args = coalesce_repeat_args(&def.params, expanded_args, invocation.span);
         if let Some(msg) = arity_error(def, expanded_args.len()) {
@@ -473,11 +542,14 @@ impl<'a> Expander<'a> {
             err.help = self.trace_help();
             errors.push(err);
             self.stack.pop();
-            return vec![(Item::MacroInvocation(MacroInvocation {
-                name: invocation.name.clone(),
-                args: expanded_args,
-                span: invocation.span,
-            }), None)];
+            return vec![(
+                Item::MacroInvocation(MacroInvocation {
+                    name: invocation.name.clone(),
+                    args: expanded_args,
+                    span: invocation.span,
+                }),
+                None,
+            )];
         }
 
         let MacroBody::Items(items, body_span) = &def.body else {
@@ -488,11 +560,14 @@ impl<'a> Expander<'a> {
             err.help = self.trace_help();
             errors.push(err);
             self.stack.pop();
-            return vec![(Item::MacroInvocation(MacroInvocation {
-                name: invocation.name.clone(),
-                args: expanded_args,
-                span: invocation.span,
-            }), None)];
+            return vec![(
+                Item::MacroInvocation(MacroInvocation {
+                    name: invocation.name.clone(),
+                    args: expanded_args,
+                    span: invocation.span,
+                }),
+                None,
+            )];
         };
 
         let mut substitution_map = HashMap::new();
@@ -560,12 +635,18 @@ impl<'a> Expander<'a> {
                 FunctionBody::Block(Box::new(self.expand_block(block, def.span, errors)))
             }
         };
-        FunctionDef { body, ..def.clone() }
+        FunctionDef {
+            body,
+            ..def.clone()
+        }
     }
 
     fn expand_const(&mut self, def: &ConstDef, errors: &mut Vec<SyntaxError>) -> ConstDef {
         let value = self.expand_expr(&def.value, 0, def.span, errors);
-        ConstDef { value, ..def.clone() }
+        ConstDef {
+            value,
+            ..def.clone()
+        }
     }
 
     fn expand_impl(&mut self, block: &ImplBlock, errors: &mut Vec<SyntaxError>) -> ImplBlock {
@@ -580,7 +661,12 @@ impl<'a> Expander<'a> {
         }
     }
 
-    fn expand_block(&mut self, block: &Block, _scope_span: Span, errors: &mut Vec<SyntaxError>) -> Block {
+    fn expand_block(
+        &mut self,
+        block: &Block,
+        _scope_span: Span,
+        errors: &mut Vec<SyntaxError>,
+    ) -> Block {
         let mut statements = Vec::new();
         for stmt in &block.statements {
             statements.push(self.expand_statement(stmt, _scope_span, errors));
@@ -662,9 +748,9 @@ impl<'a> Expander<'a> {
             Statement::Defer(defer_stmt) => Statement::Defer(DeferStmt {
                 expr: self.expand_expr(&defer_stmt.expr, 0, _scope_span, errors),
             }),
-            Statement::Block(block) => Statement::Block(Box::new(self.expand_block(
-                block, _scope_span, errors,
-            ))),
+            Statement::Block(block) => {
+                Statement::Block(Box::new(self.expand_block(block, _scope_span, errors)))
+            }
             Statement::Break | Statement::Continue => stmt.clone(),
         }
     }
@@ -691,10 +777,7 @@ impl<'a> Expander<'a> {
     ) -> Expr {
         if depth > 32 {
             if let Expr::MacroCall { span, .. } = expr {
-                let mut err = SyntaxError::new(
-                    "macro expansion exceeded recursion limit",
-                    *span,
-                );
+                let mut err = SyntaxError::new("macro expansion exceeded recursion limit", *span);
                 err.help = self.trace_help();
                 errors.push(err);
             }
@@ -715,10 +798,8 @@ impl<'a> Expander<'a> {
                     .collect();
                 let result = match self.registry.get(&name.name, self.current_path.as_deref()) {
                     None => {
-                        let mut err = SyntaxError::new(
-                            format!("unknown macro `{}`", name.name),
-                            *span,
-                        );
+                        let mut err =
+                            SyntaxError::new(format!("unknown macro `{}`", name.name), *span);
                         err.help = self.trace_help();
                         errors.push(err);
                         Expr::MacroCall {
@@ -738,7 +819,8 @@ impl<'a> Expander<'a> {
                                 span: *span,
                             };
                         }
-                        let expanded_args = coalesce_repeat_args(&def.params, expanded_args_raw, *span);
+                        let expanded_args =
+                            coalesce_repeat_args(&def.params, expanded_args_raw, *span);
                         if let Some(msg) = arity_error(def, expanded_args.len()) {
                             let mut err = SyntaxError::new(msg, *span);
                             err.help = self.trace_help();
@@ -757,11 +839,17 @@ impl<'a> Expander<'a> {
                             let mut substitution_map = HashMap::new();
                             let mut pattern_params = HashSet::new();
                             let mut pattern_map = HashMap::new();
-                            for (idx, (param, arg)) in def.params.iter().zip(expanded_args.iter()).enumerate() {
+                            for (idx, (param, arg)) in
+                                def.params.iter().zip(expanded_args.iter()).enumerate()
+                            {
                                 match param.kind {
                                     MacroParamKind::Expr => {
                                         let binding_name = format!("__macro_arg_{call_id}_{idx}");
-                                        param_bindings.push((param, arg.expr.clone(), binding_name.clone()));
+                                        param_bindings.push((
+                                            param,
+                                            arg.expr.clone(),
+                                            binding_name.clone(),
+                                        ));
                                         substitution_map.insert(
                                             param.name.clone(),
                                             Expr::Identifier(Identifier {
@@ -770,7 +858,9 @@ impl<'a> Expander<'a> {
                                             }),
                                         );
                                     }
-                                    MacroParamKind::Block | MacroParamKind::Tokens | MacroParamKind::Repeat => {
+                                    MacroParamKind::Block
+                                    | MacroParamKind::Tokens
+                                    | MacroParamKind::Repeat => {
                                         substitution_map.insert(
                                             param.name.clone(),
                                             self.macro_arg_to_expr(param.kind, arg, *span, errors),
@@ -808,10 +898,15 @@ impl<'a> Expander<'a> {
 
                             let inlined_body = match &def.body {
                                 MacroBody::Expr(expr) => substitute_expr(expr.node.clone(), &subst),
-                                MacroBody::Block(block) => substitute_expr(Expr::Block(block.clone()), &subst),
+                                MacroBody::Block(block) => {
+                                    substitute_expr(Expr::Block(block.clone()), &subst)
+                                }
                                 MacroBody::Items(_, _) => {
                                     let mut err = SyntaxError::new(
-                                        format!("macro `{}` cannot be used as an expression macro", def.name),
+                                        format!(
+                                            "macro `{}` cannot be used as an expression macro",
+                                            def.name
+                                        ),
                                         *span,
                                     );
                                     err.help = self.trace_help();
@@ -825,7 +920,8 @@ impl<'a> Expander<'a> {
                                 }
                             };
                             let macro_locals = collect_bindings_from_body(&def.body);
-                            let renamed_body = rename_macro_locals(&inlined_body, call_id, &macro_locals);
+                            let renamed_body =
+                                rename_macro_locals(&inlined_body, call_id, &macro_locals);
                             let expanded_body =
                                 self.expand_expr(&renamed_body, depth + 1, scope_span, errors);
 
@@ -842,7 +938,8 @@ impl<'a> Expander<'a> {
                             }
 
                             let mut block_span_end = span.end;
-                            let (statements, tail) = if let Expr::Block(body_block) = &expanded_body {
+                            let (statements, tail) = if let Expr::Block(body_block) = &expanded_body
+                            {
                                 block_span_end = body_block.span.end.max(block_span_end);
                                 let mut merged_stmts = statements;
                                 merged_stmts.extend(body_block.statements.clone());
@@ -867,142 +964,160 @@ impl<'a> Expander<'a> {
                 self.stack.pop();
                 result
             }
-        Expr::Call {
-            callee,
-            type_args,
-            args,
-            span,
-        } => Expr::Call {
-            callee: Box::new(self.expand_expr(callee, depth + 1, scope_span, errors)),
-            type_args: type_args.clone(),
-            args: args
-                .iter()
-                .map(|arg| self.expand_expr(arg, depth + 1, scope_span, errors))
-                .collect(),
-            span: *span,
-        },
-        Expr::Binary { op, left, right, span } => Expr::Binary {
-            op: *op,
-            left: Box::new(self.expand_expr(left, depth + 1, scope_span, errors)),
-            right: Box::new(self.expand_expr(right, depth + 1, scope_span, errors)),
-            span: *span,
-        },
-        Expr::Unary { op, expr, span } => Expr::Unary {
-            op: *op,
-            expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
-            span: *span,
-        },
-        Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
-            base: Box::new(self.expand_expr(base, depth + 1, scope_span, errors)),
-            field: field.clone(),
-            span: *span,
-        },
-        Expr::StructLiteral { name, fields, span } => Expr::StructLiteral {
-            name: name.clone(),
-            fields: match fields {
-                StructLiteralKind::Named(entries) => StructLiteralKind::Named(
-                    entries
-                        .iter()
-                        .map(|entry| StructLiteralField {
-                            name: entry.name.clone(),
-                            value: self.expand_expr(&entry.value, depth + 1, scope_span, errors),
-                        })
-                        .collect(),
-                ),
-                StructLiteralKind::Positional(values) => StructLiteralKind::Positional(
-                    values
-                        .iter()
-                        .map(|value| self.expand_expr(value, depth + 1, scope_span, errors))
-                        .collect(),
-                ),
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                span,
+            } => Expr::Call {
+                callee: Box::new(self.expand_expr(callee, depth + 1, scope_span, errors)),
+                type_args: type_args.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.expand_expr(arg, depth + 1, scope_span, errors))
+                    .collect(),
+                span: *span,
             },
-            span: *span,
-        },
-        Expr::EnumLiteral {
-            enum_name,
-            variant,
-            values,
-            span,
-        } => Expr::EnumLiteral {
-            enum_name: enum_name.clone(),
-            variant: variant.clone(),
-            values: values
-                .iter()
-                .map(|v| self.expand_expr(v, depth + 1, scope_span, errors))
-                .collect(),
-            span: *span,
-        },
-        Expr::MapLiteral { entries, span } => Expr::MapLiteral {
-            entries: entries
-                .iter()
-                .map(|entry| MapLiteralEntry {
-                    key: self.expand_expr(&entry.key, depth + 1, scope_span, errors),
-                    value: self.expand_expr(&entry.value, depth + 1, scope_span, errors),
-                })
-                .collect(),
-            span: *span,
-        },
-        Expr::Tuple(values, span) => Expr::Tuple(
-            values
-                .iter()
-                .map(|v| self.expand_expr(v, depth + 1, scope_span, errors))
-                .collect(),
-            *span,
-        ),
-        Expr::ArrayLiteral(values, span) => Expr::ArrayLiteral(
-            values
-                .iter()
-                .map(|v| self.expand_expr(v, depth + 1, scope_span, errors))
-                .collect(),
-            *span,
-        ),
-        Expr::Range(range) => Expr::Range(self.expand_range(range, scope_span, errors)),
-        Expr::Index { base, index, span } => Expr::Index {
-            base: Box::new(self.expand_expr(base, depth + 1, scope_span, errors)),
-            index: Box::new(self.expand_expr(index, depth + 1, scope_span, errors)),
-            span: *span,
-        },
-        Expr::Block(block) => Expr::Block(Box::new(self.expand_block(block, scope_span, errors))),
-        Expr::If(if_expr) => Expr::If(Box::new(self.expand_if(if_expr, scope_span, errors))),
-        Expr::Match(match_expr) => Expr::Match(self.expand_match(match_expr, scope_span, errors)),
-        Expr::Reference { mutable, expr, span } => Expr::Reference {
-            mutable: *mutable,
-            expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
-            span: *span,
-        },
-        Expr::Deref { expr, span } => Expr::Deref {
-            expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
-            span: *span,
-        },
-        Expr::Move { expr, span } => Expr::Move {
-            expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
-            span: *span,
-        },
-        Expr::Spawn { expr, span } => Expr::Spawn {
-            expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
-            span: *span,
-        },
-        Expr::FormatString(literal) => Expr::FormatString(FormatStringLiteral {
-            segments: literal
-                .segments
-                .iter()
-                .map(|seg| match seg {
-                    FormatSegment::Literal(text) => FormatSegment::Literal(text.clone()),
-                    FormatSegment::Implicit(span) => FormatSegment::Implicit(*span),
-                    FormatSegment::Expr { expr, span } => FormatSegment::Expr {
-                        expr: self.expand_expr(expr, depth + 1, scope_span, errors),
-                        span: *span,
-                    },
-                })
-                .collect(),
-            span: literal.span,
-        }),
-        Expr::Identifier(_)
-        | Expr::Literal(_)
-        | Expr::Try { .. }
-        | Expr::TryPropagate { .. } => expr.clone(),
+            Expr::Binary {
+                op,
+                left,
+                right,
+                span,
+            } => Expr::Binary {
+                op: *op,
+                left: Box::new(self.expand_expr(left, depth + 1, scope_span, errors)),
+                right: Box::new(self.expand_expr(right, depth + 1, scope_span, errors)),
+                span: *span,
+            },
+            Expr::Unary { op, expr, span } => Expr::Unary {
+                op: *op,
+                expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
+                span: *span,
+            },
+            Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
+                base: Box::new(self.expand_expr(base, depth + 1, scope_span, errors)),
+                field: field.clone(),
+                span: *span,
+            },
+            Expr::StructLiteral { name, fields, span } => Expr::StructLiteral {
+                name: name.clone(),
+                fields: match fields {
+                    StructLiteralKind::Named(entries) => StructLiteralKind::Named(
+                        entries
+                            .iter()
+                            .map(|entry| StructLiteralField {
+                                name: entry.name.clone(),
+                                value: self.expand_expr(
+                                    &entry.value,
+                                    depth + 1,
+                                    scope_span,
+                                    errors,
+                                ),
+                            })
+                            .collect(),
+                    ),
+                    StructLiteralKind::Positional(values) => StructLiteralKind::Positional(
+                        values
+                            .iter()
+                            .map(|value| self.expand_expr(value, depth + 1, scope_span, errors))
+                            .collect(),
+                    ),
+                },
+                span: *span,
+            },
+            Expr::EnumLiteral {
+                enum_name,
+                variant,
+                values,
+                span,
+            } => Expr::EnumLiteral {
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+                values: values
+                    .iter()
+                    .map(|v| self.expand_expr(v, depth + 1, scope_span, errors))
+                    .collect(),
+                span: *span,
+            },
+            Expr::MapLiteral { entries, span } => Expr::MapLiteral {
+                entries: entries
+                    .iter()
+                    .map(|entry| MapLiteralEntry {
+                        key: self.expand_expr(&entry.key, depth + 1, scope_span, errors),
+                        value: self.expand_expr(&entry.value, depth + 1, scope_span, errors),
+                    })
+                    .collect(),
+                span: *span,
+            },
+            Expr::Tuple(values, span) => Expr::Tuple(
+                values
+                    .iter()
+                    .map(|v| self.expand_expr(v, depth + 1, scope_span, errors))
+                    .collect(),
+                *span,
+            ),
+            Expr::ArrayLiteral(values, span) => Expr::ArrayLiteral(
+                values
+                    .iter()
+                    .map(|v| self.expand_expr(v, depth + 1, scope_span, errors))
+                    .collect(),
+                *span,
+            ),
+            Expr::Range(range) => Expr::Range(self.expand_range(range, scope_span, errors)),
+            Expr::Index { base, index, span } => Expr::Index {
+                base: Box::new(self.expand_expr(base, depth + 1, scope_span, errors)),
+                index: Box::new(self.expand_expr(index, depth + 1, scope_span, errors)),
+                span: *span,
+            },
+            Expr::Block(block) => {
+                Expr::Block(Box::new(self.expand_block(block, scope_span, errors)))
+            }
+            Expr::If(if_expr) => Expr::If(Box::new(self.expand_if(if_expr, scope_span, errors))),
+            Expr::Match(match_expr) => {
+                Expr::Match(self.expand_match(match_expr, scope_span, errors))
+            }
+            Expr::Reference {
+                mutable,
+                expr,
+                span,
+            } => Expr::Reference {
+                mutable: *mutable,
+                expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
+                span: *span,
+            },
+            Expr::Deref { expr, span } => Expr::Deref {
+                expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
+                span: *span,
+            },
+            Expr::Move { expr, span } => Expr::Move {
+                expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
+                span: *span,
+            },
+            Expr::Spawn { expr, span } => Expr::Spawn {
+                expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
+                span: *span,
+            },
+            Expr::FormatString(literal) => Expr::FormatString(FormatStringLiteral {
+                segments: literal
+                    .segments
+                    .iter()
+                    .map(|seg| match seg {
+                        FormatSegment::Literal(text) => FormatSegment::Literal(text.clone()),
+                        FormatSegment::Implicit(span) => FormatSegment::Implicit(*span),
+                        FormatSegment::Expr { expr, span } => FormatSegment::Expr {
+                            expr: self.expand_expr(expr, depth + 1, scope_span, errors),
+                            span: *span,
+                        },
+                    })
+                    .collect(),
+                span: literal.span,
+            }),
+            Expr::Identifier(_)
+            | Expr::Literal(_)
+            | Expr::Try { .. }
+            | Expr::TryPropagate { .. } => expr.clone(),
+        }
     }
-}
 
     fn expand_if(
         &mut self,
@@ -1021,17 +1136,14 @@ impl<'a> Expander<'a> {
                 },
             },
             then_branch: self.expand_block(&expr.then_branch, scope_span, errors),
-            else_branch: expr
-                .else_branch
-                .as_ref()
-                .map(|branch| match branch {
-                    ElseBranch::Block(block) => {
-                        ElseBranch::Block(self.expand_block(block, scope_span, errors))
-                    }
-                    ElseBranch::ElseIf(inner) => {
-                        ElseBranch::ElseIf(Box::new(self.expand_if(inner, scope_span, errors)))
-                    }
-                }),
+            else_branch: expr.else_branch.as_ref().map(|branch| match branch {
+                ElseBranch::Block(block) => {
+                    ElseBranch::Block(self.expand_block(block, scope_span, errors))
+                }
+                ElseBranch::ElseIf(inner) => {
+                    ElseBranch::ElseIf(Box::new(self.expand_if(inner, scope_span, errors)))
+                }
+            }),
             span: expr.span,
         }
     }
@@ -1059,7 +1171,6 @@ impl<'a> Expander<'a> {
             span: expr.span,
         }
     }
-
 }
 
 fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
@@ -1075,7 +1186,12 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
                 .cloned()
                 .unwrap_or(Expr::Identifier(ident))
         }
-        Expr::Binary { op, left, right, span } => Expr::Binary {
+        Expr::Binary {
+            op,
+            left,
+            right,
+            span,
+        } => Expr::Binary {
             op,
             left: Box::new(substitute_expr(*left, subst)),
             right: Box::new(substitute_expr(*right, subst)),
@@ -1086,10 +1202,18 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
-        Expr::Call { callee, type_args, args, span } => Expr::Call {
+        Expr::Call {
+            callee,
+            type_args,
+            args,
+            span,
+        } => Expr::Call {
             callee: Box::new(substitute_expr(*callee, subst)),
             type_args,
-            args: args.into_iter().map(|arg| substitute_expr(arg, subst)).collect(),
+            args: args
+                .into_iter()
+                .map(|arg| substitute_expr(arg, subst))
+                .collect(),
             span,
         },
         Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
@@ -1110,15 +1234,26 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
                         .collect(),
                 ),
                 StructLiteralKind::Positional(values) => StructLiteralKind::Positional(
-                    values.into_iter().map(|v| substitute_expr(v, subst)).collect(),
+                    values
+                        .into_iter()
+                        .map(|v| substitute_expr(v, subst))
+                        .collect(),
                 ),
             },
             span,
         },
-        Expr::EnumLiteral { enum_name, variant, values, span } => Expr::EnumLiteral {
+        Expr::EnumLiteral {
             enum_name,
             variant,
-            values: values.into_iter().map(|v| substitute_expr(v, subst)).collect(),
+            values,
+            span,
+        } => Expr::EnumLiteral {
+            enum_name,
+            variant,
+            values: values
+                .into_iter()
+                .map(|v| substitute_expr(v, subst))
+                .collect(),
             span,
         },
         Expr::MapLiteral { entries, span } => Expr::MapLiteral {
@@ -1147,11 +1282,17 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             span: match_expr.span,
         }),
         Expr::Tuple(values, span) => Expr::Tuple(
-            values.into_iter().map(|v| substitute_expr(v, subst)).collect(),
+            values
+                .into_iter()
+                .map(|v| substitute_expr(v, subst))
+                .collect(),
             span,
         ),
         Expr::ArrayLiteral(values, span) => Expr::ArrayLiteral(
-            values.into_iter().map(|v| substitute_expr(v, subst)).collect(),
+            values
+                .into_iter()
+                .map(|v| substitute_expr(v, subst))
+                .collect(),
             span,
         ),
         Expr::Range(range) => Expr::Range(RangeExpr {
@@ -1165,7 +1306,11 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             index: Box::new(substitute_expr(*index, subst)),
             span,
         },
-        Expr::Reference { mutable, expr, span } => Expr::Reference {
+        Expr::Reference {
+            mutable,
+            expr,
+            span,
+        } => Expr::Reference {
             mutable,
             expr: Box::new(substitute_expr(*expr, subst)),
             span,
@@ -1219,7 +1364,9 @@ fn substitute_block(block: Block, subst: &Substitution) -> Block {
             .into_iter()
             .map(|stmt| substitute_statement(stmt, subst))
             .collect(),
-        tail: block.tail.map(|expr| Box::new(substitute_expr(*expr, subst))),
+        tail: block
+            .tail
+            .map(|expr| Box::new(substitute_expr(*expr, subst))),
         span: block.span,
     }
 }
@@ -1231,10 +1378,9 @@ fn substitute_statement(stmt: Statement, subst: &Substitution) -> Statement {
             pattern: substitute_pattern(let_stmt.pattern, subst),
             ..let_stmt
         }),
-        Statement::MacroSemi(expr) => Statement::MacroSemi(Spanned::new(
-            substitute_expr(expr.node, subst),
-            expr.span,
-        )),
+        Statement::MacroSemi(expr) => {
+            Statement::MacroSemi(Spanned::new(substitute_expr(expr.node, subst), expr.span))
+        }
         Statement::Assign(assign) => Statement::Assign(AssignStmt {
             target: substitute_expr(assign.target, subst),
             value: substitute_expr(assign.value, subst),
@@ -1251,9 +1397,7 @@ fn substitute_statement(stmt: Statement, subst: &Substitution) -> Statement {
         }),
         Statement::While(while_stmt) => Statement::While(WhileStmt {
             condition: match while_stmt.condition {
-                WhileCondition::Expr(expr) => {
-                    WhileCondition::Expr(substitute_expr(expr, subst))
-                }
+                WhileCondition::Expr(expr) => WhileCondition::Expr(substitute_expr(expr, subst)),
                 WhileCondition::Let { pattern, value } => WhileCondition::Let {
                     pattern: substitute_pattern(pattern, subst),
                     value: substitute_expr(value, subst),
@@ -1274,9 +1418,7 @@ fn substitute_statement(stmt: Statement, subst: &Substitution) -> Statement {
                     inclusive: range.inclusive,
                     span: range.span,
                 }),
-                ForTarget::Collection(expr) => {
-                    ForTarget::Collection(substitute_expr(expr, subst))
-                }
+                ForTarget::Collection(expr) => ForTarget::Collection(substitute_expr(expr, subst)),
             },
             body: substitute_block(for_stmt.body, subst),
             span: for_stmt.span,
@@ -1299,14 +1441,10 @@ fn substitute_if(if_expr: IfExpr, subst: &Substitution) -> IfExpr {
             },
         },
         then_branch: substitute_block(if_expr.then_branch, subst),
-        else_branch: if_expr
-            .else_branch
-            .map(|branch| match branch {
-                ElseBranch::Block(block) => ElseBranch::Block(substitute_block(block, subst)),
-                ElseBranch::ElseIf(inner) => {
-                    ElseBranch::ElseIf(Box::new(substitute_if(*inner, subst)))
-                }
-            }),
+        else_branch: if_expr.else_branch.map(|branch| match branch {
+            ElseBranch::Block(block) => ElseBranch::Block(substitute_block(block, subst)),
+            ElseBranch::ElseIf(inner) => ElseBranch::ElseIf(Box::new(substitute_if(*inner, subst))),
+        }),
         span: if_expr.span,
     }
 }
@@ -1343,11 +1481,12 @@ fn substitute_item(item: Item, subst: &Substitution) -> Item {
 
 fn substitute_function(def: FunctionDef, subst: &Substitution) -> FunctionDef {
     let body = match def.body {
-        FunctionBody::Expr(expr) => FunctionBody::Expr(Spanned::new(
-            substitute_expr(expr.node, subst),
-            expr.span,
-        )),
-        FunctionBody::Block(block) => FunctionBody::Block(Box::new(substitute_block(*block, subst))),
+        FunctionBody::Expr(expr) => {
+            FunctionBody::Expr(Spanned::new(substitute_expr(expr.node, subst), expr.span))
+        }
+        FunctionBody::Block(block) => {
+            FunctionBody::Block(Box::new(substitute_block(*block, subst)))
+        }
     };
     FunctionDef { body, ..def }
 }
@@ -1367,7 +1506,11 @@ fn substitute_pattern(pattern: Pattern, subst: &Substitution) -> Pattern {
             }
             Pattern::Identifier(name, span)
         }
-        Pattern::EnumVariant { enum_name, variant, bindings } => Pattern::EnumVariant {
+        Pattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings,
+        } => Pattern::EnumVariant {
             enum_name,
             variant,
             bindings: bindings
@@ -1392,7 +1535,12 @@ fn substitute_pattern(pattern: Pattern, subst: &Substitution) -> Pattern {
                 .collect(),
             span,
         ),
-        Pattern::Struct { struct_name, fields, has_spread, span } => Pattern::Struct {
+        Pattern::Struct {
+            struct_name,
+            fields,
+            has_spread,
+            span,
+        } => Pattern::Struct {
             struct_name,
             fields: fields
                 .into_iter()
@@ -1404,7 +1552,12 @@ fn substitute_pattern(pattern: Pattern, subst: &Substitution) -> Pattern {
             has_spread,
             span,
         },
-        Pattern::Slice { prefix, rest, suffix, span } => Pattern::Slice {
+        Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+            span,
+        } => Pattern::Slice {
             prefix: prefix
                 .into_iter()
                 .map(|p| substitute_pattern(p, subst))
@@ -1651,7 +1804,12 @@ fn collect_bindings_pattern(pattern: &Pattern) -> HashSet<String> {
                 set.extend(collect_bindings_pattern(&field.pattern));
             }
         }
-        Pattern::Slice { prefix, rest, suffix, .. } => {
+        Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+            ..
+        } => {
             for p in prefix {
                 set.extend(collect_bindings_pattern(p));
             }
@@ -1725,7 +1883,12 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },
-        Expr::Binary { op, left, right, span } => Expr::Binary {
+        Expr::Binary {
+            op,
+            left,
+            right,
+            span,
+        } => Expr::Binary {
             op,
             left: Box::new(rename_expr(*left, map)),
             right: Box::new(rename_expr(*right, map)),
@@ -1736,7 +1899,12 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },
-        Expr::Call { callee, type_args, args, span } => Expr::Call {
+        Expr::Call {
+            callee,
+            type_args,
+            args,
+            span,
+        } => Expr::Call {
             callee: Box::new(rename_expr(*callee, map)),
             type_args,
             args: args.into_iter().map(|arg| rename_expr(arg, map)).collect(),
@@ -1776,7 +1944,12 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             },
             span,
         },
-        Expr::EnumLiteral { enum_name, variant, values, span } => Expr::EnumLiteral {
+        Expr::EnumLiteral {
+            enum_name,
+            variant,
+            values,
+            span,
+        } => Expr::EnumLiteral {
             enum_name,
             variant,
             values: values.into_iter().map(|v| rename_expr(v, map)).collect(),
@@ -1814,7 +1987,11 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             index: Box::new(rename_expr(*index, map)),
             span,
         },
-        Expr::Reference { mutable, expr, span } => Expr::Reference {
+        Expr::Reference {
+            mutable,
+            expr,
+            span,
+        } => Expr::Reference {
             mutable,
             expr: Box::new(rename_expr(*expr, map)),
             span,
@@ -1858,13 +2035,16 @@ fn rename_function(def: FunctionDef, map: &HashMap<String, String>) -> FunctionD
         })
         .collect();
     let body = match def.body {
-        FunctionBody::Expr(expr) => FunctionBody::Expr(Spanned::new(
-            rename_expr(expr.node, map),
-            expr.span,
-        )),
+        FunctionBody::Expr(expr) => {
+            FunctionBody::Expr(Spanned::new(rename_expr(expr.node, map), expr.span))
+        }
         FunctionBody::Block(block) => FunctionBody::Block(Box::new(rename_block(*block, map))),
     };
-    FunctionDef { params, body, ..def }
+    FunctionDef {
+        params,
+        body,
+        ..def
+    }
 }
 
 fn rename_item(item: Item, map: &HashMap<String, String>) -> Item {
@@ -1904,10 +2084,9 @@ fn rename_statement(stmt: Statement, map: &HashMap<String, String>) -> Statement
             value: let_stmt.value.map(|expr| rename_expr(expr, map)),
             ..let_stmt
         }),
-        Statement::MacroSemi(expr) => Statement::MacroSemi(Spanned::new(
-            rename_expr(expr.node, map),
-            expr.span,
-        )),
+        Statement::MacroSemi(expr) => {
+            Statement::MacroSemi(Spanned::new(rename_expr(expr.node, map), expr.span))
+        }
         Statement::Assign(assign) => Statement::Assign(AssignStmt {
             target: rename_expr(assign.target, map),
             value: rename_expr(assign.value, map),
@@ -1937,7 +2116,10 @@ fn rename_statement(stmt: Statement, map: &HashMap<String, String>) -> Statement
             span: loop_stmt.span,
         }),
         Statement::For(for_stmt) => {
-            let new_binding = map.get(&for_stmt.binding).cloned().unwrap_or(for_stmt.binding);
+            let new_binding = map
+                .get(&for_stmt.binding)
+                .cloned()
+                .unwrap_or(for_stmt.binding);
             Statement::For(ForStmt {
                 binding: new_binding,
                 target: match for_stmt.target {
@@ -1971,14 +2153,10 @@ fn rename_if(if_expr: IfExpr, map: &HashMap<String, String>) -> IfExpr {
             },
         },
         then_branch: rename_block(if_expr.then_branch, map),
-        else_branch: if_expr
-            .else_branch
-            .map(|branch| match branch {
-                ElseBranch::Block(block) => ElseBranch::Block(rename_block(block, map)),
-                ElseBranch::ElseIf(inner) => {
-                    ElseBranch::ElseIf(Box::new(rename_if(*inner, map)))
-                }
-            }),
+        else_branch: if_expr.else_branch.map(|branch| match branch {
+            ElseBranch::Block(block) => ElseBranch::Block(rename_block(block, map)),
+            ElseBranch::ElseIf(inner) => ElseBranch::ElseIf(Box::new(rename_if(*inner, map))),
+        }),
         span: if_expr.span,
     }
 }
@@ -2007,10 +2185,17 @@ fn rename_pattern(pattern: Pattern, map: &HashMap<String, String>) -> Pattern {
             }
             Pattern::Identifier(name, span)
         }
-        Pattern::EnumVariant { enum_name, variant, bindings } => Pattern::EnumVariant {
+        Pattern::EnumVariant {
             enum_name,
             variant,
-            bindings: bindings.into_iter().map(|b| rename_pattern(b, map)).collect(),
+            bindings,
+        } => Pattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings: bindings
+                .into_iter()
+                .map(|b| rename_pattern(b, map))
+                .collect(),
         },
         Pattern::Tuple(bindings, span) => Pattern::Tuple(
             bindings
@@ -2029,7 +2214,12 @@ fn rename_pattern(pattern: Pattern, map: &HashMap<String, String>) -> Pattern {
                 .collect(),
             span,
         ),
-        Pattern::Struct { struct_name, fields, has_spread, span } => Pattern::Struct {
+        Pattern::Struct {
+            struct_name,
+            fields,
+            has_spread,
+            span,
+        } => Pattern::Struct {
             struct_name,
             fields: fields
                 .into_iter()
@@ -2041,7 +2231,12 @@ fn rename_pattern(pattern: Pattern, map: &HashMap<String, String>) -> Pattern {
             has_spread,
             span,
         },
-        Pattern::Slice { prefix, rest, suffix, span } => Pattern::Slice {
+        Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+            span,
+        } => Pattern::Slice {
             prefix: prefix.into_iter().map(|p| rename_pattern(p, map)).collect(),
             rest: rest.map(|p| Box::new(rename_pattern(*p, map))),
             suffix: suffix.into_iter().map(|p| rename_pattern(p, map)).collect(),
@@ -2178,8 +2373,14 @@ impl<'a> Expander<'a> {
                                 return match fragments.separator {
                                     Some(TokenKind::Semi) => {
                                         let mut stmts = Vec::new();
-                                        for part in fragments.parts.iter().take(fragments.parts.len().saturating_sub(1)) {
-                                            stmts.push(Statement::Expr(ExprStmt { expr: part.clone() }));
+                                        for part in fragments
+                                            .parts
+                                            .iter()
+                                            .take(fragments.parts.len().saturating_sub(1))
+                                        {
+                                            stmts.push(Statement::Expr(ExprStmt {
+                                                expr: part.clone(),
+                                            }));
                                         }
                                         let tail = fragments.parts.last().cloned().map(Box::new);
                                         Expr::Block(Box::new(Block {
@@ -2218,8 +2419,11 @@ impl<'a> Expander<'a> {
     }
 }
 
-
-fn parse_repeat_fragments(path: &std::path::Path, tokens: &[crate::language::token::Token], spec: &RepeatSpec) -> Result<RepeatFragments, Vec<SyntaxError>> {
+fn parse_repeat_fragments(
+    path: &std::path::Path,
+    tokens: &[crate::language::token::Token],
+    spec: &RepeatSpec,
+) -> Result<RepeatFragments, Vec<SyntaxError>> {
     let slice = &tokens[spec.skip.min(tokens.len())..];
     if slice.is_empty() {
         return Ok(RepeatFragments {
@@ -2264,10 +2468,17 @@ fn parse_repeat_fragments(path: &std::path::Path, tokens: &[crate::language::tok
             TokenKind::RBrace => depth_brace = depth_brace.saturating_sub(1),
             TokenKind::LBracket => depth_bracket += 1,
             TokenKind::RBracket => depth_bracket = depth_bracket.saturating_sub(1),
-            kind if kind == sep_ref && depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 => {
+            kind if kind == sep_ref
+                && depth_paren == 0
+                && depth_brace == 0
+                && depth_bracket == 0 =>
+            {
                 let slice_part = &slice[start..idx];
                 if !slice_part.is_empty() {
-                    match crate::language::parser::parse_expression_from_tokens(path.to_path_buf(), slice_part.to_vec()) {
+                    match crate::language::parser::parse_expression_from_tokens(
+                        path.to_path_buf(),
+                        slice_part.to_vec(),
+                    ) {
                         Ok(expr) => parts.push(expr),
                         Err(errs) => return Err(errs.errors),
                     }
@@ -2280,13 +2491,19 @@ fn parse_repeat_fragments(path: &std::path::Path, tokens: &[crate::language::tok
     if start < slice.len() {
         let slice_part = &slice[start..];
         if !slice_part.is_empty() {
-            match crate::language::parser::parse_expression_from_tokens(path.to_path_buf(), slice_part.to_vec()) {
+            match crate::language::parser::parse_expression_from_tokens(
+                path.to_path_buf(),
+                slice_part.to_vec(),
+            ) {
                 Ok(expr) => parts.push(expr),
                 Err(errs) => return Err(errs.errors),
             }
         }
     }
-    let span = Span::new(slice.first().unwrap().span.start, slice.last().unwrap().span.end);
+    let span = Span::new(
+        slice.first().unwrap().span.start,
+        slice.last().unwrap().span.end,
+    );
     Ok(RepeatFragments {
         parts,
         separator: separator.or(Some(TokenKind::Comma)),
@@ -2350,14 +2567,20 @@ fn main() -> int32 {
   0
 }
 "#;
-        let module =
-            parse_module("tests::repeat_plus", PathBuf::from("repeat_plus.prime"), source)
-                .expect("parse module");
+        let module = parse_module(
+            "tests::repeat_plus",
+            PathBuf::from("repeat_plus.prime"),
+            source,
+        )
+        .expect("parse module");
         let program = crate::language::ast::Program {
             modules: vec![module],
         };
         let result = expand_program(&program);
-        assert!(result.is_err(), "expected arity error for repeat+ with no args");
+        assert!(
+            result.is_err(),
+            "expected arity error for repeat+ with no args"
+        );
     }
 
     #[test]
@@ -2372,10 +2595,15 @@ fn main() -> int32 {
   x + y + z
 }
 "#;
-        let module =
-            parse_module("tests::repeat_custom", PathBuf::from("repeat_custom.prime"), source)
-                .expect("parse module");
-        let program = Program { modules: vec![module] };
+        let module = parse_module(
+            "tests::repeat_custom",
+            PathBuf::from("repeat_custom.prime"),
+            source,
+        )
+        .expect("parse module");
+        let program = Program {
+            modules: vec![module],
+        };
         let result = expand_program(&program);
         assert!(result.is_ok(), "custom separator should parse/expand");
     }
@@ -2420,11 +2648,15 @@ fn fail() -> int32 { ~pkg_macro() }
             .flat_map(|e| e.errors.iter().map(|err| err.message.clone()))
             .collect();
         assert!(
-            messages.iter().any(|m| m.contains("unknown macro `local_only`")),
+            messages
+                .iter()
+                .any(|m| m.contains("unknown macro `local_only`")),
             "missing private macro error"
         );
         assert!(
-            messages.iter().any(|m| m.contains("unknown macro `pkg_macro`")),
+            messages
+                .iter()
+                .any(|m| m.contains("unknown macro `pkg_macro`")),
             "missing package macro error"
         );
     }

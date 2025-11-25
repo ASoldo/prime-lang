@@ -1,0 +1,17 @@
+test tests.input_read;
+
+import core.types;
+
+fn reads_integer_input() -> bool {
+  match in[int32]("Enter age: ") {
+    Result::Ok(age) => age == 21,
+    Result::Err(_) => false,
+  }
+}
+
+fn reports_invalid_integer_input() -> bool {
+  match in[int32]("Enter age: ") {
+    Result::Ok(_) => false,
+    Result::Err(msg) => msg == "invalid integer input",
+  }
+}

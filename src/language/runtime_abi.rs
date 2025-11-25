@@ -4,7 +4,7 @@ use llvm_sys::{
     LLVMLinkage,
     core::{
         LLVMAddFunction, LLVMDoubleTypeInContext, LLVMFunctionType, LLVMInt1TypeInContext,
-        LLVMInt32TypeInContext, LLVMInt8TypeInContext, LLVMIntTypeInContext, LLVMPointerType,
+        LLVMInt8TypeInContext, LLVMInt32TypeInContext, LLVMIntTypeInContext, LLVMPointerType,
         LLVMSetLinkage, LLVMVoidTypeInContext,
     },
     prelude::*,
@@ -82,8 +82,10 @@ impl RuntimeAbi {
         let handle_type = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
         let status_type = LLVMInt32TypeInContext(context);
         let mut thread_params = [handle_type];
-        let thread_fn_type =
-            LLVMPointerType(LLVMFunctionType(handle_type, thread_params.as_mut_ptr(), 1, 0), 0);
+        let thread_fn_type = LLVMPointerType(
+            LLVMFunctionType(handle_type, thread_params.as_mut_ptr(), 1, 0),
+            0,
+        );
         let channel_out_type = LLVMPointerType(handle_type, 0);
         let string_data_type = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
         let void_type = LLVMVoidTypeInContext(context);
@@ -134,10 +136,18 @@ impl RuntimeAbi {
             module,
             "prime_enum_new",
             handle_type,
-            &mut [LLVMPointerType(handle_type, 0), usize_type, LLVMInt32TypeInContext(context)],
+            &mut [
+                LLVMPointerType(handle_type, 0),
+                usize_type,
+                LLVMInt32TypeInContext(context),
+            ],
         );
-        let (prime_enum_tag, prime_enum_tag_ty) =
-            declare_fn(module, "prime_enum_tag", LLVMInt32TypeInContext(context), &mut [handle_type]);
+        let (prime_enum_tag, prime_enum_tag_ty) = declare_fn(
+            module,
+            "prime_enum_tag",
+            LLVMInt32TypeInContext(context),
+            &mut [handle_type],
+        );
         let (prime_enum_get, prime_enum_get_ty) = declare_fn(
             module,
             "prime_enum_get",
@@ -188,12 +198,8 @@ impl RuntimeAbi {
             status_type,
             &mut [handle_type, channel_out_type],
         );
-        let (prime_print, prime_print_ty) = declare_fn(
-            module,
-            "prime_print",
-            void_type,
-            &mut [handle_type],
-        );
+        let (prime_print, prime_print_ty) =
+            declare_fn(module, "prime_print", void_type, &mut [handle_type]);
         let (prime_read_value, prime_read_value_ty) = declare_fn(
             module,
             "prime_read_value",

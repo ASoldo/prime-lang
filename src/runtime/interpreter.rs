@@ -12,10 +12,12 @@ use crate::runtime::{
         SliceValue, StructInstance, Value,
     },
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::env;
+use std::fs;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 
 pub struct Interpreter {
     package: Package,
@@ -72,6 +74,8 @@ struct EnumVariantInfo {
     visibility: Visibility,
 }
 
+static TEST_INPUTS: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+
 enum FlowSignal {
     Break,
     Continue,
@@ -104,6 +108,17 @@ impl Interpreter {
             module_stack: Vec::new(),
             bootstrapped: false,
         }
+    }
+
+    /// Seed the shared test input queue from environment variables.
+    pub fn seed_test_inputs_from_env() {
+        let debug = env::var("PRIME_TEST_INPUTS_DEBUG").is_ok();
+        let mut guard = TEST_INPUTS
+            .get_or_init(|| Mutex::new(VecDeque::new()))
+            .lock()
+            .unwrap();
+        guard.clear();
+        Self::populate_test_inputs(&mut guard, debug);
     }
 
     pub fn run(&mut self) -> RuntimeResult<()> {
@@ -174,7 +189,11 @@ impl Interpreter {
                     Item::Interface(def) => {
                         self.register_interface(&module.name, def.clone())?;
                     }
-                    Item::Macro(_) | Item::MacroInvocation(_) | Item::Impl(_) | Item::Function(_) | Item::Const(_) => {}
+                    Item::Macro(_)
+                    | Item::MacroInvocation(_)
+                    | Item::Impl(_)
+                    | Item::Function(_)
+                    | Item::Const(_) => {}
                 }
             }
         }
@@ -192,7 +211,11 @@ impl Interpreter {
                     Item::Const(const_def) => {
                         self.consts.push((module.name.clone(), const_def.clone()));
                     }
-                    Item::Struct(_) | Item::Enum(_) | Item::Interface(_) | Item::Macro(_) | Item::MacroInvocation(_) => {}
+                    Item::Struct(_)
+                    | Item::Enum(_)
+                    | Item::Interface(_)
+                    | Item::Macro(_)
+                    | Item::MacroInvocation(_) => {}
                 }
             }
         }
@@ -775,17 +798,24 @@ impl Interpreter {
             }
         };
 
-        use std::io::{self, Write};
-        print!("{prompt}");
-        io::stdout().flush().ok();
+        let raw = if let Some(test_input) = Self::next_test_input() {
+            if env::var("PRIME_TEST_INPUTS_DEBUG").is_ok() {
+                eprintln!("[prime-test-input] {}", test_input);
+            }
+            test_input
+        } else {
+            use std::io::{self, Write};
+            print!("{prompt}");
+            io::stdout().flush().ok();
 
-        let mut buffer = String::new();
-        io::stdin()
-            .read_line(&mut buffer)
-            .map_err(|err| RuntimeError::Panic {
-                message: format!("failed to read input: {err}"),
-            })?;
-        let raw = buffer.trim_end_matches(&['\n', '\r'][..]).to_string();
+            let mut buffer = String::new();
+            io::stdin()
+                .read_line(&mut buffer)
+                .map_err(|err| RuntimeError::Panic {
+                    message: format!("failed to read input: {err}"),
+                })?;
+            buffer.trim_end_matches(&['\n', '\r'][..]).to_string()
+        };
         let parsed = match self.parse_input_value(&raw, ty) {
             Ok(value) => self.instantiate_enum("Result", "Ok", vec![value]),
             Err(msg) => self.instantiate_enum("Result", "Err", vec![Value::String(msg)]),
@@ -796,13 +826,18 @@ impl Interpreter {
     fn parse_input_value(&self, raw: &str, ty: &TypeExpr) -> Result<Value, String> {
         match ty {
             TypeExpr::Named(name, _) if name == "string" => Ok(Value::String(raw.to_string())),
-            TypeExpr::Named(name, _) if name == "bool" => match raw.trim().to_ascii_lowercase().as_str() {
-                "true" => Ok(Value::Bool(true)),
-                "false" => Ok(Value::Bool(false)),
-                _ => Err("expected `true` or `false`".into()),
-            },
+            TypeExpr::Named(name, _) if name == "bool" => {
+                match raw.trim().to_ascii_lowercase().as_str() {
+                    "true" => Ok(Value::Bool(true)),
+                    "false" => Ok(Value::Bool(false)),
+                    _ => Err("expected `true` or `false`".into()),
+                }
+            }
             TypeExpr::Named(name, _) if name.starts_with("int") || name == "isize" => {
-                let parsed = raw.trim().parse::<i128>().map_err(|_| "invalid integer input")?;
+                let parsed = raw
+                    .trim()
+                    .parse::<i128>()
+                    .map_err(|_| "invalid integer input")?;
                 let (min, max) = match name.as_str() {
                     "int8" => (i8::MIN as i128, i8::MAX as i128),
                     "int16" => (i16::MIN as i128, i16::MAX as i128),
@@ -817,7 +852,10 @@ impl Interpreter {
                 Ok(Value::Int(parsed))
             }
             TypeExpr::Named(name, _) if name.starts_with("uint") || name == "usize" => {
-                let parsed = raw.trim().parse::<u128>().map_err(|_| "invalid integer input")?;
+                let parsed = raw
+                    .trim()
+                    .parse::<u128>()
+                    .map_err(|_| "invalid integer input")?;
                 let max = match name.as_str() {
                     "uint8" => u8::MAX as u128,
                     "uint16" => u16::MAX as u128,
@@ -1245,12 +1283,7 @@ impl Interpreter {
         }
     }
 
-    fn assign_index_value(
-        &mut self,
-        base: Value,
-        index: Value,
-        value: Value,
-    ) -> RuntimeResult<()> {
+    fn assign_index_value(&mut self, base: Value, index: Value, value: Value) -> RuntimeResult<()> {
         match base {
             Value::Slice(slice) => {
                 let idx = self.expect_int_value("index", index)?;
@@ -1653,7 +1686,9 @@ impl Interpreter {
             }
             ("float32" | "float64", Value::Int(i)) => Value::Float(i as f64),
             ("float32" | "float64", Value::Float(f)) => Value::Float(f),
-            (target, Value::Float(f)) if target.starts_with("int") || target.starts_with("uint") => {
+            (target, Value::Float(f))
+                if target.starts_with("int") || target.starts_with("uint") =>
+            {
                 Value::Int(f as i128)
             }
             (target, Value::Int(i)) if target.starts_with("int") || target.starts_with("uint") => {
@@ -1661,8 +1696,11 @@ impl Interpreter {
             }
             (_, other) => {
                 return Err(RuntimeError::TypeMismatch {
-                    message: format!("`cast` only supports numeric values (got {})", self.describe_value(&other)),
-                })
+                    message: format!(
+                        "`cast` only supports numeric values (got {})",
+                        self.describe_value(&other)
+                    ),
+                });
             }
         };
         Ok(vec![casted])
@@ -2315,19 +2353,13 @@ impl Interpreter {
                                 Ok(Value::Tuple(values))
                             }
                         }
-                        Ok(EvalOutcome::Flow(flow @ FlowSignal::Propagate(_))) => Err(
-                            RuntimeError::Panic {
-                                message: format!(
-                                    "spawned task encountered {}",
-                                    flow_name(&flow)
-                                ),
-                            },
-                        ),
+                        Ok(EvalOutcome::Flow(flow @ FlowSignal::Propagate(_))) => {
+                            Err(RuntimeError::Panic {
+                                message: format!("spawned task encountered {}", flow_name(&flow)),
+                            })
+                        }
                         Ok(EvalOutcome::Flow(flow)) => Err(RuntimeError::Panic {
-                            message: format!(
-                                "spawned task exited with {}",
-                                flow_name(&flow)
-                            ),
+                            message: format!("spawned task exited with {}", flow_name(&flow)),
                         }),
                         Err(err) => Err(err),
                     }
@@ -3157,6 +3189,47 @@ impl Interpreter {
             }
         }
         Ok(output)
+    }
+
+    fn populate_test_inputs(queue: &mut VecDeque<String>, debug: bool) {
+        if let Ok(raw) = env::var("PRIME_TEST_INPUTS") {
+            if !raw.is_empty() {
+                for chunk in raw.split(|c| c == '|' || c == ',' || c == ';') {
+                    let trimmed = chunk.trim().to_string();
+                    if debug {
+                        eprintln!("[prime-test-input:init] push '{trimmed}'");
+                    }
+                    queue.push_back(trimmed);
+                }
+            } else {
+                if debug {
+                    eprintln!("[prime-test-input:init] push empty");
+                }
+                queue.push_back(String::new());
+            }
+        } else if let Ok(path) = env::var("PRIME_TEST_INPUTS_FILE") {
+            if let Ok(contents) = fs::read_to_string(path) {
+                for line in contents.lines() {
+                    let trimmed = line.trim_end_matches(&['\r', '\n'][..]).to_string();
+                    if debug {
+                        eprintln!("[prime-test-input:init] push '{trimmed}'");
+                    }
+                    queue.push_back(trimmed);
+                }
+            }
+        } else if debug {
+            eprintln!("[prime-test-input:init] no PRIME_TEST_INPUTS/FILE set");
+        }
+    }
+
+    fn next_test_input() -> Option<String> {
+        let queue = TEST_INPUTS.get_or_init(|| Mutex::new(VecDeque::new()));
+        let mut guard = queue.lock().unwrap();
+        if guard.is_empty() {
+            let debug = env::var("PRIME_TEST_INPUTS_DEBUG").is_ok();
+            Self::populate_test_inputs(&mut guard, debug);
+        }
+        guard.pop_front()
     }
 
     fn describe_value(&self, value: &Value) -> &'static str {

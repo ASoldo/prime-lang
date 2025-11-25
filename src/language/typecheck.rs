@@ -194,15 +194,13 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
                         ),
                     );
                 }
-                registry
-                    .enums
-                    .insert(
-                        def.name.clone(),
-                        EnumInfo {
-                            def: def.clone(),
-                            module: module.name.clone(),
-                        },
-                    );
+                registry.enums.insert(
+                    def.name.clone(),
+                    EnumInfo {
+                        def: def.clone(),
+                        module: module.name.clone(),
+                    },
+                );
             }
             Item::Function(def) => {
                 register_function(registry, &module.name, def.clone(), None);
@@ -648,122 +646,107 @@ impl Checker {
                     }
                 }
             }
-            Statement::Assign(assign) => {
-                match &assign.target {
-                    Expr::Identifier(ident) => {
-                        env.clear_binding_borrows(&ident.name);
-                        env.reset_moved(&ident.name);
-                        let expected_type =
-                            env.lookup(&ident.name).and_then(|info| info.ty.clone());
-                        if let Some(expected) = expected_type {
-                            let ty = self.check_expression(
+            Statement::Assign(assign) => match &assign.target {
+                Expr::Identifier(ident) => {
+                    env.clear_binding_borrows(&ident.name);
+                    env.reset_moved(&ident.name);
+                    let expected_type = env.lookup(&ident.name).and_then(|info| info.ty.clone());
+                    if let Some(expected) = expected_type {
+                        let ty = self.check_expression(
+                            module,
+                            &assign.value,
+                            Some(&expected),
+                            returns,
+                            env,
+                        );
+                        self.ensure_type(module, ident.span, &expected, ty.as_ref());
+                        for target in expression_borrow_targets(&assign.value, env) {
+                            env.register_binding_borrow(&ident.name, target);
+                        }
+                    } else {
+                        self.check_expression(module, &assign.value, None, returns, env);
+                        for target in expression_borrow_targets(&assign.value, env) {
+                            env.register_binding_borrow(&ident.name, target);
+                        }
+                    }
+                }
+                Expr::Index { base, index, span } => {
+                    let base_ty = self.check_expression(module, base, None, returns, env);
+                    let Some(container_ty) = base_ty.as_ref() else {
+                        self.check_expression(module, &assign.value, None, returns, env);
+                        return;
+                    };
+                    let target_ty = strip_refs_and_pointers(container_ty);
+                    match target_ty {
+                        TypeExpr::Slice(inner) => {
+                            self.check_expression(module, index, Some(&int_type()), returns, env);
+                            let value_ty = self.check_expression(
                                 module,
                                 &assign.value,
-                                Some(&expected),
+                                Some(inner.as_ref()),
                                 returns,
                                 env,
                             );
-                            self.ensure_type(module, ident.span, &expected, ty.as_ref());
-                            for target in expression_borrow_targets(&assign.value, env) {
-                                env.register_binding_borrow(&ident.name, target);
-                            }
-                        } else {
-                            self.check_expression(module, &assign.value, None, returns, env);
-                            for target in expression_borrow_targets(&assign.value, env) {
-                                env.register_binding_borrow(&ident.name, target);
-                            }
+                            self.ensure_type(
+                                module,
+                                expr_span(&assign.value),
+                                inner.as_ref(),
+                                value_ty.as_ref(),
+                            );
                         }
-                    }
-                    Expr::Index { base, index, span } => {
-                        let base_ty = self.check_expression(module, base, None, returns, env);
-                        let Some(container_ty) = base_ty.as_ref() else {
-                            self.check_expression(module, &assign.value, None, returns, env);
-                            return;
-                        };
-                        let target_ty = strip_refs_and_pointers(container_ty);
-                        match target_ty {
-                            TypeExpr::Slice(inner) => {
-                                self.check_expression(
-                                    module,
-                                    index,
-                                    Some(&int_type()),
-                                    returns,
-                                    env,
-                                );
-                                let value_ty = self.check_expression(
-                                    module,
-                                    &assign.value,
-                                    Some(inner.as_ref()),
-                                    returns,
-                                    env,
-                                );
-                                self.ensure_type(
-                                    module,
-                                    expr_span(&assign.value),
-                                    inner.as_ref(),
-                                    value_ty.as_ref(),
-                                );
-                            }
-                            TypeExpr::Named(name, args) if name == "Map" && args.len() == 2 => {
-                                self.check_expression(
-                                    module,
-                                    index,
-                                    Some(&string_type()),
-                                    returns,
-                                    env,
-                                );
-                                let expected = &args[1];
-                                let value_ty = self.check_expression(
-                                    module,
-                                    &assign.value,
-                                    Some(expected),
-                                    returns,
-                                    env,
-                                );
-                                self.ensure_type(
-                                    module,
-                                    expr_span(&assign.value),
-                                    expected,
-                                    value_ty.as_ref(),
-                                );
-                            }
-                            TypeExpr::Array { ty, .. } => {
-                                self.check_expression(
-                                    module,
-                                    index,
-                                    Some(&int_type()),
-                                    returns,
-                                    env,
-                                );
-                                let value_ty = self.check_expression(
-                                    module,
-                                    &assign.value,
-                                    Some(ty.as_ref()),
-                                    returns,
-                                    env,
-                                );
-                                self.ensure_type(
-                                    module,
-                                    expr_span(&assign.value),
-                                    ty.as_ref(),
-                                    value_ty.as_ref(),
-                                );
-                            }
-                            other => {
-                                self.errors.push(TypeError::new(
-                                    &module.path,
-                                    *span,
-                                    format!("`{}` cannot be indexed", other.canonical_name()),
-                                ));
-                                self.check_expression(module, &assign.value, None, returns, env);
-                            }
+                        TypeExpr::Named(name, args) if name == "Map" && args.len() == 2 => {
+                            self.check_expression(
+                                module,
+                                index,
+                                Some(&string_type()),
+                                returns,
+                                env,
+                            );
+                            let expected = &args[1];
+                            let value_ty = self.check_expression(
+                                module,
+                                &assign.value,
+                                Some(expected),
+                                returns,
+                                env,
+                            );
+                            self.ensure_type(
+                                module,
+                                expr_span(&assign.value),
+                                expected,
+                                value_ty.as_ref(),
+                            );
                         }
-                    }
-                    _ => {
-                        self.check_expression(module, &assign.value, None, returns, env);
+                        TypeExpr::Array { ty, .. } => {
+                            self.check_expression(module, index, Some(&int_type()), returns, env);
+                            let value_ty = self.check_expression(
+                                module,
+                                &assign.value,
+                                Some(ty.as_ref()),
+                                returns,
+                                env,
+                            );
+                            self.ensure_type(
+                                module,
+                                expr_span(&assign.value),
+                                ty.as_ref(),
+                                value_ty.as_ref(),
+                            );
+                        }
+                        other => {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                *span,
+                                format!("`{}` cannot be indexed", other.canonical_name()),
+                            ));
+                            self.check_expression(module, &assign.value, None, returns, env);
+                        }
                     }
                 }
-            }
+                _ => {
+                    self.check_expression(module, &assign.value, None, returns, env);
+                }
+            },
             Statement::Expr(expr) => {
                 self.check_expression(module, &expr.expr, None, returns, env);
             }
@@ -832,8 +815,7 @@ impl Checker {
             }
             Statement::For(for_stmt) => match &for_stmt.target {
                 ForTarget::Range(range) => {
-                    let element_ty =
-                        self.check_range_bounds(module, range, None, returns, env);
+                    let element_ty = self.check_range_bounds(module, range, None, returns, env);
                     let entry_state = env.snapshot_borrows();
                     let (_, body_state) = env.run_branch(|env| {
                         env.push_scope();
@@ -896,10 +878,10 @@ impl Checker {
     ) -> Option<TypeExpr> {
         match expr {
             Expr::Identifier(ident) => {
-        if let Some(entry) = env.lookup(&ident.name) {
-            env.ensure_not_moved(module, ident.span, &ident.name, &mut self.errors);
-            return entry.ty.clone();
-        }
+                if let Some(entry) = env.lookup(&ident.name) {
+                    env.ensure_not_moved(module, ident.span, &ident.name, &mut self.errors);
+                    return entry.ty.clone();
+                }
                 if let Some(const_info) = self.registry.consts.get(&ident.name) {
                     return const_info.ty.as_ref().map(|ann| ann.ty.clone());
                 }
@@ -920,7 +902,10 @@ impl Checker {
                     TypeError::new(
                         &module.path,
                         *span,
-                        format!("macro `{}` requires expansion before type checking", name.name),
+                        format!(
+                            "macro `{}` requires expansion before type checking",
+                            name.name
+                        ),
                     )
                     .with_code("Emacro"),
                 );
@@ -1933,8 +1918,7 @@ impl Checker {
                     return Some(TypeExpr::Unit);
                 }
                 let left = self.check_expression(module, &args[0], None, returns, env);
-                let right =
-                    self.check_expression(module, &args[1], left.as_ref(), returns, env);
+                let right = self.check_expression(module, &args[1], left.as_ref(), returns, env);
                 if let Some(expected) = left.as_ref() {
                     self.ensure_type(module, expr_span(&args[1]), expected, right.as_ref());
                 }
@@ -2746,8 +2730,7 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
-        let start_ty =
-            self.check_expression(module, &range.start, expected_inner, returns, env);
+        let start_ty = self.check_expression(module, &range.start, expected_inner, returns, env);
         let end_ty = self.check_expression(module, &range.end, expected_inner, returns, env);
         self.resolve_range_element_type(module, range.span, start_ty, end_ty, expected_inner)
     }
@@ -2804,21 +2787,17 @@ impl Checker {
             match numeric_kind(ty) {
                 Some(NumericKind::Signed(_, _)) | Some(NumericKind::Unsigned(_, _)) => {}
                 Some(NumericKind::Float(_, _)) => {
-                    self.errors.push(TypeError::new(
-                        &module.path,
-                        span,
-                        "ranges only support integer bounds",
-                    )
-                    .with_code("E0204"));
+                    self.errors.push(
+                        TypeError::new(&module.path, span, "ranges only support integer bounds")
+                            .with_code("E0204"),
+                    );
                     return None;
                 }
                 None => {
-                    self.errors.push(TypeError::new(
-                        &module.path,
-                        span,
-                        "range bounds must be numeric",
-                    )
-                    .with_code("E0205"));
+                    self.errors.push(
+                        TypeError::new(&module.path, span, "range bounds must be numeric")
+                            .with_code("E0205"),
+                    );
                     return None;
                 }
             }
@@ -3233,8 +3212,7 @@ impl Checker {
             return None;
         }
 
-        let Some(kind) =
-            self.unify_numeric_kinds(module, span, left, right, left_kind, right_kind)
+        let Some(kind) = self.unify_numeric_kinds(module, span, left, right, left_kind, right_kind)
         else {
             return None;
         };
@@ -3249,13 +3227,18 @@ impl Checker {
         left: Option<&TypeExpr>,
         right: Option<&TypeExpr>,
     ) -> Option<TypeExpr> {
-        if matches!(expected.and_then(numeric_kind), Some(NumericKind::Float(_, _))) {
-            self.errors.push(TypeError::new(
-                &module.path,
-                span,
-                "bitwise operations require integer operands",
-            )
-            .with_code("E0206"));
+        if matches!(
+            expected.and_then(numeric_kind),
+            Some(NumericKind::Float(_, _))
+        ) {
+            self.errors.push(
+                TypeError::new(
+                    &module.path,
+                    span,
+                    "bitwise operations require integer operands",
+                )
+                .with_code("E0206"),
+            );
             return None;
         }
 
@@ -3265,12 +3248,14 @@ impl Checker {
         if matches!(left_kind, Some(NumericKind::Float(_, _)))
             || matches!(right_kind, Some(NumericKind::Float(_, _)))
         {
-            self.errors.push(TypeError::new(
-                &module.path,
-                span,
-                "bitwise operations require integer operands",
-            )
-            .with_code("E0206"));
+            self.errors.push(
+                TypeError::new(
+                    &module.path,
+                    span,
+                    "bitwise operations require integer operands",
+                )
+                .with_code("E0206"),
+            );
             return None;
         }
 
@@ -3288,12 +3273,14 @@ impl Checker {
 
         match kind {
             Some(NumericKind::Float(_, _)) => {
-                self.errors.push(TypeError::new(
-                    &module.path,
-                    span,
-                    "bitwise operations require integer operands",
-                )
-                .with_code("E0206"));
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        span,
+                        "bitwise operations require integer operands",
+                    )
+                    .with_code("E0206"),
+                );
                 None
             }
             Some(other) => Some(numeric_type_from_kind(other)),
@@ -3312,25 +3299,29 @@ impl Checker {
         match operand_kind {
             Some(kind) if self.numeric_kinds_compatible(expected_kind, kind) => true,
             Some(_) => {
-                self.errors.push(TypeError::new(
-                    &module.path,
-                    span,
-                    format!(
-                        "expected `{}`, found `{}`",
-                        numeric_type_from_kind(expected_kind).canonical_name(),
-                        describe_type(operand_ty)
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        span,
+                        format!(
+                            "expected `{}`, found `{}`",
+                            numeric_type_from_kind(expected_kind).canonical_name(),
+                            describe_type(operand_ty)
+                        ),
                     )
-                )
-                .with_code("E0201"));
+                    .with_code("E0201"),
+                );
                 false
             }
             None => {
-                self.errors.push(TypeError::new(
-                    &module.path,
-                    span,
-                    "numeric operations require int or float operands",
-                )
-                .with_code("E0200"));
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        span,
+                        "numeric operations require int or float operands",
+                    )
+                    .with_code("E0200"),
+                );
                 false
             }
         }
@@ -3362,27 +3353,31 @@ impl Checker {
     ) -> Option<NumericKind> {
         let mut had_error = false;
         if let (Some(ty), None) = (left_ty, left_kind) {
-            self.errors.push(TypeError::new(
-                &module.path,
-                span,
-                format!(
-                    "numeric operations require numeric operands (found `{}`)",
-                    ty.canonical_name()
+            self.errors.push(
+                TypeError::new(
+                    &module.path,
+                    span,
+                    format!(
+                        "numeric operations require numeric operands (found `{}`)",
+                        ty.canonical_name()
+                    ),
                 )
-            )
-            .with_code("E0200"));
+                .with_code("E0200"),
+            );
             had_error = true;
         }
         if let (Some(ty), None) = (right_ty, right_kind) {
-            self.errors.push(TypeError::new(
-                &module.path,
-                span,
-                format!(
-                    "numeric operations require numeric operands (found `{}`)",
-                    ty.canonical_name()
+            self.errors.push(
+                TypeError::new(
+                    &module.path,
+                    span,
+                    format!(
+                        "numeric operations require numeric operands (found `{}`)",
+                        ty.canonical_name()
+                    ),
                 )
-            )
-            .with_code("E0200"));
+                .with_code("E0200"),
+            );
             had_error = true;
         }
         if had_error {
@@ -3392,12 +3387,14 @@ impl Checker {
         match (left_kind, right_kind) {
             (Some(kind), None) | (None, Some(kind)) => Some(kind),
             (None, None) => {
-                self.errors.push(TypeError::new(
-                    &module.path,
-                    span,
-                    "numeric operations require int or float operands",
-                )
-                .with_code("E0200"));
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        span,
+                        "numeric operations require int or float operands",
+                    )
+                    .with_code("E0200"),
+                );
                 None
             }
             (Some(NumericKind::Float(_, left_bits)), Some(NumericKind::Float(_, right_bits))) => {
@@ -3408,9 +3405,10 @@ impl Checker {
             (Some(NumericKind::Signed(_, left_bits)), Some(NumericKind::Signed(_, right_bits))) => {
                 Some(signed_kind_for_bits(left_bits.max(right_bits)))
             }
-            (Some(NumericKind::Unsigned(_, left_bits)), Some(NumericKind::Unsigned(_, right_bits))) => {
-                Some(unsigned_kind_for_bits(left_bits.max(right_bits)))
-            }
+            (
+                Some(NumericKind::Unsigned(_, left_bits)),
+                Some(NumericKind::Unsigned(_, right_bits)),
+            ) => Some(unsigned_kind_for_bits(left_bits.max(right_bits))),
             _ => {
                 self.emit_signedness_mismatch(module, span, left_ty, right_ty);
                 None
@@ -3560,12 +3558,14 @@ impl Checker {
                 let ty = self.check_expression(module, expr, numeric_expected, returns, env);
                 match ty.as_ref().and_then(numeric_kind) {
                     Some(NumericKind::Unsigned(_, _)) | None => {
-                        self.errors.push(TypeError::new(
-                            &module.path,
-                            span,
-                            "unary `-` requires a signed or floating-point type",
-                        )
-                        .with_code("E0203"));
+                        self.errors.push(
+                            TypeError::new(
+                                &module.path,
+                                span,
+                                "unary `-` requires a signed or floating-point type",
+                            )
+                            .with_code("E0203"),
+                        );
                         None
                     }
                     Some(kind) => Some(numeric_type_from_kind(kind)),
@@ -4108,7 +4108,7 @@ fn expr_span(expr: &Expr) -> Span {
     }
 }
 
-    fn stmt_span(statement: &Statement) -> Span {
+fn stmt_span(statement: &Statement) -> Span {
     match statement {
         Statement::Let(stmt) => stmt.span,
         Statement::Assign(AssignStmt { target, .. }) => expr_span(target),
@@ -4186,9 +4186,9 @@ fn numeric_kind(ty: &TypeExpr) -> Option<NumericKind> {
 
 fn numeric_type_from_kind(kind: NumericKind) -> TypeExpr {
     match kind {
-        NumericKind::Signed(name, _) | NumericKind::Unsigned(name, _) | NumericKind::Float(name, _) => {
-            TypeExpr::Named(name.into(), Vec::new())
-        }
+        NumericKind::Signed(name, _)
+        | NumericKind::Unsigned(name, _)
+        | NumericKind::Float(name, _) => TypeExpr::Named(name.into(), Vec::new()),
     }
 }
 
@@ -4386,7 +4386,9 @@ mod tests {
     fn typecheck_source(source: &str) -> Result<(), Vec<super::TypeError>> {
         let module =
             parse_module("tests::module", PathBuf::from("test.prime"), source).expect("parse");
-        let program = Program { modules: vec![module] };
+        let program = Program {
+            modules: vec![module],
+        };
         let expanded = ExpandedProgram {
             program,
             traces: ExpansionTraces::default(),
@@ -4397,11 +4399,10 @@ mod tests {
 
     #[test]
     fn type_errors_include_macro_trace() {
-        let module =
-            parse_module(
-                "tests::macro_trace",
-                PathBuf::from("test.prime"),
-                r#"
+        let module = parse_module(
+            "tests::macro_trace",
+            PathBuf::from("test.prime"),
+            r#"
 module tests::macro_trace;
 
 macro make_value() -> int32 {
@@ -4412,9 +4413,11 @@ fn use_it() {
   let int32 value = ~make_value();
 }
 "#,
-            )
-            .expect("parse macro test");
-        let program = Program { modules: vec![module] };
+        )
+        .expect("parse macro test");
+        let program = Program {
+            modules: vec![module],
+        };
         let expanded = macro_expander::expand_program(&program).expect("expand macros");
         let Err(errors) = check_program(&expanded) else {
             panic!("expected a type error for macro output");
@@ -4431,7 +4434,7 @@ fn use_it() {
     }
 
     #[test]
-fn input_requires_type_argument_and_returns_result() {
+    fn input_requires_type_argument_and_returns_result() {
         let ok = r#"
 module tests::input;
 

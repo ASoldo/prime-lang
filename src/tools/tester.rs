@@ -137,6 +137,9 @@ fn run_test_file(root: &Path, path: &Path) -> Result<(), String> {
         }
     };
 
+    // Seed scripted input queue for `in[...]` so prime tests can run non-interactively.
+    crate::runtime::Interpreter::seed_test_inputs_from_env();
+
     if let Err(errors) = typecheck::check_program(&expanded_program) {
         emit_type_errors(&errors);
         return Err("typechecking failed".into());

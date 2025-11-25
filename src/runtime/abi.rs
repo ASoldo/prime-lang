@@ -2,14 +2,12 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
-    io::{self, Write},
     ffi::c_void,
+    io::{self, Write},
     os::raw::c_char,
     ptr,
     sync::{
-        Arc,
-        Condvar,
-        Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
@@ -236,7 +234,10 @@ impl PrimeMap {
     }
 
     fn insert(&self, key: String, value: PrimeHandle) {
-        self.entries.lock().unwrap().insert(key, retain_value(value));
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(key, retain_value(value));
     }
 
     fn snapshot(&self) -> Vec<PrimeHandle> {
@@ -252,7 +253,10 @@ impl PrimeMap {
 impl PrimeEnum {
     fn new(tag: u32, values: Vec<PrimeHandle>) -> Self {
         let retained = values.into_iter().map(retain_value).collect();
-        Self { tag, values: retained }
+        Self {
+            tag,
+            values: retained,
+        }
     }
 }
 
@@ -432,10 +436,7 @@ pub unsafe extern "C" fn prime_string_new(data: *const u8, len: usize) -> PrimeH
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn prime_slice_new() -> PrimeHandle {
-    PrimeValue::new(
-        PrimeTag::Slice,
-        PrimePayload::Slice(PrimeSlice::new()),
-    )
+    PrimeValue::new(PrimeTag::Slice, PrimePayload::Slice(PrimeSlice::new()))
 }
 
 #[unsafe(no_mangle)]
@@ -489,7 +490,10 @@ pub unsafe extern "C" fn prime_struct_new(name_ptr: *const u8, name_len: usize) 
         Ok(n) => n,
         Err(_) => return PrimeHandle::null(),
     };
-    PrimeValue::new(PrimeTag::Struct, PrimePayload::Struct(PrimeStruct::new(name)))
+    PrimeValue::new(
+        PrimeTag::Struct,
+        PrimePayload::Struct(PrimeStruct::new(name)),
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -614,10 +618,13 @@ pub unsafe extern "C" fn prime_read_value(
 
     let mut buffer = String::new();
     if let Err(err) = io::stdin().read_line(&mut buffer) {
-        return build_result_enum(err_tag, vec![PrimeValue::new(
-            PrimeTag::String,
-            PrimePayload::String(format!("failed to read input: {err}")),
-        )]);
+        return build_result_enum(
+            err_tag,
+            vec![PrimeValue::new(
+                PrimeTag::String,
+                PrimePayload::String(format!("failed to read input: {err}")),
+            )],
+        );
     }
     let raw = buffer.trim_end_matches(&['\n', '\r'][..]).to_string();
 
@@ -625,10 +632,7 @@ pub unsafe extern "C" fn prime_read_value(
         Ok(value) => build_result_enum(ok_tag, vec![value]),
         Err(msg) => build_result_enum(
             err_tag,
-            vec![PrimeValue::new(
-                PrimeTag::String,
-                PrimePayload::String(msg),
-            )],
+            vec![PrimeValue::new(PrimeTag::String, PrimePayload::String(msg))],
         ),
     }
 }
@@ -675,7 +679,10 @@ pub unsafe extern "C" fn prime_send(sender: PrimeHandle, value: PrimeHandle) -> 
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn prime_recv(receiver: PrimeHandle, value_out: *mut PrimeHandle) -> PrimeStatus {
+pub unsafe extern "C" fn prime_recv(
+    receiver: PrimeHandle,
+    value_out: *mut PrimeHandle,
+) -> PrimeStatus {
     if value_out.is_null() {
         return PrimeStatus::Invalid;
     }
@@ -745,7 +752,10 @@ pub unsafe extern "C" fn prime_spawn(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn prime_join(handle: PrimeHandle, result_out: *mut PrimeHandle) -> PrimeStatus {
+pub unsafe extern "C" fn prime_join(
+    handle: PrimeHandle,
+    result_out: *mut PrimeHandle,
+) -> PrimeStatus {
     if result_out.is_null() {
         return PrimeStatus::Invalid;
     }
@@ -810,11 +820,7 @@ fn format_value(handle: PrimeHandle) -> String {
                     format!("{} {{{}}}", s.name, parts.join(", "))
                 }
                 PrimePayload::Enum(e) => {
-                    let parts: Vec<String> = e.values
-                        .iter()
-                        .copied()
-                        .map(format_value)
-                        .collect();
+                    let parts: Vec<String> = e.values.iter().copied().map(format_value).collect();
                     format!("Enum#{}({})", e.tag, parts.join(", "))
                 }
                 PrimePayload::Reference(reference) => {
@@ -847,7 +853,10 @@ fn parse_input_value(raw: &str, type_code: u32) -> Result<PrimeHandle, String> {
             _ => Err("expected `true` or `false`".into()),
         },
         TYPE_INT8 | TYPE_INT16 | TYPE_INT32 | TYPE_INT64 | TYPE_ISIZE => {
-            let parsed = raw.trim().parse::<i128>().map_err(|_| "invalid integer input")?;
+            let parsed = raw
+                .trim()
+                .parse::<i128>()
+                .map_err(|_| "invalid integer input")?;
             let (min, max) = match type_code {
                 TYPE_INT8 => (i8::MIN as i128, i8::MAX as i128),
                 TYPE_INT16 => (i16::MIN as i128, i16::MAX as i128),
@@ -862,7 +871,10 @@ fn parse_input_value(raw: &str, type_code: u32) -> Result<PrimeHandle, String> {
             Ok(PrimeValue::new(PrimeTag::Int, PrimePayload::Int(parsed)))
         }
         TYPE_UINT8 | TYPE_UINT16 | TYPE_UINT32 | TYPE_UINT64 | TYPE_USIZE => {
-            let parsed = raw.trim().parse::<u128>().map_err(|_| "invalid integer input")?;
+            let parsed = raw
+                .trim()
+                .parse::<u128>()
+                .map_err(|_| "invalid integer input")?;
             let max = match type_code {
                 TYPE_UINT8 => u8::MAX as u128,
                 TYPE_UINT16 => u16::MAX as u128,
@@ -880,8 +892,14 @@ fn parse_input_value(raw: &str, type_code: u32) -> Result<PrimeHandle, String> {
             ))
         }
         TYPE_FLOAT32 | TYPE_FLOAT64 => {
-            let parsed = raw.trim().parse::<f64>().map_err(|_| "invalid float input")?;
-            Ok(PrimeValue::new(PrimeTag::Float, PrimePayload::Float(parsed)))
+            let parsed = raw
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| "invalid float input")?;
+            Ok(PrimeValue::new(
+                PrimeTag::Float,
+                PrimePayload::Float(parsed),
+            ))
         }
         _ => Err("unsupported input type".into()),
     }
@@ -962,10 +980,7 @@ unsafe fn drop_value(handle: PrimeHandle) {
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn as_payload<'a>(
-    handle: PrimeHandle,
-    expected: PrimeTag,
-) -> Option<&'a PrimePayload> {
+unsafe fn as_payload<'a>(handle: PrimeHandle, expected: PrimeTag) -> Option<&'a PrimePayload> {
     handle
         .as_ref()
         .and_then(|value| (value.tag == expected).then_some(&value.payload))
@@ -1006,7 +1021,10 @@ mod tests {
         unsafe {
             let mut sender = PrimeHandle::null();
             let mut receiver = PrimeHandle::null();
-            assert_eq!(prime_channel_new(&mut sender, &mut receiver), PrimeStatus::Ok);
+            assert_eq!(
+                prime_channel_new(&mut sender, &mut receiver),
+                PrimeStatus::Ok
+            );
             let sent = prime_int_new(99);
             assert_eq!(prime_send(sender, sent), PrimeStatus::Ok);
             let mut received = PrimeHandle::null();
@@ -1028,7 +1046,10 @@ mod tests {
         unsafe {
             let arg = prime_int_new(7);
             let mut join_handle = PrimeHandle::null();
-            assert_eq!(prime_spawn(Some(echo), arg, &mut join_handle), PrimeStatus::Ok);
+            assert_eq!(
+                prime_spawn(Some(echo), arg, &mut join_handle),
+                PrimeStatus::Ok
+            );
 
             let mut result = PrimeHandle::null();
             assert_eq!(prime_join(join_handle, &mut result), PrimeStatus::Ok);

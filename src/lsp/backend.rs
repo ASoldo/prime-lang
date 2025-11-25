@@ -1,16 +1,15 @@
 use super::{
     analysis::{
-        collect_identifier_spans as collect_identifier_spans_ast, collect_identifier_spans_for_decl,
-        find_local_decl, find_local_definition_span, find_module_item_span, identifier_at_offset,
-        unused_variable_diagnostics,
+        collect_identifier_spans as collect_identifier_spans_ast,
+        collect_identifier_spans_for_decl, find_local_decl, find_local_definition_span,
+        find_module_item_span, identifier_at_offset, unused_variable_diagnostics,
     },
     completion::{
         ModulePathCompletionKind, collect_interface_info, collect_struct_info, completion_prefix,
-        completion_trigger_characters, expression_chain_before_dot, format_function_param,
-        format_function_signature, general_completion_items, keyword_completion_items,
-        member_completion_items, module_completion_items_from_manifest,
+        completion_trigger_characters, enum_variant_completion_items, expression_chain_before_dot,
+        format_function_param, format_function_signature, general_completion_items,
+        keyword_completion_items, member_completion_items, module_completion_items_from_manifest,
         module_path_completion_context,
-        enum_variant_completion_items,
     },
     diagnostics::{collect_parse_and_manifest_diagnostics, diagnostic_code, manifest_entry_action},
     hover::{collect_var_infos, hover_for_token},
@@ -231,15 +230,15 @@ fn module_symbol_definitions(
                     ));
                 }
             }
-                Item::Interface(def) => {
-                    defs.push((
-                        def.name.clone(),
-                        def.span, // keep full span for interface keyword+name
-                        SymbolKind::INTERFACE,
-                        def.visibility,
-                        module.kind,
-                    ));
-                }
+            Item::Interface(def) => {
+                defs.push((
+                    def.name.clone(),
+                    def.span, // keep full span for interface keyword+name
+                    SymbolKind::INTERFACE,
+                    def.visibility,
+                    module.kind,
+                ));
+            }
             Item::Const(def) => defs.push((
                 def.name.clone(),
                 def.span,
@@ -1074,8 +1073,11 @@ impl LanguageServer for Backend {
         };
         let module = self.parse_cached_module(&uri, &text).await;
         let offset = position_to_offset(&text, position);
-        let target = identifier_at(&tokens, offset)
-            .or_else(|| module.as_ref().and_then(|module| identifier_at_offset(module, offset)));
+        let target = identifier_at(&tokens, offset).or_else(|| {
+            module
+                .as_ref()
+                .and_then(|module| identifier_at_offset(module, offset))
+        });
         let Some((name, span)) = target else {
             return Ok(None);
         };
@@ -1105,8 +1107,11 @@ impl LanguageServer for Backend {
         };
         let offset = position_to_offset(&text, position);
         let module = self.parse_cached_module(&uri, &text).await;
-        let target = identifier_at(&tokens, offset)
-            .or_else(|| module.as_ref().and_then(|module| identifier_at_offset(module, offset)));
+        let target = identifier_at(&tokens, offset).or_else(|| {
+            module
+                .as_ref()
+                .and_then(|module| identifier_at_offset(module, offset))
+        });
         let Some((target_name, _)) = target else {
             return Ok(None);
         };

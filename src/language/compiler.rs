@@ -1,17 +1,13 @@
+use crate::runtime::abi::{
+    TYPE_BOOL, TYPE_FLOAT32, TYPE_FLOAT64, TYPE_INT8, TYPE_INT16, TYPE_INT32, TYPE_INT64,
+    TYPE_ISIZE, TYPE_STRING, TYPE_UINT8, TYPE_UINT16, TYPE_UINT32, TYPE_UINT64, TYPE_USIZE,
+};
 use crate::{
     language::{
         ast::*,
         build::{
-            BuildBinding,
-            BuildEnumVariant,
-            BuildEffect,
-            BuildEvaluation,
-            BuildFormatTemplate,
-            BuildFunction,
-            BuildFunctionKey,
-            BuildInterpreter,
-            BuildScope,
-            BuildSnapshot,
+            BuildBinding, BuildEffect, BuildEnumVariant, BuildEvaluation, BuildFormatTemplate,
+            BuildFunction, BuildFunctionKey, BuildInterpreter, BuildScope, BuildSnapshot,
             BuildValue,
         },
         runtime_abi::RuntimeAbi,
@@ -19,33 +15,29 @@ use crate::{
     },
     runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric},
 };
-use crate::runtime::abi::{
-    TYPE_BOOL, TYPE_FLOAT32, TYPE_FLOAT64, TYPE_INT16, TYPE_INT32, TYPE_INT64, TYPE_INT8, TYPE_ISIZE, TYPE_STRING,
-    TYPE_UINT16, TYPE_UINT32, TYPE_UINT64, TYPE_UINT8, TYPE_USIZE,
-};
 use llvm_sys::{
-    LLVMLinkage,
+    LLVMLinkage, LLVMTypeKind,
     core::{
-        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAlloca, LLVMBuildBr, LLVMBuildCall2,
-        LLVMBuildCondBr, LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildLoad2, LLVMBuildRet,
-        LLVMBuildStore, LLVMConstInt, LLVMConstNull,
-        LLVMConstReal, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
-        LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent,
-        LLVMGetElementType, LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetLastInstruction, LLVMGetModuleContext,
-        LLVMGetReturnType, LLVMGetTypeKind, LLVMInt32TypeInContext, LLVMInt8TypeInContext, LLVMIsAFunction,
-        LLVMModuleCreateWithNameInContext, LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPointerType,
-        LLVMPrintModuleToFile, LLVMSetLinkage, LLVMTypeOf,
+        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAlloca,
+        LLVMBuildBr, LLVMBuildCall2, LLVMBuildCondBr, LLVMBuildGlobalString, LLVMBuildICmp,
+        LLVMBuildInBoundsGEP2, LLVMBuildLoad2, LLVMBuildRet, LLVMBuildStore, LLVMConstInt,
+        LLVMConstNull, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
+        LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
+        LLVMDoubleTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetElementType,
+        LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetLastInstruction, LLVMGetModuleContext,
+        LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
+        LLVMIsAFunction, LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilder,
+        LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile, LLVMSetLinkage, LLVMTypeOf,
     },
-    LLVMTypeKind,
     prelude::*,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    env,
     ffi::{CStr, CString},
     mem,
     path::Path,
     ptr,
-    env,
     sync::{Arc, Condvar, Mutex},
     thread,
 };
@@ -276,10 +268,9 @@ impl JoinHandleValue {
     fn join_with(&self, compiler: &mut Compiler) -> Result<Value, String> {
         let mut guard = self.result.lock().unwrap();
         match &mut *guard {
-            JoinResult::Immediate(slot) => {
-                slot.take()
-                    .ok_or_else(|| "join handle already consumed".to_string())
-            }
+            JoinResult::Immediate(slot) => slot
+                .take()
+                .ok_or_else(|| "join handle already consumed".to_string()),
             JoinResult::BuildThread(handle_slot) => {
                 let handle = handle_slot
                     .take()
@@ -322,7 +313,10 @@ struct EvaluatedValue {
 
 impl EvaluatedValue {
     fn from_value(value: Value) -> Self {
-        Self { value, runtime: None }
+        Self {
+            value,
+            runtime: None,
+        }
     }
 
     fn runtime_handle(&self) -> Option<LLVMValueRef> {
@@ -453,14 +447,15 @@ impl MapValue {
 }
 
 fn expect_constant_int(int: &IntValue) -> Result<i128, String> {
-    int.constant
-        .ok_or_else(|| "Non-constant integer cannot be captured for parallel build execution".into())
+    int.constant.ok_or_else(|| {
+        "Non-constant integer cannot be captured for parallel build execution".into()
+    })
 }
 
 fn expect_constant_float(float: &FloatValue) -> Result<f64, String> {
-    float.constant.ok_or_else(|| {
-        "Non-constant float cannot be captured for parallel build execution".into()
-    })
+    float
+        .constant
+        .ok_or_else(|| "Non-constant float cannot be captured for parallel build execution".into())
 }
 
 fn format_template_to_build(template: &FormatTemplateValue) -> Result<BuildFormatTemplate, String> {
@@ -553,18 +548,18 @@ fn value_to_build_value(value: &Value) -> Result<BuildValue, String> {
             }
             Ok(BuildValue::Map(converted))
         }
-        Value::FormatTemplate(template) => {
-            Ok(BuildValue::FormatTemplate(format_template_to_build(template)?))
-        }
+        Value::FormatTemplate(template) => Ok(BuildValue::FormatTemplate(
+            format_template_to_build(template)?,
+        )),
         Value::Sender(_) | Value::Receiver(_) => {
             Err("channel endpoints cannot be captured for parallel build execution (yet)".into())
         }
-        Value::Reference(_) | Value::Pointer(_)
-        | Value::JoinHandle(_)
-        | Value::Moved => Err(format!(
-            "{} cannot be captured for parallel build execution",
-            describe_value(value)
-        )),
+        Value::Reference(_) | Value::Pointer(_) | Value::JoinHandle(_) | Value::Moved => {
+            Err(format!(
+                "{} cannot be captured for parallel build execution",
+                describe_value(value)
+            ))
+        }
     }
 }
 
@@ -952,9 +947,9 @@ impl Compiler {
                 end: self.const_int_value(end),
                 inclusive,
             })),
-            BuildValue::Boxed(inner) => {
-                Ok(Value::Boxed(BoxValue::new(self.build_value_to_value(*inner, channels)?)))
-            }
+            BuildValue::Boxed(inner) => Ok(Value::Boxed(BoxValue::new(
+                self.build_value_to_value(*inner, channels)?,
+            ))),
             BuildValue::Slice(items) => {
                 let mut converted = Vec::with_capacity(items.len());
                 for item in items {
@@ -969,11 +964,9 @@ impl Compiler {
                 }
                 Ok(Value::Map(MapValue::from_entries(converted)))
             }
-            BuildValue::JoinHandle(handle) => {
-                Ok(Value::JoinHandle(Box::new(JoinHandleValue::new_build(
-                    handle.into_thread(),
-                ))))
-            }
+            BuildValue::JoinHandle(handle) => Ok(Value::JoinHandle(Box::new(
+                JoinHandleValue::new_build(handle.into_thread()),
+            ))),
             BuildValue::Reference(reference) => {
                 let inner = self.build_value_to_value(
                     reference
@@ -998,11 +991,10 @@ impl Compiler {
                             FormatRuntimeSegmentGeneric::Literal(text)
                         }
                         FormatRuntimeSegmentGeneric::Named(value) => {
-                            let converted_value =
-                                self.build_value_to_value(value, channels)?;
-                            FormatRuntimeSegmentGeneric::Named(
-                                EvaluatedValue::from_value(converted_value),
-                            )
+                            let converted_value = self.build_value_to_value(value, channels)?;
+                            FormatRuntimeSegmentGeneric::Named(EvaluatedValue::from_value(
+                                converted_value,
+                            ))
                         }
                         FormatRuntimeSegmentGeneric::Implicit => {
                             FormatRuntimeSegmentGeneric::Implicit
@@ -1027,7 +1019,11 @@ impl Compiler {
                     .ok_or_else(|| "channel handle missing during join".to_string())?;
                 Ok(Value::Receiver(ChannelReceiver::new_with_state(inner)))
             }
-            BuildValue::DeferredCall { name, type_args, args } => {
+            BuildValue::DeferredCall {
+                name,
+                type_args,
+                args,
+            } => {
                 let mut evaluated = Vec::with_capacity(args.len());
                 for arg in args {
                     evaluated.push(self.build_value_to_value(arg, channels)?);
@@ -1085,7 +1081,9 @@ impl Compiler {
                     let value = match self.emit_expression(expr)? {
                         EvalOutcome::Value(value) => value,
                         EvalOutcome::Flow(_) => {
-                            return Err("control flow not allowed inside format placeholders".into());
+                            return Err(
+                                "control flow not allowed inside format placeholders".into()
+                            );
                         }
                     };
                     segments.push(FormatRuntimeSegment::Named(value));
@@ -1155,7 +1153,11 @@ impl Compiler {
                             },
                         );
                     }
-                    Item::Macro(_) | Item::MacroInvocation(_) | Item::Impl(_) | Item::Function(_) | Item::Const(_) => {}
+                    Item::Macro(_)
+                    | Item::MacroInvocation(_)
+                    | Item::Impl(_)
+                    | Item::Function(_)
+                    | Item::Const(_) => {}
                 }
             }
         }
@@ -1173,7 +1175,11 @@ impl Compiler {
                     Item::Const(const_def) => {
                         self.consts.push((module.name.clone(), const_def.clone()));
                     }
-                    Item::Struct(_) | Item::Enum(_) | Item::Interface(_) | Item::Macro(_) | Item::MacroInvocation(_) => {}
+                    Item::Struct(_)
+                    | Item::Enum(_)
+                    | Item::Interface(_)
+                    | Item::Macro(_)
+                    | Item::MacroInvocation(_) => {}
                 }
             }
         }
@@ -1303,7 +1309,10 @@ impl Compiler {
 
     fn print_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         let mut value = value;
-        if let Some(handle) = value.runtime_handle().or_else(|| self.maybe_attach_runtime_handle(&mut value)) {
+        if let Some(handle) = value
+            .runtime_handle()
+            .or_else(|| self.maybe_attach_runtime_handle(&mut value))
+        {
             self.emit_runtime_print(handle);
             return Ok(());
         }
@@ -1417,9 +1426,9 @@ impl Compiler {
                 "unit",
             )),
             Value::Int(int_value) => {
-                let constant = int_value
-                    .constant()
-                    .ok_or_else(|| "Non-constant int not yet supported in runtime codegen".to_string())?;
+                let constant = int_value.constant().ok_or_else(|| {
+                    "Non-constant int not yet supported in runtime codegen".to_string()
+                })?;
                 let arg = unsafe { LLVMConstInt(self.runtime_abi.int_type, constant as u64, 1) };
                 Ok(self.call_runtime(
                     self.runtime_abi.prime_int_new,
@@ -1429,9 +1438,9 @@ impl Compiler {
                 ))
             }
             Value::Float(float_value) => {
-                let constant = float_value
-                    .constant()
-                    .ok_or_else(|| "Non-constant float not yet supported in runtime codegen".to_string())?;
+                let constant = float_value.constant().ok_or_else(|| {
+                    "Non-constant float not yet supported in runtime codegen".to_string()
+                })?;
                 let arg = unsafe { LLVMConstReal(self.runtime_abi.float_type, constant) };
                 Ok(self.call_runtime(
                     self.runtime_abi.prime_float_new,
@@ -1499,8 +1508,14 @@ impl Compiler {
                 ))
             }
             Value::Range(range) => {
-                let start = range.start.constant().ok_or_else(|| "range start not constant".to_string())?;
-                let end = range.end.constant().ok_or_else(|| "range end not constant".to_string())?;
+                let start = range
+                    .start
+                    .constant()
+                    .ok_or_else(|| "range start not constant".to_string())?;
+                let end = range
+                    .end
+                    .constant()
+                    .ok_or_else(|| "range end not constant".to_string())?;
                 let rendered = if range.inclusive {
                     format!("{start}..={end}")
                 } else {
@@ -1541,7 +1556,10 @@ impl Compiler {
                 let (queued, closed) = {
                     let (lock, _) = &*sender.inner;
                     let guard = lock.lock().unwrap();
-                    (guard.queue.iter().cloned().collect::<Vec<_>>(), guard.closed)
+                    (
+                        guard.queue.iter().cloned().collect::<Vec<_>>(),
+                        guard.closed,
+                    )
                 };
                 let (send_handle, recv_handle) = self
                     .build_channel_handles()
@@ -1557,7 +1575,10 @@ impl Compiler {
                 let (queued, closed) = {
                     let (lock, _) = &*receiver.inner;
                     let guard = lock.lock().unwrap();
-                    (guard.queue.iter().cloned().collect::<Vec<_>>(), guard.closed)
+                    (
+                        guard.queue.iter().cloned().collect::<Vec<_>>(),
+                        guard.closed,
+                    )
                 };
                 let (send_handle, recv_handle) = self
                     .build_channel_handles()
@@ -1572,7 +1593,8 @@ impl Compiler {
             Value::Pointer(ptr) => {
                 let inner = ptr.cell.lock().unwrap().clone().into_value();
                 let target = self.build_runtime_handle(inner)?;
-                let mut_flag = unsafe { LLVMConstInt(self.runtime_abi.bool_type, ptr.mutable as u64, 0) };
+                let mut_flag =
+                    unsafe { LLVMConstInt(self.runtime_abi.bool_type, ptr.mutable as u64, 0) };
                 Ok(self.call_runtime(
                     self.runtime_abi.prime_reference_new,
                     self.runtime_abi.prime_reference_new_ty,
@@ -1622,8 +1644,9 @@ impl Compiler {
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone().into_value();
                 let target = self.build_runtime_handle(inner)?;
-                let mut_flag =
-                    unsafe { LLVMConstInt(self.runtime_abi.bool_type, reference.mutable as u64, 0) };
+                let mut_flag = unsafe {
+                    LLVMConstInt(self.runtime_abi.bool_type, reference.mutable as u64, 0)
+                };
                 Ok(self.call_runtime(
                     self.runtime_abi.prime_reference_new,
                     self.runtime_abi.prime_reference_new_ty,
@@ -1704,29 +1727,31 @@ impl Compiler {
         assert!(!self.builder.is_null(), "LLVM builder is not initialized");
         unsafe {
             let block = LLVMGetInsertBlock(self.builder);
-            assert!(!block.is_null(), "no insertion block for runtime call `{}`", name);
+            assert!(
+                !block.is_null(),
+                "no insertion block for runtime call `{}`",
+                name
+            );
             if debug_handles {
                 let parent_fn = LLVMGetBasicBlockParent(block);
                 let func_mod = LLVMGetGlobalParent(func);
                 let module_ctx = LLVMGetModuleContext(self.module);
                 eprintln!(
                     "[rt_call] name={name} func_ptr={:?} func_mod={:?} current_mod={:?} block={:?} block_fn={:?} ctx={:?}",
-                    func,
-                    func_mod,
-                    self.module,
-                    block,
-                    parent_fn,
-                    module_ctx
+                    func, func_mod, self.module, block, parent_fn, module_ctx
                 );
             }
         }
         unsafe {
             let mut fn_type = func_type;
-            if fn_type.is_null() && LLVMGetTypeKind(LLVMTypeOf(func)) == LLVMTypeKind::LLVMPointerTypeKind {
+            if fn_type.is_null()
+                && LLVMGetTypeKind(LLVMTypeOf(func)) == LLVMTypeKind::LLVMPointerTypeKind
+            {
                 fn_type = LLVMGetElementType(LLVMTypeOf(func));
             }
             assert!(
-                !fn_type.is_null() && LLVMGetTypeKind(fn_type) == LLVMTypeKind::LLVMFunctionTypeKind,
+                !fn_type.is_null()
+                    && LLVMGetTypeKind(fn_type) == LLVMTypeKind::LLVMFunctionTypeKind,
                 "runtime function `{}` has invalid type for call",
                 name
             );
@@ -1746,8 +1771,8 @@ impl Compiler {
         text: &str,
         symbol: &str,
     ) -> Result<(LLVMValueRef, LLVMValueRef), String> {
-        let c_text =
-            CString::new(text.as_bytes()).map_err(|_| "string contains interior null byte".to_string())?;
+        let c_text = CString::new(text.as_bytes())
+            .map_err(|_| "string contains interior null byte".to_string())?;
         let sym = CString::new(symbol).unwrap();
         let ptr = unsafe { LLVMBuildGlobalString(self.builder, c_text.as_ptr(), sym.as_ptr()) };
         let len = unsafe { LLVMConstInt(self.runtime_abi.usize_type, text.len() as u64, 0) };
@@ -1774,7 +1799,11 @@ impl Compiler {
             Value::Tuple(values) => {
                 let parts: Vec<String> = values
                     .iter()
-                    .map(|v| self.render_runtime_value_bytes(v).and_then(|b| String::from_utf8(b).map_err(|_| "invalid utf8".to_string())))
+                    .map(|v| {
+                        self.render_runtime_value_bytes(v).and_then(|b| {
+                            String::from_utf8(b).map_err(|_| "invalid utf8".to_string())
+                        })
+                    })
                     .collect::<Result<_, _>>()?;
                 format!("({})", parts.join(", "))
             }
@@ -1782,7 +1811,11 @@ impl Compiler {
                 let parts: Vec<String> = e
                     .values
                     .iter()
-                    .map(|v| self.render_runtime_value_bytes(v).and_then(|b| String::from_utf8(b).map_err(|_| "invalid utf8".to_string())))
+                    .map(|v| {
+                        self.render_runtime_value_bytes(v).and_then(|b| {
+                            String::from_utf8(b).map_err(|_| "invalid utf8".to_string())
+                        })
+                    })
                     .collect::<Result<_, _>>()?;
                 if parts.is_empty() {
                     format!("{}::{}", e.enum_name, e.variant)
@@ -1835,7 +1868,6 @@ impl Compiler {
             _ => Err("`in` requires a concrete primitive type".into()),
         }
     }
-
 
     fn alloc_handle_array(&mut self, handles: &[LLVMValueRef]) -> LLVMValueRef {
         if handles.is_empty() {
@@ -2111,15 +2143,15 @@ impl Compiler {
 
     fn emit_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
-            Expr::Literal(Literal::Int(value, _)) => Ok(EvalOutcome::Value(self.evaluated(
-                Value::Int(self.const_int_value(*value as i128)),
-            ))),
+            Expr::Literal(Literal::Int(value, _)) => Ok(EvalOutcome::Value(
+                self.evaluated(Value::Int(self.const_int_value(*value as i128))),
+            )),
             Expr::Literal(Literal::Bool(value, _)) => {
                 Ok(EvalOutcome::Value(self.evaluated(Value::Bool(*value))))
             }
-            Expr::Literal(Literal::Float(value, _)) => Ok(EvalOutcome::Value(self.evaluated(
-                Value::Float(self.const_float_value(*value)),
-            ))),
+            Expr::Literal(Literal::Float(value, _)) => Ok(EvalOutcome::Value(
+                self.evaluated(Value::Float(self.const_float_value(*value))),
+            )),
             Expr::Literal(Literal::String(value, _)) => {
                 let string = self.build_string_constant(value.clone())?;
                 Ok(EvalOutcome::Value(self.evaluated(string)))
@@ -2128,9 +2160,9 @@ impl Compiler {
                 let value = self.build_format_string_value(literal)?;
                 Ok(EvalOutcome::Value(self.evaluated(value)))
             }
-            Expr::Literal(Literal::Rune(value, _)) => Ok(EvalOutcome::Value(self.evaluated(
-                Value::Int(self.const_int_value(*value as i128)),
-            ))),
+            Expr::Literal(Literal::Rune(value, _)) => Ok(EvalOutcome::Value(
+                self.evaluated(Value::Int(self.const_int_value(*value as i128))),
+            )),
             Expr::Try { block, .. } => {
                 self.push_scope();
                 let result = self.execute_block_contents(block)?;
@@ -2174,9 +2206,7 @@ impl Compiler {
             }
             Expr::StructLiteral { name, fields, .. } => self.build_struct_literal(name, fields),
             Expr::EnumLiteral {
-                variant,
-                values,
-                ..
+                variant, values, ..
             } => {
                 let mut evaluated = Vec::new();
                 for expr in values {
@@ -2204,11 +2234,13 @@ impl Compiler {
             Expr::Range(range) => {
                 let start = self.expect_int_value_from_expr(&range.start)?;
                 let end = self.expect_int_value_from_expr(&range.end)?;
-                Ok(EvalOutcome::Value(self.evaluated(Value::Range(RangeValue {
-                    start,
-                    end,
-                    inclusive: range.inclusive,
-                }))))
+                Ok(EvalOutcome::Value(self.evaluated(Value::Range(
+                    RangeValue {
+                        start,
+                        end,
+                        inclusive: range.inclusive,
+                    },
+                ))))
             }
             Expr::Index { base, index, .. } => {
                 let base_value = match self.emit_expression(base)? {
@@ -2281,7 +2313,9 @@ impl Compiler {
                         Value::Reference(reference) => {
                             reference.cell.lock().unwrap().clone().into_value()
                         }
-                        Value::Pointer(pointer) => pointer.cell.lock().unwrap().clone().into_value(),
+                        Value::Pointer(pointer) => {
+                            pointer.cell.lock().unwrap().clone().into_value()
+                        }
                         Value::Range(_) => {
                             return Err("Cannot access field on range value".into());
                         }
@@ -2453,10 +2487,15 @@ impl Compiler {
         args: &[Expr],
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         if type_args.len() != 1 {
-            return Err("`in` expects exactly one type argument, e.g. in[int32](\"prompt\")".into());
+            return Err(
+                "`in` expects exactly one type argument, e.g. in[int32](\"prompt\")".into(),
+            );
         }
         if args.is_empty() {
-            return Err("`in` expects at least 1 argument (a prompt, optionally with format placeholders)".into());
+            return Err(
+                "`in` expects at least 1 argument (a prompt, optionally with format placeholders)"
+                    .into(),
+            );
         }
 
         // Evaluate prompt and arguments
@@ -2498,27 +2537,39 @@ impl Compiler {
         let type_code = self.type_code_for(&type_args[0])?;
 
         // Find Result::Ok/Err tags
-        let ok_tag = self.enum_variants.get("Ok").map(|v| v.variant_index).ok_or_else(|| {
-            "Result::Ok variant not found; ensure core.types is available in build mode".to_string()
-        })?;
+        let ok_tag = self
+            .enum_variants
+            .get("Ok")
+            .map(|v| v.variant_index)
+            .ok_or_else(|| {
+                "Result::Ok variant not found; ensure core.types is available in build mode"
+                    .to_string()
+            })?;
         let err_tag = self
             .enum_variants
             .get("Err")
             .map(|v| v.variant_index)
-            .ok_or_else(|| "Result::Err variant not found; ensure core.types is available in build mode".to_string())?;
+            .ok_or_else(|| {
+                "Result::Err variant not found; ensure core.types is available in build mode"
+                    .to_string()
+            })?;
 
         // Build runtime arguments
-        let prompt_str = String::from_utf8(prompt_bytes).map_err(|_| "prompt is not valid utf-8")?;
+        let prompt_str =
+            String::from_utf8(prompt_bytes).map_err(|_| "prompt is not valid utf-8")?;
         let (prompt_ptr, prompt_len) = self.build_runtime_bytes(&prompt_str, "rt_prompt")?;
         let handles_array = if fmt_handles.is_empty() {
             self.null_handle_ptr()
         } else {
             self.alloc_handle_array(&fmt_handles)
         };
-        let fmt_len = unsafe { LLVMConstInt(self.runtime_abi.usize_type, fmt_handles.len() as u64, 0) };
-        let type_code_const = unsafe { LLVMConstInt(self.runtime_abi.status_type, type_code as u64, 0) };
+        let fmt_len =
+            unsafe { LLVMConstInt(self.runtime_abi.usize_type, fmt_handles.len() as u64, 0) };
+        let type_code_const =
+            unsafe { LLVMConstInt(self.runtime_abi.status_type, type_code as u64, 0) };
         let ok_tag_const = unsafe { LLVMConstInt(self.runtime_abi.status_type, ok_tag as u64, 0) };
-        let err_tag_const = unsafe { LLVMConstInt(self.runtime_abi.status_type, err_tag as u64, 0) };
+        let err_tag_const =
+            unsafe { LLVMConstInt(self.runtime_abi.status_type, err_tag as u64, 0) };
 
         let result_handle = self.call_runtime(
             self.runtime_abi.prime_read_value,
@@ -2711,8 +2762,7 @@ impl Compiler {
                 Err(err) => return Err(err),
             }
         }
-        f(self, evaluated)
-            .map(|v| EvalOutcome::Value(self.evaluated(v)))
+        f(self, evaluated).map(|v| EvalOutcome::Value(self.evaluated(v)))
     }
 
     fn build_reference(
@@ -2734,30 +2784,33 @@ impl Compiler {
                 if matches!(cell.lock().unwrap().value(), Value::Moved) {
                     return Err(format!("Value `{}` has been moved", ident.name));
                 }
-                Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
-                    cell,
-                    mutable,
-                    origin: Some(ident.name.clone()),
-                })
-                .into()))
+                Ok(EvalOutcome::Value(
+                    Value::Reference(ReferenceValue {
+                        cell,
+                        mutable,
+                        origin: Some(ident.name.clone()),
+                    })
+                    .into(),
+                ))
             }
             _ => match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => {
-                    Ok(EvalOutcome::Value(
-                        Value::Reference(ReferenceValue {
-                            cell: Arc::new(Mutex::new(value)),
-                            mutable,
-                            origin: None,
-                        })
-                        .into(),
-                    ))
-                }
+                EvalOutcome::Value(value) => Ok(EvalOutcome::Value(
+                    Value::Reference(ReferenceValue {
+                        cell: Arc::new(Mutex::new(value)),
+                        mutable,
+                        origin: None,
+                    })
+                    .into(),
+                )),
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
         }
     }
 
-    fn emit_array_literal(&mut self, values: &[Expr]) -> Result<EvalOutcome<EvaluatedValue>, String> {
+    fn emit_array_literal(
+        &mut self,
+        values: &[Expr],
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         let mut items = Vec::with_capacity(values.len());
         for expr in values {
             match self.emit_expression(expr)? {
@@ -2792,10 +2845,7 @@ impl Compiler {
         ))
     }
 
-    fn emit_move_expression(
-        &mut self,
-        expr: &Expr,
-    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+    fn emit_move_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Identifier(ident) => {
                 let (cell, _) = self
@@ -2817,8 +2867,7 @@ impl Compiler {
                         ident.name
                     ));
                 }
-                let moved =
-                    std::mem::replace(&mut *slot, EvaluatedValue::from_value(Value::Moved));
+                let moved = std::mem::replace(&mut *slot, EvaluatedValue::from_value(Value::Moved));
                 self.register_move(&ident.name);
                 Ok(EvalOutcome::Value(moved))
             }
@@ -2979,10 +3028,9 @@ impl Compiler {
                     let field_handle = self.call_runtime(
                         self.runtime_abi.prime_enum_get,
                         self.runtime_abi.prime_enum_get_ty,
-                        &mut [
-                            handle,
-                            unsafe { LLVMConstInt(self.runtime_abi.usize_type, field_idx as u64, 0) },
-                        ],
+                        &mut [handle, unsafe {
+                            LLVMConstInt(self.runtime_abi.usize_type, field_idx as u64, 0)
+                        }],
                         "enum_get",
                     );
                     let mut bound = self.evaluated(Value::Unit);
@@ -3026,12 +3074,10 @@ impl Compiler {
                             Ok(EvalOutcome::Value(self.evaluated(Value::Tuple(values))))
                         }
                     }
-                    "Err" => Ok(EvalOutcome::Flow(FlowSignal::Propagate(
-                        EvaluatedValue {
-                            value: Value::Enum(enum_value),
-                            runtime,
-                        },
-                    ))),
+                    "Err" => Ok(EvalOutcome::Flow(FlowSignal::Propagate(EvaluatedValue {
+                        value: Value::Enum(enum_value),
+                        runtime,
+                    }))),
                     _ => Err("? operator expects Result value in build mode".into()),
                 }
             }
@@ -3049,7 +3095,9 @@ impl Compiler {
             Pattern::Wildcard => Ok(true),
             Pattern::Identifier(name, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
+                    Value::Reference(reference) => {
+                        reference.cell.lock().unwrap().clone().into_value()
+                    }
                     other => other.clone(),
                 };
                 self.insert_var(name, concrete.into(), mutable_bindings)?;
@@ -3063,7 +3111,9 @@ impl Compiler {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
+                    Value::Reference(reference) => {
+                        reference.cell.lock().unwrap().clone().into_value()
+                    }
                     other => other.clone(),
                 };
                 if let Value::Enum(enum_value) = concrete {
@@ -3103,7 +3153,9 @@ impl Compiler {
             }
             Pattern::Tuple(patterns, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
+                    Value::Reference(reference) => {
+                        reference.cell.lock().unwrap().clone().into_value()
+                    }
                     other => other.clone(),
                 };
                 if let Value::Tuple(values) = concrete {
@@ -3122,7 +3174,9 @@ impl Compiler {
             }
             Pattern::Map(entries, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
+                    Value::Reference(reference) => {
+                        reference.cell.lock().unwrap().clone().into_value()
+                    }
                     other => other.clone(),
                 };
                 if let Value::Map(map) = concrete {
@@ -3146,7 +3200,9 @@ impl Compiler {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
+                    Value::Reference(reference) => {
+                        reference.cell.lock().unwrap().clone().into_value()
+                    }
                     other => other.clone(),
                 };
                 if let Value::Struct(instance) = concrete {
@@ -3175,7 +3231,9 @@ impl Compiler {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
+                    Value::Reference(reference) => {
+                        reference.cell.lock().unwrap().clone().into_value()
+                    }
                     other => other.clone(),
                 };
                 let elements = match concrete {
@@ -3702,8 +3760,7 @@ impl Compiler {
                 }
             }
         }
-        let receiver_args: Vec<Value> =
-            evaluated_args.iter().map(|v| v.value().clone()).collect();
+        let receiver_args: Vec<Value> = evaluated_args.iter().map(|v| v.value().clone()).collect();
         let receiver_candidate = self.receiver_name_from_values(&receiver_args);
         let func_entry = self.resolve_function(
             name,
@@ -3756,10 +3813,9 @@ impl Compiler {
                         }
                     } else {
                         match value.into_value() {
-                            Value::Tuple(values) => Ok(values
-                                .into_iter()
-                                .map(|v| self.evaluated(v))
-                                .collect()),
+                            Value::Tuple(values) => {
+                                Ok(values.into_iter().map(|v| self.evaluated(v)).collect())
+                            }
                             other => Ok(vec![self.evaluated(other)]),
                         }
                     }
@@ -4441,7 +4497,12 @@ impl Compiler {
         }
     }
 
-    fn assign_index_value(&mut self, base: Value, index: Value, value: Value) -> Result<(), String> {
+    fn assign_index_value(
+        &mut self,
+        base: Value,
+        index: Value,
+        value: Value,
+    ) -> Result<(), String> {
         match base {
             Value::Slice(slice) => {
                 let int_value = self.expect_int(index)?;
@@ -4828,10 +4889,9 @@ impl Compiler {
         for scope in &self.scopes {
             let mut bindings = HashMap::new();
             for (name, binding) in scope {
-                let guard = binding
-                    .cell
-                    .lock()
-                    .map_err(|_| format!("Binding `{name}` poisoned while capturing build snapshot"))?;
+                let guard = binding.cell.lock().map_err(|_| {
+                    format!("Binding `{name}` poisoned while capturing build snapshot")
+                })?;
                 bindings.insert(
                     name.clone(),
                     BuildBinding {
@@ -5006,7 +5066,11 @@ impl Compiler {
                     .end
                     .constant
                     .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
-                let end = if range.inclusive { end_const + 1 } else { end_const };
+                let end = if range.inclusive {
+                    end_const + 1
+                } else {
+                    end_const
+                };
                 Ok((start_const..end)
                     .map(|v| Value::Int(self.const_int_value(v)).into())
                     .collect())
@@ -5138,7 +5202,6 @@ fn substitute_self_in_function(def: &mut FunctionDef, target: &str) {
     }
 }
 
-
 fn describe_value(value: &Value) -> &'static str {
     match value {
         Value::Int(_) => "int",
@@ -5166,8 +5229,8 @@ fn describe_value(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::language::{ast::Program, parser::parse_module};
     use crate::language::span::Span;
+    use crate::language::{ast::Program, parser::parse_module};
     use crate::project::load_package;
     use std::{
         collections::HashMap,
@@ -5235,10 +5298,9 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.push_scope();
         let int_binding = Binding {
-            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Int(IntValue::new(
-                ptr::null_mut(),
-                Some(7),
-            ))))),
+            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Int(
+                IntValue::new(ptr::null_mut(), Some(7)),
+            )))),
             mutable: false,
         };
         let tuple_binding = Binding {
@@ -5249,10 +5311,9 @@ mod tests {
             mutable: true,
         };
         let string_binding = Binding {
-            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Str(StringValue::new(
-                ptr::null_mut(),
-                Arc::new("hello".to_string()),
-            ))))),
+            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Str(
+                StringValue::new(ptr::null_mut(), Arc::new("hello".to_string())),
+            )))),
             mutable: false,
         };
         if let Some(scope) = compiler.scopes.last_mut() {
@@ -5302,10 +5363,9 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.push_scope();
         let non_const_int = Binding {
-            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Int(IntValue::new(
-                ptr::null_mut(),
-                None,
-            ))))),
+            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Int(
+                IntValue::new(ptr::null_mut(), None),
+            )))),
             mutable: false,
         };
         if let Some(scope) = compiler.scopes.last_mut() {
@@ -5552,9 +5612,7 @@ fn main() {
                 EvalOutcome::Value(value) => value.into_value(),
                 EvalOutcome::Flow(_) => panic!("unexpected flow from spawn"),
             };
-            let joined = compiler
-                .builtin_join(vec![handle])
-                .expect("join returns");
+            let joined = compiler.builtin_join(vec![handle]).expect("join returns");
             assert!(matches!(joined, Value::Int(v) if v.constant() == Some(9)));
         });
     }
@@ -5571,7 +5629,10 @@ fn main() {
                 }),
                 span,
             };
-            let outer = match compiler.emit_expression(&expr).expect("outer spawn evaluates") {
+            let outer = match compiler
+                .emit_expression(&expr)
+                .expect("outer spawn evaluates")
+            {
                 EvalOutcome::Value(value) => value.into_value(),
                 EvalOutcome::Flow(_) => panic!("unexpected flow from outer spawn"),
             };
@@ -5627,9 +5688,8 @@ fn main() {
         let channels = compiler
             .apply_build_effects(effects)
             .expect("channel effects apply");
-        let rx = ChannelReceiver::new_with_state(
-            channels.get(&7).cloned().expect("channel present"),
-        );
+        let rx =
+            ChannelReceiver::new_with_state(channels.get(&7).cloned().expect("channel present"));
         match rx.recv() {
             Some(Value::Enum(enum_value)) => {
                 assert_eq!(enum_value.enum_name, "Option");

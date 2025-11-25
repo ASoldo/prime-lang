@@ -1,4 +1,8 @@
-use crate::language::{ast::*, token::{Token, TokenKind}, types::TypeExpr};
+use crate::language::{
+    ast::*,
+    token::{Token, TokenKind},
+    types::TypeExpr,
+};
 pub fn format_module(module: &Module) -> String {
     let mut out = String::new();
     if let Some(name) = module.declared_name.as_ref() {
@@ -220,10 +224,15 @@ fn format_macro_param(param: &MacroParam) -> String {
         MacroParamKind::Block => Some("block"),
         MacroParamKind::Pattern => Some("pattern"),
         MacroParamKind::Tokens => Some("tokens"),
-        MacroParamKind::Repeat => Some(match param.repeat_quantifier.unwrap_or(MacroRepeatQuantifier::OneOrMore) {
-            MacroRepeatQuantifier::OneOrMore => "repeat+",
-            MacroRepeatQuantifier::ZeroOrMore => "repeat*",
-        }),
+        MacroParamKind::Repeat => Some(
+            match param
+                .repeat_quantifier
+                .unwrap_or(MacroRepeatQuantifier::OneOrMore)
+            {
+                MacroRepeatQuantifier::OneOrMore => "repeat+",
+                MacroRepeatQuantifier::ZeroOrMore => "repeat*",
+            },
+        ),
         MacroParamKind::Expr => None,
     };
     if let Some(kind) = kind {

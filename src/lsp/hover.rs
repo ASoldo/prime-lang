@@ -1,5 +1,8 @@
 use crate::language::{
-    ast::{ConstDef, EnumDef, EnumVariant, FunctionDef, InterfaceDef, Item, MacroDef, MacroParam, MacroParamKind, MacroRepeatQuantifier, Module, StructDef, Visibility},
+    ast::{
+        ConstDef, EnumDef, EnumVariant, FunctionDef, InterfaceDef, Item, MacroDef, MacroParam,
+        MacroParamKind, MacroRepeatQuantifier, Module, StructDef, Visibility,
+    },
     span::Span,
     token::{Token, TokenKind},
     types::{Mutability, TypeExpr},
@@ -129,11 +132,11 @@ pub fn hover_for_token(
                 {
                     return Some(method_hover);
                 }
-        if let Some(mods) = modules {
-            if let Some(hover) = hover_for_imported_symbol(text, span, name, module, mods) {
-                return Some(hover);
-            }
-        }
+                if let Some(mods) = modules {
+                    if let Some(hover) = hover_for_imported_symbol(text, span, name, module, mods) {
+                        return Some(hover);
+                    }
+                }
                 if let Some(struct_info) = struct_info {
                     if let Some(hover) =
                         hover_for_field_usage(text, span, struct_info, module, span.start)
@@ -168,9 +171,10 @@ pub fn hover_for_token(
             }
         }
         TokenKind::Let => Some(keyword_doc("let", "Introduces a new binding.")),
-        TokenKind::TestKw => {
-            Some(keyword_doc("test", "Declares a test module; enables `fn` bodies as test cases."))
-        }
+        TokenKind::TestKw => Some(keyword_doc(
+            "test",
+            "Declares a test module; enables `fn` bodies as test cases.",
+        )),
         TokenKind::ModuleKw => Some(keyword_doc("module", "Declares a regular module.")),
         TokenKind::LibraryKw => Some(keyword_doc(
             "library",
@@ -182,9 +186,10 @@ pub fn hover_for_token(
         )),
         TokenKind::Struct => Some(keyword_doc("struct", "Declares a structure.")),
         TokenKind::Enum => Some(keyword_doc("enum", "Declares an enum.")),
-        TokenKind::Interface => {
-            Some(keyword_doc("interface", "Declares an interface of required methods."))
-        }
+        TokenKind::Interface => Some(keyword_doc(
+            "interface",
+            "Declares an interface of required methods.",
+        )),
         TokenKind::Impl => Some(keyword_doc(
             "impl",
             "Implements an interface for a concrete struct.",
@@ -199,7 +204,10 @@ pub fn hover_for_token(
         TokenKind::If => Some(keyword_doc("if", "Conditional execution.")),
         TokenKind::Else => Some(keyword_doc("else", "Alternate branch for `if`.")),
         TokenKind::While => Some(keyword_doc("while", "Loop while the condition holds.")),
-        TokenKind::Loop => Some(keyword_doc("loop", "Infinite loop until `break` is reached.")),
+        TokenKind::Loop => Some(keyword_doc(
+            "loop",
+            "Infinite loop until `break` is reached.",
+        )),
         TokenKind::For => Some(keyword_doc("for", "Range-based loop.")),
         TokenKind::Match => Some(keyword_doc("match", "Pattern matching expression.")),
         TokenKind::Defer => Some(keyword_doc("defer", "Run code when leaving scope.")),
@@ -209,15 +217,18 @@ pub fn hover_for_token(
         )),
         TokenKind::Import => Some(keyword_doc("import", "Bring another module into scope.")),
         TokenKind::Using => Some(keyword_doc("using", "Re-export or alias imported symbols.")),
-        TokenKind::True | TokenKind::False => {
-            Some(keyword_doc("bool", "Boolean literal values `true`/`false`."))
-        }
-        TokenKind::Integer(value) => {
-            Some(keyword_doc("int literal", &format!("Integer literal `{value}`")))
-        }
-        TokenKind::Float(value) => {
-            Some(keyword_doc("float literal", &format!("Float literal `{value}`")))
-        }
+        TokenKind::True | TokenKind::False => Some(keyword_doc(
+            "bool",
+            "Boolean literal values `true`/`false`.",
+        )),
+        TokenKind::Integer(value) => Some(keyword_doc(
+            "int literal",
+            &format!("Integer literal `{value}`"),
+        )),
+        TokenKind::Float(value) => Some(keyword_doc(
+            "float literal",
+            &format!("Float literal `{value}`"),
+        )),
         TokenKind::String(value) => Some(keyword_doc(
             "string literal",
             &format!("String literal \"{value}\""),
@@ -270,7 +281,10 @@ fn builtin_function_docs(name: &str) -> Option<String> {
         )),
         "slice_get" => Some(format!(
             "Built-in slice helper\n{}",
-            code_block("prime", "fn slice_get[T](slice: []T, index: int32) -> Option[T]")
+            code_block(
+                "prime",
+                "fn slice_get[T](slice: []T, index: int32) -> Option[T]"
+            )
         )),
         "map_new" => Some(format!(
             "Built-in map helper\n{}",
@@ -278,11 +292,17 @@ fn builtin_function_docs(name: &str) -> Option<String> {
         )),
         "map_insert" => Some(format!(
             "Built-in map helper\n{}",
-            code_block("prime", "fn map_insert[V](map: Map[string, V], key: string, value: V) -> ()")
+            code_block(
+                "prime",
+                "fn map_insert[V](map: Map[string, V], key: string, value: V) -> ()"
+            )
         )),
         "map_get" => Some(format!(
             "Built-in map helper\n{}\nEquivalent available via `map.get(key)`",
-            code_block("prime", "fn map_get[V](map: Map[string, V], key: string) -> Option[V]")
+            code_block(
+                "prime",
+                "fn map_get[V](map: Map[string, V], key: string) -> Option[V]"
+            )
         )),
         "assert" => Some(format!(
             "Built-in test helper\n{}\nPanics if `cond` is false.",
@@ -298,7 +318,10 @@ fn builtin_function_docs(name: &str) -> Option<String> {
         )),
         "str_contains" => Some(format!(
             "Built-in string helper\n{}",
-            code_block("prime", "fn str_contains(haystack: string, needle: string) -> bool")
+            code_block(
+                "prime",
+                "fn str_contains(haystack: string, needle: string) -> bool"
+            )
         )),
         "str_trim" => Some(format!(
             "Built-in string helper\n{}",
@@ -306,7 +329,10 @@ fn builtin_function_docs(name: &str) -> Option<String> {
         )),
         "str_split" => Some(format!(
             "Built-in string helper\n{}",
-            code_block("prime", "fn str_split(input: string, delim: string) -> []string")
+            code_block(
+                "prime",
+                "fn str_split(input: string, delim: string) -> []string"
+            )
         )),
         "min" => Some(format!(
             "Built-in math helper\n{}\nWorks on integer values.",
@@ -326,7 +352,10 @@ fn builtin_function_docs(name: &str) -> Option<String> {
         )),
         "send" => Some(format!(
             "Built-in concurrency helper\n{}\nReturns `Err` when the channel is closed.",
-            code_block("prime", "fn send[T](tx: Sender[T], value: T) -> Result[(), string]")
+            code_block(
+                "prime",
+                "fn send[T](tx: Sender[T], value: T) -> Result[(), string]"
+            )
         )),
         "recv" => Some(format!(
             "Built-in concurrency helper\n{}\nReturns `None` after the channel closes and drains.",
@@ -754,7 +783,7 @@ fn hover_for_interface_method_definition(
     module: &Module,
 ) -> Option<Hover> {
     for item in &module.items {
-                if let Item::Interface(def) = item {
+        if let Item::Interface(def) = item {
             for method in &def.methods {
                 if method.name == name && span_contains(method.span, usage_span.start) {
                     let mut value = String::new();
@@ -976,7 +1005,10 @@ fn macro_param_kind_name(param: &MacroParam) -> String {
         MacroParamKind::Block => "`block`".into(),
         MacroParamKind::Pattern => "`pattern`".into(),
         MacroParamKind::Tokens => "`tokens`".into(),
-        MacroParamKind::Repeat => match param.repeat_quantifier.unwrap_or(MacroRepeatQuantifier::OneOrMore) {
+        MacroParamKind::Repeat => match param
+            .repeat_quantifier
+            .unwrap_or(MacroRepeatQuantifier::OneOrMore)
+        {
             MacroRepeatQuantifier::OneOrMore => "`repeat+`".into(),
             MacroRepeatQuantifier::ZeroOrMore => "`repeat*`".into(),
         },
@@ -1021,10 +1053,7 @@ fn normalize_spacing(value: String) -> String {
 }
 
 fn keyword_doc(keyword: &str, detail: &str) -> String {
-    format!(
-        "```md\nKeyword: `{keyword}`\n{}\n```",
-        wrap_md(detail, 48)
-    )
+    format!("```md\nKeyword: `{keyword}`\n{}\n```", wrap_md(detail, 48))
 }
 
 fn code_block(lang: &str, body: &str) -> String {
@@ -1056,10 +1085,7 @@ fn primitive_type_docs(name: &str) -> Option<String> {
         "JoinHandle" => "Handle returned from `spawn`",
         _ => return None,
     };
-    Some(format!(
-        "```md\nType: `{name}`\n{}\n```",
-        wrap_md(desc, 48)
-    ))
+    Some(format!("```md\nType: `{name}`\n{}\n```", wrap_md(desc, 48)))
 }
 
 fn wrap_md(text: &str, width: usize) -> String {

@@ -15,13 +15,33 @@ use tower_lsp_server::lsp_types::{
 
 const BUILTIN_TYPES: &[&str] = &[
     // Integers
-    "int8", "int16", "int32", "int64", "isize", "uint8", "uint16", "uint32", "uint64", "usize",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "isize",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "usize",
     // Floats
-    "float32", "float64",
+    "float32",
+    "float64",
     // Other primitives
-    "bool", "string", "rune",
+    "bool",
+    "string",
+    "rune",
     // Containers / std types
-    "Option", "Result", "Range", "Box", "Map", "Slice", "JoinHandle", "Sender", "Receiver",
+    "Option",
+    "Result",
+    "Range",
+    "Box",
+    "Map",
+    "Slice",
+    "JoinHandle",
+    "Sender",
+    "Receiver",
 ];
 
 use super::{
@@ -42,7 +62,11 @@ pub struct ModulePathCompletionContext {
     pub prefix: Option<String>,
 }
 
-fn macro_visible_to_requester(def: &MacroDef, defining_module: &Module, requester: &Module) -> bool {
+fn macro_visible_to_requester(
+    def: &MacroDef,
+    defining_module: &Module,
+    requester: &Module,
+) -> bool {
     match def.visibility {
         Visibility::Public => true,
         Visibility::Package => match (requester.path.parent(), defining_module.path.parent()) {
@@ -109,7 +133,8 @@ pub fn module_path_completion_context(
 pub fn completion_trigger_characters() -> Vec<String> {
     // Trigger on identifiers, qualification separators, macro sigils, and hygiene escapes.
     // `:` is kept so the LSP can fire on the second colon in `::`.
-    const TRIGGER_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.~@";
+    const TRIGGER_CHARS: &str =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.~@";
     TRIGGER_CHARS.chars().map(|ch| ch.to_string()).collect()
 }
 
@@ -899,15 +924,15 @@ pub fn enum_variant_completion_items(
     while start > 0 {
         let ch = slice.chars().nth(start.saturating_sub(1)).unwrap();
         if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
-                start -= 1;
-            } else {
-                break;
-            }
+            start -= 1;
+        } else {
+            break;
         }
-        let enum_path = slice[start..sep].trim_end_matches('.');
-        if enum_path.is_empty() {
-            return None;
-        }
+    }
+    let enum_path = slice[start..sep].trim_end_matches('.');
+    if enum_path.is_empty() {
+        return None;
+    }
     let enum_token = enum_path
         .rsplit('.')
         .next()
@@ -1273,8 +1298,11 @@ pub fn keyword_completion_items(
             ("block", "macro param kind"),
             ("pattern", "macro param kind"),
             ("tokens", "macro param kind"),
-        ("repeat", "macro param kind (supports +/*, use with @sep)"),
-            ("@sep", "macro repeat separator hint (use `@sep = ,` or `@sep = ;`)"),
+            ("repeat", "macro param kind (supports +/*, use with @sep)"),
+            (
+                "@sep",
+                "macro repeat separator hint (use `@sep = ,` or `@sep = ;`)",
+            ),
             ("@", "hygiene escape for outer bindings"),
         ];
         for (label, detail) in MACRO_HELPERS
@@ -1878,15 +1906,20 @@ import pkg::macros;
 fn main() -> int32 { 0 }
 "#;
 
-        let provider =
-            parse_module("pkg::macros", PathBuf::from("pkg/macros.prime"), provider_src)
-                .expect("provider module");
-        let same_pkg =
-            parse_module("pkg::user", PathBuf::from("pkg/user.prime"), same_pkg_src)
-                .expect("same package module");
-        let other_pkg =
-            parse_module("other::user", PathBuf::from("other/user.prime"), other_pkg_src)
-                .expect("other package module");
+        let provider = parse_module(
+            "pkg::macros",
+            PathBuf::from("pkg/macros.prime"),
+            provider_src,
+        )
+        .expect("provider module");
+        let same_pkg = parse_module("pkg::user", PathBuf::from("pkg/user.prime"), same_pkg_src)
+            .expect("same package module");
+        let other_pkg = parse_module(
+            "other::user",
+            PathBuf::from("other/user.prime"),
+            other_pkg_src,
+        )
+        .expect("other package module");
         let modules = vec![provider.clone(), same_pkg.clone(), other_pkg.clone()];
 
         let same_pkg_items = general_completion_items(&same_pkg, &modules, None, None);

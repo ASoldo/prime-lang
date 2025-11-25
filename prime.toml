@@ -99,6 +99,11 @@ path = "input_demo.prime"
 visibility = "pub"
 
 [[modules]]
+name = "tests.build_input_demo"
+path = "tests/build_input_demo.prime"
+visibility = "pub"
+
+[[modules]]
 name = "demos.pointer_demo"
 path = "pointer_demo.prime"
 visibility = "pub"
@@ -111,4 +116,9 @@ visibility = "pub"
 [[tests]]
 name = "tests.types_numeric"
 path = "tests/types_numeric.prime"
+visibility = "pub"
+
+[[tests]]
+name = "tests.input_read"
+path = "tests/input_read.prime"
 visibility = "pub"

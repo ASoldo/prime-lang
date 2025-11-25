@@ -673,7 +673,11 @@ fn collect_used_in_macro(def: &MacroDef, used: &mut HashSet<String>) {
     collect_used_in_macro_body(&def.body, &params, used);
 }
 
-fn collect_used_in_macro_body(body: &MacroBody, params: &HashSet<String>, used: &mut HashSet<String>) {
+fn collect_used_in_macro_body(
+    body: &MacroBody,
+    params: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
     match body {
         MacroBody::Block(block) => collect_macro_used_in_block(block, params, used),
         MacroBody::Expr(expr) => collect_macro_expr_idents(&expr.node, params, used),
@@ -852,7 +856,11 @@ fn collect_macro_expr_idents(expr: &Expr, params: &HashSet<String>, used: &mut H
     }
 }
 
-fn collect_macro_range_expr(range: &RangeExpr, params: &HashSet<String>, used: &mut HashSet<String>) {
+fn collect_macro_range_expr(
+    range: &RangeExpr,
+    params: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
     collect_macro_expr_idents(&range.start, params, used);
     collect_macro_expr_idents(&range.end, params, used);
 }
@@ -939,7 +947,12 @@ fn collect_macro_pattern_usage(
                 collect_macro_pattern_usage(&field.pattern, params, used);
             }
         }
-        Pattern::Slice { prefix, rest, suffix, .. } => {
+        Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+            ..
+        } => {
             for p in prefix {
                 collect_macro_pattern_usage(p, params, used);
             }
@@ -1140,14 +1153,10 @@ pub fn collect_identifier_spans_for_decl(
     let mut spans = Vec::new();
     spans.push(decl.span);
     spans.extend(collect_identifier_spans_in_scope(
-        tokens,
-        &decl.name,
-        decl.scope,
+        tokens, &decl.name, decl.scope,
     ));
     spans.extend(collect_identifier_spans_in_scope_ast(
-        module,
-        &decl.name,
-        decl.scope,
+        module, &decl.name, decl.scope,
     ));
     spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
     spans.dedup();
@@ -1270,7 +1279,12 @@ fn collect_spans_in_pattern(pattern: &Pattern, name: &str, spans: &mut Vec<Span>
                 collect_spans_in_pattern(&field.pattern, name, spans);
             }
         }
-        Pattern::Slice { prefix, rest, suffix, .. } => {
+        Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+            ..
+        } => {
             for p in prefix {
                 collect_spans_in_pattern(p, name, spans);
             }
@@ -1290,7 +1304,11 @@ fn collect_spans_in_pattern(pattern: &Pattern, name: &str, spans: &mut Vec<Span>
     }
 }
 
-fn collect_spans_in_format_string(literal: &FormatStringLiteral, name: &str, spans: &mut Vec<Span>) {
+fn collect_spans_in_format_string(
+    literal: &FormatStringLiteral,
+    name: &str,
+    spans: &mut Vec<Span>,
+) {
     for segment in &literal.segments {
         if let FormatSegment::Expr { expr, span } = segment {
             if let Some((found, s)) = find_in_expr(expr, span.start) {
@@ -1370,7 +1388,9 @@ fn collect_spans_in_expr(expr: &Expr, name: &str, spans: &mut Vec<Span>) {
             if let Some(else_branch) = &if_expr.else_branch {
                 match else_branch {
                     ElseBranch::Block(block) => collect_spans_in_block(block, name, spans),
-                    ElseBranch::ElseIf(expr) => collect_spans_in_expr(&Expr::If(Box::new((**expr).clone())), name, spans),
+                    ElseBranch::ElseIf(expr) => {
+                        collect_spans_in_expr(&Expr::If(Box::new((**expr).clone())), name, spans)
+                    }
                 }
             }
         }
@@ -1609,31 +1629,45 @@ fn find_in_expr(expr: &Expr, offset: usize) -> Option<(String, Span)> {
             }
         }
         Expr::TryPropagate { expr: inner, span }
-        | Expr::Reference { expr: inner, span, .. }
-        | Expr::Deref { expr: inner, span, .. }
-        | Expr::Move { expr: inner, span, .. }
-        | Expr::Spawn { expr: inner, span, .. } => {
+        | Expr::Reference {
+            expr: inner, span, ..
+        }
+        | Expr::Deref {
+            expr: inner, span, ..
+        }
+        | Expr::Move {
+            expr: inner, span, ..
+        }
+        | Expr::Spawn {
+            expr: inner, span, ..
+        } => {
             if span_contains(*span, offset) {
                 find_in_expr(inner, offset)
             } else {
                 None
             }
         }
-        Expr::Binary { left, right, span, .. } => {
+        Expr::Binary {
+            left, right, span, ..
+        } => {
             if span_contains(*span, offset) {
                 find_in_expr(left, offset).or_else(|| find_in_expr(right, offset))
             } else {
                 None
             }
         }
-        Expr::Unary { expr: inner, span, .. } => {
+        Expr::Unary {
+            expr: inner, span, ..
+        } => {
             if span_contains(*span, offset) {
                 find_in_expr(inner, offset)
             } else {
                 None
             }
         }
-        Expr::Call { callee, args, span, .. } => {
+        Expr::Call {
+            callee, args, span, ..
+        } => {
             if !span_contains(*span, offset) {
                 return None;
             }
@@ -1647,7 +1681,9 @@ fn find_in_expr(expr: &Expr, offset: usize) -> Option<(String, Span)> {
             }
             None
         }
-        Expr::FieldAccess { base, span, field, .. } => {
+        Expr::FieldAccess {
+            base, span, field, ..
+        } => {
             if !span_contains(*span, offset) {
                 return None;
             }
@@ -1869,8 +1905,8 @@ pub fn find_module_item_span(module: &Module, name: &str) -> Option<Span> {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_identifier_spans_for_decl, collect_identifier_spans_in_scope_ast,
-        find_local_decl, find_local_definition_span, unused_variable_diagnostics,
+        collect_identifier_spans_for_decl, collect_identifier_spans_in_scope_ast, find_local_decl,
+        find_local_definition_span, unused_variable_diagnostics,
     };
     use crate::language::{lexer::lex, parser::parse_module};
     use std::path::PathBuf;
@@ -1903,11 +1939,11 @@ macro dbg(label: string) -> string {
   label
 }
 "#;
-        let module =
-            parse_module("tests::macro_defs", PathBuf::from("macros.prime"), source).expect("parse");
+        let module = parse_module("tests::macro_defs", PathBuf::from("macros.prime"), source)
+            .expect("parse");
         let offset = source.find("{label}").expect("placeholder") + 1;
-        let span =
-            find_local_definition_span(&module, "label", offset).expect("definition should resolve");
+        let span = find_local_definition_span(&module, "label", offset)
+            .expect("definition should resolve");
         let macro_def = match &module.items[0] {
             crate::language::ast::Item::Macro(def) => def,
             _ => panic!("expected macro item"),
@@ -1925,8 +1961,8 @@ macro tag(name: string) -> string {
   `{local} {name}`
 }
 "#;
-        let module =
-            parse_module("tests::macro_fmt", PathBuf::from("macro_fmt.prime"), source).expect("parse");
+        let module = parse_module("tests::macro_fmt", PathBuf::from("macro_fmt.prime"), source)
+            .expect("parse");
         let macro_def = match &module.items[0] {
             crate::language::ast::Item::Macro(def) => def,
             _ => panic!("expected macro item"),
@@ -1954,9 +1990,12 @@ macro add_twice(a: int32, b: int32) -> int32 {
   a + b + b
 }
 "#;
-        let module =
-            parse_module("tests::macro_rename", PathBuf::from("macro_rename.prime"), source)
-                .expect("parse");
+        let module = parse_module(
+            "tests::macro_rename",
+            PathBuf::from("macro_rename.prime"),
+            source,
+        )
+        .expect("parse");
         let tokens = lex(source).expect("lex");
         let usage_offset = source.find("b + b").expect("usage") + 2;
         let decl = find_local_decl(&module, "b", usage_offset).expect("decl should resolve");
@@ -1992,9 +2031,12 @@ macro match_literal(pat: pattern, value: int32) -> int32 {
   }
 }
 "#;
-        let module =
-            parse_module("tests::macro_usage", PathBuf::from("macro_usage.prime"), source)
-                .expect("parse");
+        let module = parse_module(
+            "tests::macro_usage",
+            PathBuf::from("macro_usage.prime"),
+            source,
+        )
+        .expect("parse");
         let diags = unused_variable_diagnostics(&module, source);
         assert!(
             diags.is_empty(),

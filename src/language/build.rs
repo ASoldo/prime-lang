@@ -6,11 +6,11 @@ use crate::language::ast::{
 use crate::language::span::Span;
 use crate::language::types::{Mutability, TypeExpr};
 use crate::runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric};
-use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
 use std::thread;
+use std::time::Duration;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -249,7 +249,10 @@ fn build_values_equal(left: &BuildValue, right: &BuildValue) -> bool {
                     .all(|(x, y)| build_values_equal(x, y))
         }
         (BuildValue::Tuple(a), BuildValue::Tuple(b)) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| build_values_equal(x, y))
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(x, y)| build_values_equal(x, y))
         }
         _ => false,
     }
@@ -413,7 +416,7 @@ impl BuildInterpreter {
                             return Err(format!(
                                 "map literal keys must be string or int for build spawn, found {}",
                                 other.kind()
-                            ))
+                            ));
                         }
                     };
                     let value = self.eval_expr_mut(&entry.value)?;
@@ -421,7 +424,9 @@ impl BuildInterpreter {
                 }
                 Ok(BuildValue::Map(map))
             }
-            Expr::Binary { op, left, right, .. } => {
+            Expr::Binary {
+                op, left, right, ..
+            } => {
                 let l = self.eval_expr_mut(left)?;
                 let r = self.eval_expr_mut(right)?;
                 self.eval_binary(*op, l, r)
@@ -437,12 +442,13 @@ impl BuildInterpreter {
                 let index_value = self.eval_expr_mut(index)?;
                 self.eval_index(base_value, index_value)
             }
-            Expr::StructLiteral { name, fields, .. } => {
-                self.eval_struct_literal(name, fields)
-            }
-            Expr::EnumLiteral { enum_name, variant, values, .. } => {
-                self.eval_enum_literal(enum_name.as_ref(), variant, values)
-            }
+            Expr::StructLiteral { name, fields, .. } => self.eval_struct_literal(name, fields),
+            Expr::EnumLiteral {
+                enum_name,
+                variant,
+                values,
+                ..
+            } => self.eval_enum_literal(enum_name.as_ref(), variant, values),
             Expr::Block(block) => match self.eval_block(block)? {
                 Flow::Value(v) => Ok(v),
                 Flow::Return(v) => Ok(v),
@@ -451,67 +457,66 @@ impl BuildInterpreter {
                 }
             },
             Expr::Match(match_expr) => self.eval_match(match_expr),
-            Expr::Call { callee, args, type_args, .. } => self.eval_call(callee, type_args, args),
+            Expr::Call {
+                callee,
+                args,
+                type_args,
+                ..
+            } => self.eval_call(callee, type_args, args),
             Expr::FieldAccess { base, field, .. } => self.eval_field_access(base, field),
-            Expr::Reference { expr, mutable, .. } => {
-                match expr.as_ref() {
-                    Expr::Identifier(ident) => {
-                        let (cell, mutable_flag, borrowed_mut, borrowed_shared) = {
-                            let binding = self
-                                .find_binding_mut(&ident.name)
-                                .ok_or_else(|| {
-                                    format!("Unknown identifier `{}` for reference", ident.name)
-                                })?;
-                           (
-                               binding.cell.clone(),
-                               binding.mutable,
-                               binding.borrowed_mut,
-                               binding.borrowed_shared,
-                           )
-                        };
-                        if *mutable && !mutable_flag {
-                            return Err(format!("Identifier `{}` is immutable", ident.name));
-                        }
-                        if *mutable && borrowed_mut {
-                            return Err(format!(
-                                "Identifier `{}` is already mutably borrowed",
-                                ident.name
-                            ));
-                        }
-                        if *mutable && borrowed_shared > 0 {
-                            return Err(format!(
-                                "Identifier `{}` has active shared borrows",
-                                ident.name
-                            ));
-                        }
-                        if *mutable {
-                            self.begin_mut_borrow(&ident.name)?;
-                            if let Some(binding) = self.find_binding_mut(&ident.name) {
-                                binding.borrowed_mut = true;
-                            }
-                        } else {
-                            self.begin_shared_borrow(&ident.name, &ident.name)?;
-                        }
-                        Ok(BuildValue::Reference(BuildReference {
-                            cell,
-                            mutable: *mutable,
-                        }))
+            Expr::Reference { expr, mutable, .. } => match expr.as_ref() {
+                Expr::Identifier(ident) => {
+                    let (cell, mutable_flag, borrowed_mut, borrowed_shared) = {
+                        let binding = self.find_binding_mut(&ident.name).ok_or_else(|| {
+                            format!("Unknown identifier `{}` for reference", ident.name)
+                        })?;
+                        (
+                            binding.cell.clone(),
+                            binding.mutable,
+                            binding.borrowed_mut,
+                            binding.borrowed_shared,
+                        )
+                    };
+                    if *mutable && !mutable_flag {
+                        return Err(format!("Identifier `{}` is immutable", ident.name));
                     }
-                    _ => {
-                        let value = self.eval_expr_mut(expr)?;
-                        Ok(BuildValue::Reference(BuildReference {
-                            cell: Arc::new(Mutex::new(value)),
-                            mutable: *mutable,
-                        }))
+                    if *mutable && borrowed_mut {
+                        return Err(format!(
+                            "Identifier `{}` is already mutably borrowed",
+                            ident.name
+                        ));
                     }
+                    if *mutable && borrowed_shared > 0 {
+                        return Err(format!(
+                            "Identifier `{}` has active shared borrows",
+                            ident.name
+                        ));
+                    }
+                    if *mutable {
+                        self.begin_mut_borrow(&ident.name)?;
+                        if let Some(binding) = self.find_binding_mut(&ident.name) {
+                            binding.borrowed_mut = true;
+                        }
+                    } else {
+                        self.begin_shared_borrow(&ident.name, &ident.name)?;
+                    }
+                    Ok(BuildValue::Reference(BuildReference {
+                        cell,
+                        mutable: *mutable,
+                    }))
                 }
-            }
-            Expr::Deref { expr, .. } => {
-                match self.eval_expr_mut(expr)? {
-                    BuildValue::Reference(reference) => Ok(reference.cell.lock().unwrap().clone()),
-                    other => Err(format!("deref not supported for {}", other.kind())),
+                _ => {
+                    let value = self.eval_expr_mut(expr)?;
+                    Ok(BuildValue::Reference(BuildReference {
+                        cell: Arc::new(Mutex::new(value)),
+                        mutable: *mutable,
+                    }))
                 }
-            }
+            },
+            Expr::Deref { expr, .. } => match self.eval_expr_mut(expr)? {
+                BuildValue::Reference(reference) => Ok(reference.cell.lock().unwrap().clone()),
+                other => Err(format!("deref not supported for {}", other.kind())),
+            },
             Expr::Try { block, .. } => self.eval_try(block),
             Expr::TryPropagate { expr, .. } => self.eval_try_propagate(expr),
             Expr::Move { expr, .. } => self.eval_move(expr),
@@ -541,10 +546,7 @@ impl BuildInterpreter {
         }
     }
 
-    fn eval_format_string(
-        &mut self,
-        literal: &FormatStringLiteral,
-    ) -> Result<BuildValue, String> {
+    fn eval_format_string(&mut self, literal: &FormatStringLiteral) -> Result<BuildValue, String> {
         let mut segments = Vec::with_capacity(literal.segments.len());
         let mut implicit = 0usize;
         for segment in &literal.segments {
@@ -681,7 +683,11 @@ impl BuildInterpreter {
             crate::language::ast::ForTarget::Collection(expr) => self.eval_expr_mut(expr)?,
         };
         match iterable {
-            BuildValue::Range { start, end, inclusive } => {
+            BuildValue::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 let end_bound = if inclusive { end + 1 } else { end };
                 for idx in start..end_bound {
                     self.push_scope();
@@ -751,9 +757,9 @@ impl BuildInterpreter {
         match &assign.target {
             Expr::Identifier(Identifier { name, .. }) => {
                 let value = self.eval_expr_mut(&assign.value)?;
-                let binding = self.find_binding_mut(name).ok_or_else(|| {
-                    format!("Unknown identifier `{}` in assignment", name)
-                })?;
+                let binding = self
+                    .find_binding_mut(name)
+                    .ok_or_else(|| format!("Unknown identifier `{}` in assignment", name))?;
                 if binding.borrowed_mut || binding.borrowed_shared > 0 {
                     return Err(format!("Identifier `{}` is borrowed", name));
                 }
@@ -802,9 +808,7 @@ impl BuildInterpreter {
                     Expr::Deref { expr, .. } => match self.eval_expr_mut(expr)? {
                         BuildValue::Reference(reference) => {
                             if !reference.mutable {
-                                return Err(
-                                    "Cannot assign through immutable reference".into()
-                                );
+                                return Err("Cannot assign through immutable reference".into());
                             }
                             let mut guard = reference.cell.lock().unwrap();
                             self.assign_index_into_value(&mut *guard, index_value, value)
@@ -847,9 +851,9 @@ impl BuildInterpreter {
                                 Ok(())
                             }
                             BuildValue::Tuple(items) => {
-                                let idx = field
-                                    .parse::<usize>()
-                                    .map_err(|_| "tuple field access expects numeric index".to_string())?;
+                                let idx = field.parse::<usize>().map_err(|_| {
+                                    "tuple field access expects numeric index".to_string()
+                                })?;
                                 if let Some(slot) = items.get_mut(idx) {
                                     *slot = value;
                                     Ok(())
@@ -857,10 +861,7 @@ impl BuildInterpreter {
                                     Err(format!("tuple index {} out of bounds", idx))
                                 }
                             }
-                            other => Err(format!(
-                                "Cannot assign field on {}",
-                                other.kind()
-                            )),
+                            other => Err(format!("Cannot assign field on {}", other.kind())),
                         }
                     }
                     _ => match self.eval_expr_mut(base)? {
@@ -876,9 +877,9 @@ impl BuildInterpreter {
                                     Ok(())
                                 }
                                 BuildValue::Tuple(items) => {
-                                    let idx = field
-                                        .parse::<usize>()
-                                        .map_err(|_| "tuple field access expects numeric index".to_string())?;
+                                    let idx = field.parse::<usize>().map_err(|_| {
+                                        "tuple field access expects numeric index".to_string()
+                                    })?;
                                     if let Some(slot) = items.get_mut(idx) {
                                         *slot = value;
                                         Ok(())
@@ -919,9 +920,9 @@ impl BuildInterpreter {
         if self.expect_bool(cond)? {
             match self.eval_block(&if_expr.then_branch)? {
                 Flow::Value(v) | Flow::Return(v) => Ok(v),
-                Flow::Break | Flow::Continue => Err(
-                    "break/continue not allowed in expression context for build spawn".into(),
-                ),
+                Flow::Break | Flow::Continue => {
+                    Err("break/continue not allowed in expression context for build spawn".into())
+                }
             }
         } else if let Some(else_branch) = &if_expr.else_branch {
             match else_branch {
@@ -958,7 +959,11 @@ impl BuildInterpreter {
         match fields {
             StructLiteralKind::Named(named) => {
                 let mut map = BTreeMap::new();
-                for StructLiteralField { name: field_name, value } in named {
+                for StructLiteralField {
+                    name: field_name,
+                    value,
+                } in named
+                {
                     map.insert(field_name.clone(), self.eval_expr_mut(value)?);
                 }
                 Ok(BuildValue::Struct {
@@ -967,11 +972,10 @@ impl BuildInterpreter {
                 })
             }
             StructLiteralKind::Positional(values) => {
-                let order = self
-                    .struct_fields
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| format!("Unknown struct `{}` for positional literal", name))?;
+                let order =
+                    self.struct_fields.get(name).cloned().ok_or_else(|| {
+                        format!("Unknown struct `{}` for positional literal", name)
+                    })?;
                 if order.len() != values.len() {
                     return Err(format!(
                         "Struct `{}` expects {} fields, got {}",
@@ -1030,7 +1034,9 @@ impl BuildInterpreter {
         }
         let meta = self.enum_variants.get(variant);
         let (enum_name, variant_index) = match (enum_name, meta) {
-            (Some(name), Some(info)) if &info.enum_name == name => (name.clone(), info.variant_index),
+            (Some(name), Some(info)) if &info.enum_name == name => {
+                (name.clone(), info.variant_index)
+            }
             (Some(name), _) => (name.clone(), 0),
             (None, Some(info)) => (info.enum_name.clone(), info.variant_index),
             (None, None) => ("".into(), 0),
@@ -1065,7 +1071,9 @@ impl BuildInterpreter {
                 let receiver = self.eval_expr_mut(base)?;
                 self.eval_builtin_or_deferred(field, Some(receiver), type_args, args)
             }
-            _ => Err("only identifier and method calls supported in build spawn interpreter".into()),
+            _ => {
+                Err("only identifier and method calls supported in build spawn interpreter".into())
+            }
         }
     }
 
@@ -1112,28 +1120,45 @@ impl BuildInterpreter {
         match self.eval_block(block)? {
             Flow::Value(v) => Ok(v),
             Flow::Return(v) => Ok(v),
-            Flow::Break | Flow::Continue => Err("break/continue not allowed in try expression".into()),
+            Flow::Break | Flow::Continue => {
+                Err("break/continue not allowed in try expression".into())
+            }
         }
     }
 
     fn eval_try_propagate(&mut self, expr: &Expr) -> Result<BuildValue, String> {
         let value = self.eval_expr_mut(expr)?;
         match value {
-            BuildValue::Enum { enum_name, variant, mut values, .. } if enum_name == "Result" && variant == "Ok" => {
+            BuildValue::Enum {
+                enum_name,
+                variant,
+                mut values,
+                ..
+            } if enum_name == "Result" && variant == "Ok" => {
                 if values.len() == 1 {
                     Ok(values.pop().unwrap())
                 } else {
                     Ok(BuildValue::Tuple(values))
                 }
             }
-            BuildValue::Enum { enum_name, variant, values, .. } if enum_name == "Result" && variant == "Err" => {
+            BuildValue::Enum {
+                enum_name,
+                variant,
+                values,
+                ..
+            } if enum_name == "Result" && variant == "Err" => {
                 Err(format!("try propagation yielded error {:?}", values))
             }
             other => Err(format!("? operator expects Result, found {}", other.kind())),
         }
     }
 
-    fn eval_binary(&self, op: BinaryOp, left: BuildValue, right: BuildValue) -> Result<BuildValue, String> {
+    fn eval_binary(
+        &self,
+        op: BinaryOp,
+        left: BuildValue,
+        right: BuildValue,
+    ) -> Result<BuildValue, String> {
         match (left, right) {
             (BuildValue::Int(l), BuildValue::Int(r)) => {
                 let value = match op {
@@ -1219,7 +1244,11 @@ impl BuildInterpreter {
             (UnaryOp::Neg, BuildValue::Int(v)) => Ok(BuildValue::Int(-v)),
             (UnaryOp::Neg, BuildValue::Float(v)) => Ok(BuildValue::Float(-v)),
             (UnaryOp::Not, BuildValue::Bool(v)) => Ok(BuildValue::Bool(!v)),
-            (_, other) => Err(format!("Unary op {:?} not supported for {}", op, other.kind())),
+            (_, other) => Err(format!(
+                "Unary op {:?} not supported for {}",
+                op,
+                other.kind()
+            )),
         }
     }
 
@@ -1244,17 +1273,15 @@ impl BuildInterpreter {
             ) => ls == rs && le == re && li == ri,
             (BuildValue::Tuple(l), BuildValue::Tuple(r)) => {
                 l.len() == r.len()
-                    && l
-                        .iter()
+                    && l.iter()
                         .zip(r.iter())
                         .all(|(a, b)| self.values_equal(a, b).unwrap_or(false))
             }
             (BuildValue::Slice(l), BuildValue::Slice(r)) => {
                 l.len() == r.len()
-                && l
-                    .iter()
-                    .zip(r.iter())
-                    .all(|(a, b)| self.values_equal(a, b).unwrap_or(false))
+                    && l.iter()
+                        .zip(r.iter())
+                        .all(|(a, b)| self.values_equal(a, b).unwrap_or(false))
             }
             (
                 BuildValue::Struct {
@@ -1332,10 +1359,7 @@ impl BuildInterpreter {
                 return Err(format!("Identifier `{}` is immutable", name));
             }
             if binding.borrowed_shared > 0 {
-                return Err(format!(
-                    "Identifier `{}` has active shared borrows",
-                    name
-                ));
+                return Err(format!("Identifier `{}` has active shared borrows", name));
             }
             binding.borrowed_mut = true;
         }
@@ -1589,11 +1613,7 @@ impl BuildInterpreter {
                     }
                     if let Some(rest_pat) = rest {
                         let slice = values[idx..end_idx].to_vec();
-                        if !self.try_bind_pattern(
-                            rest_pat,
-                            BuildValue::Slice(slice),
-                            mutability,
-                        )? {
+                        if !self.try_bind_pattern(rest_pat, BuildValue::Slice(slice), mutability)? {
                             return Ok(false);
                         }
                     } else if idx != end_idx {
@@ -1638,10 +1658,7 @@ impl BuildInterpreter {
                 let key = match index {
                     BuildValue::String(s) => s,
                     other => {
-                        return Err(format!(
-                            "map index expects string, found {}",
-                            other.kind()
-                        ))
+                        return Err(format!("map index expects string, found {}", other.kind()));
                     }
                 };
                 if let Some(value) = entries.get(&key) {
@@ -1681,10 +1698,7 @@ impl BuildInterpreter {
                 let key = match index {
                     BuildValue::String(s) => s,
                     other => {
-                        return Err(format!(
-                            "map index expects string, found {}",
-                            other.kind()
-                        ))
+                        return Err(format!("map index expects string, found {}", other.kind()));
                     }
                 };
                 entries.insert(key, value);
@@ -1743,11 +1757,23 @@ impl BuildInterpreter {
                 let left = self.eval_expr_mut(&args[0])?;
                 let right = self.eval_expr_mut(&args[1])?;
                 match (left, right, name) {
-                    (BuildValue::Int(l), BuildValue::Int(r), "min") => Ok(BuildValue::Int(l.min(r))),
-                    (BuildValue::Int(l), BuildValue::Int(r), "max") => Ok(BuildValue::Int(l.max(r))),
-                    (BuildValue::Float(l), BuildValue::Float(r), "min") => Ok(BuildValue::Float(l.min(r))),
-                    (BuildValue::Float(l), BuildValue::Float(r), "max") => Ok(BuildValue::Float(l.max(r))),
-                    (l, r, _) => Err(format!("{name} not supported for {} and {}", l.kind(), r.kind())),
+                    (BuildValue::Int(l), BuildValue::Int(r), "min") => {
+                        Ok(BuildValue::Int(l.min(r)))
+                    }
+                    (BuildValue::Int(l), BuildValue::Int(r), "max") => {
+                        Ok(BuildValue::Int(l.max(r)))
+                    }
+                    (BuildValue::Float(l), BuildValue::Float(r), "min") => {
+                        Ok(BuildValue::Float(l.min(r)))
+                    }
+                    (BuildValue::Float(l), BuildValue::Float(r), "max") => {
+                        Ok(BuildValue::Float(l.max(r)))
+                    }
+                    (l, r, _) => Err(format!(
+                        "{name} not supported for {} and {}",
+                        l.kind(),
+                        r.kind()
+                    )),
                 }
             }
             "abs" => {
@@ -1776,14 +1802,21 @@ impl BuildInterpreter {
                 let casted = match (target_name, value) {
                     ("float32" | "float64", BuildValue::Int(i)) => BuildValue::Float(i as f64),
                     ("float32" | "float64", BuildValue::Float(f)) => BuildValue::Float(f),
-                    (name, BuildValue::Float(f)) if name.starts_with("int") || name.starts_with("uint") => {
+                    (name, BuildValue::Float(f))
+                        if name.starts_with("int") || name.starts_with("uint") =>
+                    {
                         BuildValue::Int(f as i128)
                     }
-                    (name, BuildValue::Int(i)) if name.starts_with("int") || name.starts_with("uint") => {
+                    (name, BuildValue::Int(i))
+                        if name.starts_with("int") || name.starts_with("uint") =>
+                    {
                         BuildValue::Int(i)
                     }
                     (_, other) => {
-                        return Err(format!("cast only supports numeric values (found {})", other.kind()))
+                        return Err(format!(
+                            "cast only supports numeric values (found {})",
+                            other.kind()
+                        ));
                     }
                 };
                 Ok(casted)
@@ -1813,12 +1846,20 @@ impl BuildInterpreter {
                 }
                 let sender = match self.eval_expr_mut(&args[0])? {
                     BuildValue::ChannelSender(tx) => tx,
-                    other => return Err(format!("send expects channel sender, found {}", other.kind())),
+                    other => {
+                        return Err(format!(
+                            "send expects channel sender, found {}",
+                            other.kind()
+                        ));
+                    }
                 };
                 let value = self.eval_expr_mut(&args[1])?;
                 match sender.send(value.clone()) {
                     Ok(()) => {
-                        self.effects.push(BuildEffect::ChannelSend { id: sender.id, value });
+                        self.effects.push(BuildEffect::ChannelSend {
+                            id: sender.id,
+                            value,
+                        });
                         Ok(self.wrap_enum("Ok", vec![BuildValue::Unit]))
                     }
                     Err(msg) => Ok(self.wrap_enum("Err", vec![BuildValue::String(msg)])),
@@ -1831,7 +1872,10 @@ impl BuildInterpreter {
                 let receiver = match self.eval_expr_mut(&args[0])? {
                     BuildValue::ChannelReceiver(rx) => rx,
                     other => {
-                        return Err(format!("recv expects channel receiver, found {}", other.kind()))
+                        return Err(format!(
+                            "recv expects channel receiver, found {}",
+                            other.kind()
+                        ));
                     }
                 };
                 match receiver.recv() {
@@ -1849,7 +1893,7 @@ impl BuildInterpreter {
                         return Err(format!(
                             "recv_timeout expects channel receiver, found {}",
                             other.kind()
-                        ))
+                        ));
                     }
                 };
                 let millis = match self.eval_expr_mut(&args[1])? {
@@ -1858,7 +1902,7 @@ impl BuildInterpreter {
                         return Err(format!(
                             "recv_timeout expects integer millis, found {}",
                             other.kind()
-                        ))
+                        ));
                     }
                 };
                 let millis_i64: i64 = millis
@@ -1882,7 +1926,12 @@ impl BuildInterpreter {
                         rx.close();
                         self.effects.push(BuildEffect::ChannelClose { id: rx.id });
                     }
-                    other => return Err(format!("close expects channel endpoint, found {}", other.kind())),
+                    other => {
+                        return Err(format!(
+                            "close expects channel endpoint, found {}",
+                            other.kind()
+                        ));
+                    }
                 }
                 Ok(BuildValue::Unit)
             }
@@ -1892,7 +1941,9 @@ impl BuildInterpreter {
                 }
                 let handle = match self.eval_expr_mut(&args[0])? {
                     BuildValue::JoinHandle(handle) => handle,
-                    other => return Err(format!("join expects join handle, found {}", other.kind())),
+                    other => {
+                        return Err(format!("join expects join handle, found {}", other.kind()));
+                    }
                 };
                 let evaluation = handle
                     .into_thread()
@@ -1932,7 +1983,7 @@ impl BuildInterpreter {
                         return Err(format!(
                             "sleep expects integer millis, found {}",
                             other.kind()
-                        ))
+                        ));
                     }
                 };
                 if millis > 0 {
@@ -1966,22 +2017,18 @@ impl BuildInterpreter {
                             None => Ok(self.wrap_enum("None", vec![])),
                         }
                     }
-                    (BuildValue::Map(entries), BuildValue::String(key)) => {
-                        match entries.get(key) {
-                            Some(value) => Ok(self.wrap_enum("Some", vec![value.clone()])),
-                            None => Ok(self.wrap_enum("None", vec![])),
-                        }
-                    }
+                    (BuildValue::Map(entries), BuildValue::String(key)) => match entries.get(key) {
+                        Some(value) => Ok(self.wrap_enum("Some", vec![value.clone()])),
+                        None => Ok(self.wrap_enum("None", vec![])),
+                    },
                     (BuildValue::Reference(reference), _) => {
                         let inner = reference.cell.lock().unwrap().clone();
-                        self.eval_builtin_or_deferred(
-                            name,
-                            Some(inner),
-                            type_args,
-                            &args[1..],
-                        )
+                        self.eval_builtin_or_deferred(name, Some(inner), type_args, &args[1..])
                     }
-                    (receiver, _) => Err(format!("get expects slice or map, found {}", receiver.kind())),
+                    (receiver, _) => Err(format!(
+                        "get expects slice or map, found {}",
+                        receiver.kind()
+                    )),
                 }
             }
             other => {
@@ -2049,7 +2096,9 @@ impl BuildInterpreter {
         let result = match &func.def.body {
             crate::language::ast::FunctionBody::Block(block) => match self.eval_block(block)? {
                 Flow::Value(v) | Flow::Return(v) => Ok(v),
-                Flow::Break | Flow::Continue => Err("Control flow cannot escape function body in build mode".into()),
+                Flow::Break | Flow::Continue => {
+                    Err("Control flow cannot escape function body in build mode".into())
+                }
             },
             crate::language::ast::FunctionBody::Expr(expr) => self.eval_expr_mut(&expr.node),
         };
@@ -2088,7 +2137,7 @@ enum Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::language::ast::{LetStmt, Block, MatchArmExpr, MatchExpr};
+    use crate::language::ast::{Block, LetStmt, MatchArmExpr, MatchExpr};
     use crate::language::span::Span;
     use std::sync::mpsc;
     use std::thread;
@@ -2311,12 +2360,14 @@ mod tests {
                 }),
                 Statement::For(crate::language::ast::ForStmt {
                     binding: "i".into(),
-                    target: crate::language::ast::ForTarget::Range(crate::language::ast::RangeExpr {
-                        start: Box::new(Expr::Literal(Literal::Int(0, s))),
-                        end: Box::new(Expr::Literal(Literal::Int(3, s))),
-                        inclusive: false,
-                        span: s,
-                    }),
+                    target: crate::language::ast::ForTarget::Range(
+                        crate::language::ast::RangeExpr {
+                            start: Box::new(Expr::Literal(Literal::Int(0, s))),
+                            end: Box::new(Expr::Literal(Literal::Int(3, s))),
+                            inclusive: false,
+                            span: s,
+                        },
+                    ),
                     body: Block {
                         statements: vec![Statement::Assign(AssignStmt {
                             target: Expr::Identifier(Identifier {
@@ -2534,38 +2585,46 @@ mod tests {
             },
         );
         let block = Block {
-            statements: vec![Statement::Let(crate::language::ast::LetStmt {
-                pattern: Pattern::Tuple(vec![Pattern::Identifier("tx".into(), s), Pattern::Identifier("rx".into(), s)], s),
-                ty: None,
-                value: Some(Expr::Call {
-                    callee: Box::new(Expr::Identifier(Identifier {
-                        name: "channel".into(),
+            statements: vec![
+                Statement::Let(crate::language::ast::LetStmt {
+                    pattern: Pattern::Tuple(
+                        vec![
+                            Pattern::Identifier("tx".into(), s),
+                            Pattern::Identifier("rx".into(), s),
+                        ],
+                        s,
+                    ),
+                    ty: None,
+                    value: Some(Expr::Call {
+                        callee: Box::new(Expr::Identifier(Identifier {
+                            name: "channel".into(),
+                            span: s,
+                        })),
+                        type_args: Vec::new(),
+                        args: Vec::new(),
                         span: s,
-                    })),
-                    type_args: Vec::new(),
-                    args: Vec::new(),
+                    }),
+                    mutability: Mutability::Immutable,
                     span: s,
                 }),
-                mutability: Mutability::Immutable,
-                span: s,
-            }),
-            Statement::Expr(crate::language::ast::ExprStmt {
-                expr: Expr::Call {
-                    callee: Box::new(Expr::Identifier(Identifier {
-                        name: "send".into(),
-                        span: s,
-                    })),
-                    type_args: Vec::new(),
-                    args: vec![
-                        Expr::Identifier(Identifier {
-                            name: "tx".into(),
+                Statement::Expr(crate::language::ast::ExprStmt {
+                    expr: Expr::Call {
+                        callee: Box::new(Expr::Identifier(Identifier {
+                            name: "send".into(),
                             span: s,
-                        }),
-                        Expr::Literal(Literal::Int(42, s)),
-                    ],
-                    span: s,
-                },
-            })],
+                        })),
+                        type_args: Vec::new(),
+                        args: vec![
+                            Expr::Identifier(Identifier {
+                                name: "tx".into(),
+                                span: s,
+                            }),
+                            Expr::Literal(Literal::Int(42, s)),
+                        ],
+                        span: s,
+                    },
+                }),
+            ],
             tail: Some(Box::new(Expr::Match(MatchExpr {
                 expr: Box::new(Expr::Call {
                     callee: Box::new(Expr::Identifier(Identifier {
@@ -2750,12 +2809,18 @@ mod tests {
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter
             .eval_expr(&Expr::Move {
-                expr: Box::new(Expr::Identifier(Identifier { name: "x".into(), span: s })),
+                expr: Box::new(Expr::Identifier(Identifier {
+                    name: "x".into(),
+                    span: s,
+                })),
                 span: s,
             })
             .expect("first move should succeed");
         assert!(matches!(first, BuildValue::Int(1)));
-        let second = interpreter.eval_expr(&Expr::Identifier(Identifier { name: "x".into(), span: s }));
+        let second = interpreter.eval_expr(&Expr::Identifier(Identifier {
+            name: "x".into(),
+            span: s,
+        }));
         assert!(second.is_err(), "moved identifier should error");
     }
 
@@ -2784,18 +2849,27 @@ mod tests {
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter.eval_expr(&Expr::Reference {
             mutable: true,
-            expr: Box::new(Expr::Identifier(Identifier { name: "y".into(), span: s })),
+            expr: Box::new(Expr::Identifier(Identifier {
+                name: "y".into(),
+                span: s,
+            })),
             span: s,
         });
         assert!(first.is_ok());
         let second = interpreter.eval_expr(&Expr::Reference {
             mutable: true,
-            expr: Box::new(Expr::Identifier(Identifier { name: "y".into(), span: s })),
+            expr: Box::new(Expr::Identifier(Identifier {
+                name: "y".into(),
+                span: s,
+            })),
             span: s,
         });
         assert!(second.is_err(), "second mutable borrow should fail");
         // Reading while mutably borrowed should also fail.
-        let third = interpreter.eval_expr(&Expr::Identifier(Identifier { name: "y".into(), span: s }));
+        let third = interpreter.eval_expr(&Expr::Identifier(Identifier {
+            name: "y".into(),
+            span: s,
+        }));
         assert!(third.is_err(), "read during mutable borrow should fail");
     }
 
@@ -2827,7 +2901,10 @@ mod tests {
                 target: Expr::Deref {
                     expr: Box::new(Expr::Reference {
                         mutable: true,
-                        expr: Box::new(Expr::Identifier(Identifier { name: "x".into(), span: s })),
+                        expr: Box::new(Expr::Identifier(Identifier {
+                            name: "x".into(),
+                            span: s,
+                        })),
                         span: s,
                     }),
                     span: s,
@@ -2841,7 +2918,10 @@ mod tests {
             .eval_expr(&Expr::Block(Box::new(block)))
             .expect("deref assignment succeeds");
         let result = interpreter
-            .eval_expr(&Expr::Identifier(Identifier { name: "x".into(), span: s }))
+            .eval_expr(&Expr::Identifier(Identifier {
+                name: "x".into(),
+                span: s,
+            }))
             .expect("load x");
         assert!(matches!(result, BuildValue::Int(9)));
     }
@@ -2857,9 +2937,12 @@ mod tests {
             BuildBinding {
                 cell: Arc::new(Mutex::new(BuildValue::Struct {
                     name: "Point".into(),
-                    fields: [("x".into(), BuildValue::Int(1)), ("y".into(), BuildValue::Int(2))]
-                        .into_iter()
-                        .collect(),
+                    fields: [
+                        ("x".into(), BuildValue::Int(1)),
+                        ("y".into(), BuildValue::Int(2)),
+                    ]
+                    .into_iter()
+                    .collect(),
                 })),
                 mutable: true,
                 borrowed_mut: false,
@@ -2877,7 +2960,10 @@ mod tests {
         let block = Block {
             statements: vec![Statement::Assign(AssignStmt {
                 target: Expr::FieldAccess {
-                    base: Box::new(Expr::Identifier(Identifier { name: "p".into(), span: s })),
+                    base: Box::new(Expr::Identifier(Identifier {
+                        name: "p".into(),
+                        span: s,
+                    })),
                     field: "x".into(),
                     span: s,
                 },
@@ -2891,7 +2977,10 @@ mod tests {
             .expect("field assignment");
         let updated = interpreter
             .eval_expr(&Expr::FieldAccess {
-                base: Box::new(Expr::Identifier(Identifier { name: "p".into(), span: s })),
+                base: Box::new(Expr::Identifier(Identifier {
+                    name: "p".into(),
+                    span: s,
+                })),
                 field: "x".into(),
                 span: s,
             })
@@ -2950,7 +3039,9 @@ mod tests {
             .eval_expr(&expr)
             .expect("get evaluates");
         match result {
-            BuildValue::Enum { variant, values, .. } if variant == "Some" => {
+            BuildValue::Enum {
+                variant, values, ..
+            } if variant == "Some" => {
                 assert!(matches!(values.as_slice(), [BuildValue::Int(2)]));
             }
             other => panic!("unexpected result: {:?}", other),
@@ -2962,7 +3053,7 @@ mod tests {
         let s = span();
         let expr = Expr::Binary {
             op: BinaryOp::BitAnd,
-            left: Box::new(Expr::Literal(Literal::Int(6, s))),  // 110
+            left: Box::new(Expr::Literal(Literal::Int(6, s))), // 110
             right: Box::new(Expr::Literal(Literal::Int(3, s))), // 011
             span: s,
         };
@@ -2995,16 +3086,28 @@ mod tests {
             left: Box::new(Expr::StructLiteral {
                 name: "Point".into(),
                 fields: StructLiteralKind::Named(vec![
-                    StructLiteralField { name: "x".into(), value: Expr::Literal(Literal::Int(1, s)) },
-                    StructLiteralField { name: "y".into(), value: Expr::Literal(Literal::Int(2, s)) },
+                    StructLiteralField {
+                        name: "x".into(),
+                        value: Expr::Literal(Literal::Int(1, s)),
+                    },
+                    StructLiteralField {
+                        name: "y".into(),
+                        value: Expr::Literal(Literal::Int(2, s)),
+                    },
                 ]),
                 span: s,
             }),
             right: Box::new(Expr::StructLiteral {
                 name: "Point".into(),
                 fields: StructLiteralKind::Named(vec![
-                    StructLiteralField { name: "y".into(), value: Expr::Literal(Literal::Int(2, s)) },
-                    StructLiteralField { name: "x".into(), value: Expr::Literal(Literal::Int(1, s)) },
+                    StructLiteralField {
+                        name: "y".into(),
+                        value: Expr::Literal(Literal::Int(2, s)),
+                    },
+                    StructLiteralField {
+                        name: "x".into(),
+                        value: Expr::Literal(Literal::Int(1, s)),
+                    },
                 ]),
                 span: s,
             }),
@@ -3085,7 +3188,9 @@ mod tests {
             span: s,
         };
         let mut interpreter = BuildInterpreter::new(snapshot.clone());
-        let ok_value = interpreter.eval_expr(&ok_expr).expect("Ok should propagate");
+        let ok_value = interpreter
+            .eval_expr(&ok_expr)
+            .expect("Ok should propagate");
         assert!(matches!(ok_value, BuildValue::Int(9)));
 
         let err_expr = Expr::TryPropagate {

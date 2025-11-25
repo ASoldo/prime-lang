@@ -1,0 +1,15 @@
+module tests.build_input_demo;
+
+import core.types;
+
+fn main() {
+  match in[int32](`Enter age: `) {
+    Result::Ok(age) => out(`age recorded: {age}`),
+    Result::Err(msg) => out(`age error: {msg}`),
+  }
+
+  match in[int32](`Temperature for { "Soldo" }: `) {
+    Result::Ok(temp) => out(`temp recorded: {temp}`),
+    Result::Err(msg) => out(`temp error: {msg}`),
+  }
+}

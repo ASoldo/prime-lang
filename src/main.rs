@@ -3,15 +3,20 @@ mod language;
 mod lsp;
 mod project;
 mod runtime;
+#[cfg(test)]
+mod tests;
 mod tools;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use language::{ast::{Item, ModuleKind}, span::Span};
+use language::{
+    ast::{Item, ModuleKind},
+    span::Span,
+};
 use language::{compiler::Compiler, macro_expander, parser::parse_module, typecheck};
 use miette::NamedSource;
 use project::diagnostics::analyze_manifest_issues;
 use project::{
-    canonicalize, FileErrors, PackageError, apply_manifest_header_with_manifest, find_manifest,
+    FileErrors, PackageError, apply_manifest_header_with_manifest, canonicalize, find_manifest,
     load_package, manifest::PackageManifest, warn_manifest_drift,
 };
 use runtime::Interpreter;
@@ -617,7 +622,11 @@ fn offset_from_line_col(source: &str, line: usize, column: usize) -> Option<usiz
 }
 
 fn line_number(text: &str, offset: usize) -> usize {
-    text[..offset.min(text.len())].bytes().filter(|b| *b == b'\n').count() + 1
+    text[..offset.min(text.len())]
+        .bytes()
+        .filter(|b| *b == b'\n')
+        .count()
+        + 1
 }
 
 fn column_number(text: &str, offset: usize) -> usize {
