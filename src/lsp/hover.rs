@@ -168,6 +168,14 @@ pub fn hover_for_token(
             }
         }
         TokenKind::Let => Some(keyword_doc("let", "Introduces a new binding.")),
+        TokenKind::TestKw => {
+            Some(keyword_doc("test", "Declares a test module; enables `fn` bodies as test cases."))
+        }
+        TokenKind::ModuleKw => Some(keyword_doc("module", "Declares a regular module.")),
+        TokenKind::LibraryKw => Some(keyword_doc(
+            "library",
+            "Declares a library module (importable, no `main`).",
+        )),
         TokenKind::Fn => Some(keyword_doc(
             "fn",
             "Defines a function. Functions are hygienic; hovers display params and returns.",
@@ -339,11 +347,11 @@ fn builtin_function_docs(name: &str) -> Option<String> {
 
 fn markdown_var_info(text: &str, span: Span, info: &VarInfo) -> Hover {
     let mut header = String::from("let ");
-    if let Some(ty) = &info.ty {
-        header.push_str(ty);
-        header.push(' ');
-    }
     header.push_str(&info.name);
+    if let Some(ty) = &info.ty {
+        header.push_str(": ");
+        header.push_str(ty);
+    }
     if let Some(expr) = &info.expr_text {
         header.push_str(" = ");
         header.push_str(expr);
@@ -500,9 +508,8 @@ fn hover_for_local_decl(text: &str, usage_span: Span, decl: &DeclInfo) -> Hover 
     value.push_str(format_decl_kind(decl.kind));
     value.push('\n');
     if let Some(ty) = &decl.ty {
-        value.push_str("Type: `");
+        value.push_str("Type: ");
         value.push_str(&format_type_expr(ty));
-        value.push_str("`");
         value.push('\n');
     }
     if decl.mutability.is_mutable() {
