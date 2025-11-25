@@ -4322,6 +4322,7 @@ mod tests {
         let expanded = ExpandedProgram {
             program,
             traces: ExpansionTraces::default(),
+            item_origins: std::collections::HashMap::new(),
         };
         check_program(&expanded)
     }

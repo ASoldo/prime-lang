@@ -14,6 +14,7 @@ use std::{
 pub struct ExpandedProgram {
     pub program: Program,
     pub traces: ExpansionTraces,
+    pub item_origins: HashMap<PathBuf, Vec<Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,7 @@ pub fn expand_program(program: &Program) -> Result<ExpandedProgram, Vec<MacroExp
     Ok(ExpandedProgram {
         program,
         traces: expander.traces,
+        item_origins: expander.item_origins,
     })
 }
 
@@ -118,6 +120,7 @@ struct Expander<'a> {
     stack: Vec<MacroFrame>,
     traces: ExpansionTraces,
     current_path: Option<PathBuf>,
+    item_origins: HashMap<PathBuf, Vec<Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -319,6 +322,27 @@ impl ExpansionTraces {
         let entry = best.or_else(|| entries.iter().find(|e| spans_overlap(e.span, span)))?;
         Some(format_trace(&entry.frames))
     }
+
+    pub fn macro_names_for(&self, path: &Path, span: Span) -> Option<Vec<String>> {
+        let entries = self.entries.get(path)?;
+        let mut best: Option<&TraceEntry> = None;
+        for entry in entries {
+            if entry.span.start <= span.start && entry.span.end >= span.end {
+                let is_narrower = best
+                    .map(|best| {
+                        let current_len = entry.span.len();
+                        let best_len = best.span.len();
+                        current_len < best_len || (current_len == best_len && entry.span.end < best.span.end)
+                    })
+                    .unwrap_or(true);
+                if is_narrower {
+                    best = Some(entry);
+                }
+            }
+        }
+        let entry = best.or_else(|| entries.iter().find(|e| spans_overlap(e.span, span)))?;
+        Some(entry.frames.iter().map(|f| f.name.clone()).collect())
+    }
 }
 
 impl<'a> Expander<'a> {
@@ -329,6 +353,7 @@ impl<'a> Expander<'a> {
             stack: Vec::new(),
             traces: ExpansionTraces::default(),
             current_path: None,
+            item_origins: HashMap::new(),
         }
     }
 
@@ -349,7 +374,11 @@ impl<'a> Expander<'a> {
                     errors: module_errors,
                 });
             }
-            let items = expanded_items.into_iter().map(|(item, _)| item).collect();
+            let items = expanded_items
+                .iter()
+                .map(|(item, _)| item.clone())
+                .collect::<Vec<_>>();
+            let origins = expanded_items.iter().map(|(_, origin)| origin.clone()).collect();
             expanded_modules.push(Module {
                 name: module.name.clone(),
                 kind: module.kind,
@@ -360,6 +389,8 @@ impl<'a> Expander<'a> {
                 imports: module.imports.clone(),
                 items,
             });
+            self.item_origins
+                .insert(module.path.clone(), origins);
         }
         self.current_path = None;
         if errors.is_empty() {

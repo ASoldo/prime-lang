@@ -7,4 +7,4 @@ pub use program::{
     FileErrors, Package, PackageError, apply_manifest_header_with_manifest, find_manifest,
     load_package, warn_manifest_drift,
 };
-pub use package::ModuleUnit;
+pub use package::{ModuleUnit, canonicalize};

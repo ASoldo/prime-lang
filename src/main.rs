@@ -6,13 +6,13 @@ mod runtime;
 mod tools;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use language::ast::ModuleKind;
+use language::{ast::{Item, ModuleKind}, span::Span};
 use language::{compiler::Compiler, macro_expander, parser::parse_module, typecheck};
 use miette::NamedSource;
 use project::diagnostics::analyze_manifest_issues;
 use project::{
-    FileErrors, PackageError, apply_manifest_header_with_manifest, find_manifest, load_package,
-    manifest::PackageManifest, warn_manifest_drift,
+    canonicalize, FileErrors, PackageError, apply_manifest_header_with_manifest, find_manifest,
+    load_package, manifest::PackageManifest, warn_manifest_drift,
 };
 use runtime::Interpreter;
 use std::{
@@ -124,6 +124,37 @@ enum Commands {
         #[arg(long, default_value_t = false, help = "List available topics")]
         list: bool,
     },
+    /// Expand macros for a file (optionally at a cursor offset)
+    Expand {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        #[arg(
+            long,
+            value_name = "BYTE_OFFSET",
+            help = "Byte offset in the file for which to show macro expansion trace"
+        )]
+        offset: Option<usize>,
+        #[arg(
+            long,
+            value_name = "LINE",
+            requires = "column",
+            help = "1-based line number (use with --column) to derive byte offset"
+        )]
+        line: Option<usize>,
+        #[arg(
+            long,
+            value_name = "COLUMN",
+            requires = "line",
+            help = "1-based column number (use with --line) to derive byte offset"
+        )]
+        column: Option<usize>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Also print the fully expanded, formatted module"
+        )]
+        print_expanded: bool,
+    },
 }
 
 fn main() {
@@ -190,6 +221,13 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Expand {
+            file,
+            offset,
+            line,
+            column,
+            print_expanded,
+        } => expand_entry(&file, offset, line, column, print_expanded),
     }
 }
 fn run_entry(path: &Path) {
@@ -379,6 +417,236 @@ fn run_gcc(obj_path: &Path, bin_path: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn expand_entry(
+    path: &Path,
+    offset: Option<usize>,
+    line: Option<usize>,
+    column: Option<usize>,
+    print_expanded: bool,
+) {
+    ensure_prime_file(path);
+    if offset.is_some() && (line.is_some() || column.is_some()) {
+        eprintln!("Use either --offset or --line/--column to select a position, not both.");
+        std::process::exit(1);
+    }
+    let source = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) => {
+            report_io_error(path, &err);
+            std::process::exit(1);
+        }
+    };
+    let resolved_offset = match offset {
+        Some(off) => off,
+        None => {
+            let line = line.unwrap_or(1);
+            let column = column.unwrap_or(1);
+            match offset_from_line_col(&source, line, column) {
+                Some(off) => off,
+                None => {
+                    eprintln!(
+                        "Could not compute offset for line {}, column {} in {}",
+                        line,
+                        column,
+                        path.display()
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
+    warn_manifest_drift(path);
+    let has_position = offset.is_some() || line.is_some() || column.is_some();
+    match load_package(path) {
+        Ok(package) => {
+            let expanded = expand_or_report(&package.program);
+            let canonical = canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            let span = Span::new(resolved_offset, resolved_offset.saturating_add(1));
+            let macro_names = expanded.traces.macro_names_for(&canonical, span);
+            if let Some(trace) = expanded.traces.help_for(&canonical, span) {
+                println!("Macro expansion trace:\n{trace}");
+            } else {
+                println!(
+                    "No macro expansion trace found at offset {} (line {}, column {})",
+                    resolved_offset,
+                    line.unwrap_or_else(|| line_number(&source, resolved_offset)),
+                    column.unwrap_or_else(|| column_number(&source, resolved_offset))
+                );
+            }
+            if let Some(module) = expanded
+                .program
+                .modules
+                .iter()
+                .find(|m| m.path == canonical)
+            {
+                let formatted = if print_expanded || !has_position {
+                    format_module(module)
+                } else {
+                    let mut focused_items: Vec<Item> = module
+                        .items
+                        .iter()
+                        .filter(|item| {
+                            let span = item_span(item);
+                            span.start <= resolved_offset && span.end >= resolved_offset
+                        })
+                        .cloned()
+                        .collect();
+                    if focused_items.is_empty() {
+                        if let Some(names) = macro_names.as_ref() {
+                            if let Some(origins) = expanded.item_origins.get(&canonical) {
+                                let by_origin: Vec<Item> = module
+                                    .items
+                                    .iter()
+                                    .zip(origins.iter())
+                                    .filter(|(_, origin)| {
+                                        origin
+                                            .as_ref()
+                                            .map(|o| names.iter().any(|n| n == o))
+                                            .unwrap_or(false)
+                                    })
+                                    .map(|(item, _)| item.clone())
+                                    .collect();
+                                focused_items.extend(by_origin);
+                            }
+                        }
+                    }
+                    if focused_items.is_empty() {
+                        format_module(module)
+                    } else {
+                        let mut clone = module.clone();
+                        clone.items = focused_items;
+                        format_module(&clone)
+                    }
+                };
+                let header = if print_expanded || !has_position {
+                    format!("Expanded module ({})", module.name)
+                } else {
+                    format!(
+                        "Expanded items at offset {} ({}:{})",
+                        resolved_offset,
+                        line.unwrap_or_else(|| line_number(&source, resolved_offset)),
+                        column.unwrap_or_else(|| column_number(&source, resolved_offset))
+                    )
+                };
+                println!("\n=== {header} ===\n");
+                println!("{formatted}");
+            } else {
+                eprintln!(
+                    "Expanded module for {} not found in expanded program",
+                    canonical.display()
+                );
+                std::process::exit(1);
+            }
+        }
+        Err(PackageError::Io { path, error }) => {
+            report_io_error(&path, &error);
+            std::process::exit(1);
+        }
+        Err(PackageError::Syntax(errors)) => {
+            emit_syntax_errors(&errors);
+            std::process::exit(1);
+        }
+        Err(PackageError::Manifest { path, message }) => {
+            eprintln!("manifest error at {}: {}", path.display(), message);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn offset_from_line_col(source: &str, line: usize, column: usize) -> Option<usize> {
+    if line == 0 || column == 0 {
+        return None;
+    }
+    let mut offset = 0usize;
+    for (idx, mut l) in source.split_inclusive('\n').enumerate() {
+        let current_line = idx + 1;
+        if current_line == line {
+            if !l.ends_with('\n') {
+                l = l.trim_end_matches('\r');
+            }
+            if column - 1 > l.len() {
+                return None;
+            }
+            return Some(offset + column - 1);
+        }
+        offset += l.len();
+    }
+    None
+}
+
+fn line_number(text: &str, offset: usize) -> usize {
+    text[..offset.min(text.len())].bytes().filter(|b| *b == b'\n').count() + 1
+}
+
+fn column_number(text: &str, offset: usize) -> usize {
+    let slice = &text[..offset.min(text.len())];
+    let line_start = slice.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+    offset.saturating_sub(line_start) + 1
+}
+
+fn item_span(item: &Item) -> Span {
+    match item {
+        Item::Struct(def) => def.span,
+        Item::Enum(def) => def.span,
+        Item::Interface(def) => def.span,
+        Item::Impl(def) => def
+            .methods
+            .first()
+            .map(|m| m.span)
+            .unwrap_or_else(|| Span::new(0, 0)),
+        Item::Function(def) => def.span,
+        Item::Macro(def) => def.span,
+        Item::Const(def) => def.span,
+        Item::MacroInvocation(inv) => inv.span,
+    }
+}
+
+#[cfg(test)]
+mod expand_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn computes_offset_from_line_and_column() {
+        let src = "abc\ndef\n";
+        assert_eq!(offset_from_line_col(src, 1, 1), Some(0));
+        assert_eq!(offset_from_line_col(src, 2, 2), Some(5));
+        assert_eq!(offset_from_line_col(src, 3, 1), None);
+    }
+
+    #[test]
+    fn expansion_trace_reports_macro_chain() {
+        let dir = tempdir().expect("tempdir");
+        let file = dir.path().join("demo.prime");
+        let src = r#"
+module demo::main;
+
+macro add_one(value: expr) -> int32 { value + 1 }
+
+fn main() {
+  let int32 x = ~add_one(5);
+  out(x);
+}
+"#;
+        fs::write(&file, src).expect("write");
+        let package = load_package(&file).expect("load package");
+        let expanded = expand_or_report(&package.program);
+        let canonical = canonicalize(&file).unwrap();
+        let offset = src.find("~add_one").expect("find macro usage");
+        let trace = expanded
+            .traces
+            .help_for(&canonical, Span::new(offset, offset + 1));
+        assert!(
+            trace
+                .as_deref()
+                .map(|t| t.contains("add_one"))
+                .unwrap_or(false),
+            "expected macro name in trace, got {trace:?}"
+        );
+    }
 }
 
 fn ensure_prime_file(path: &Path) {
