@@ -878,7 +878,7 @@ fn format_macro_signature(def: &MacroDef) -> String {
 
 fn format_macro_signature_block(def: &MacroDef) -> String {
     let signature = format_macro_signature(def);
-    code_block("md", &signature)
+    code_block("prime", &signature)
 }
 
 fn format_function_hover(def: &FunctionDef) -> String {
@@ -926,7 +926,7 @@ fn format_macro_hover(text: &str, def: &MacroDef) -> String {
     if snippet.is_empty() {
         content.push_str(&format_macro_signature_block(def));
     } else {
-        content.push_str(&code_block("md", &snippet));
+        content.push_str(&code_block("prime", &snippet));
     }
     content.push_str("\n\n```md\nKind: macro\n");
     content.push_str("Params: ");

@@ -1204,7 +1204,7 @@ impl LanguageServer for Backend {
                 general_completion_items(&module, &struct_modules, Some(offset), prefix_ref);
             Ok(Some(CompletionResponse::Array(general_items)))
         } else {
-            let keywords = keyword_completion_items(prefix_ref, false);
+            let keywords = keyword_completion_items(prefix_ref, false, false);
             if keywords.is_empty() {
                 Ok(None)
             } else {

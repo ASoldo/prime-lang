@@ -937,6 +937,9 @@ pub fn general_completion_items(
     let mut items = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let macro_ctx = offset.map(|o| is_macro_context(module, o)).unwrap_or(false);
+    let inside_function = offset
+        .and_then(|o| is_inside_function(module, o))
+        .unwrap_or(false);
     if let Some(offset) = offset {
         for decl in visible_locals(module, offset) {
             if !seen.insert(decl.name.clone()) {
@@ -1150,7 +1153,7 @@ pub fn general_completion_items(
         }
     }
 
-    items.extend(keyword_completion_items(prefix, macro_ctx));
+    items.extend(keyword_completion_items(prefix, macro_ctx, inside_function));
 
     items
         .into_iter()
@@ -1166,7 +1169,11 @@ fn import_module_from_snapshot<'a>(
     all_modules.iter().find(|m| m.name == name)
 }
 
-pub fn keyword_completion_items(prefix: Option<&str>, macro_ctx: bool) -> Vec<CompletionItem> {
+pub fn keyword_completion_items(
+    prefix: Option<&str>,
+    macro_ctx: bool,
+    inside_function: bool,
+) -> Vec<CompletionItem> {
     const KEYWORDS: &[&str] = &[
         "fn",
         "macro",
@@ -1190,7 +1197,12 @@ pub fn keyword_completion_items(prefix: Option<&str>, macro_ctx: bool) -> Vec<Co
     ];
     let mut items: Vec<CompletionItem> = KEYWORDS
         .iter()
-        .filter(|kw| prefix_matches(kw, prefix))
+        .filter(|kw| {
+            if inside_function && **kw == "macro" {
+                return false;
+            }
+            prefix_matches(kw, prefix)
+        })
         .map(|kw| CompletionItem {
             label: kw.to_string(),
             kind: Some(CompletionItemKind::KEYWORD),
@@ -1319,6 +1331,24 @@ fn is_macro_context(module: &Module, offset: usize) -> bool {
         }
     }
     false
+}
+
+fn is_inside_function(module: &Module, offset: usize) -> Option<bool> {
+    fn contains(span: Span, offset: usize) -> bool {
+        offset >= span.start && offset < span.end
+    }
+    for item in &module.items {
+        if let Item::Function(func) = item {
+            let body_span = match &func.body {
+                crate::language::ast::FunctionBody::Block(block) => block.span,
+                crate::language::ast::FunctionBody::Expr(expr) => expr.span,
+            };
+            if contains(body_span, offset) {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
 }
 
 pub fn format_function_param(param: &FunctionParam) -> String {
