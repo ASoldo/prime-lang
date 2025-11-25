@@ -132,7 +132,8 @@ match in[int32](`Temperature for { "Soldo" }: `) {
 
 For non-interactive test runs, set `PRIME_TEST_INPUTS` to a delimited list of lines
 (supports `|`, `,`, or `;` as separators) so `in[...]` consumes scripted input instead
-of blocking on stdin. Example: `PRIME_TEST_INPUTS="21,abc" prime-lang test tests/input_read.prime`.
+of blocking on stdin. Example: `PRIME_TEST_INPUTS="21,abc" prime-lang test tests/input_read.prime`
+or to drive the entire test suite: `PRIME_TEST_INPUTS="21,abc" prime-lang test`.
 Alternatively point `PRIME_TEST_INPUTS_FILE` at a file containing one input per line.
 
 ### `prime-lang docs`
