@@ -936,6 +936,7 @@ pub fn general_completion_items(
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let macro_ctx = offset.map(|o| is_macro_context(module, o)).unwrap_or(false);
     if let Some(offset) = offset {
         for decl in visible_locals(module, offset) {
             if !seen.insert(decl.name.clone()) {
@@ -1149,7 +1150,7 @@ pub fn general_completion_items(
         }
     }
 
-    items.extend(keyword_completion_items(prefix));
+    items.extend(keyword_completion_items(prefix, macro_ctx));
 
     items
         .into_iter()
@@ -1165,7 +1166,7 @@ fn import_module_from_snapshot<'a>(
     all_modules.iter().find(|m| m.name == name)
 }
 
-pub fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
+pub fn keyword_completion_items(prefix: Option<&str>, macro_ctx: bool) -> Vec<CompletionItem> {
     const KEYWORDS: &[&str] = &[
         "fn",
         "macro",
@@ -1248,25 +1249,27 @@ pub fn keyword_completion_items(prefix: Option<&str>) -> Vec<CompletionItem> {
         });
     }
 
-    const MACRO_HELPERS: &[(&str, &str)] = &[
-        ("expr", "macro param kind"),
-        ("block", "macro param kind"),
-        ("pattern", "macro param kind"),
-        ("tokens", "macro param kind"),
-        ("repeat", "macro param kind (use with @sep)"),
-        ("@sep", "macro repeat separator hint (use `@sep = ,` or `@sep = ;`)"),
-        ("@", "hygiene escape for outer bindings"),
-    ];
-    for (label, detail) in MACRO_HELPERS
-        .iter()
-        .filter(|(name, _)| prefix_matches(name, prefix))
-    {
-        items.push(CompletionItem {
-            label: (*label).to_string(),
-            kind: Some(CompletionItemKind::KEYWORD),
-            detail: Some((*detail).to_string()),
-            ..Default::default()
-        });
+    if macro_ctx {
+        const MACRO_HELPERS: &[(&str, &str)] = &[
+            ("expr", "macro param kind"),
+            ("block", "macro param kind"),
+            ("pattern", "macro param kind"),
+            ("tokens", "macro param kind"),
+            ("repeat", "macro param kind (use with @sep)"),
+            ("@sep", "macro repeat separator hint (use `@sep = ,` or `@sep = ;`)"),
+            ("@", "hygiene escape for outer bindings"),
+        ];
+        for (label, detail) in MACRO_HELPERS
+            .iter()
+            .filter(|(name, _)| prefix_matches(name, prefix))
+        {
+            items.push(CompletionItem {
+                label: (*label).to_string(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some((*detail).to_string()),
+                ..Default::default()
+            });
+        }
     }
 
     items
@@ -1302,6 +1305,20 @@ pub fn format_function_signature(func: &FunctionDef) -> String {
         }
     }
     signature
+}
+
+fn is_macro_context(module: &Module, offset: usize) -> bool {
+    fn contains(span: Span, offset: usize) -> bool {
+        offset >= span.start && offset < span.end
+    }
+    for item in &module.items {
+        match item {
+            Item::Macro(def) if contains(def.span, offset) => return true,
+            Item::MacroInvocation(inv) if contains(inv.span, offset) => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 pub fn format_function_param(param: &FunctionParam) -> String {
