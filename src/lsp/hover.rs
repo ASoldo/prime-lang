@@ -252,7 +252,10 @@ fn builtin_function_docs(name: &str) -> Option<String> {
             "Built-in input helper\n{}",
             code_block(
                 "prime",
-                "fn in[T](prompt: string, ...) -> Result[T, string]\n# With format string:\n# in[int32](`Enter age {label}: `, label)"
+                "fn in[T](prompt: string, ...) -> Result[T, string] {}"
+            ) + "\n\n" + &code_block(
+                "prime",
+                "fn main() {\n  let string label = \"home\";\n  in[int32](`Enter age {label}: `, label);\n}"
             )
         )),
         "box_get" => Some(format!(
