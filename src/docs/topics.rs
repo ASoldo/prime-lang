@@ -667,7 +667,7 @@ tree-sitter init   # if ABI warnings appear"#,
         key: "macros",
         title: "Macros & hygiene",
         category: "Language Features",
-        summary: "Macro parameters, hygiene escapes with `@`, repeat separators, macro-aware completions, and hover support that shows full macro declarations.",
+        summary: "Macro parameters, hygiene escapes with `@`, repeat separators (including custom tokens), macro-aware completions, visibility (`pub`, `pub(package)`, private), and hover support that shows full macro declarations.",
         aliases: &["macro", "macro-hygiene"],
         sections: &[
             TopicSection {
@@ -685,7 +685,7 @@ tree-sitter init   # if ABI warnings appear"#,
 
 let (a, b, c) = ~collect(@sep = , 1, 2, 3);
 let int32 total = ~collect(@sep = ;, { 1; }, { 2; }, 3);"#,
-                explanation: "Repeat params split on the first top-level separator: comma joins into a tuple, semicolon joins into a sequential block. Place `@sep = ,` or `@sep = ;` immediately after the opening `(` (an optional comma after the prefix is accepted).",
+                explanation: "Repeat params split on the first top-level separator: comma joins into a tuple, semicolon joins into a sequential block. Use `@sep = <token>` immediately after the opening `(` (an optional comma after the prefix is accepted) to set the separator, e.g. `@sep = ,`, `@sep = ;`, or `@sep = |`. Repeat params support quantifiers: `repeat+` (default) and `repeat*` (zero-or-more).",
             },
             TopicSection {
                 title: "LSP hover for macros",

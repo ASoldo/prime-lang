@@ -38,9 +38,14 @@ pub fn parse_expression_snippet(path: PathBuf, source: &str) -> Result<Expr, Syn
         .parse_expression()
         .map_err(|err| SyntaxErrors::new(vec![err]))?;
     if !parser.is_eof() {
+        let span = parser
+            .tokens
+            .get(parser.pos)
+            .map(|tok| tok.span)
+            .unwrap_or_else(|| Span::new(0, 0));
         return Err(SyntaxErrors::new(vec![SyntaxError::new(
             "Unexpected tokens after expression",
-            Span::new(0, 0),
+            span,
         )]));
     }
     Ok(expr)
@@ -55,9 +60,14 @@ pub fn parse_expression_from_tokens(
         .parse_expression()
         .map_err(|err| SyntaxErrors::new(vec![err]))?;
     if !parser.is_eof() {
+        let span = parser
+            .tokens
+            .get(parser.pos)
+            .map(|tok| tok.span)
+            .unwrap_or_else(|| Span::new(0, 0));
         return Err(SyntaxErrors::new(vec![SyntaxError::new(
             "Unexpected tokens after expression",
-            Span::new(0, 0),
+            span,
         )]));
     }
     Ok(expr)
@@ -560,7 +570,19 @@ impl Parser {
         }
         let mut visibility = Visibility::Private;
         if self.matches(TokenKind::Pub) {
-            visibility = Visibility::Public;
+            if self.matches(TokenKind::LParen) {
+                if let Some(TokenKind::Identifier(name)) = self.peek_kind() {
+                    if name == "package" {
+                        self.advance();
+                        self.expect(TokenKind::RParen)?;
+                        visibility = Visibility::Package;
+                    } else {
+                        self.report(self.error_here("expected `package` after `pub(`"));
+                    }
+                }
+            } else {
+                visibility = Visibility::Public;
+            }
         }
         if self.matches(TokenKind::Struct) {
             return self.parse_struct(visibility).map(Item::Struct);
@@ -910,6 +932,7 @@ impl Parser {
         let name = self.expect_identifier("Expected macro parameter name")?;
         let mut kind = MacroParamKind::Expr;
         let mut ty = None;
+        let mut repeat_quantifier = None;
         if self.matches(TokenKind::Colon) {
             if let Some(TokenKind::Identifier(raw_kind)) = self.peek_kind() {
                 let lower = raw_kind.to_ascii_lowercase();
@@ -921,6 +944,13 @@ impl Parser {
                         "tokens" => MacroParamKind::Tokens,
                         _ => MacroParamKind::Repeat,
                     };
+                    if kind == MacroParamKind::Repeat {
+                        if self.matches(TokenKind::Plus) {
+                            repeat_quantifier = Some(MacroRepeatQuantifier::OneOrMore);
+                        } else if self.matches(TokenKind::Star) {
+                            repeat_quantifier = Some(MacroRepeatQuantifier::ZeroOrMore);
+                        }
+                    }
                 } else {
                     ty = Some(self.parse_type_annotation()?);
                 }
@@ -928,11 +958,15 @@ impl Parser {
                 ty = Some(self.parse_type_annotation()?);
             }
         }
-        let end = ty.as_ref().map(|ty| ty.span.end).unwrap_or(name.span.end);
+        let end = ty
+            .as_ref()
+            .map(|ty| ty.span.end)
+            .unwrap_or_else(|| self.previous_span().map(|s| s.end).unwrap_or(name.span.end));
         Ok(MacroParam {
             name: name.name,
             ty,
             kind,
+            repeat_quantifier,
             span: Span::new(start, end),
         })
     }
@@ -1021,6 +1055,7 @@ impl Parser {
     fn parse_macro_call_args(&mut self) -> Result<Vec<MacroArg>, SyntaxError> {
         let mut args = Vec::new();
         let mut repeat_prefix = self.consume_repeat_separator_prefix();
+        let repeat_sep_kind = repeat_prefix.as_ref().map(|(_, kind)| kind.clone());
         let allow_semicolon_sep = repeat_prefix
             .as_ref()
             .map(|(_, kind)| *kind == TokenKind::Semi)
@@ -1029,9 +1064,9 @@ impl Parser {
             // Allow but do not require a comma after the prefix for readability.
             let _ = self.matches(TokenKind::Comma);
         }
-        if !self.check(TokenKind::RParen) {
-            loop {
-                let mut arg = self.parse_macro_arg()?;
+        if let Some(custom_sep) = repeat_sep_kind.clone() {
+            while !self.check(TokenKind::RParen) {
+                let mut arg = self.parse_macro_arg_with_custom_sep(custom_sep.clone())?;
                 let prefix_attached = if let Some((prefix_tokens, _)) = repeat_prefix.take() {
                     if let Some(tokens) = arg.tokens.as_mut() {
                         let mut merged = prefix_tokens;
@@ -1053,7 +1088,52 @@ impl Parser {
                     }
                 }
                 args.push(arg);
-                if self.matches(TokenKind::Comma) || (allow_semicolon_sep && self.matches(TokenKind::Semi)) {
+                if self.check(TokenKind::RParen) {
+                    break;
+                }
+                if self.matches(custom_sep.clone()) || self.matches(TokenKind::Comma) {
+                    continue;
+                }
+                return Err(self.error_here("Expected separator or ')' in macro call"));
+            }
+            return Ok(args);
+        }
+        if !self.check(TokenKind::RParen) {
+            loop {
+                let mut arg = if let Some(sep) = repeat_sep_kind.clone() {
+                    self.parse_macro_arg_with_custom_sep(sep)?
+                } else {
+                    self.parse_macro_arg()?
+                };
+                let prefix_attached = if let Some((prefix_tokens, _)) = repeat_prefix.take() {
+                    if let Some(tokens) = arg.tokens.as_mut() {
+                        let mut merged = prefix_tokens;
+                        merged.extend(tokens.drain(..));
+                        *tokens = merged;
+                    } else {
+                        arg.tokens = Some(prefix_tokens);
+                    }
+                    true
+                } else {
+                    false
+                };
+                if let Some(span) = Self::sep_prefix_span(arg.tokens.as_deref().unwrap_or(&[])) {
+                    if !prefix_attached {
+                        return Err(self.error_at(
+                            span,
+                            "separator prefix `@sep =` must appear immediately after '(' and only once",
+                        ));
+                    }
+                }
+                args.push(arg);
+                if self.matches(TokenKind::Comma)
+                    || (allow_semicolon_sep && self.matches(TokenKind::Semi))
+                    || repeat_sep_kind
+                        .as_ref()
+                        .map(|k| self.matches(k.clone()))
+                        .unwrap_or(false)
+                    || self.matches(TokenKind::Pipe)
+                {
                     if self.check(TokenKind::RParen) {
                         break;
                     }
@@ -1067,25 +1147,48 @@ impl Parser {
 
     fn consume_repeat_separator_prefix(&mut self) -> Option<(Vec<Token>, TokenKind)> {
         let start_pos = self.pos;
-        if self.peek_kind() != Some(TokenKind::At) {
-            return None;
+        let window = self.tokens.get(self.pos..)?.get(0..4)?;
+        if let [first, second, third, fourth] = window {
+            if first.kind == TokenKind::At {
+                if let TokenKind::Identifier(name) = &second.kind {
+                    if name == "sep" && third.kind == TokenKind::Eq {
+                        let sep = fourth.kind.clone();
+                        for _ in 0..4 {
+                            self.advance();
+                        }
+                        let normalized = if matches!(sep, TokenKind::Comma | TokenKind::Semi) {
+                            sep.clone()
+                        } else {
+                            let mut depth_paren: i32 = 0;
+                            let mut depth_brace: i32 = 0;
+                            let mut depth_bracket: i32 = 0;
+                            for tok in self.tokens.iter_mut().skip(self.pos) {
+                                match tok.kind {
+                                    TokenKind::LParen => depth_paren += 1,
+                                    TokenKind::RParen => {
+                                        if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 {
+                                            break;
+                                        }
+                                        depth_paren = depth_paren.saturating_sub(1);
+                                    }
+                                    TokenKind::LBrace => depth_brace += 1,
+                                    TokenKind::RBrace => depth_brace = depth_brace.saturating_sub(1),
+                                    TokenKind::LBracket => depth_bracket += 1,
+                                    TokenKind::RBracket => depth_bracket = depth_bracket.saturating_sub(1),
+                                    _ => {}
+                                }
+                                if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 && tok.kind == sep {
+                                    tok.kind = TokenKind::Comma;
+                                }
+                            }
+                            TokenKind::Comma
+                        };
+                        return Some((self.tokens[start_pos..self.pos].to_vec(), normalized));
+                    }
+                }
+            }
         }
-        let Some(TokenKind::Identifier(name)) = self.peek_kind_n(1) else {
-            return None;
-        };
-        if name != "sep" || self.peek_kind_n(2) != Some(TokenKind::Eq) {
-            return None;
-        }
-        let Some(sep) = self.peek_kind_n(3) else {
-            return None;
-        };
-        if !matches!(sep, TokenKind::Comma | TokenKind::Semi) {
-            return None;
-        }
-        for _ in 0..4 {
-            self.advance();
-        }
-        Some((self.tokens[start_pos..self.pos].to_vec(), sep))
+        None
     }
 
     fn sep_prefix_span(tokens: &[Token]) -> Option<Span> {
@@ -1094,9 +1197,7 @@ impl Parser {
                 if first.kind == TokenKind::At {
                     if let TokenKind::Identifier(name) = &second.kind {
                         if name == "sep" && matches!(third.kind, TokenKind::Eq) {
-                            if matches!(fourth.kind, TokenKind::Comma | TokenKind::Semi) {
-                                return Some(Span::new(first.span.start, fourth.span.end));
-                            }
+                            return Some(Span::new(first.span.start, fourth.span.end));
                         }
                     }
                 }
@@ -1113,6 +1214,53 @@ impl Parser {
             expr,
             tokens: Some(tokens),
         })
+    }
+
+    fn parse_macro_arg_with_custom_sep(&mut self, separator: TokenKind) -> Result<MacroArg, SyntaxError> {
+        let start_idx = self.pos;
+        let mut depth_paren: i32 = 0;
+        let mut depth_brace: i32 = 0;
+        let mut depth_bracket: i32 = 0;
+        let mut end_idx = self.pos;
+        while end_idx < self.tokens.len() {
+            let tok = &self.tokens[end_idx];
+            match tok.kind {
+                TokenKind::LParen => depth_paren += 1,
+                TokenKind::RParen => {
+                    if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 {
+                        break;
+                    }
+                    depth_paren = depth_paren.saturating_sub(1);
+                }
+                TokenKind::LBrace => depth_brace += 1,
+                TokenKind::RBrace => depth_brace = depth_brace.saturating_sub(1),
+                TokenKind::LBracket => depth_bracket += 1,
+                TokenKind::RBracket => depth_bracket = depth_bracket.saturating_sub(1),
+                _ => {}
+            }
+            if depth_paren == 0 && depth_brace == 0 && depth_bracket == 0 {
+                if tok.kind == separator || tok.kind == TokenKind::Comma {
+                    break;
+                }
+            }
+            end_idx += 1;
+        }
+        if end_idx == start_idx {
+            return Err(self.error_here("Expected macro argument"));
+        }
+        let slice = self.tokens[start_idx..end_idx].to_vec();
+        self.pos = end_idx;
+        match parse_expression_from_tokens(self.path.clone(), slice.clone()) {
+            Ok(expr) => Ok(MacroArg {
+                expr,
+                tokens: Some(slice),
+            }),
+            Err(errors) => Err(errors
+                .errors
+                .first()
+                .cloned()
+                .unwrap_or_else(|| self.error_here("Invalid macro argument"))),
+        }
     }
 
     fn parse_const(&mut self, visibility: Visibility) -> Result<ConstDef, SyntaxError> {
@@ -3174,6 +3322,19 @@ fn main() {
 }
 "#;
         let result = parse_module("test::index", PathBuf::from("test.prime"), source);
+        assert!(
+            result.is_ok(),
+            "parse errors: {:?}",
+            result.err().map(|e| e.errors)
+        );
+    }
+
+    #[test]
+    fn macros_fixture_parses() {
+        let path = PathBuf::from("tests/macros.prime");
+        let source =
+            std::fs::read_to_string(&path).expect("read macros fixture from workspace tests");
+        let result = parse_module("tests::macros", path, &source);
         assert!(
             result.is_ok(),
             "parse errors: {:?}",

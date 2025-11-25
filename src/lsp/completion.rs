@@ -1,6 +1,8 @@
 use crate::{
     language::{
-        ast::{FunctionDef, FunctionParam, Import, InterfaceMethod, Item, Module, Visibility},
+        ast::{
+            FunctionDef, FunctionParam, Import, InterfaceMethod, Item, MacroDef, Module, Visibility,
+        },
         span::Span,
         types::TypeExpr,
     },
@@ -38,6 +40,40 @@ pub enum ModulePathCompletionKind {
 pub struct ModulePathCompletionContext {
     pub kind: ModulePathCompletionKind,
     pub prefix: Option<String>,
+}
+
+fn macro_visible_to_requester(def: &MacroDef, defining_module: &Module, requester: &Module) -> bool {
+    match def.visibility {
+        Visibility::Public => true,
+        Visibility::Package => match (requester.path.parent(), defining_module.path.parent()) {
+            (Some(requester_dir), Some(def_dir)) => requester_dir.starts_with(def_dir),
+            _ => false,
+        },
+        Visibility::Private => requester.path == defining_module.path,
+    }
+}
+
+fn format_macro_detail(def: &MacroDef) -> String {
+    let params = def
+        .params
+        .iter()
+        .map(|p| match &p.ty {
+            Some(ty) => format!("{}: {}", p.name, format_type_expr(&ty.ty)),
+            None => p.name.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ret = def
+        .return_ty
+        .as_ref()
+        .map(|ty| format!(" -> {}", format_type_expr(&ty.ty)))
+        .unwrap_or_default();
+    let vis = match def.visibility {
+        Visibility::Public => "pub",
+        Visibility::Package => "pub(package)",
+        Visibility::Private => "private",
+    };
+    format!("{} macro ~{}({}){}", vis, def.name, params, ret)
 }
 
 pub fn module_path_completion_context(
@@ -1020,27 +1056,10 @@ pub fn general_completion_items(
                 if !seen.insert(label.clone()) {
                     continue;
                 }
-                let detail = {
-                    let params = def
-                        .params
-                        .iter()
-                        .map(|p| match &p.ty {
-                            Some(ty) => format!("{}: {}", p.name, format_type_expr(&ty.ty)),
-                            None => p.name.clone(),
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let ret = def
-                        .return_ty
-                        .as_ref()
-                        .map(|ty| format!(" -> {}", format_type_expr(&ty.ty)))
-                        .unwrap_or_default();
-                    format!("macro ~{}({}){}", def.name, params, ret)
-                };
                 items.push(CompletionItem {
                     label,
                     kind: Some(CompletionItemKind::FUNCTION),
-                    detail: Some(detail),
+                    detail: Some(format_macro_detail(def)),
                     ..Default::default()
                 });
             }
@@ -1118,31 +1137,17 @@ pub fn general_completion_items(
                         ..Default::default()
                     }),
                     Item::Macro(def) => {
+                        if !macro_visible_to_requester(def, imported, module) {
+                            continue;
+                        }
                         let label = format!("~{}", def.name);
                         if !seen.insert(label.clone()) {
                             continue;
                         }
-                        let detail = {
-                            let params = def
-                                .params
-                                .iter()
-                                .map(|p| match &p.ty {
-                                    Some(ty) => format!("{}: {}", p.name, format_type_expr(&ty.ty)),
-                                    None => p.name.clone(),
-                                })
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            let ret = def
-                                .return_ty
-                                .as_ref()
-                                .map(|ty| format!(" -> {}", format_type_expr(&ty.ty)))
-                                .unwrap_or_default();
-                            format!("macro ~{}({}){}", def.name, params, ret)
-                        };
                         items.push(CompletionItem {
                             label,
                             kind: Some(CompletionItemKind::FUNCTION),
-                            detail: Some(detail),
+                            detail: Some(format_macro_detail(def)),
                             ..Default::default()
                         });
                     }
@@ -1267,7 +1272,7 @@ pub fn keyword_completion_items(
             ("block", "macro param kind"),
             ("pattern", "macro param kind"),
             ("tokens", "macro param kind"),
-            ("repeat", "macro param kind (use with @sep)"),
+        ("repeat", "macro param kind (supports +/*, use with @sep)"),
             ("@sep", "macro repeat separator hint (use `@sep = ,` or `@sep = ;`)"),
             ("@", "hygiene escape for outer bindings"),
         ];
@@ -1845,6 +1850,78 @@ fn main() {
                 .iter()
                 .map(|item| item.label.clone())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn macro_completion_respects_visibility() {
+        let provider_src = r#"
+module pkg::macros;
+
+macro local_only() -> int32 { 1 }
+pub(package) macro pkg_only() -> int32 { 2 }
+pub macro exported() -> int32 { 3 }
+"#;
+        let same_pkg_src = r#"
+module pkg::user;
+
+import pkg::macros;
+
+fn main() -> int32 { 0 }
+"#;
+        let other_pkg_src = r#"
+module other::user;
+
+import pkg::macros;
+
+fn main() -> int32 { 0 }
+"#;
+
+        let provider =
+            parse_module("pkg::macros", PathBuf::from("pkg/macros.prime"), provider_src)
+                .expect("provider module");
+        let same_pkg =
+            parse_module("pkg::user", PathBuf::from("pkg/user.prime"), same_pkg_src)
+                .expect("same package module");
+        let other_pkg =
+            parse_module("other::user", PathBuf::from("other/user.prime"), other_pkg_src)
+                .expect("other package module");
+        let modules = vec![provider.clone(), same_pkg.clone(), other_pkg.clone()];
+
+        let same_pkg_items = general_completion_items(&same_pkg, &modules, None, None);
+        assert!(
+            same_pkg_items.iter().any(|item| item.label == "~pkg_only"),
+            "expected package macro visible inside the package"
+        );
+        assert!(same_pkg_items.iter().any(|item| item.label == "~exported"));
+        assert!(
+            !same_pkg_items
+                .iter()
+                .any(|item| item.label == "~local_only"),
+            "private macro should stay local to the defining module"
+        );
+
+        let other_pkg_items = general_completion_items(&other_pkg, &modules, None, None);
+        assert!(other_pkg_items.iter().any(|item| item.label == "~exported"));
+        assert!(
+            !other_pkg_items.iter().any(|item| item.label == "~pkg_only"),
+            "package macro should be hidden outside the package"
+        );
+        assert!(
+            !other_pkg_items
+                .iter()
+                .any(|item| item.label == "~local_only"),
+            "private macro should be hidden outside the defining module"
+        );
+
+        let pkg_only_detail = same_pkg_items
+            .iter()
+            .find(|item| item.label == "~pkg_only")
+            .and_then(|item| item.detail.as_ref())
+            .expect("detail for pkg_only macro");
+        assert!(
+            pkg_only_detail.contains("pub(package) macro"),
+            "expected macro visibility in completion detail, got {pkg_only_detail}"
         );
     }
 }

@@ -231,15 +231,15 @@ fn module_symbol_definitions(
                     ));
                 }
             }
-            Item::Interface(def) => {
-                defs.push((
-                    def.name.clone(),
-                    def.span, // keep full span for interface keyword+name
-                    SymbolKind::INTERFACE,
-                    def.visibility,
-                    module.kind,
-                ));
-            }
+                Item::Interface(def) => {
+                    defs.push((
+                        def.name.clone(),
+                        def.span, // keep full span for interface keyword+name
+                        SymbolKind::INTERFACE,
+                        def.visibility,
+                        module.kind,
+                    ));
+                }
             Item::Const(def) => defs.push((
                 def.name.clone(),
                 def.span,

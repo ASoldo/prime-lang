@@ -1,5 +1,5 @@
 use crate::language::{
-    ast::{ConstDef, EnumDef, EnumVariant, FunctionDef, InterfaceDef, Item, MacroDef, MacroParamKind, Module, StructDef, Visibility},
+    ast::{ConstDef, EnumDef, EnumVariant, FunctionDef, InterfaceDef, Item, MacroDef, MacroParam, MacroParamKind, MacroRepeatQuantifier, Module, StructDef, Visibility},
     span::Span,
     token::{Token, TokenKind},
     types::{Mutability, TypeExpr},
@@ -183,7 +183,7 @@ pub fn hover_for_token(
         )),
         TokenKind::Macro => Some(keyword_doc(
             "macro",
-            "Declares a macro. Supports hygiene escape with `@ident`, repeat params with optional `@sep = ,|;`, and item macros spliced with `~call();` at module scope.",
+            "Declares a macro. Supports hygiene escape with `@ident`, repeat params with optional `@sep = <token>` (`,`/`;` by default), and item macros spliced with `~call();` at module scope.",
         )),
         TokenKind::Pub => Some(keyword_doc("pub", "Marks an item as public.")),
         TokenKind::Const => Some(keyword_doc("const", "Declares a constant.")),
@@ -864,7 +864,7 @@ fn format_macro_signature(def: &MacroDef) -> String {
         .iter()
         .map(|param| match (&param.ty, param.kind) {
             (Some(ty), _) => format!("{}: {}", param.name, format_type_expr(&ty.ty)),
-            (None, kind) => format!("{}: {}", param.name, macro_param_kind_name(kind)),
+            (None, _) => format!("{}: {}", param.name, macro_param_kind_name(param)),
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -929,6 +929,13 @@ fn format_macro_hover(text: &str, def: &MacroDef) -> String {
         content.push_str(&code_block("prime", &snippet));
     }
     content.push_str("\n\n```md\nKind: macro\n");
+    content.push_str("Visibility: ");
+    content.push_str(match def.visibility {
+        Visibility::Public => "`pub`",
+        Visibility::Package => "`pub(package)`",
+        Visibility::Private => "private",
+    });
+    content.push('\n');
     content.push_str("Params: ");
     if def.params.is_empty() {
         content.push_str("none");
@@ -936,7 +943,7 @@ fn format_macro_hover(text: &str, def: &MacroDef) -> String {
         content.push_str(
             &def.params
                 .iter()
-                .map(|p| format!("`{}` ({})", p.name, macro_param_kind_name(p.kind)))
+                .map(|p| format!("`{}` ({})", p.name, macro_param_kind_name(p)))
                 .collect::<Vec<_>>()
                 .join(", "),
         );
@@ -949,13 +956,16 @@ fn format_macro_hover(text: &str, def: &MacroDef) -> String {
     content
 }
 
-fn macro_param_kind_name(kind: MacroParamKind) -> &'static str {
-    match kind {
-        MacroParamKind::Expr => "`expr`",
-        MacroParamKind::Block => "`block`",
-        MacroParamKind::Pattern => "`pattern`",
-        MacroParamKind::Tokens => "`tokens`",
-        MacroParamKind::Repeat => "`repeat`",
+fn macro_param_kind_name(param: &MacroParam) -> String {
+    match param.kind {
+        MacroParamKind::Expr => "`expr`".into(),
+        MacroParamKind::Block => "`block`".into(),
+        MacroParamKind::Pattern => "`pattern`".into(),
+        MacroParamKind::Tokens => "`tokens`".into(),
+        MacroParamKind::Repeat => match param.repeat_quantifier.unwrap_or(MacroRepeatQuantifier::OneOrMore) {
+            MacroRepeatQuantifier::OneOrMore => "`repeat+`".into(),
+            MacroRepeatQuantifier::ZeroOrMore => "`repeat*`".into(),
+        },
     }
 }
 

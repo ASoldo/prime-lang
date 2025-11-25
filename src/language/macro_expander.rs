@@ -86,8 +86,28 @@ impl<'a> MacroRegistry<'a> {
         Self { macros, errors }
     }
 
-    fn get(&self, name: &str) -> Option<&(&'a MacroDef, &'a Module)> {
-        self.macros.get(name)
+    fn get(&self, name: &str, requester: Option<&Path>) -> Option<&(&'a MacroDef, &'a Module)> {
+        let entry = self.macros.get(name)?;
+        let (_def, module) = entry;
+        match entry.0.visibility {
+            Visibility::Public => Some(entry),
+            Visibility::Package => {
+                if let (Some(req), Some(pkg)) = (requester, module.path.parent()) {
+                    if req.starts_with(pkg) {
+                        return Some(entry);
+                    }
+                }
+                None
+            }
+            Visibility::Private => {
+                if let Some(req) = requester {
+                    if req == module.path {
+                        return Some(entry);
+                    }
+                }
+                None
+            }
+        }
     }
 }
 
@@ -168,26 +188,57 @@ struct RepeatSpec {
     skip: usize,
 }
 
-fn arity_matches(def: &MacroDef, args: &[MacroArg]) -> bool {
+fn repeat_quantifier(param: &MacroParam) -> MacroRepeatQuantifier {
+    param
+        .repeat_quantifier
+        .unwrap_or(MacroRepeatQuantifier::OneOrMore)
+}
+
+fn min_args(def: &MacroDef) -> usize {
     if let Some(last) = def.params.last() {
         if matches!(last.kind, MacroParamKind::Repeat) {
-            return args.len() >= def.params.len();
+            let fixed = def.params.len().saturating_sub(1);
+            return fixed
+                + match repeat_quantifier(last) {
+                    MacroRepeatQuantifier::OneOrMore => 1,
+                    MacroRepeatQuantifier::ZeroOrMore => 0,
+                };
         }
     }
-    def.params.len() == args.len()
+    def.params.len()
+}
+
+fn arity_error(def: &MacroDef, args_len: usize) -> Option<String> {
+    let min = min_args(def);
+    if let Some(last) = def.params.last() {
+        if matches!(last.kind, MacroParamKind::Repeat) {
+            if args_len < min {
+                return Some(format!(
+                    "macro `{}` expects at least {} argument(s), found {}",
+                    def.name, min, args_len
+                ));
+            }
+            return None;
+        }
+    }
+    if args_len != min {
+        Some(format!(
+            "macro `{}` expects {} argument(s), found {}",
+            def.name, min, args_len
+        ))
+    } else {
+        None
+    }
 }
 
 fn coalesce_repeat_args(params: &[MacroParam], args: Vec<MacroArg>, call_span: Span) -> Vec<MacroArg> {
     if params.last().map(|p| p.kind) != Some(MacroParamKind::Repeat) {
         return args;
     }
-    if args.len() < params.len() {
-        return args;
-    }
     let fixed = params.len().saturating_sub(1);
     let mut out = Vec::new();
-    out.extend_from_slice(&args[..fixed]);
-    let repeat_slice = &args[fixed..];
+    out.extend_from_slice(&args[..fixed.min(args.len())]);
+    let repeat_slice = if args.len() > fixed { &args[fixed..] } else { &[] };
     let exprs: Vec<Expr> = repeat_slice.iter().map(|a| a.expr.clone()).collect();
     let span = match (repeat_slice.first(), repeat_slice.last()) {
         (Some(first), Some(last)) => {
@@ -230,11 +281,8 @@ fn merge_tokens_with_separator(args: &[MacroArg], separator: TokenKind) -> Optio
 
 fn repeat_separator_hint(args: &[MacroArg]) -> TokenKind {
     args.iter()
-        .find_map(|arg| arg.tokens.as_ref().and_then(|tokens| match find_repeat_spec(tokens).separator {
-            Some(TokenKind::Semi) => Some(TokenKind::Semi),
-            Some(TokenKind::Comma) => Some(TokenKind::Comma),
-            _ => None,
-        }))
+        .find_map(|arg| arg.tokens.as_ref().map(|tokens| find_repeat_spec(tokens).separator.clone()))
+        .flatten()
         .unwrap_or(TokenKind::Comma)
 }
 
@@ -361,7 +409,9 @@ impl<'a> Expander<'a> {
                 tokens: arg.tokens.clone(),
             })
             .collect();
-        let Some((def, _module)) = self.registry.get(&invocation.name.name) else {
+        let Some((def, _module)) =
+            self.registry.get(&invocation.name.name, self.current_path.as_deref())
+        else {
             let mut err = SyntaxError::new(
                 format!("unknown macro `{}`", invocation.name.name),
                 invocation.span,
@@ -375,17 +425,20 @@ impl<'a> Expander<'a> {
                 span: invocation.span,
             }), None)];
         };
+        if let Some(msg) = arity_error(def, expanded_args.len()) {
+            let mut err = SyntaxError::new(msg, invocation.span);
+            err.help = self.trace_help();
+            errors.push(err);
+            self.stack.pop();
+            return vec![(Item::MacroInvocation(MacroInvocation {
+                name: invocation.name.clone(),
+                args: expanded_args,
+                span: invocation.span,
+            }), None)];
+        }
         let expanded_args = coalesce_repeat_args(&def.params, expanded_args, invocation.span);
-        if !arity_matches(def, &expanded_args) {
-            let mut err = SyntaxError::new(
-                format!(
-                    "macro `{}` expects {} argument(s), found {}",
-                    def.name,
-                    def.params.len(),
-                    expanded_args.len()
-                ),
-                invocation.span,
-            );
+        if let Some(msg) = arity_error(def, expanded_args.len()) {
+            let mut err = SyntaxError::new(msg, invocation.span);
             err.help = self.trace_help();
             errors.push(err);
             self.stack.pop();
@@ -629,7 +682,7 @@ impl<'a> Expander<'a> {
                         tokens: arg.tokens.clone(),
                     })
                     .collect();
-                let result = match self.registry.get(&name.name) {
+                let result = match self.registry.get(&name.name, self.current_path.as_deref()) {
                     None => {
                         let mut err = SyntaxError::new(
                             format!("unknown macro `{}`", name.name),
@@ -644,17 +697,19 @@ impl<'a> Expander<'a> {
                         }
                     }
                     Some((def, _)) => {
+                        if let Some(msg) = arity_error(def, expanded_args_raw.len()) {
+                            let mut err = SyntaxError::new(msg, *span);
+                            err.help = self.trace_help();
+                            errors.push(err);
+                            return Expr::MacroCall {
+                                name: name.clone(),
+                                args: expanded_args_raw,
+                                span: *span,
+                            };
+                        }
                         let expanded_args = coalesce_repeat_args(&def.params, expanded_args_raw, *span);
-                        if !arity_matches(def, &expanded_args) {
-                            let mut err = SyntaxError::new(
-                                format!(
-                                    "macro `{}` expects {} argument(s), found {}",
-                                    def.name,
-                                    def.params.len(),
-                                    expanded_args.len()
-                                ),
-                                *span,
-                            );
+                        if let Some(msg) = arity_error(def, expanded_args.len()) {
+                            let mut err = SyntaxError::new(msg, *span);
                             err.help = self.trace_help();
                             errors.push(err);
                             Expr::MacroCall {
@@ -2222,9 +2277,8 @@ fn format_trace(frames: &[MacroFrame]) -> String {
     parts.join(" -> ")
 }
 
-
 fn find_repeat_spec(tokens: &[crate::language::token::Token]) -> RepeatSpec {
-    // Optional prefix: @sep = , or @sep = ;
+    // Optional prefix: @sep = <token>
     let mut separator = None;
     let mut skip = 0;
     for (idx, window) in tokens.windows(4).enumerate() {
@@ -2232,13 +2286,8 @@ fn find_repeat_spec(tokens: &[crate::language::token::Token]) -> RepeatSpec {
             if first.kind == TokenKind::At {
                 if let TokenKind::Identifier(name) = &second.kind {
                     if name == "sep" && matches!(third.kind, TokenKind::Eq) {
-                        match fourth.kind {
-                            TokenKind::Comma | TokenKind::Semi => {
-                                separator = Some(fourth.kind.clone());
-                                skip = idx + 4;
-                            }
-                            _ => {}
-                        }
+                        separator = Some(fourth.kind.clone());
+                        skip = idx + 4;
                     }
                 }
             }
@@ -2248,4 +2297,104 @@ fn find_repeat_spec(tokens: &[crate::language::token::Token]) -> RepeatSpec {
         }
     }
     RepeatSpec { separator, skip }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::language::parser::parse_module;
+    use std::path::PathBuf;
+
+    #[test]
+    fn repeat_plus_requires_argument() {
+        let source = r#"
+module tests::repeat_plus;
+
+macro only_positive(values: repeat) -> int32 {
+  values
+}
+
+fn main() -> int32 {
+  ~only_positive();
+  0
+}
+"#;
+        let module =
+            parse_module("tests::repeat_plus", PathBuf::from("repeat_plus.prime"), source)
+                .expect("parse module");
+        let program = crate::language::ast::Program {
+            modules: vec![module],
+        };
+        let result = expand_program(&program);
+        assert!(result.is_err(), "expected arity error for repeat+ with no args");
+    }
+
+    #[test]
+    fn repeat_custom_separator_parses() {
+        let source = r#"
+module tests::repeat_custom;
+
+macro tally(values: repeat) -> int32 { values }
+
+fn main() -> int32 {
+  let (x, y, z) = ~tally(@sep = | 5 | 6 | 7);
+  x + y + z
+}
+"#;
+        let module =
+            parse_module("tests::repeat_custom", PathBuf::from("repeat_custom.prime"), source)
+                .expect("parse module");
+        let program = Program { modules: vec![module] };
+        let result = expand_program(&program);
+        assert!(result.is_ok(), "custom separator should parse/expand");
+    }
+
+    #[test]
+    fn macro_visibility_private_and_package() {
+        let priv_src = r#"
+module pkg::a;
+
+macro local_only() -> int32 { 1 }
+
+fn ok() -> int32 { ~local_only() }
+"#;
+        let caller_src = r#"
+module pkg::b;
+
+fn fail() -> int32 { ~local_only() }
+"#;
+        let package_src = r#"
+module pkg::c;
+
+pub(package) macro pkg_macro() -> int32 { 2 }
+fn ok() -> int32 { ~pkg_macro() }
+"#;
+        let outside_src = r#"
+module other::d;
+
+fn fail() -> int32 { ~pkg_macro() }
+"#;
+        let modules = vec![
+            parse_module("pkg::a", PathBuf::from("pkg/a.prime"), priv_src).unwrap(),
+            parse_module("pkg::b", PathBuf::from("pkg/b.prime"), caller_src).unwrap(),
+            parse_module("pkg::c", PathBuf::from("pkg/c.prime"), package_src).unwrap(),
+            parse_module("other::d", PathBuf::from("other/d.prime"), outside_src).unwrap(),
+        ];
+        let program = Program { modules };
+        let result = expand_program(&program);
+        assert!(result.is_err(), "expected visibility errors");
+        let errors = result.err().unwrap();
+        let messages: Vec<String> = errors
+            .iter()
+            .flat_map(|e| e.errors.iter().map(|err| err.message.clone()))
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("unknown macro `local_only`")),
+            "missing private macro error"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("unknown macro `pkg_macro`")),
+            "missing package macro error"
+        );
+    }
 }

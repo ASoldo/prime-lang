@@ -116,3 +116,20 @@ fn repeat_param_supports_semicolon_separator() -> bool {
   }, seen);
   seen == 3 && result == 3
 }
+
+macro tally_optional(values: repeat*) -> int32 {
+  let mut int32 total = 0;
+  values;
+  total
+}
+
+fn repeat_star_allows_empty() -> bool {
+  let int32 result = ~tally_optional();
+  result == 0
+}
+
+
+fn repeat_param_supports_custom_separator() -> bool {
+  let (x, y, z) = ~tally(@sep = | 5 | 6 | 7);
+  x == 5 && y == 6 && z == 7
+}

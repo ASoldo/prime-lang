@@ -32,6 +32,7 @@ pub struct Module {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Visibility {
     Public,
+    Package,
     Private,
 }
 
@@ -158,6 +159,7 @@ pub struct MacroParam {
     pub name: String,
     pub ty: Option<TypeAnnotation>,
     pub kind: MacroParamKind,
+    pub repeat_quantifier: Option<MacroRepeatQuantifier>,
     pub span: Span,
 }
 
@@ -168,6 +170,12 @@ pub enum MacroParamKind {
     Pattern,
     Tokens,
     Repeat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MacroRepeatQuantifier {
+    ZeroOrMore,
+    OneOrMore,
 }
 
 #[derive(Clone, Debug)]

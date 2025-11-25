@@ -47,8 +47,10 @@ fn format_import_path(path: &ImportPath) -> String {
 }
 
 fn write_visibility(out: &mut String, visibility: Visibility) {
-    if matches!(visibility, Visibility::Public) {
-        out.push_str("pub ");
+    match visibility {
+        Visibility::Public => out.push_str("pub "),
+        Visibility::Package => out.push_str("pub(package) "),
+        Visibility::Private => {}
     }
 }
 
@@ -218,7 +220,10 @@ fn format_macro_param(param: &MacroParam) -> String {
         MacroParamKind::Block => Some("block"),
         MacroParamKind::Pattern => Some("pattern"),
         MacroParamKind::Tokens => Some("tokens"),
-        MacroParamKind::Repeat => Some("repeat"),
+        MacroParamKind::Repeat => Some(match param.repeat_quantifier.unwrap_or(MacroRepeatQuantifier::OneOrMore) {
+            MacroRepeatQuantifier::OneOrMore => "repeat+",
+            MacroRepeatQuantifier::ZeroOrMore => "repeat*",
+        }),
         MacroParamKind::Expr => None,
     };
     if let Some(kind) = kind {
@@ -864,23 +869,64 @@ fn format_macro_arg(arg: &MacroArg) -> String {
     inner
 }
 
-fn macro_sep_prefix(tokens: &[Token]) -> Option<&'static str> {
+fn macro_sep_prefix(tokens: &[Token]) -> Option<String> {
     for window in tokens.windows(4) {
         if let [first, second, third, fourth] = window {
             if first.kind == TokenKind::At {
                 if let TokenKind::Identifier(name) = &second.kind {
                     if name == "sep" && matches!(third.kind, TokenKind::Eq) {
-                        return match fourth.kind {
-                            TokenKind::Comma => Some(","),
-                            TokenKind::Semi => Some(";"),
-                            _ => None,
-                        };
+                        return Some(token_kind_display(&fourth.kind));
                     }
                 }
             }
         }
     }
     None
+}
+
+fn token_kind_display(kind: &TokenKind) -> String {
+    match kind {
+        TokenKind::Identifier(name) => name.clone(),
+        TokenKind::Comma => ",".into(),
+        TokenKind::Semi => ";".into(),
+        TokenKind::Pipe => "|".into(),
+        TokenKind::Slash => "/".into(),
+        TokenKind::Plus => "+".into(),
+        TokenKind::Minus => "-".into(),
+        TokenKind::Star => "*".into(),
+        TokenKind::Percent => "%".into(),
+        TokenKind::Ampersand => "&".into(),
+        TokenKind::PipePipe => "||".into(),
+        TokenKind::AmpersandAmpersand => "&&".into(),
+        TokenKind::Caret => "^".into(),
+        TokenKind::Dot => ".".into(),
+        TokenKind::Colon => ":".into(),
+        TokenKind::ColonColon => "::".into(),
+        TokenKind::Arrow => "->".into(),
+        TokenKind::FatArrow => "=>".into(),
+        TokenKind::Question => "?".into(),
+        TokenKind::Bang => "!".into(),
+        TokenKind::Eq => "=".into(),
+        TokenKind::Lt => "<".into(),
+        TokenKind::Gt => ">".into(),
+        TokenKind::LtEq => "<=".into(),
+        TokenKind::GtEq => ">=".into(),
+        TokenKind::BangEq => "!=".into(),
+        TokenKind::DotDot => "..".into(),
+        TokenKind::DotDotEq => "..=".into(),
+        TokenKind::Hash => "#".into(),
+        TokenKind::LParen => "(".into(),
+        TokenKind::RParen => ")".into(),
+        TokenKind::LBrace => "{".into(),
+        TokenKind::RBrace => "}".into(),
+        TokenKind::LBracket => "[".into(),
+        TokenKind::RBracket => "]".into(),
+        TokenKind::Tilde => "~".into(),
+        TokenKind::At => "@".into(),
+        TokenKind::String(s) => s.clone(),
+        TokenKind::Rune(ch) => ch.to_string(),
+        _ => format!("{:?}", kind),
+    }
 }
 
 fn indent_multiline_arg(arg: String) -> String {
@@ -1436,7 +1482,7 @@ mod tests {
     fn formatter_macro_call_blocks_indent() {
         let input = r#"test tests.formatter_macro_call;
 
-macro tally(values: repeat) -> int32 {
+macro tally(values: repeat+) -> int32 {
   values
 }
 
@@ -1448,7 +1494,7 @@ fn repeat_param_supports_semicolon_separator() -> bool {
 "#;
         let expected = r#"test tests.formatter_macro_call;
 
-macro tally(values: repeat) -> int32 {
+macro tally(values: repeat+) -> int32 {
   values
 }
 
