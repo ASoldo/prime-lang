@@ -3242,15 +3242,23 @@ impl Interpreter {
 
         if allow_default && queue.is_empty() {
             let defaults = [
-                "21",
-                "abc",
-                "true",
-                "maybe",
-                "98.6",
-                "nope",
-                "Prime",
-                "Y",
-                "200",
+                "21",      // int32 ok
+                "abc",     // int32 err
+                "true",    // bool ok
+                "maybe",   // bool err
+                "98.6",    // float64 ok
+                "nope",    // float64 err
+                "Prime",   // string ok
+                "Y",       // rune ok
+                "200",     // int8 err
+                "42",      // uint8 ok
+                "-1",      // uint8 err
+                "500",     // uint16 ok
+                "70000",   // uint32 ok
+                "1000000", // uint64 ok
+                "128",     // usize ok
+                "3.14",    // float32 ok
+                "badf",    // float32 err
             ];
             for value in defaults {
                 if debug {

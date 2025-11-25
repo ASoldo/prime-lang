@@ -38,7 +38,7 @@ fn prime_tests_support_scripted_input() {
         .arg("tests/input_read.prime")
         .env(
             "PRIME_TEST_INPUTS",
-            "21|abc|true|maybe|98.6|nope|Prime|Y|200",
+            "21|abc|true|maybe|98.6|nope|Prime|Y|200|42|-1|500|70000|1000000|128|3.14|badf",
         )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -53,8 +53,8 @@ fn reads_string_input() -> bool {
 
 fn reads_rune_choice() -> bool {
   match in[rune]("Choose [Y/N]: ") {
-    Result::Ok(_) => true,
-    Result::Err(_) => true, // ensure rune input is consumed without blocking
+    Result::Ok(code) => code == 'Y',
+    Result::Err(_) => false,
   }
 }
 
@@ -62,5 +62,61 @@ fn rejects_out_of_range_int8() -> bool {
   match in[int8]("Small: ") {
     Result::Ok(_) => false,
     Result::Err(msg) => msg == "integer out of range for int8",
+  }
+}
+
+fn reads_uint8() -> bool {
+  match in[uint8]("u8: ") {
+    Result::Ok(value) => value == 42,
+    Result::Err(_) => false,
+  }
+}
+
+fn rejects_invalid_uint8() -> bool {
+  match in[uint8]("bad u8: ") {
+    Result::Ok(_) => false,
+    Result::Err(msg) => msg == "invalid integer input",
+  }
+}
+
+fn reads_uint16() -> bool {
+  match in[uint16]("u16: ") {
+    Result::Ok(value) => value == 500,
+    Result::Err(_) => false,
+  }
+}
+
+fn reads_uint32() -> bool {
+  match in[uint32]("u32: ") {
+    Result::Ok(value) => value == 70000,
+    Result::Err(_) => false,
+  }
+}
+
+fn reads_uint64() -> bool {
+  match in[uint64]("u64: ") {
+    Result::Ok(value) => value == 1000000,
+    Result::Err(_) => false,
+  }
+}
+
+fn reads_usize() -> bool {
+  match in[usize]("usize: ") {
+    Result::Ok(value) => value == 128,
+    Result::Err(_) => false,
+  }
+}
+
+fn reads_float32_input() -> bool {
+  match in[float32]("float32: ") {
+    Result::Ok(value) => value == 3.14,
+    Result::Err(_) => false,
+  }
+}
+
+fn rejects_invalid_float32_input() -> bool {
+  match in[float32]("bad float32: ") {
+    Result::Ok(_) => false,
+    Result::Err(msg) => msg == "invalid float input",
   }
 }

@@ -133,7 +133,7 @@ match in[int32](`Temperature for { "Soldo" }: `) {
 Input supports all primitives (`string`, `bool`, signed/unsigned ints, floats, `rune`).
 For non-interactive test runs, set `PRIME_TEST_INPUTS` to a delimited list of lines
 (supports `|`, `,`, or `;` as separators) so `in[...]` consumes scripted input instead
-of blocking on stdin. Example: `PRIME_TEST_INPUTS="21,abc,true,maybe,98.6,nope,Prime,Y,200" prime-lang test`
+of blocking on stdin. Example: `PRIME_TEST_INPUTS="21,abc,true,maybe,98.6,nope,Prime,Y,200,42,-1,500,70000,1000000,128,3.14,badf" prime-lang test`
 feeds every prompt in the bundled input tests; quote the value so shells don’t split on `|`.
 Alternatively point `PRIME_TEST_INPUTS_FILE` at a file containing one input per line.
 When no input env is provided, `prime-lang test` auto-seeds the above defaults to avoid blocking.
