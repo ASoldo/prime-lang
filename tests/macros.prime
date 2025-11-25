@@ -39,7 +39,7 @@ macro match_literal(pat: pattern, value: int32) -> int32 {
   }
 }
 
-macro collect(values: repeat) -> (int32, int32, int32) {
+macro collect(values: repeat+) -> (int32, int32, int32) {
   values
 }
 
@@ -103,7 +103,7 @@ fn repeat_param_expands_tuple() -> bool {
   a == 1 && b == 2 && c == 3
 }
 
-macro tally(values: repeat) -> int32 {
+macro tally(values: repeat+) -> int32 {
   values
 }
 
@@ -128,8 +128,7 @@ fn repeat_star_allows_empty() -> bool {
   result == 0
 }
 
-
 fn repeat_param_supports_custom_separator() -> bool {
-  let (x, y, z) = ~tally(@sep = | 5 | 6 | 7);
+  let (x, y, z) = ~tally(@sep = | 5, 6, 7);
   x == 5 && y == 6 && z == 7
 }
