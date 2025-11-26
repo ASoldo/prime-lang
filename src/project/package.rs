@@ -148,8 +148,55 @@ impl ModuleLoader {
         import_path: &ImportPath,
     ) -> Result<PathBuf, PackageError> {
         if let Some(manifest) = &self.manifest {
+            if let Some(path) = resolve_namespaced_import(manifest, import_path) {
+                return Ok(path);
+            }
             if let Some(path) = manifest.module_path(&import_path.to_string()) {
                 return Ok(path);
+            }
+            for dep in manifest.dependencies() {
+                let dep_name = crate::project::manifest::canonical_module_name(&dep.name);
+                let import_name = import_path.to_string();
+                if dep_name != import_name && !import_name.starts_with(&(dep_name.clone() + "::")) {
+                    continue;
+                }
+                let manifest_path = match &dep.source {
+                    crate::project::manifest::DependencySource::Path { path } => {
+                        path.join("prime.toml")
+                    }
+                    crate::project::manifest::DependencySource::Git { cache, .. } => {
+                        cache.join("prime.toml")
+                    }
+                };
+                if manifest_path.exists() {
+                    if let Ok(dep_manifest) =
+                        crate::project::manifest::PackageManifest::load(&manifest_path)
+                    {
+                        if let Some(path) = dep_manifest.module_path(&import_name) {
+                            return Ok(path);
+                        }
+                    }
+                }
+                let dep_segments: Vec<_> = dep_name.split("::").collect();
+                let import_segments: Vec<_> = import_path.segments.iter().map(|s| s.as_str()).collect();
+                if import_segments.starts_with(&dep_segments[..]) {
+                    let rel_segments = &import_segments[dep_segments.len()..];
+                    let mut candidate_root = match &dep.source {
+                        crate::project::manifest::DependencySource::Path { path } => path.clone(),
+                        crate::project::manifest::DependencySource::Git { cache, .. } => {
+                            cache.clone()
+                        }
+                    };
+                    for seg in rel_segments {
+                        candidate_root.push(seg);
+                    }
+                    if candidate_root.extension().is_none() {
+                        candidate_root.set_extension("prime");
+                    }
+                    if candidate_root.exists() {
+                        return Ok(candidate_root);
+                    }
+                }
             }
         }
         Ok(resolve_import_relative(base, import_path))
@@ -197,6 +244,55 @@ fn resolve_import_relative(base: &Path, import_path: &ImportPath) -> PathBuf {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
     base_dir.join(path)
+}
+
+fn resolve_namespaced_import(manifest: &PackageManifest, import_path: &ImportPath) -> Option<PathBuf> {
+    if import_path.segments.is_empty() {
+        return None;
+    }
+    if import_path.segments[0] == "deps" && import_path.segments.len() >= 2 {
+        let import_name =
+            crate::project::manifest::canonical_module_name(&import_path.segments[1..].join("::"));
+        for dep in manifest.dependencies() {
+            let dep_name = crate::project::manifest::canonical_module_name(&dep.name);
+            if import_name != dep_name && !import_name.starts_with(&(dep_name.clone() + "::")) {
+                continue;
+            }
+            let dep_manifest = match &dep.source {
+                crate::project::manifest::DependencySource::Path { path } => {
+                    let m = path.join("prime.toml");
+                    if m.exists() {
+                        PackageManifest::load(&m).ok()
+                    } else {
+                        None
+                    }
+                }
+                crate::project::manifest::DependencySource::Git { cache, .. } => {
+                    let m = cache.join("prime.toml");
+                    if m.exists() {
+                        PackageManifest::load(&m).ok()
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(dep_manifest) = dep_manifest {
+                if let Some(path) = dep_manifest.module_path(&import_name) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    if import_path.segments[0] == "libs" && import_path.segments.len() >= 2 {
+        let lib_name =
+            crate::project::manifest::canonical_module_name(&import_path.segments[1..].join("::"));
+        for entry in manifest.module_entries() {
+            if entry.kind == crate::language::ast::ModuleKind::Library && entry.name == lib_name {
+                return Some(entry.path.clone());
+            }
+        }
+    }
+    None
 }
 
 pub fn canonicalize(path: &Path) -> Result<PathBuf, std::io::Error> {

@@ -190,12 +190,12 @@ name = "demo-app"
 version = "0.1.0"
 
 [module]
-name = "demo_app.main"
+name = "demo_app::main"
 path = "main.prime"
 visibility = "pub"
 
 [libraries]
-core_types = { name = "core.types", path = "../core/types.prime", visibility = "pub" }
+core_types = { name = "core::types", path = "../core/types.prime", visibility = "pub" }
 "#,
                 explanation: "`project::manifest::PackageManifest` reads the workspace `prime.toml`, then each member's `prime.toml` for `[module]`, `[modules]`, `[libraries]`, and `[tests]` entries. Inline tables or `items` arrays are accepted. Entries must match each file's `module ...;`, `library ...;`, or `test ...;` header so `load_package` can resolve imports across the workspace before typechecking or interpretation.",
             },

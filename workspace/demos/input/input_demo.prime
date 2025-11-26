@@ -1,6 +1,6 @@
-module demos.input;
+module demos::input;
 
-import core.types;
+import core::types;
 
 fn prompt_age() -> Result[int32, string] {
   in[int32]("Enter age: ")

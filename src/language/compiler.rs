@@ -2544,7 +2544,7 @@ impl Compiler {
             .get("Ok")
             .map(|v| v.variant_index)
             .ok_or_else(|| {
-                "Result::Ok variant not found; ensure core.types is available in build mode"
+                "Result::Ok variant not found; ensure core::types is available in build mode"
                     .to_string()
             })?;
         let err_tag = self
@@ -2552,7 +2552,7 @@ impl Compiler {
             .get("Err")
             .map(|v| v.variant_index)
             .ok_or_else(|| {
-                "Result::Err variant not found; ensure core.types is available in build mode"
+                "Result::Err variant not found; ensure core::types is available in build mode"
                     .to_string()
             })?;
 
@@ -5807,12 +5807,13 @@ fn main() {
 
     #[test]
     fn borrow_demo_compiles() {
-        compile_entry("demos/borrow/borrow_demo.prime").expect("compile borrow demo in build mode");
+        compile_entry("workspace/demos/borrow/borrow_demo.prime")
+            .expect("compile borrow demo in build mode");
     }
 
     #[test]
     fn pattern_demo_compiles() {
-        compile_entry("demos/patterns/pattern_demo.prime")
+        compile_entry("workspace/demos/patterns/pattern_demo.prime")
             .expect("compile pattern demo in build mode");
     }
 

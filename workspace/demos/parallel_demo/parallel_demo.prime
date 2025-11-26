@@ -1,6 +1,6 @@
-module demos.parallel_demo;
+module demos::parallel_demo;
 
-import core.types;
+import core::types;
 
 enum WorkerOutcome {
   Total(int32),

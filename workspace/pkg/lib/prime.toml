@@ -1,8 +1,8 @@
 manifest_version = "3"
 
 [package]
-name = "pkg.lib"
+name = "pkg::lib"
 version = "0.1.0"
 
 [libraries]
-pkg_lib = { name = "pkg.lib", path = "pkg_lib.prime", visibility = "pub" }
+pkg_lib = { name = "pkg::lib", path = "pkg_lib.prime", visibility = "pub" }

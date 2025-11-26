@@ -1,4 +1,8 @@
-library libpkg_a.lib;
+library libpkg_a::lib;
+
+export prelude {
+  example,
+};
 
 pub fn example() -> int32 {
   0

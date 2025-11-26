@@ -1,12 +1,13 @@
 use crate::language::{
     ast::{
-        ConstDef, EnumDef, EnumVariant, FunctionDef, InterfaceDef, Item, MacroDef, MacroParam,
-        MacroParamKind, MacroRepeatQuantifier, Module, StructDef, Visibility,
+        ConstDef, EnumDef, EnumVariant, FunctionDef, ImportSelector, InterfaceDef, Item, MacroDef,
+        MacroParam, MacroParamKind, MacroRepeatQuantifier, Module, StructDef, Visibility,
     },
     span::Span,
     token::{Token, TokenKind},
     types::{Mutability, TypeExpr},
 };
+use std::collections::HashSet;
 use tower_lsp_server::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 
 use super::{
@@ -491,34 +492,104 @@ fn hover_for_imported_symbol(
 ) -> Option<Hover> {
     for import in &module.imports {
         let import_name = import.path.to_string();
-        let imported = modules.iter().find(|m| m.name == import_name)?;
-        for item in &imported.items {
-            match item {
-                Item::Function(func)
-                    if func.visibility == Visibility::Public && func.name == name =>
+        let imported = modules
+            .iter()
+            .find(|m| m.name == import_name)
+            .or_else(|| {
+                if import
+                    .path
+                    .segments
+                    .last()
+                    .map(|s| s == "prelude")
+                    .unwrap_or(false)
+                    && import.path.segments.len() > 1
                 {
+                    let base = import.path.segments[..import.path.segments.len() - 1].join("::");
+                    modules.iter().find(|m| m.name == base)
+                } else {
+                    None
+                }
+            })?;
+        let mut allowed: Option<HashSet<String>> = None;
+        if let Some(selectors) = &import.selectors {
+            let mut names = HashSet::new();
+            for selector in selectors {
+                match selector {
+                    ImportSelector::Name { name, alias, .. } => {
+                        names.insert(alias.clone().unwrap_or_else(|| name.clone()));
+                    }
+                    ImportSelector::Glob(_) => {
+                        names.clear();
+                        break;
+                    }
+                }
+            }
+            if !names.is_empty() {
+                allowed = Some(names);
+            }
+        } else if import
+            .path
+            .segments
+            .last()
+            .map(|s| s == "prelude")
+            .unwrap_or(false)
+        {
+            let mut names = HashSet::new();
+            for selector in &imported.prelude {
+                match selector {
+                    ImportSelector::Name { name, alias, .. } => {
+                        names.insert(alias.clone().unwrap_or_else(|| name.clone()));
+                    }
+                    ImportSelector::Glob(_) => {
+                        names.clear();
+                        break;
+                    }
+                }
+            }
+            if !names.is_empty() {
+                allowed = Some(names);
+            }
+        }
+        for item in &imported.items {
+            let (label, public) = match item {
+                Item::Function(func) => (&func.name, func.visibility == Visibility::Public),
+                Item::Struct(def) => (&def.name, def.visibility == Visibility::Public),
+                Item::Enum(def) => (&def.name, def.visibility == Visibility::Public),
+                Item::Interface(def) => (&def.name, def.visibility == Visibility::Public),
+                Item::Macro(def) => (&def.name, def.visibility == Visibility::Public),
+                Item::Const(def) => (&def.name, def.visibility == Visibility::Public),
+                Item::Impl(_) | Item::MacroInvocation(_) => continue,
+            };
+            if let Some(allow) = &allowed {
+                if !allow.contains(label) {
+                    continue;
+                }
+            }
+            if !public || label != &name {
+                continue;
+            }
+            match item {
+                Item::Function(func) if func.name == name => {
                     let value = format_function_hover(func);
                     return Some(markdown_hover(text, usage_span, value));
                 }
-                Item::Struct(def) if def.visibility == Visibility::Public && def.name == name => {
+                Item::Struct(def) if def.name == name => {
                     let snippet = format_struct_hover(def);
                     return Some(markdown_hover(text, usage_span, snippet));
                 }
-                Item::Enum(def) if def.visibility == Visibility::Public && def.name == name => {
+                Item::Enum(def) if def.name == name => {
                     let snippet = format_enum_hover(def);
                     return Some(markdown_hover(text, usage_span, snippet));
                 }
-                Item::Interface(def)
-                    if def.visibility == Visibility::Public && def.name == name =>
-                {
+                Item::Interface(def) if def.name == name => {
                     let snippet = format_interface_hover(def);
                     return Some(markdown_hover(text, usage_span, snippet));
                 }
-                Item::Macro(def) if def.visibility == Visibility::Public && def.name == name => {
+                Item::Macro(def) if def.name == name => {
                     let snippet = format_macro_signature_block(def);
                     return Some(markdown_hover(text, usage_span, snippet));
                 }
-                Item::Const(def) if def.visibility == Visibility::Public && def.name == name => {
+                Item::Const(def) if def.name == name => {
                     let snippet = format_const_snippet(text, def);
                     return Some(markdown_hover(text, usage_span, snippet));
                 }

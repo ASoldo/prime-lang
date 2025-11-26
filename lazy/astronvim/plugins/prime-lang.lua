@@ -63,6 +63,7 @@ return {
 			opts.extension = opts.extension or {}
 			opts.filetype = opts.filetype or {}
 			opts.directory = opts.directory or {}
+			opts.file = opts.file or {}
 
 			-- 1) .prime files
 			opts.extension["prime"] = {
@@ -81,6 +82,16 @@ return {
 			-- folder named "src" (yeah, global; good enough for your own projects)
 			opts.directory["src"] = {
 				glyph = "",
+				hl = "MiniIconsCyan",
+			}
+
+			-- prime specific icons for meta files
+			opts.file["prime.lock"] = {
+				glyph = "󰦝",
+				hl = "MiniIconsCyan",
+			}
+			opts.file["prime.toml"] = {
+				glyph = "",
 				hl = "MiniIconsCyan",
 			}
 
@@ -129,7 +140,7 @@ return {
 			-- highlights.scm
 			do
 				local highlights = [[
-    ["fn" "let" "mut" "import" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "loop" "spawn" "return" "break" "continue" "defer" "module" "test" "library" "macro" "pub" "interface" "impl" "try" "move"] @keyword
+    ["fn" "let" "mut" "import" "export" "prelude" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "loop" "spawn" "return" "break" "continue" "defer" "module" "test" "library" "macro" "pub" "interface" "impl" "try" "move"] @keyword
 
     (module_declaration name: (module_path) @namespace)
     (module_path (identifier) @namespace)

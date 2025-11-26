@@ -11,8 +11,7 @@ pub fn format_module(module: &Module) -> String {
             ModuleKind::Library => "library",
             ModuleKind::Test => "test",
         };
-        let rendered_name = name.replace("::", ".");
-        out.push_str(&format!("{header} {};\n\n", rendered_name));
+        out.push_str(&format!("{header} {};\n\n", name));
     }
     for import in &module.imports {
         write_visibility(&mut out, import.visibility);
@@ -21,10 +20,21 @@ pub fn format_module(module: &Module) -> String {
         if let Some(alias) = &import.alias {
             out.push_str(&format!(" as {}", alias));
         }
+        if let Some(selectors) = &import.selectors {
+            out.push_str("::{");
+            write_inline_selectors(&mut out, selectors);
+            out.push('}');
+        }
         out.push_str(";\n");
     }
     if !module.imports.is_empty() {
         out.push('\n');
+    }
+
+    if !module.prelude.is_empty() {
+        out.push_str("export prelude {\n");
+        write_multiline_selectors(&mut out, &module.prelude);
+        out.push_str("};\n\n");
     }
 
     for (idx, item) in module.items.iter().enumerate() {
@@ -47,7 +57,39 @@ pub fn format_module(module: &Module) -> String {
 }
 
 fn format_import_path(path: &ImportPath) -> String {
-    path.segments.join(".")
+    path.segments.join("::")
+}
+
+fn write_inline_selectors(out: &mut String, selectors: &[ImportSelector]) {
+    for (idx, sel) in selectors.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        match sel {
+            ImportSelector::Name { name, alias, .. } => {
+                out.push_str(name);
+                if let Some(alias) = alias {
+                    out.push_str(&format!(" as {}", alias));
+                }
+            }
+            ImportSelector::Glob(_) => out.push('*'),
+        }
+    }
+}
+
+fn write_multiline_selectors(out: &mut String, selectors: &[ImportSelector]) {
+    for sel in selectors {
+        match sel {
+            ImportSelector::Name { name, alias, .. } => {
+                if let Some(alias) = alias {
+                    out.push_str(&format!("  {} as {},\n", name, alias));
+                } else {
+                    out.push_str(&format!("  {},\n", name));
+                }
+            }
+            ImportSelector::Glob(_) => out.push_str("  *,\n"),
+        }
+    }
 }
 
 fn write_visibility(out: &mut String, visibility: Visibility) {
@@ -1469,19 +1511,19 @@ mod tests {
 
     #[test]
     fn formatter_literals_and_maps() {
-        let input =
-            fs::read_to_string("tests/golden/formatter_literals_in.prime").expect("fixture input");
-        let output =
-            fs::read_to_string("tests/golden/formatter_literals_out.prime").expect("fixture out");
+        let input = fs::read_to_string("workspace/tests/golden/formatter_literals_in.prime")
+            .expect("fixture input");
+        let output = fs::read_to_string("workspace/tests/golden/formatter_literals_out.prime")
+            .expect("fixture out");
         let formatted = format_fixture(&input);
         assert_eq!(formatted, output);
     }
 
     #[test]
     fn formatter_interface_self() {
-        let input = fs::read_to_string("tests/golden/formatter_interface_self_in.prime")
+        let input = fs::read_to_string("workspace/tests/golden/formatter_interface_self_in.prime")
             .expect("fixture input");
-        let output = fs::read_to_string("tests/golden/formatter_interface_self_out.prime")
+        let output = fs::read_to_string("workspace/tests/golden/formatter_interface_self_out.prime")
             .expect("fixture out");
         let formatted = format_fixture(&input);
         assert_eq!(formatted, output);
@@ -1489,7 +1531,7 @@ mod tests {
 
     #[test]
     fn formatter_macro_call_blocks_indent() {
-        let input = r#"test tests.formatter_macro_call;
+        let input = r#"test tests::formatter_macro_call;
 
 macro tally(values: repeat+) -> int32 {
   values
@@ -1501,7 +1543,7 @@ fn repeat_param_supports_semicolon_separator() -> bool {
   seen == 3 && result == 3
 }
 "#;
-        let expected = r#"test tests.formatter_macro_call;
+        let expected = r#"test tests::formatter_macro_call;
 
 macro tally(values: repeat+) -> int32 {
   values

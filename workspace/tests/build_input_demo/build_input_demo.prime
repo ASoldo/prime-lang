@@ -1,6 +1,6 @@
-module tests.build_input_demo;
+module tests::build_input_demo;
 
-import core.types;
+import core::types;
 
 fn main() {
   match in[int32](`Enter age: `) {

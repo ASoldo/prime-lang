@@ -33,7 +33,7 @@ cargo install --path .
 prime-lang run main.prime         # interpret
 prime-lang build main.prime       # emit LLVM, link to ./.build.prime/output
 ./.build.prime/output/output      # run the native binary
-# Try another module: prime-lang run --entry demos.error_handling
+# Try another module: prime-lang run --entry demos::error_handling
 ```
 
 The repository ships with `main.prime` so you can confirm the full toolchain
@@ -59,9 +59,9 @@ the emitted binary uses real OS threads.
 Run any of them directly:
 
 ```bash
-prime-lang run lab_demo.prime            # module demos.lab_demo in the manifest
-prime-lang run pattern_demo.prime        # module demos.patterns
-prime-lang run error_handling_demo.prime # module demos.error_handling
+prime-lang run lab_demo.prime            # module demos::lab_demo in the manifest
+prime-lang run pattern_demo.prime        # module demos::patterns
+prime-lang run error_handling_demo.prime # module demos::error_handling
 ```
 
 Validated outputs (fresh run, current syntax):
@@ -169,37 +169,35 @@ name = "demo-app"
 version = "0.1.0"
 
 [module]
-name = "demo_app.main"
+name = "demo_app::main"
 path = "main.prime"
 visibility = "pub"
 
 [dependencies]
-util_logging = { name = "util.logging", git = "https://example.com/logging.git", features = ["fmt"] }
+util_logging = { name = "util::logging", git = "https://example.com/logging.git", features = ["fmt"] }
 
 [libraries]
-core_types = { name = "core.types", path = "../core/types.prime", visibility = "pub" }
+core_types = { name = "core::types", path = "../core/types.prime", visibility = "pub" }
 ```
 
-Module names can use either `::` or `.` separators; `core.types` and `core::types`
-resolve to the same module internally. Tests can be listed under `[tests]` (inline
-entries or an `items` array) if you want manifest metadata; otherwise any file that
-starts with `test ...;` is
-discovered by `prime-lang test`.
+Module names use `::` separators (no dots). Tests can be listed under `[tests]`
+(inline entries or an `items` array) if you want manifest metadata; otherwise
+any file that starts with `test ...;` is discovered by `prime-lang test`.
 
 ### Tests
 
-- Write test files with a `test my.module;` header. They can import other modules
+- Write test files with a `test my::module;` header. They can import other modules
   and define any number of functions; no `main` is required.
 - `prime-lang test` runs every zero-arg function in the test module (bool return
   is treated as pass/fail). The full return list is passed to the next function
   when arity matches (supports multi-value chaining) or to a single-arg function
   when there is exactly one return; otherwise the function is skipped with a note.
-- Targets can be files or module names (`prime-lang test tests.basic,other.test`);
+- Targets can be files or module names (`prime-lang test tests::basic,other::test`);
   no target runs all discovered test headers.
 - `prime-lang run/build` refuse to execute/compile `test ...;` targets.
 - Built-in helpers for tests: `assert(cond: bool)` and `expect(cond: bool, message: string)`.
 
-`prime-lang add demos.patterns --path pattern_demo.prime` will append another
+`prime-lang add demos::patterns --path pattern_demo.prime` will append another
 `[modules]` entry and create the stub file automatically. Keeping the manifest
 in sync with each file’s `module ...;` declaration lets the CLI, interpreter,
 compiler, and LSP share the same package graph.
@@ -212,11 +210,11 @@ in `main.prime` and `types.prime` demonstrate the core semantics:
 ### Modules, Libraries & Imports
 
 ```prime
-module app.main;
-library core.types;
+module app::main;
+library core::types;
 
-import core.types;            // load structs/enums from types.prime
-import math.random;           // relative paths become math/random.prime
+import core::types;            // load structs/enums from types.prime
+import math::random;           // relative paths become math/random.prime
 ```
 
 Headers distinguish entrypoints (`module` with `main`), shared code (`library`

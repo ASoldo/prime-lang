@@ -1,4 +1,4 @@
-module demos.lab_demo;
+module demos::lab_demo;
 
 const LAB_TITLE: string = "Prime Resonance Lab";
 

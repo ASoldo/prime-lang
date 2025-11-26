@@ -45,7 +45,7 @@ module.exports = grammar({
   rules: {
     program: $ => seq(
       optional($.module_declaration),
-      repeat($.import_declaration),
+      repeat(choice($.import_declaration, $.prelude_export)),
       repeat($.item)
     ),
 
@@ -60,7 +60,25 @@ module.exports = grammar({
       'import',
       field('path', choice($.module_path, $.string_literal)),
       optional(seq('as', field('alias', $.identifier))),
-      ';'
+      optional($.import_selector_list),
+      optional(';')
+    ),
+
+    prelude_export: $ => seq(
+      'export',
+      'prelude',
+      field('selectors', $.import_selector_list),
+      optional(';')
+    ),
+
+    import_selector_list: $ => seq(
+      '{',
+      commaSep1(choice(
+        '*',
+        seq(field('name', $.identifier), optional(seq('as', field('alias', $.identifier))))
+      )),
+      optional(','),
+      '}'
     ),
 
     module_path: $ => prec(1, seq(

@@ -928,6 +928,42 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "import_selector_list",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "import_selector_list",
+    "named": true,
+    "fields": {
+      "alias": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -1568,6 +1604,22 @@
     }
   },
   {
+    "type": "prelude_export",
+    "named": true,
+    "fields": {
+      "selectors": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "import_selector_list",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "program",
     "named": true,
     "root": true,
@@ -1586,6 +1638,10 @@
         },
         {
           "type": "module_declaration",
+          "named": true
+        },
+        {
+          "type": "prelude_export",
           "named": true
         }
       ]
@@ -2310,6 +2366,10 @@
     "named": false
   },
   {
+    "type": "export",
+    "named": false
+  },
+  {
     "type": "false",
     "named": false
   },
@@ -2387,6 +2447,10 @@
   },
   {
     "type": "mut",
+    "named": false
+  },
+  {
+    "type": "prelude",
     "named": false
   },
   {

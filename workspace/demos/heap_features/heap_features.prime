@@ -1,6 +1,6 @@
-module demos.heap_features;
+module demos::heap_features;
 
-import core.types;
+import core::types;
 
 fn describe_slice(label: string, collection: []string) {
   let int32 total = collection.len();

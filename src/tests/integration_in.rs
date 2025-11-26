@@ -75,7 +75,7 @@ fn prime_tests_support_scripted_input() {
     let mut cmd = Command::new(bin_path());
     cmd.current_dir(root())
         .arg("test")
-        .arg("tests/input_read/input_read.prime")
+        .arg("workspace/tests/input_read/input_read.prime")
         .env(
             "PRIME_TEST_INPUTS",
             "21|abc|true|maybe|98.6|nope|Prime|Y|200|42|-1|500|70000|1000000|128|3.14|badf",
@@ -101,7 +101,7 @@ fn build_mode_in_preserves_values() {
         .current_dir(root())
         .args([
             "build",
-            "tests/build_input_demo/build_input_demo.prime",
+            "workspace/tests/build_input_demo/build_input_demo.prime",
             "--name",
             build_name,
         ])
@@ -160,7 +160,7 @@ name = "dep"
 version = "0.1.0"
 
 [libraries]
-dep_lib = { name = "dep.lib", path = "lib.prime", visibility = "pub" }
+dep_lib = { name = "dep::lib", path = "lib.prime", visibility = "pub" }
 "#,
     )
     .expect("write dep manifest");
@@ -200,7 +200,7 @@ name = "app"
 version = "0.1.0"
 
 [module]
-name = "app.main"
+name = "app::main"
 path = "main.prime"
 visibility = "pub"
 "#,
@@ -211,7 +211,7 @@ visibility = "pub"
         r#"
 module app::main;
 
-import dep.lib;
+import dep::lib;
 
 fn main() {
   out(7);
@@ -225,8 +225,8 @@ fn main() {
         .current_dir(&app_dir)
         .args([
             "add",
-            "dep.lib",
-            "--git",
+            "dep::lib",
+            "--dep-path",
             dep_dir.to_str().unwrap(),
             "--features",
             "featA",
@@ -238,7 +238,7 @@ fn main() {
     // run entry
     let output = Command::new(bin_path())
         .current_dir(&workspace_root)
-        .args(["run", "app/main.prime"])
+        .args(["run", "app/main.prime", "--project", "app"])
         .output()
         .expect("run prime-lang run");
     assert!(
@@ -349,7 +349,7 @@ fn main() {
     // run the app from workspace root
     let output = Command::new(bin_path())
         .current_dir(root)
-        .args(["run", "app.main", "--project", "app"])
+        .args(["run", "app::main", "--project", "app"])
         .output()
         .expect("run app");
     assert!(

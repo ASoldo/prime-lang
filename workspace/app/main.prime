@@ -1,15 +1,15 @@
-module app.main;
+module app::main;
 
-import core.types;
-import libpkg_a.lib;
+import core::types;
+import libpkg_a::lib::{example};
 
 const TRAINING_LIMIT: int32 = 3;
 
-interface Renderable[T] {
+pub interface Renderable[T] {
   fn render(self: T);
 }
 
-interface Nameable[T] {
+pub interface Nameable[T] {
   fn label(self: T) -> string;
 }
 
@@ -432,16 +432,16 @@ fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
 
 fn describe_event(event: MissionEvent) {
   match event {
-    event::Completed(stage) if stage == "Prime ascent" => {
+    MissionEvent::Completed(stage) if stage == "Prime ascent" => {
       out(`mission completed with honors: {stage}`);
     },
-    event::Completed(stage) => {
+    MissionEvent::Completed(stage) => {
       out(`mission completed: {stage}`);
     },
-    event::Failed(reason) => {
+    MissionEvent::Failed(reason) => {
       out(`mission failed: {reason}`);
     },
-    event::Waiting => {
+    MissionEvent::Waiting => {
       out("mission awaiting clearance");
     },
   }
@@ -449,9 +449,9 @@ fn describe_event(event: MissionEvent) {
 
 fn summarize_event(event: MissionEvent) -> string {
   match event {
-    event::Completed(stage) => stage,
-    event::Failed(reason) => reason,
-    event::Waiting => "Awaiting assignment",
+    MissionEvent::Completed(stage) => stage,
+    MissionEvent::Failed(reason) => reason,
+    MissionEvent::Waiting => "Awaiting assignment",
   }
 }
 

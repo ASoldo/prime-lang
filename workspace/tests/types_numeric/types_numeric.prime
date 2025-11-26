@@ -1,4 +1,4 @@
-test tests.types_numeric;
+test tests::types_numeric;
 
 fn accepts_all_numeric_types() -> bool {
   let int8 a = 0;

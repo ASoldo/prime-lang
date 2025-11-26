@@ -49,12 +49,10 @@ impl TypeError {
 }
 
 struct TypeRegistry {
+    modules: HashMap<String, ModuleSymbols>,
     structs: HashMap<String, StructInfo>,
     enums: HashMap<String, EnumInfo>,
     enum_variants: HashMap<String, EnumVariantInfo>,
-    functions: HashMap<FunctionKey, FunctionSignature>,
-    consts: HashMap<String, ConstInfo>,
-    interfaces: HashMap<String, InterfaceInfo>,
     impls: HashSet<ImplKey>,
     pending_impls: Vec<ImplCandidate>,
     errors: Vec<TypeError>,
@@ -63,12 +61,10 @@ struct TypeRegistry {
 impl Default for TypeRegistry {
     fn default() -> Self {
         Self {
+            modules: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
             enum_variants: HashMap::new(),
-            functions: HashMap::new(),
-            consts: HashMap::new(),
-            interfaces: HashMap::new(),
             impls: HashSet::new(),
             pending_impls: Vec::new(),
             errors: Vec::new(),
@@ -76,9 +72,70 @@ impl Default for TypeRegistry {
     }
 }
 
+impl TypeRegistry {
+    fn module_symbols_mut(&mut self, module: &str) -> &mut ModuleSymbols {
+        self.modules
+            .entry(module.to_string())
+            .or_insert_with(ModuleSymbols::new)
+    }
+
+    fn module_symbols(&self, module: &str) -> Option<&ModuleSymbols> {
+        self.modules.get(module)
+    }
+
+    fn find_interface(&self, name: &str) -> Option<InterfaceInfo> {
+        self.modules
+            .values()
+            .find_map(|symbols| symbols.interfaces.get(name).cloned())
+    }
+
+    fn find_function_in_module(
+        &self,
+        module: &str,
+        key: &FunctionKey,
+    ) -> Option<FunctionInfo> {
+        self.module_symbols(module)
+            .and_then(|symbols| symbols.functions.get(key).cloned())
+    }
+
+    fn find_const_in_module(&self, module: &str, name: &str) -> Option<ConstInfo> {
+        self.module_symbols(module)
+            .and_then(|symbols| symbols.consts.get(name).cloned())
+    }
+
+    fn find_struct_in_module(&self, module: &str, name: &str) -> Option<&StructInfo> {
+        self.structs
+            .get(name)
+            .filter(|info| info._module == module)
+    }
+
+    fn find_enum_in_module(&self, module: &str, name: &str) -> Option<&EnumInfo> {
+        self.enums.get(name).filter(|info| info.module == module)
+    }
+}
+
+struct ModuleSymbols {
+    functions: HashMap<FunctionKey, FunctionInfo>,
+    consts: HashMap<String, ConstInfo>,
+    interfaces: HashMap<String, InterfaceInfo>,
+    prelude: Vec<ImportSelector>,
+}
+
+impl ModuleSymbols {
+    fn new() -> Self {
+        Self {
+            functions: HashMap::new(),
+            consts: HashMap::new(),
+            interfaces: HashMap::new(),
+            prelude: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct StructInfo {
     def: StructDef,
+    _module: String,
 }
 
 #[derive(Clone)]
@@ -109,7 +166,9 @@ impl EnumVariantInfo {
 #[derive(Clone)]
 struct ConstInfo {
     ty: Option<TypeAnnotation>,
+    visibility: Visibility,
     _span: Span,
+    _module: String,
 }
 
 #[derive(Clone)]
@@ -128,12 +187,17 @@ struct FunctionKey {
 }
 
 #[derive(Clone)]
+struct FunctionInfo {
+    signature: FunctionSignature,
+    visibility: Visibility,
+    _module: String,
+}
+
+#[derive(Clone)]
 struct InterfaceInfo {
     def: InterfaceDef,
-    #[allow(dead_code)]
-    module: String,
-    #[allow(dead_code)]
-    span: Span,
+    _module: String,
+    _span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -158,6 +222,7 @@ pub fn check_program(expanded: &ExpandedProgram) -> Result<(), Vec<TypeError>> {
     let mut checker = Checker {
         registry,
         errors: Vec::new(),
+        current_module: None,
     };
     checker.errors.extend(checker.registry.errors.drain(..));
     checker.validate_impls();
@@ -176,12 +241,20 @@ pub fn check_program(expanded: &ExpandedProgram) -> Result<(), Vec<TypeError>> {
 }
 
 fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
+    {
+        let symbols = registry.module_symbols_mut(&module.name);
+        symbols.prelude = module.prelude.clone();
+    }
     for item in &module.items {
         match item {
             Item::Struct(def) => {
-                registry
-                    .structs
-                    .insert(def.name.clone(), StructInfo { def: def.clone() });
+                registry.structs.insert(
+                    def.name.clone(),
+                    StructInfo {
+                        def: def.clone(),
+                        _module: module.name.clone(),
+                    },
+                );
             }
             Item::Enum(def) => {
                 for variant in &def.variants {
@@ -206,11 +279,14 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
                 register_function(registry, &module.name, def.clone(), None);
             }
             Item::Const(def) => {
-                registry.consts.insert(
+                let symbols = registry.module_symbols_mut(&module.name);
+                symbols.consts.insert(
                     def.name.clone(),
                     ConstInfo {
                         ty: def.ty.clone(),
+                        visibility: def.visibility,
                         _span: def.span,
+                        _module: module.name.clone(),
                     },
                 );
             }
@@ -233,19 +309,20 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
                 });
             }
             Item::Interface(def) => {
-                if registry.interfaces.contains_key(&def.name) {
+                let symbols = registry.module_symbols_mut(&module.name);
+                if symbols.interfaces.contains_key(&def.name) {
                     registry.errors.push(TypeError::new(
                         &module.path,
                         def.span,
                         format!("duplicate interface `{}`", def.name),
                     ));
                 } else {
-                    registry.interfaces.insert(
+                    symbols.interfaces.insert(
                         def.name.clone(),
                         InterfaceInfo {
                             def: def.clone(),
-                            module: module.name.clone(),
-                            span: def.span,
+                            _module: module.name.clone(),
+                            _span: def.span,
                         },
                     );
                 }
@@ -270,10 +347,6 @@ fn register_function(
     def: FunctionDef,
     receiver: Option<String>,
 ) {
-    let key = FunctionKey {
-        name: def.name.clone(),
-        receiver: receiver.clone(),
-    };
     let params: Vec<TypeAnnotation> = def.params.iter().map(|param| param.ty.clone()).collect();
     let returns = def.returns.clone();
     let base_signature = FunctionSignature {
@@ -283,20 +356,16 @@ fn register_function(
         returns: returns.clone(),
         span: def.span,
     };
-    registry.functions.insert(key, base_signature);
-    let qualified_name = format!("{}::{}", module, def.name);
-    let qualified = FunctionKey {
-        name: qualified_name.clone(),
-        receiver,
-    };
-    registry.functions.insert(
-        qualified,
-        FunctionSignature {
-            name: qualified_name,
-            type_params: def.type_params,
-            params,
-            returns,
-            span: def.span,
+    let symbols = registry.module_symbols_mut(module);
+    symbols.functions.insert(
+        FunctionKey {
+            name: def.name.clone(),
+            receiver: receiver.clone(),
+        },
+        FunctionInfo {
+            signature: base_signature,
+            visibility: def.visibility,
+            _module: module.to_string(),
         },
     );
 }
@@ -304,19 +373,30 @@ fn register_function(
 struct Checker {
     registry: TypeRegistry,
     errors: Vec<TypeError>,
+    current_module: Option<String>,
 }
 
 impl Checker {
     fn resolve_enum_literal(
         &self,
         module: &Module,
+        env: &FnEnv,
         enum_name: Option<&str>,
         variant: &str,
         span: Span,
     ) -> Result<EnumVariantInfo, TypeError> {
         if let Some(name) = enum_name {
-            let enum_info = self.registry.enums.get(name).ok_or_else(|| {
-                TypeError::new(&module.path, span, format!("Unknown enum `{}`", name))
+            let mut private = false;
+            let enum_info = self.lookup_enum(env, name, &mut private).ok_or_else(|| {
+                if private {
+                    TypeError::new(
+                        &module.path,
+                        span,
+                        format!("enum `{}` is not public", name),
+                    )
+                } else {
+                    TypeError::new(&module.path, span, format!("Unknown enum `{}`", name))
+                }
             })?;
             let variant_def =
                 find_variant(&enum_info.def, &enum_info.module, variant, module, span)?;
@@ -336,6 +416,430 @@ impl Checker {
         }
     }
 
+    fn can_access(&self, module: &str, visibility: Visibility) -> bool {
+        matches!(visibility, Visibility::Public)
+            || self.current_module.as_deref() == Some(module)
+    }
+
+    fn build_import_scope(&mut self, module: &Module) -> ImportScope {
+        let mut scope = ImportScope::default();
+        self.apply_default_prelude(module, &mut scope);
+        for import in &module.imports {
+            let (module_name, selectors_override) = if import
+                .path
+                .segments
+                .last()
+                .map(|s| s == "prelude")
+                .unwrap_or(false)
+            {
+                if import.path.segments.len() < 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        import.span,
+                        "prelude import requires a parent module",
+                    ));
+                    continue;
+                }
+                let base_segments = &import.path.segments[..import.path.segments.len() - 1];
+                let base_module = base_segments.join("::");
+                let Some(symbols) = self.registry.module_symbols(&base_module) else {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        import.span,
+                        format!("unknown module `{}`", base_module),
+                    ));
+                    continue;
+                };
+                let selectors = if let Some(sel) = &import.selectors {
+                    sel.clone()
+                } else {
+                    symbols.prelude.clone()
+                };
+                (base_module, Some(selectors))
+            } else {
+                (import.canonical_path(), import.selectors.clone())
+            };
+            if self.registry.module_symbols(&module_name).is_none() {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    import.span,
+                    format!("unknown module `{}`", module_name),
+                ));
+                continue;
+            }
+            if let Some(selectors) = selectors_override.as_ref() {
+                for selector in selectors {
+                    match selector {
+                        ImportSelector::Name { name, alias, span } => {
+                            let local_name = alias.clone().unwrap_or_else(|| name.clone());
+                            if let Some(existing) = scope.selected.get(&local_name) {
+                                if existing.module == module_name && existing.name == *name {
+                                    continue;
+                                }
+                                self.errors.push(TypeError::new(
+                                    &module.path,
+                                    *span,
+                                    format!("duplicate import `{}`", local_name),
+                                ));
+                                continue;
+                            }
+                            if !self.validate_public_symbol(
+                                &module_name,
+                                name,
+                                &module.path,
+                                *span,
+                            ) {
+                                continue;
+                            }
+                            scope.selected.insert(
+                                local_name,
+                                ImportedItem {
+                                    module: module_name.clone(),
+                                    name: name.clone(),
+                                },
+                            );
+                        }
+                        ImportSelector::Glob(span) => {
+                            if scope.globs.contains(&module_name) {
+                                self.errors.push(TypeError::new(
+                                    &module.path,
+                                    *span,
+                                    format!("duplicate glob import from `{}`", module_name),
+                                ));
+                                continue;
+                            }
+                            scope.globs.push(module_name.clone());
+                        }
+                    }
+                }
+            } else {
+                let alias = import
+                    .alias
+                    .clone()
+                    .or_else(|| import.path.segments.last().cloned())
+                    .unwrap_or_else(|| module_name.clone());
+                if scope.modules.contains_key(&alias) {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        import.span,
+                        format!("duplicate module import alias `{}`", alias),
+                    ));
+                    continue;
+                }
+                scope.modules.insert(alias, module_name.clone());
+                if let Some(symbols) = self.registry.module_symbols(&module_name) {
+                    let prelude = symbols.prelude.clone();
+                    for selector in prelude {
+                        match selector {
+                            ImportSelector::Name { name, alias, span } => {
+                                let local_name =
+                                    alias.clone().unwrap_or_else(|| name.clone());
+                                if let Some(existing) = scope.selected.get(&local_name) {
+                                    if existing.module == module_name && existing.name == name {
+                                        continue;
+                                    }
+                                    self.errors.push(TypeError::new(
+                                        &module.path,
+                                        span,
+                                        format!("duplicate import `{}`", local_name),
+                                    ));
+                                    continue;
+                                }
+                                if !self.validate_public_symbol(
+                                    &module_name,
+                                    &name,
+                                    &module.path,
+                                    span,
+                                ) {
+                                    continue;
+                                }
+                                scope.selected.insert(
+                                    local_name,
+                                    ImportedItem {
+                                        module: module_name.clone(),
+                                        name: name.clone(),
+                                    },
+                                );
+                            }
+                            ImportSelector::Glob(span) => {
+                                scope.globs.push(module_name.clone());
+                                let _ = span;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        scope
+    }
+
+    fn apply_default_prelude(&mut self, module: &Module, scope: &mut ImportScope) {
+        let default = "core::types";
+        if module.name == default {
+            return;
+        }
+        let Some(symbols) = self.registry.module_symbols(default) else {
+            return;
+        };
+        let prelude = symbols.prelude.clone();
+        for selector in prelude {
+            match selector {
+                ImportSelector::Name { name, alias, span } => {
+                    let local_name = alias.clone().unwrap_or_else(|| name.clone());
+                    if scope.selected.contains_key(&local_name) {
+                        continue;
+                    }
+                    if !self.validate_public_symbol(default, &name, &module.path, span) {
+                        continue;
+                    }
+                    scope.selected.insert(
+                        local_name,
+                        ImportedItem {
+                            module: default.to_string(),
+                            name,
+                        },
+                    );
+                }
+                ImportSelector::Glob(_) => {
+                    if !scope.globs.contains(&default.to_string()) {
+                        scope.globs.push(default.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    fn validate_public_symbol(
+        &mut self,
+        module_name: &str,
+        name: &str,
+        path: &PathBuf,
+        span: Span,
+    ) -> bool {
+        let Some(symbols) = self.registry.module_symbols(module_name) else {
+            self.errors.push(TypeError::new(
+                path,
+                span,
+                format!("unknown module `{}`", module_name),
+            ));
+            return false;
+        };
+        let key = FunctionKey {
+            name: name.to_string(),
+            receiver: None,
+        };
+        if let Some(func) = symbols.functions.get(&key) {
+            if self.can_access(module_name, func.visibility) {
+                return true;
+            }
+            self.errors.push(TypeError::new(
+                path,
+                span,
+                format!("`{}` is not public in `{}`", name, module_name),
+            ));
+            return false;
+        }
+        if let Some(const_info) = symbols.consts.get(name) {
+            if self.can_access(module_name, const_info.visibility) {
+                return true;
+            }
+            self.errors.push(TypeError::new(
+                path,
+                span,
+                format!("`{}` is not public in `{}`", name, module_name),
+            ));
+            return false;
+        }
+        if let Some(interface) = symbols.interfaces.get(name) {
+            if self.can_access(module_name, interface.def.visibility) {
+                return true;
+            }
+            self.errors.push(TypeError::new(
+                path,
+                span,
+                format!("`{}` is not public in `{}`", name, module_name),
+            ));
+            return false;
+        }
+        if let Some(struct_info) = self.registry.find_struct_in_module(module_name, name) {
+            if self.can_access(module_name, struct_info.def.visibility) {
+                return true;
+            }
+            self.errors.push(TypeError::new(
+                path,
+                span,
+                format!("`{}` is not public in `{}`", name, module_name),
+            ));
+            return false;
+        }
+        if let Some(enum_info) = self.registry.find_enum_in_module(module_name, name) {
+            if self.can_access(module_name, enum_info.def.visibility) {
+                return true;
+            }
+            self.errors.push(TypeError::new(
+                path,
+                span,
+                format!("`{}` is not public in `{}`", name, module_name),
+            ));
+            return false;
+        }
+        self.errors.push(TypeError::new(
+            path,
+            span,
+            format!("`{}` not found in `{}`", name, module_name),
+        ));
+        false
+    }
+
+    fn lookup_function_in_module(
+        &self,
+        module_name: &str,
+        func_name: &str,
+        receiver: Option<&str>,
+    ) -> Option<FunctionSignature> {
+        let key = FunctionKey {
+            name: func_name.to_string(),
+            receiver: receiver.map(|s| s.to_string()),
+        };
+        let info = self.registry.find_function_in_module(module_name, &key)?;
+        if self.can_access(module_name, info.visibility) {
+            Some(info.signature)
+        } else {
+            None
+        }
+    }
+
+    fn resolve_module_name<'a>(&self, env: &'a FnEnv, name: &'a str) -> Option<&'a str> {
+        if let Some(found) = env.module_alias(name) {
+            Some(found.as_str())
+        } else if self.registry.module_symbols(name).is_some() {
+            Some(name)
+        } else {
+            None
+        }
+    }
+
+    fn lookup_const_in_module(&self, module_name: &str, name: &str) -> Option<TypeExpr> {
+        let info = self.registry.find_const_in_module(module_name, name)?;
+        if self.can_access(module_name, info.visibility) {
+            info.ty.as_ref().map(|ann| ann.ty.clone())
+        } else {
+            None
+        }
+    }
+
+    fn lookup_module_const_type(
+        &mut self,
+        module_path: &PathBuf,
+        module_name: &str,
+        name: &str,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        let Some(info) = self.registry.find_const_in_module(module_name, name) else {
+            self.errors.push(TypeError::new(
+                module_path,
+                span,
+                format!("`{}` not found in module `{}`", name, module_name),
+            ));
+            return None;
+        };
+        if self.can_access(module_name, info.visibility) {
+            return info.ty.as_ref().map(|ann| ann.ty.clone());
+        }
+        self.errors.push(TypeError::new(
+            module_path,
+            span,
+            format!("`{}` is not public in `{}`", name, module_name),
+        ));
+        None
+    }
+
+    fn lookup_struct(
+        &self,
+        env: &FnEnv,
+        name: &str,
+        found_private: &mut bool,
+    ) -> Option<StructInfo> {
+        if let Some(import) = env.imported_item(name) {
+            if let Some(info) =
+                self.registry.find_struct_in_module(&import.module, &import.name)
+            {
+                if self.can_access(&import.module, info.def.visibility) {
+                    return Some(info.clone());
+                }
+                *found_private = true;
+            }
+        }
+        if let Some(module) = self.current_module.as_deref() {
+            if let Some(info) = self.registry.find_struct_in_module(module, name) {
+                if self.can_access(module, info.def.visibility) {
+                    return Some(info.clone());
+                }
+                *found_private = true;
+            }
+        }
+        for module_name in env.glob_modules() {
+            if let Some(info) = self.registry.find_struct_in_module(module_name, name) {
+                if self.can_access(module_name, info.def.visibility) {
+                    return Some(info.clone());
+                }
+                *found_private = true;
+            }
+        }
+        if let Some((module_name, type_name)) = name.rsplit_once("::") {
+            if let Some(info) = self.registry.find_struct_in_module(module_name, type_name) {
+                if self.can_access(module_name, info.def.visibility) {
+                    return Some(info.clone());
+                }
+                *found_private = true;
+            }
+        }
+        None
+    }
+
+    fn lookup_enum(
+        &self,
+        env: &FnEnv,
+        name: &str,
+        found_private: &mut bool,
+    ) -> Option<EnumInfo> {
+        if let Some(import) = env.imported_item(name) {
+            if let Some(info) =
+                self.registry.find_enum_in_module(&import.module, &import.name)
+            {
+                if self.can_access(&import.module, info.def.visibility) {
+                    return Some(info.clone());
+                }
+                *found_private = true;
+            }
+        }
+        if let Some(module) = self.current_module.as_deref() {
+            if let Some(info) = self.registry.find_enum_in_module(module, name) {
+                if self.can_access(module, info.def.visibility) {
+                    return Some(info.clone());
+                }
+                *found_private = true;
+            }
+        }
+        for module_name in env.glob_modules() {
+            if let Some(info) = self.registry.find_enum_in_module(module_name, name) {
+                if self.can_access(module_name, info.def.visibility) {
+                    return Some(info.clone());
+                }
+                *found_private = true;
+            }
+        }
+        if let Some((module_name, type_name)) = name.rsplit_once("::") {
+            if let Some(info) = self.registry.find_enum_in_module(module_name, type_name) {
+                if self.can_access(module_name, info.def.visibility) {
+                    return Some(info.clone());
+                }
+                *found_private = true;
+            }
+        }
+        None
+    }
+
     fn validate_impls(&mut self) {
         for candidate in self.registry.pending_impls.clone() {
             let block = candidate.block.clone();
@@ -344,7 +848,7 @@ impl Checker {
                 .first()
                 .map(|m| m.span)
                 .unwrap_or_else(|| Span::new(0, 0));
-            let Some(iface) = self.registry.interfaces.get(&block.interface).cloned() else {
+            let Some(iface) = self.registry.find_interface(&block.interface) else {
                 self.errors.push(TypeError::new(
                     &candidate.module_path,
                     span,
@@ -352,6 +856,14 @@ impl Checker {
                 ));
                 continue;
             };
+            if !self.interface_accessible(&iface) {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    span,
+                    format!("interface `{}` is not public", block.interface),
+                ));
+                continue;
+            }
             if !self.registry.structs.contains_key(&block.target) {
                 self.errors.push(TypeError::new(
                     &candidate.module_path,
@@ -501,8 +1013,10 @@ impl Checker {
 
     fn check_program(&mut self, program: &Program) {
         for module in &program.modules {
+            self.current_module = Some(module.name.clone());
             self.check_module(module);
         }
+        self.current_module = None;
     }
 
     fn validate_format_string(
@@ -519,22 +1033,25 @@ impl Checker {
     }
 
     fn check_module(&mut self, module: &Module) {
+        self.current_module = Some(module.name.clone());
+        let import_scope = self.build_import_scope(module);
         for item in &module.items {
             match item {
-                Item::Function(def) => self.check_function(module, def),
-                Item::Const(def) => self.check_const(module, def),
+                Item::Function(def) => self.check_function(module, def, &import_scope),
+                Item::Const(def) => self.check_const(module, def, &import_scope),
                 Item::Impl(block) => {
                     for method in &block.methods {
-                        self.check_function(module, method);
+                        self.check_function(module, method, &import_scope);
                     }
                 }
                 _ => {}
             }
         }
+        self.current_module = None;
     }
 
-    fn check_function(&mut self, module: &Module, def: &FunctionDef) {
-        let mut env = FnEnv::new(module.path.clone(), def.type_params.clone());
+    fn check_function(&mut self, module: &Module, def: &FunctionDef, imports: &ImportScope) {
+        let mut env = FnEnv::new(module.path.clone(), def.type_params.clone(), imports.clone());
         let return_types: Vec<TypeExpr> = def.returns.iter().map(|ann| ann.ty.clone()).collect();
         for param in &def.params {
             env.declare(
@@ -565,9 +1082,9 @@ impl Checker {
         }
     }
 
-    fn check_const(&mut self, module: &Module, def: &ConstDef) {
+    fn check_const(&mut self, module: &Module, def: &ConstDef, imports: &ImportScope) {
         if let Some(annotation) = &def.ty {
-            let mut env = FnEnv::new(module.path.clone(), Vec::new());
+            let mut env = FnEnv::new(module.path.clone(), Vec::new(), imports.clone());
             let ty = self.check_expression(module, &def.value, Some(&annotation.ty), &[], &mut env);
             self.ensure_type(module, def.span, &annotation.ty, ty.as_ref());
         }
@@ -833,7 +1350,7 @@ impl Checker {
                 ForTarget::Collection(expr) => {
                     let collection_ty = self.check_expression(module, expr, None, returns, env);
                     if let Some(coll_ty) = collection_ty {
-                        if let Some(element_ty) = self.collection_element_type(&coll_ty) {
+                        if let Some(element_ty) = self.collection_element_type(&coll_ty, env) {
                             let entry_state = env.snapshot_borrows();
                             let element_ty_clone = element_ty.clone();
                             let (_, body_state) = env.run_branch(move |env| {
@@ -882,8 +1399,27 @@ impl Checker {
                     env.ensure_not_moved(module, ident.span, &ident.name, &mut self.errors);
                     return entry.ty.clone();
                 }
-                if let Some(const_info) = self.registry.consts.get(&ident.name) {
-                    return const_info.ty.as_ref().map(|ann| ann.ty.clone());
+                if let Some(import) = env.imported_item(&ident.name) {
+                    if let Some(ty) =
+                        self.lookup_const_in_module(&import.module, &import.name)
+                    {
+                        return Some(ty);
+                    }
+                }
+                if let Some(module_name) = self.current_module.as_deref() {
+                    if let Some(ty) = self.lookup_const_in_module(module_name, &ident.name) {
+                        return Some(ty);
+                    }
+                }
+                for module_name in env.glob_modules() {
+                    if let Some(ty) = self.lookup_const_in_module(module_name, &ident.name) {
+                        return Some(ty);
+                    }
+                }
+                if let Some((module_name, const_name)) = ident.name.rsplit_once("::") {
+                    if let Some(ty) = self.lookup_const_in_module(module_name, const_name) {
+                        return Some(ty);
+                    }
                 }
                 self.errors.push(TypeError::new(
                     &module.path,
@@ -929,6 +1465,20 @@ impl Checker {
                 module, callee, args, type_args, *span, expected, returns, env,
             ),
             Expr::FieldAccess { base, field, span } => {
+                if let Expr::Identifier(module_ident) = base.as_ref() {
+                    if let Some(module_name) = self.resolve_module_name(env, &module_ident.name) {
+                        if let Some(ty) = self.lookup_module_const_type(
+                            &module.path,
+                            module_name,
+                            field,
+                            *span,
+                        ) {
+                            return Some(ty);
+                        } else {
+                            return None;
+                        }
+                    }
+                }
                 self.check_field_access(module, base, field, *span, returns, env)
             }
             Expr::StructLiteral { name, fields, span } => {
@@ -954,7 +1504,7 @@ impl Checker {
                         }
                     }
                 }
-                let info = match self.resolve_enum_literal(module, resolved_name, variant, *span) {
+                let info = match self.resolve_enum_literal(module, env, resolved_name, variant, *span) {
                     Ok(info) => info,
                     Err(err) => {
                         self.errors.push(err);
@@ -1240,7 +1790,8 @@ impl Checker {
         }
         env.merge_branch_borrows(&borrow_states);
         if let Some(TypeExpr::Named(enum_name, _)) = &scrutinee_ty {
-            if let Some(enum_info) = self.registry.enums.get(enum_name) {
+            let mut private = false;
+            if let Some(enum_info) = self.lookup_enum(env, enum_name, &mut private) {
                 if !has_wildcard {
                     let all_variants: HashSet<String> = enum_info
                         .def
@@ -1263,6 +1814,12 @@ impl Checker {
                         ));
                     }
                 }
+            } else if private {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    expr.span,
+                    format!("enum `{}` is not public", enum_name),
+                ));
             }
         }
         arm_type
@@ -1289,8 +1846,17 @@ impl Checker {
             }
         }
         if let TypeExpr::Named(name, _) = &inner_ty {
-            if let Some(struct_info) = self.registry.structs.get(&name.to_string()) {
+            let mut private = false;
+            if let Some(struct_info) = self.lookup_struct(env, name, &mut private) {
                 return lookup_struct_field(&self.registry, &struct_info.def, field);
+            }
+            if private {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    format!("struct `{}` is not public", name),
+                ));
+                return None;
             }
         }
         self.errors.push(TypeError::new(
@@ -1310,12 +1876,21 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) {
-        let Some(struct_info) = self.registry.structs.get(name) else {
-            self.errors.push(TypeError::new(
-                &module.path,
-                span,
-                format!("Unknown struct `{}`", name),
-            ));
+        let mut private = false;
+        let Some(struct_info) = self.lookup_struct(env, name, &mut private) else {
+            if private {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    format!("struct `{}` is not public", name),
+                ));
+            } else {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    format!("Unknown struct `{}`", name),
+                ));
+            }
             return;
         };
         let struct_fields = struct_info.def.fields.clone();
@@ -1404,7 +1979,7 @@ impl Checker {
                         span,
                     );
                 }
-                if let Some(sig) = self.lookup_function(&ident.name, None) {
+                if let Some(sig) = self.lookup_function(env, &ident.name, None) {
                     return self.check_function_call(
                         module, sig, args, type_args, expected, returns, env, span,
                     );
@@ -1422,11 +1997,29 @@ impl Checker {
             }
             Expr::FieldAccess { base, field, .. } => {
                 if let Expr::Identifier(module_ident) = base.as_ref() {
-                    let qualified = format!("{}::{}", module_ident.name, field);
-                    if let Some(sig) = self.lookup_function(&qualified, None) {
-                        return self.check_function_call(
-                            module, sig, args, type_args, expected, returns, env, span,
-                        );
+                    if let Some(module_name) = self.resolve_module_name(env, &module_ident.name) {
+                        if let Some(sig) =
+                            self.lookup_function_in_module(module_name, field, None)
+                        {
+                            return self.check_function_call(
+                                module, sig, args, type_args, expected, returns, env, span,
+                            );
+                        }
+                        if let Some(const_ty) = self.lookup_module_const_type(
+                            &module.path,
+                            module_name,
+                            field,
+                            span,
+                        ) {
+                            if !args.is_empty() {
+                                self.errors.push(TypeError::new(
+                                    &module.path,
+                                    span,
+                                    "const values are not callable",
+                                ));
+                            }
+                            return Some(const_ty);
+                        }
                     }
                 }
                 let receiver = match self.check_expression(module, base, None, returns, env) {
@@ -1434,7 +2027,7 @@ impl Checker {
                     None => return None,
                 };
                 if let Some(name) = named_type_name(&receiver) {
-                    if let Some(sig) = self.lookup_function(field, Some(name)) {
+                    if let Some(sig) = self.lookup_function(env, field, Some(name)) {
                         return self.check_method_call(
                             module, sig, &receiver, args, type_args, expected, returns, env, span,
                         );
@@ -2422,8 +3015,16 @@ impl Checker {
                 }
                 _ => return false,
             },
-            TypeExpr::Named(name, args) if self.registry.interfaces.contains_key(name) => {
-                Some((name, args))
+            TypeExpr::Named(name, args) => {
+                if let Some(iface) = self.registry.find_interface(name) {
+                    if self.interface_accessible(&iface) {
+                        Some((name, args))
+                    } else {
+                        return false;
+                    }
+                } else {
+                    None
+                }
             }
             _ => None,
         };
@@ -2441,12 +3042,41 @@ impl Checker {
         self.registry.impls.contains(&key)
     }
 
-    fn lookup_function(&self, name: &str, receiver: Option<&str>) -> Option<FunctionSignature> {
-        let key = FunctionKey {
-            name: name.to_string(),
-            receiver: receiver.map(|s| s.to_string()),
-        };
-        self.registry.functions.get(&key).cloned()
+    fn interface_accessible(&self, iface: &InterfaceInfo) -> bool {
+        self.can_access(&iface._module, iface.def.visibility)
+    }
+
+    fn lookup_function(
+        &self,
+        env: &FnEnv,
+        name: &str,
+        receiver: Option<&str>,
+    ) -> Option<FunctionSignature> {
+        if let Some(import) = env.imported_item(name) {
+            if let Some(sig) =
+                self.lookup_function_in_module(&import.module, &import.name, receiver)
+            {
+                return Some(sig);
+            }
+        }
+        if let Some(module) = self.current_module.as_deref() {
+            if let Some(sig) = self.lookup_function_in_module(module, name, receiver) {
+                return Some(sig);
+            }
+        }
+        for module_name in env.glob_modules() {
+            if let Some(sig) = self.lookup_function_in_module(module_name, name, receiver) {
+                return Some(sig);
+            }
+        }
+        if let Some((module_path, func_name)) = name.rsplit_once("::") {
+            if let Some(sig) =
+                self.lookup_function_in_module(module_path, func_name, receiver)
+            {
+                return Some(sig);
+            }
+        }
+        None
     }
 
     fn pattern_variant(&self, pattern: &Pattern) -> Option<String> {
@@ -2490,62 +3120,57 @@ impl Checker {
                 bindings,
             } => {
                 if let Some(name) = enum_name {
-                    let mut resolved = name.as_str();
-                    if !self.registry.enums.contains_key(name) {
-                        if let Some(binding) = env.lookup(name) {
-                            if let Some(TypeExpr::Named(actual, _)) = &binding.ty {
-                                if self.registry.enums.contains_key(actual) {
-                                    resolved = actual;
-                                }
-                            }
-                        }
-                    }
-                    if let Some(enum_info) = self.registry.enums.get(resolved) {
-                        let Ok(variant_def) = find_variant(
-                            &enum_info.def,
-                            &enum_info.module,
-                            variant,
-                            module,
-                            pattern_span(pattern),
-                        ) else {
-                            self.errors.push(TypeError::new(
-                                &module.path,
-                                pattern_span(pattern),
-                                format!("`{}` does not belong to enum `{}`", variant, name),
-                            ));
-                            return;
+                    let mut private = false;
+                    let Some(enum_info) = self.lookup_enum(env, name, &mut private) else {
+                        let msg = if private {
+                            format!("enum `{}` is not public", name)
+                        } else {
+                            format!("Unknown enum `{}`", name)
                         };
-                        if bindings.len() != variant_def.fields.len() {
-                            self.errors.push(TypeError::new(
-                                &module.path,
-                                pattern_span(pattern),
-                                format!(
-                                    "`{}` expects {} field(s), found {}",
-                                    variant,
-                                    variant_def.fields.len(),
-                                    bindings.len()
-                                ),
-                            ));
-                            return;
-                        }
-                        let info = EnumVariantInfo::from_def(
-                            enum_info.def.name.clone(),
-                            enum_info.module.clone(),
-                            variant_def.clone(),
-                        );
-                        let fields = instantiate_variant_fields(&info, ty, &self.registry);
-                        for (binding, field) in bindings.iter().zip(fields.iter()) {
-                            self.bind_pattern(module, binding, Some(&field.ty), env);
-                        }
-                        return;
-                    } else {
                         self.errors.push(TypeError::new(
                             &module.path,
                             pattern_span(pattern),
-                            format!("Unknown enum `{}`", name),
+                            msg,
+                        ));
+                        return;
+                    };
+                    let Ok(variant_def) = find_variant(
+                        &enum_info.def,
+                        &enum_info.module,
+                        variant,
+                        module,
+                        pattern_span(pattern),
+                    ) else {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            pattern_span(pattern),
+                            format!("`{}` does not belong to enum `{}`", variant, name),
+                        ));
+                        return;
+                    };
+                    if bindings.len() != variant_def.fields.len() {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            pattern_span(pattern),
+                            format!(
+                                "`{}` expects {} field(s), found {}",
+                                variant,
+                                variant_def.fields.len(),
+                                bindings.len()
+                            ),
                         ));
                         return;
                     }
+                    let info = EnumVariantInfo::from_def(
+                        enum_info.def.name.clone(),
+                        enum_info.module.clone(),
+                        variant_def.clone(),
+                    );
+                    let fields = instantiate_variant_fields(&info, ty, &self.registry);
+                    for (binding, field) in bindings.iter().zip(fields.iter()) {
+                        self.bind_pattern(module, binding, Some(&field.ty), env);
+                    }
+                    return;
                 }
                 if let Some(info) = self.registry.enum_variants.get(variant).cloned() {
                     if let Some(actual_enum) = enum_name {
@@ -2805,12 +3430,12 @@ impl Checker {
         candidate
     }
 
-    fn collection_element_type(&self, ty: &TypeExpr) -> Option<TypeExpr> {
+    fn collection_element_type(&self, ty: &TypeExpr, env: &FnEnv) -> Option<TypeExpr> {
         if let Some(inner) = self.direct_collection_element_type(ty) {
             return Some(inner);
         }
-        if let Some(return_ty) = self.iter_method_return_type(ty) {
-            return self.collection_element_type(&return_ty);
+        if let Some(return_ty) = self.iter_method_return_type(ty, env) {
+            return self.collection_element_type(&return_ty, env);
         }
         None
     }
@@ -2831,11 +3456,11 @@ impl Checker {
         }
     }
 
-    fn iter_method_return_type(&self, receiver: &TypeExpr) -> Option<TypeExpr> {
+    fn iter_method_return_type(&self, receiver: &TypeExpr, env: &FnEnv) -> Option<TypeExpr> {
         let Some(name) = named_type_name(receiver) else {
             return None;
         };
-        let sig = self.lookup_function("iter", Some(name))?;
+        let sig = self.lookup_function(env, "iter", Some(name))?;
         if sig.params.len() != 1 || sig.returns.len() != 1 {
             return None;
         }
@@ -3596,11 +4221,25 @@ impl BindingInfo {
     }
 }
 
+#[derive(Clone)]
+struct ImportedItem {
+    module: String,
+    name: String,
+}
+
+#[derive(Clone, Default)]
+struct ImportScope {
+    modules: HashMap<String, String>,
+    selected: HashMap<String, ImportedItem>,
+    globs: Vec<String>,
+}
+
 struct FnEnv {
     path: PathBuf,
     _type_params: HashSet<String>,
     scopes: Vec<HashMap<String, BindingInfo>>,
     active_mut_borrows: HashMap<String, usize>,
+    imports: ImportScope,
 }
 
 #[derive(Clone)]
@@ -3611,12 +4250,13 @@ struct BorrowState {
 }
 
 impl FnEnv {
-    fn new(path: PathBuf, type_params: Vec<String>) -> Self {
+    fn new(path: PathBuf, type_params: Vec<String>, imports: ImportScope) -> Self {
         Self {
             path,
             _type_params: type_params.into_iter().collect(),
             scopes: vec![HashMap::new()],
             active_mut_borrows: HashMap::new(),
+            imports,
         }
     }
 
@@ -3864,6 +4504,18 @@ impl FnEnv {
             }
         }
         None
+    }
+
+    fn imported_item(&self, name: &str) -> Option<&ImportedItem> {
+        self.imports.selected.get(name)
+    }
+
+    fn module_alias(&self, alias: &str) -> Option<&String> {
+        self.imports.modules.get(alias)
+    }
+
+    fn glob_modules(&self) -> impl Iterator<Item = &String> {
+        self.imports.globs.iter()
     }
 
     fn clear_binding_borrows(&mut self, name: &str) {
@@ -4397,6 +5049,20 @@ mod tests {
         check_program(&expanded)
     }
 
+    fn typecheck_modules(mods: Vec<(&str, &str)>) -> Result<(), Vec<super::TypeError>> {
+        let modules = mods
+            .into_iter()
+            .map(|(name, src)| parse_module(name, PathBuf::from(format!("{}.prime", name)), src).expect("parse"))
+            .collect();
+        let program = Program { modules };
+        let expanded = ExpandedProgram {
+            program,
+            traces: ExpansionTraces::default(),
+            item_origins: std::collections::HashMap::new(),
+        };
+        check_program(&expanded)
+    }
+
     #[test]
     fn type_errors_include_macro_trace() {
         let module = parse_module(
@@ -4610,6 +5276,43 @@ fn release_after_for_collection() {
                         .collect::<Vec<_>>()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn module_imports_prelude_implicitly() {
+        let core_types = r#"
+library core::types;
+
+export prelude { Option, Result };
+
+pub enum Option[T] { Some(T), None }
+pub enum Result[T, E] { Ok(T), Err(E) }
+"#;
+        let consumer = r#"
+module app::main;
+import core::types;
+
+fn demo(flag: bool) -> Result[int32, string] {
+  if flag {
+    Result::Ok(1)
+  } else {
+    Result::Err("nope")
+  }
+}
+"#;
+        let modules = vec![
+            parse_module("core::types", PathBuf::from("types.prime"), core_types).unwrap(),
+            parse_module("app::main", PathBuf::from("main.prime"), consumer).unwrap(),
+        ];
+        let program = Program { modules };
+        let expanded = ExpandedProgram {
+            program,
+            traces: ExpansionTraces::default(),
+            item_origins: std::collections::HashMap::new(),
+        };
+        if let Err(errs) = check_program(&expanded) {
+            panic!("prelude import should typecheck, got {:?}", errs);
         }
     }
 

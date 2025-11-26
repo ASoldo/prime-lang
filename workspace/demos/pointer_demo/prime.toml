@@ -1,13 +1,13 @@
 manifest_version = "3"
 
 [package]
-name = "demos.pointer_demo"
+name = "demos::pointer_demo"
 version = "0.1.0"
 
 [module]
-name = "demos.pointer_demo"
+name = "demos::pointer_demo"
 path = "pointer_demo.prime"
 visibility = "pub"
 
 [libraries]
-core_types = { name = "core.types", path = "../../core/types.prime", visibility = "pub" }
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }

@@ -1136,8 +1136,8 @@ members = [
             }
             let package_name = package_name_from_dir(dir);
             let module_name = match kind {
-                NewKind::Binary => format!("{}.main", package_name.replace('-', "_")),
-                NewKind::Library => format!("{}.lib", package_name.replace('-', "_")),
+                NewKind::Binary => format!("{}::main", package_name.replace('-', "_")),
+                NewKind::Library => format!("{}::lib", package_name.replace('-', "_")),
                 _ => unreachable!(),
             };
             let entry_path = if kind == NewKind::Binary {
@@ -1530,8 +1530,17 @@ fn parse_module_segments(name: &str) -> Result<Vec<String>, Box<dyn std::error::
             io::Error::new(io::ErrorKind::InvalidInput, "module name cannot be empty").into(),
         );
     }
+    if name.contains('.') {
+        return Err(
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "module name cannot contain '.'; use '::' or '/' separators",
+            )
+            .into(),
+        );
+    }
     let parts: Vec<_> = name
-        .split(|ch| ch == ':' || ch == '.')
+        .split(|ch| ch == ':' || ch == '/')
         .filter(|s| !s.is_empty() && *s != ":")
         .collect();
     if parts.iter().any(|segment| segment.trim().is_empty()) {
@@ -1543,10 +1552,7 @@ fn parse_module_segments(name: &str) -> Result<Vec<String>, Box<dyn std::error::
     }
     let mut segments = Vec::new();
     for part in parts {
-        if !part
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        {
+        if !part.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("invalid module segment `{part}`"),
@@ -1630,7 +1636,9 @@ fn write_module_file(
                 )
             }
             "library" => {
-                format!("{header} {module_name};\n\npub fn example() -> int32 {{\n  0\n}}\n")
+                format!(
+                    "{header} {module_name};\n\nexport prelude {{ example }};\n\npub fn example() -> int32 {{\n  0\n}}\n"
+                )
             }
             "test" => {
                 format!("{header} {module_name};\n\nfn example_test() -> bool {{\n  true\n}}\n")

@@ -1,6 +1,6 @@
-test tests.input_read;
+test tests::input_read;
 
-import core.types;
+import core::types;
 
 fn reads_integer_input() -> bool {
   match in[int32]("Enter age: ") {

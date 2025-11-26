@@ -400,7 +400,7 @@ impl Parser {
         let mut declared_name = None;
         let mut declared_span = None;
         let mut redundant_module_spans = Vec::new();
-
+        let mut prelude = Vec::new();
         if matches!(
             self.peek_kind(),
             Some(TokenKind::ModuleKw | TokenKind::LibraryKw | TokenKind::TestKw)
@@ -469,6 +469,20 @@ impl Parser {
                 continue;
             }
 
+            if self.check(TokenKind::Export) {
+                match self.parse_prelude_clause() {
+                    Ok(selectors) => {
+                        prelude.extend(selectors);
+                        continue;
+                    }
+                    Err(err) => {
+                        self.report(err);
+                        self.synchronize_item();
+                        continue;
+                    }
+                }
+            }
+
             match self.parse_item() {
                 Ok(item) => items.push(item),
                 Err(err) => {
@@ -487,6 +501,7 @@ impl Parser {
                 declared_span,
                 redundant_module_spans,
                 imports,
+                prelude,
                 items,
             })
         } else {
@@ -524,13 +539,41 @@ impl Parser {
         visibility: Visibility,
     ) -> Result<Import, SyntaxError> {
         let start = self.expect(TokenKind::Import)?.span.start;
+        let mut selectors: Option<Vec<ImportSelector>> = None;
         let path = if matches!(self.peek_kind(), Some(TokenKind::String(_))) {
             let literal = self.expect_string_literal("Expected import path string")?;
+            if literal.contains('.') {
+                return Err(self.error_here(
+                    "Import paths cannot contain '.'; use '::' or '/' separators",
+                ));
+            }
             ImportPath {
                 segments: legacy_import_segments(&literal),
             }
         } else {
-            self.parse_module_path("Expected module path in import")?
+            let mut segments = Vec::new();
+            let first = self.expect_identifier("Expected module path in import")?;
+            segments.push(first.name);
+            loop {
+                if self.matches(TokenKind::ColonColon) || self.matches(TokenKind::Slash) {
+                    if self.check(TokenKind::LBrace) {
+                        self.expect(TokenKind::LBrace)?;
+                        selectors = Some(self.parse_selector_list()?);
+                        break;
+                    }
+                    if self.check(TokenKind::Star) {
+                        let span = self.expect(TokenKind::Star)?.span;
+                        selectors = Some(vec![ImportSelector::Glob(span)]);
+                        break;
+                    }
+                    let ident =
+                        self.expect_identifier("Expected segment after separator")?;
+                    segments.push(ident.name);
+                } else {
+                    break;
+                }
+            }
+            ImportPath { segments }
         };
         if path.is_empty() {
             return Err(self.error_here("Import path cannot be empty"));
@@ -540,14 +583,55 @@ impl Parser {
         } else {
             None
         };
+        if selectors.is_none() && self.matches(TokenKind::LBrace) {
+            selectors = Some(self.parse_selector_list()?);
+        }
         self.consume_optional(TokenKind::Semi);
         let end = self.last_span_end(start);
         Ok(Import {
             visibility,
             path,
             alias,
+            selectors,
             span: Span::new(start, end),
         })
+    }
+
+    fn parse_selector_list(&mut self) -> Result<Vec<ImportSelector>, SyntaxError> {
+        let mut items = Vec::new();
+        loop {
+            if self.matches(TokenKind::RBrace) {
+                break;
+            }
+            if self.matches(TokenKind::Star) {
+                let span = if self.pos > 0 {
+                    let t = &self.tokens[self.pos - 1];
+                    Span::new(t.span.start, t.span.end)
+                } else {
+                    Span::new(self.current_span_start(), self.current_span_start())
+                };
+                items.push(ImportSelector::Glob(span));
+            } else {
+                let ident = self.expect_identifier("Expected item name in import list")?;
+                let alias = if self.matches(TokenKind::As) {
+                    Some(self.expect_identifier("Expected alias after 'as'")?.name)
+                } else {
+                    None
+                };
+                items.push(ImportSelector::Name {
+                    name: ident.name,
+                    alias,
+                    span: ident.span,
+                });
+            }
+            if self.matches(TokenKind::RBrace) {
+                break;
+            }
+            if !self.matches(TokenKind::Comma) {
+                return Err(self.error_here("Expected `,` or `}` in import list"));
+            }
+        }
+        Ok(items)
     }
 
     fn parse_module_path(&mut self, msg: &str) -> Result<ImportPath, SyntaxError> {
@@ -555,7 +639,7 @@ impl Parser {
         let first = self.expect_identifier(msg)?;
         segments.push(first.name);
         loop {
-            if self.matches(TokenKind::ColonColon) || self.matches(TokenKind::Dot) {
+            if self.matches(TokenKind::ColonColon) || self.matches(TokenKind::Slash) {
                 let ident = self.expect_identifier("Expected segment after separator")?;
                 segments.push(ident.name);
             } else {
@@ -563,6 +647,18 @@ impl Parser {
             }
         }
         Ok(ImportPath { segments })
+    }
+
+    fn parse_prelude_clause(&mut self) -> Result<Vec<ImportSelector>, SyntaxError> {
+        self.expect(TokenKind::Export)?;
+        let name = self.expect_identifier("Expected `prelude` after `export`")?;
+        if name.name != "prelude" {
+            return Err(self.error_here("Expected Prelude"));
+        }
+        self.expect(TokenKind::LBrace)?;
+        let selectors = self.parse_selector_list()?;
+        self.consume_optional(TokenKind::Semi);
+        Ok(selectors)
     }
 
     fn parse_redundant_module_decl(&mut self) -> Result<Span, SyntaxError> {
@@ -3379,7 +3475,7 @@ fn main() {
 
     #[test]
     fn macros_fixture_parses() {
-        let path = PathBuf::from("tests/macros/macros.prime");
+        let path = PathBuf::from("workspace/tests/macros/macros.prime");
         let source =
             std::fs::read_to_string(&path).expect("read macros fixture from workspace tests");
         let result = parse_module("tests::macros", path, &source);
@@ -3389,10 +3485,40 @@ fn main() {
             result.err().map(|e| e.errors)
         );
     }
+
+    #[test]
+    fn parses_export_prelude() {
+        let source = r#"
+library core::types;
+
+export prelude {
+  Option,
+  Result,
+};
+
+pub enum Option[T] { Some(T) }
+pub enum Result[T, E] { Ok(T), Err(E) }
+"#;
+        let result = parse_module("core::types", PathBuf::from("types.prime"), source);
+        assert!(
+            result.is_ok(),
+            "parse errors: {:?}",
+            result.err().map(|e| e.errors)
+        );
+    }
+
+    #[test]
+    fn core_types_with_prelude_parses() {
+        let path = PathBuf::from("workspace/core/types.prime");
+        let source = std::fs::read_to_string(&path).expect("read core types");
+        let result = parse_module("core::types", path, &source);
+        let module = result.expect("parse core types");
+        assert!(!module.prelude.is_empty(), "expected prelude exports");
+    }
 }
 fn legacy_import_segments(input: &str) -> Vec<String> {
     let without_ext = input.strip_suffix(".prime").unwrap_or(input);
-    let normalized = without_ext.replace("::", "/").replace('.', "/");
+    let normalized = without_ext.replace("::", "/");
     normalized
         .split('/')
         .filter(|segment| !segment.is_empty())

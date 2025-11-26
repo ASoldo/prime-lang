@@ -26,6 +26,7 @@ pub struct Module {
     pub declared_span: Option<Span>,
     pub redundant_module_spans: Vec<Span>,
     pub imports: Vec<Import>,
+    pub prelude: Vec<ImportSelector>,
     pub items: Vec<Item>,
 }
 
@@ -47,12 +48,29 @@ pub struct Import {
     pub visibility: Visibility,
     pub path: ImportPath,
     pub alias: Option<String>,
+    pub selectors: Option<Vec<ImportSelector>>,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportPath {
     pub segments: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImportSelector {
+    Name {
+        name: String,
+        alias: Option<String>,
+        span: Span,
+    },
+    Glob(Span),
+}
+
+impl Import {
+    pub fn canonical_path(&self) -> String {
+        self.path.to_string()
+    }
 }
 
 impl ImportPath {

@@ -1,10 +1,10 @@
 manifest_version = "3"
 
 [package]
-name = "pkg.app"
+name = "pkg::app"
 version = "0.1.0"
 
 [module]
-name = "pkg.app"
+name = "pkg::app"
 path = "pkg_app.prime"
 visibility = "pub"

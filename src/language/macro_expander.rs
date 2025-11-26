@@ -448,6 +448,7 @@ impl<'a> Expander<'a> {
                 declared_span: module.declared_span,
                 redundant_module_spans: module.redundant_module_spans.clone(),
                 imports: module.imports.clone(),
+                prelude: module.prelude.clone(),
                 items,
             });
             self.item_origins.insert(module.path.clone(), origins);

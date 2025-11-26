@@ -1,6 +1,6 @@
-module demos.interface_generics;
+module demos::interface_generics;
 
-import core.types;
+import core::types;
 
 struct Hero {
   name: string;

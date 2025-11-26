@@ -1,4 +1,4 @@
-test tests.macros;
+test tests::macros;
 
 macro assert_positive(value: int32) {
   expect(value > 0, "value should stay positive");

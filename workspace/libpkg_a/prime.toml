@@ -5,4 +5,4 @@ name = "libpkg-a"
 version = "0.1.0"
 
 [libraries]
-libpkg_a_lib = { name = "libpkg_a.lib", path = "lib.prime", visibility = "pub" }
+libpkg_a_lib = { name = "libpkg_a::lib", path = "lib.prime", visibility = "pub" }

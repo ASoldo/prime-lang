@@ -1,4 +1,4 @@
-module demos.borrow_checker_errors;
+module demos::borrow_checker_errors;
 
 fn nested_borrow_release() {
   let mut int32 gauge = 20;

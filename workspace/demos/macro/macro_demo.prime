@@ -1,4 +1,4 @@
-module demos.macro_demo;
+module demos::macro_demo;
 
 struct Vec2 {
   x: int32;

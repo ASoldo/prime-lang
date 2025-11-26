@@ -9,7 +9,7 @@ use super::{
         completion_trigger_characters, enum_variant_completion_items, expression_chain_before_dot,
         format_function_param, format_function_signature, general_completion_items,
         keyword_completion_items, member_completion_items, module_completion_items_from_manifest,
-        module_path_completion_context,
+        module_path_completion_context, module_selector_items_from_modules,
     },
     diagnostics::{collect_parse_and_manifest_diagnostics, diagnostic_code, manifest_entry_action},
     hover::{collect_var_infos, hover_for_token},
@@ -1159,23 +1159,6 @@ impl LanguageServer for Backend {
         }
         let module_opt = self.parse_cached_module(&uri, &text).await;
         let offset = position_to_offset(&text, position);
-        if let Some(ctx) = module_path_completion_context(&text, offset) {
-            if let Some((manifest, file_path)) = manifest_context_for_uri(&uri) {
-                let expected = matches!(ctx.kind, ModulePathCompletionKind::Declaration)
-                    .then(|| manifest.module_name_for_path(&file_path))
-                    .flatten();
-                let items = module_completion_items_from_manifest(
-                    &manifest,
-                    ctx.prefix.as_deref(),
-                    expected.as_deref(),
-                );
-                if !items.is_empty() {
-                    return Ok(Some(CompletionResponse::Array(items)));
-                }
-            }
-        }
-        let prefix = completion_prefix(&text, offset, context.as_ref());
-        let prefix_ref = prefix.as_deref();
         let struct_modules = self
             .modules
             .snapshot()
@@ -1183,6 +1166,36 @@ impl LanguageServer for Backend {
             .into_iter()
             .map(|(_, module)| module)
             .collect::<Vec<_>>();
+        if let Some(ctx) = module_path_completion_context(&text, offset) {
+            match ctx.kind {
+                ModulePathCompletionKind::Declaration | ModulePathCompletionKind::Import => {
+                    if let Some((manifest, file_path)) = manifest_context_for_uri(&uri) {
+                        let expected = matches!(ctx.kind, ModulePathCompletionKind::Declaration)
+                            .then(|| manifest.module_name_for_path(&file_path))
+                            .flatten();
+                        let items = module_completion_items_from_manifest(
+                            &manifest,
+                            ctx.prefix.as_deref(),
+                            expected.as_deref(),
+                        );
+                        if !items.is_empty() {
+                            return Ok(Some(CompletionResponse::Array(items)));
+                        }
+                    }
+                }
+                ModulePathCompletionKind::ImportSelectors => {
+                    if let Some(module_name) = ctx.prefix.as_deref() {
+                        let items =
+                            module_selector_items_from_modules(module_name, &struct_modules);
+                        if !items.is_empty() {
+                            return Ok(Some(CompletionResponse::Array(items)));
+                        }
+                    }
+                }
+            }
+        }
+        let prefix = completion_prefix(&text, offset, context.as_ref());
+        let prefix_ref = prefix.as_deref();
         let struct_info = collect_struct_info(&struct_modules);
         let interface_info = collect_interface_info(&struct_modules);
         if let Some(module) = module_opt {

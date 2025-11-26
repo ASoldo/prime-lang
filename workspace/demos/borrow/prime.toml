@@ -1,10 +1,10 @@
 manifest_version = "3"
 
 [package]
-name = "demos.borrow"
+name = "demos::borrow"
 version = "0.1.0"
 
 [module]
-name = "demos.borrow"
+name = "demos::borrow"
 path = "borrow_demo.prime"
 visibility = "pub"

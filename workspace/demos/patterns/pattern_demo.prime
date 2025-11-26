@@ -1,6 +1,6 @@
-module demos.patterns;
+module demos::patterns;
 
-import core.types;
+import core::types;
 
 struct Telemetry {
   hp: int32;

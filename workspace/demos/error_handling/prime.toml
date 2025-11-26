@@ -1,13 +1,13 @@
 manifest_version = "3"
 
 [package]
-name = "demos.error_handling"
+name = "demos::error_handling"
 version = "0.1.0"
 
 [module]
-name = "demos.error_handling"
+name = "demos::error_handling"
 path = "error_handling_demo.prime"
 visibility = "pub"
 
 [libraries]
-core_types = { name = "core.types", path = "../../core/types.prime", visibility = "pub" }
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }

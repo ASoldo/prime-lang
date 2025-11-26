@@ -1,8 +1,6 @@
 use crate::{
     language::{
-        ast::{
-            FunctionDef, FunctionParam, Import, InterfaceMethod, Item, MacroDef, Module, Visibility,
-        },
+        ast::{FunctionDef, FunctionParam, Import, ImportSelector, InterfaceMethod, Item, MacroDef, Module, Visibility},
         span::Span,
         types::TypeExpr,
     },
@@ -55,6 +53,7 @@ use super::{
 pub enum ModulePathCompletionKind {
     Declaration,
     Import,
+    ImportSelectors,
 }
 
 pub struct ModulePathCompletionContext {
@@ -122,6 +121,13 @@ pub fn module_path_completion_context(
     }
     if trimmed.starts_with("import ") {
         let after = trimmed["import ".len()..].trim_start();
+        if let Some(idx) = after.find('{') {
+            let module_part = after[..idx].trim_end().trim_end_matches(':');
+            return Some(ModulePathCompletionContext {
+                kind: ModulePathCompletionKind::ImportSelectors,
+                prefix: sanitize_module_prefix(module_part),
+            });
+        }
         return Some(ModulePathCompletionContext {
             kind: ModulePathCompletionKind::Import,
             prefix: sanitize_module_prefix(after),
@@ -132,9 +138,8 @@ pub fn module_path_completion_context(
 
 pub fn completion_trigger_characters() -> Vec<String> {
     // Trigger on identifiers, qualification separators, macro sigils, and hygiene escapes.
-    // `.` is used for module paths.
     const TRIGGER_CHARS: &str =
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.~@";
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:/.~@";
     TRIGGER_CHARS.chars().map(|ch| ch.to_string()).collect()
 }
 
@@ -150,7 +155,7 @@ fn sanitize_module_prefix(input: &str) -> Option<String> {
     if prefix.is_empty() {
         None
     } else {
-        Some(prefix.replace("::", "."))
+        Some(prefix.replace('/', "::"))
     }
 }
 
@@ -163,14 +168,14 @@ pub fn module_completion_items_from_manifest(
     let mut items = Vec::new();
     let mut seen = HashSet::new();
     if let Some(exp) = expected {
-        let exp_dot = exp.replace("::", ".");
-        if module_prefix_matches(&exp_dot, prefix) && seen.insert(exp_dot.clone()) {
+        let exp_norm = exp.replace('/', "::");
+        if module_prefix_matches(&exp_norm, prefix) && seen.insert(exp_norm.clone()) {
             let detail = entries
                 .iter()
-                .find(|entry| entry.name.replace("::", ".") == exp_dot)
+                .find(|entry| entry.name == exp_norm)
                 .map(module_detail);
             items.push(CompletionItem {
-                label: exp_dot,
+                label: exp_norm.clone(),
                 kind: Some(CompletionItemKind::MODULE),
                 detail,
                 ..CompletionItem::default()
@@ -178,21 +183,115 @@ pub fn module_completion_items_from_manifest(
         }
     }
     for entry in entries.iter() {
-        let name_dot = entry.name.replace("::", ".");
-        if !module_prefix_matches(&name_dot, prefix) {
+        let name_norm = entry.name.replace('/', "::");
+        if !module_prefix_matches(&name_norm, prefix) {
             continue;
         }
-        if !seen.insert(name_dot.clone()) {
+        if !seen.insert(name_norm.clone()) {
             continue;
         }
         let detail = module_detail(entry);
         items.push(CompletionItem {
-            label: name_dot,
+            label: name_norm,
             kind: Some(CompletionItemKind::MODULE),
             detail: Some(detail),
             ..CompletionItem::default()
         });
     }
+    items
+}
+
+pub fn module_selector_items_from_modules(
+    module_name: &str,
+    modules: &[Module],
+) -> Vec<CompletionItem> {
+    let target_name = if module_name.ends_with("::prelude") && module_name.contains("::") {
+        module_name
+            .rsplitn(2, "::")
+            .nth(1)
+            .unwrap_or(module_name)
+    } else {
+        module_name
+    };
+    let Some(module) = modules.iter().find(|m| m.name == target_name) else {
+        return Vec::new();
+    };
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push_name = |name: &str,
+                         kind: CompletionItemKind,
+                         detail: Option<String>,
+                         visibility: Visibility| {
+        if !matches!(visibility, Visibility::Public | Visibility::Package) {
+            return;
+        }
+        if !seen.insert(name.to_string()) {
+            return;
+        }
+        items.push(CompletionItem {
+            label: name.to_string(),
+            kind: Some(kind),
+            detail,
+            ..CompletionItem::default()
+        });
+    };
+
+    for item in &module.items {
+        match item {
+            Item::Function(def) => push_name(
+                &def.name,
+                CompletionItemKind::FUNCTION,
+                Some(format_function_signature(def)),
+                def.visibility,
+            ),
+            Item::Const(def) => push_name(
+                &def.name,
+                CompletionItemKind::CONSTANT,
+                def.ty
+                    .as_ref()
+                    .map(|ann| format!("const {}: {}", def.name, format_type_expr(&ann.ty))),
+                def.visibility,
+            ),
+            Item::Struct(def) => push_name(
+                &def.name,
+                CompletionItemKind::STRUCT,
+                Some(format!(
+                    "struct {}{}",
+                    def.name,
+                    format_type_params(&def.type_params)
+                )),
+                def.visibility,
+            ),
+            Item::Enum(def) => push_name(
+                &def.name,
+                CompletionItemKind::ENUM,
+                Some(format!(
+                    "enum {}{}",
+                    def.name,
+                    format_type_params(&def.type_params)
+                )),
+                def.visibility,
+            ),
+            Item::Interface(def) => push_name(
+                &def.name,
+                CompletionItemKind::INTERFACE,
+                Some(format!(
+                    "interface {}{}",
+                    def.name,
+                    format_type_params(&def.type_params)
+                )),
+                def.visibility,
+            ),
+            Item::Macro(def) => push_name(
+                &def.name,
+                CompletionItemKind::FUNCTION,
+                Some(format_macro_detail(def)),
+                def.visibility,
+            ),
+            Item::Impl(_) | Item::MacroInvocation(_) => {}
+        }
+    }
+
     items
 }
 
@@ -1097,90 +1196,82 @@ pub fn general_completion_items(
 
     for import in &module.imports {
         if let Some(imported) = import_module_from_snapshot(all_modules, import) {
+            let allowed = import_allowed_names(import, imported);
+
             for item in &imported.items {
-                match item {
-                    Item::Function(func) => {
-                        if func.visibility != Visibility::Public || func.name == "main" {
-                            continue;
-                        }
-                        if !seen.insert(func.name.clone()) {
-                            continue;
-                        }
-                        items.push(CompletionItem {
-                            label: func.name.clone(),
-                            kind: Some(CompletionItemKind::FUNCTION),
-                            detail: Some(format_function_signature(func)),
-                            ..Default::default()
-                        });
-                    }
-                    Item::Struct(def) => {
-                        if def.visibility != Visibility::Public || !seen.insert(def.name.clone()) {
-                            continue;
-                        }
-                        items.push(CompletionItem {
-                            label: def.name.clone(),
-                            kind: Some(CompletionItemKind::STRUCT),
-                            detail: Some(format!(
-                                "struct {}{}",
-                                def.name,
-                                format_type_params(&def.type_params)
-                            )),
-                            ..Default::default()
-                        });
-                    }
-                    Item::Enum(def) => {
-                        if def.visibility != Visibility::Public || !seen.insert(def.name.clone()) {
-                            continue;
-                        }
-                        items.push(CompletionItem {
-                            label: def.name.clone(),
-                            kind: Some(CompletionItemKind::ENUM),
-                            detail: Some(format!(
-                                "enum {}{}",
-                                def.name,
-                                format_type_params(&def.type_params)
-                            )),
-                            ..Default::default()
-                        });
-                    }
-                    Item::Interface(def) => items.push(CompletionItem {
-                        label: def.name.clone(),
-                        kind: Some(CompletionItemKind::INTERFACE),
-                        detail: Some(format!(
+                let (label, kind, detail, public) = match item {
+                    Item::Function(func) => (
+                        func.name.clone(),
+                        CompletionItemKind::FUNCTION,
+                        Some(format_function_signature(func)),
+                        func.visibility == Visibility::Public && func.name != "main",
+                    ),
+                    Item::Struct(def) => (
+                        def.name.clone(),
+                        CompletionItemKind::STRUCT,
+                        Some(format!(
+                            "struct {}{}",
+                            def.name,
+                            format_type_params(&def.type_params)
+                        )),
+                        def.visibility == Visibility::Public,
+                    ),
+                    Item::Enum(def) => (
+                        def.name.clone(),
+                        CompletionItemKind::ENUM,
+                        Some(format!(
+                            "enum {}{}",
+                            def.name,
+                            format_type_params(&def.type_params)
+                        )),
+                        def.visibility == Visibility::Public,
+                    ),
+                    Item::Interface(def) => (
+                        def.name.clone(),
+                        CompletionItemKind::INTERFACE,
+                        Some(format!(
                             "interface {}{}",
                             def.name,
                             format_type_params(&def.type_params)
                         )),
-                        ..Default::default()
-                    }),
-                    Item::Const(def) => items.push(CompletionItem {
-                        label: def.name.clone(),
-                        kind: Some(CompletionItemKind::CONSTANT),
-                        detail: def
-                            .ty
+                        def.visibility == Visibility::Public,
+                    ),
+                    Item::Const(def) => (
+                        def.name.clone(),
+                        CompletionItemKind::CONSTANT,
+                        def.ty
                             .as_ref()
                             .map(|ty| format_type_expr(&ty.ty))
                             .or(Some("const".into())),
-                        ..Default::default()
-                    }),
-                    Item::Macro(def) => {
-                        if !macro_visible_to_requester(def, imported, module) {
-                            continue;
-                        }
-                        let label = format!("~{}", def.name);
-                        if !seen.insert(label.clone()) {
-                            continue;
-                        }
-                        items.push(CompletionItem {
-                            label,
-                            kind: Some(CompletionItemKind::FUNCTION),
-                            detail: Some(format_macro_detail(def)),
-                            ..Default::default()
-                        });
-                    }
-                    Item::Impl(_) => {}
-                    Item::MacroInvocation(_) => {}
+                        def.visibility == Visibility::Public,
+                    ),
+                    Item::Macro(def) => (
+                        format!("~{}", def.name),
+                        CompletionItemKind::FUNCTION,
+                        Some(format_macro_detail(def)),
+                        def.visibility != Visibility::Private
+                            && macro_visible_to_requester(def, imported, module),
+                    ),
+                    Item::Impl(_) | Item::MacroInvocation(_) => continue,
+                };
+
+                if !public {
+                    continue;
                 }
+                if let Some(allowed) = &allowed {
+                    if !allowed.contains(&label) {
+                        continue;
+                    }
+                }
+                if !seen.insert(label.clone()) {
+                    continue;
+                }
+                items.push(CompletionItem {
+                    label,
+                    kind: Some(kind),
+                    detail,
+                    ..Default::default()
+                });
             }
         }
     }
@@ -1198,7 +1289,64 @@ fn import_module_from_snapshot<'a>(
     import: &Import,
 ) -> Option<&'a Module> {
     let name = import.path.to_string();
-    all_modules.iter().find(|m| m.name == name)
+    if let Some(module) = all_modules.iter().find(|m| m.name == name) {
+        return Some(module);
+    }
+    if import
+        .path
+        .segments
+        .last()
+        .map(|s| s == "prelude")
+        .unwrap_or(false)
+        && import.path.segments.len() > 1
+    {
+        let base = import.path.segments[..import.path.segments.len() - 1].join("::");
+        return all_modules.iter().find(|m| m.name == base);
+    }
+    None
+}
+
+fn import_allowed_names(import: &Import, imported: &Module) -> Option<HashSet<String>> {
+    if let Some(selectors) = &import.selectors {
+        let mut names = HashSet::new();
+        for selector in selectors {
+            match selector {
+                ImportSelector::Name { name, alias, .. } => {
+                    names.insert(alias.clone().unwrap_or_else(|| name.clone()));
+                }
+                ImportSelector::Glob(_) => {
+                    names.clear();
+                    break;
+                }
+            }
+        }
+        if !names.is_empty() {
+            return Some(names);
+        }
+        return None;
+    }
+    if import
+        .path
+        .segments
+        .last()
+        .map(|s| s == "prelude")
+        .unwrap_or(false)
+        && import.selectors.is_none()
+    {
+        let mut names = HashSet::new();
+        for item in &imported.prelude {
+            match item {
+                ImportSelector::Name { name, alias, .. } => {
+                    names.insert(alias.clone().unwrap_or_else(|| name.clone()));
+                }
+                ImportSelector::Glob(_) => return None,
+            }
+        }
+        if !names.is_empty() {
+            return Some(names);
+        }
+    }
+    None
 }
 
 pub fn keyword_completion_items(
@@ -1798,10 +1946,10 @@ version = "0.1.0"
 
     #[test]
     fn detects_module_context_in_declarations() {
-        let text = "module demo.core;";
+        let text = "module demo::core;";
         let ctx = module_path_completion_context(text, text.len()).expect("context");
         assert!(matches!(ctx.kind, ModulePathCompletionKind::Declaration));
-        assert_eq!(ctx.prefix.as_deref(), Some("demo.core"));
+        assert_eq!(ctx.prefix.as_deref(), Some("demo::core"));
     }
 
     #[test]
@@ -1826,12 +1974,12 @@ version = "0.1.0"
         let prioritized =
             module_completion_items_from_manifest(&manifest, Some("app"), Some("app::main"));
         assert!(!prioritized.is_empty());
-        assert_eq!(prioritized[0].label, "app.main");
+        assert_eq!(prioritized[0].label, "app::main");
 
         let all_items = module_completion_items_from_manifest(&manifest, None, None);
         let lib = all_items
             .iter()
-            .find(|item| item.label == "lib.math")
+            .find(|item| item.label == "lib::math")
             .expect("lib completion item");
         let detail = lib.detail.as_ref().expect("detail");
         assert!(detail.contains("[package]"));

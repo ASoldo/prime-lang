@@ -1,6 +1,6 @@
-module pkg.app;
+module pkg::app;
 
-import pkg.lib;
+import pkg::lib;
 
 fn main() {
   let Banner banner = banner("Prime modules loaded");

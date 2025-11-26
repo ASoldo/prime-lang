@@ -1,11 +1,11 @@
 manifest_version = "3"
 
 [package]
-name = "tests.macros"
+name = "tests::macros"
 version = "0.1.0"
 
 [libraries]
-core_types = { name = "core.types", path = "../../core/types.prime", visibility = "pub" }
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }
 
 [tests]
-tests_macros = { name = "tests.macros", path = "macros.prime", visibility = "pub" }
+tests_macros = { name = "tests::macros", path = "macros.prime", visibility = "pub" }

@@ -1,4 +1,4 @@
-module demos.borrow;
+module demos::borrow;
 
 struct Refill {
   amount: int32;

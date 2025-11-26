@@ -1,4 +1,5 @@
 use crate::language::ast::ModuleKind;
+use super::deps;
 use super::lock::{Lockfile, LockedDependency};
 use super::manifest_helpers::entries_from_value;
 use serde::Deserialize;
@@ -47,7 +48,7 @@ pub struct Dependency {
 
 #[derive(Debug, Clone)]
 pub enum DependencySource {
-    Git { url: String },
+    Git { url: String, cache: PathBuf },
     Path { path: PathBuf },
 }
 
@@ -109,12 +110,23 @@ impl PackageManifest {
         let (modules, reverse, tests) = parse_modules(&value, &root)?;
         let dependencies = parse_dependencies(&value, &root)?;
         let mut dependency_manifests = Vec::new();
+        let cache_root = root.join(".prime/deps");
         for dep in &dependencies {
-            if let DependencySource::Path { path } = &dep.source {
-                let manifest_path = path.join("prime.toml");
-                if manifest_path.exists() {
-                    if let Ok(dep_manifest) = PackageManifest::load(&manifest_path) {
-                        dependency_manifests.push(dep_manifest);
+            match &dep.source {
+                DependencySource::Path { path } => {
+                    let manifest_path = path.join("prime.toml");
+                    if manifest_path.exists() {
+                        if let Ok(dep_manifest) = PackageManifest::load(&manifest_path) {
+                            dependency_manifests.push(dep_manifest);
+                        }
+                    }
+                }
+                DependencySource::Git { cache, .. } => {
+                    let manifest_path = cache.join("prime.toml");
+                    if manifest_path.exists() {
+                        if let Ok(dep_manifest) = PackageManifest::load(&manifest_path) {
+                            dependency_manifests.push(dep_manifest);
+                        }
                     }
                 }
             }
@@ -144,6 +156,20 @@ impl PackageManifest {
         for dep in &self.dependency_manifests {
             if let Some(path) = dep.module_path(&name) {
                 return Some(path);
+            }
+        }
+        let cache_root = self.root.join(".prime/deps");
+        for dep in &self.dependencies {
+            let manifest_path = match &dep.source {
+                DependencySource::Path { path } => path.join("prime.toml"),
+                DependencySource::Git { cache, .. } => cache.join("prime.toml"),
+            };
+            if manifest_path.exists() {
+                if let Ok(dep_manifest) = PackageManifest::load(&manifest_path) {
+                    if let Some(path) = dep_manifest.module_path(&name) {
+                        return Some(path);
+                    }
+                }
             }
         }
         None
@@ -214,7 +240,7 @@ impl PackageManifest {
         let mut locked = Vec::new();
         for dep in &self.dependencies {
             let (git, path) = match &dep.source {
-                DependencySource::Git { url } => (Some(url.clone()), None),
+                DependencySource::Git { url, .. } => (Some(url.clone()), None),
                 DependencySource::Path { path } => (
                     None,
                     Some(
@@ -300,6 +326,7 @@ fn parse_modules(
 
 fn parse_dependencies(value: &Value, root: &Path) -> Result<Vec<Dependency>, ManifestError> {
     let mut deps = Vec::new();
+    let cache_root = root.join(".prime/deps");
     for entry in entries_from_value(value.get("dependencies")) {
         let raw: RawDependencyEntry =
             entry
@@ -319,7 +346,8 @@ fn parse_dependencies(value: &Value, root: &Path) -> Result<Vec<Dependency>, Man
             });
         }
         let source = if let Some(url) = raw.git {
-            DependencySource::Git { url }
+            let cache = cache_root.join(deps::slug(&raw.name, &url));
+            DependencySource::Git { url, cache }
         } else if let Some(rel) = raw.path {
             DependencySource::Path {
                 path: root.join(rel),
@@ -384,6 +412,12 @@ fn insert_entry(
     default_kind: Option<&str>,
     label: &str,
 ) -> Result<(), ManifestError> {
+    if raw.name.contains('.') {
+        return Err(ManifestError::InvalidModule {
+            module: Some(raw.name.clone()),
+            message: "module name cannot contain '.'; use '::' or '/'".into(),
+        });
+    }
     let canonical_name = canonical_module_name(&raw.name);
     if target.contains_key(&canonical_name) {
         return Err(ManifestError::InvalidModule {
@@ -432,6 +466,12 @@ fn build_module_info(
         module: Some(name.to_string()),
         message,
     })?;
+    if name.contains('.') {
+        return Err(ManifestError::InvalidModule {
+            module: Some(name.to_string()),
+            message: "module name cannot contain '.'; use '::' or '/'".into(),
+        });
+    }
     Ok(ModuleInfo {
         name: canonical_name,
         path: canonical,
@@ -457,14 +497,13 @@ fn parse_module_kind(kind: Option<&str>) -> Result<ModuleKind, String> {
 
 pub fn canonical_module_name(name: &str) -> String {
     let mut segments = Vec::new();
-    for part in name.split(|c| c == ':' || c == '.') {
-        if part.is_empty() {
+    let normalized = name.replace("::", "/");
+    for part in normalized.split('/') {
+        let trimmed = part.trim_matches(':');
+        if trimmed.is_empty() {
             continue;
         }
-        if part == ":" {
-            continue;
-        }
-        segments.push(part.trim_matches(':').to_string());
+        segments.push(trimmed.to_string());
     }
     if segments.is_empty() {
         name.to_string()

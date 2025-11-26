@@ -151,6 +151,7 @@ impl<'a> Lexer<'a> {
             "try" => TokenKind::Try,
             "move" => TokenKind::Move,
             "pub" => TokenKind::Pub,
+            "export" => TokenKind::Export,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "as" => TokenKind::As,

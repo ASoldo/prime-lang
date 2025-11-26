@@ -3702,7 +3702,7 @@ fn broken() {
 
     #[test]
     fn borrow_demo_executes_successfully() {
-        let mut interpreter = interpreter_from_entry("demos/borrow/borrow_demo.prime");
+        let mut interpreter = interpreter_from_entry("workspace/demos/borrow/borrow_demo.prime");
         interpreter.bootstrap().expect("bootstrap");
         interpreter
             .call_function("main", None, &[], Vec::new())
@@ -3711,7 +3711,7 @@ fn broken() {
 
     #[test]
     fn pattern_demo_executes_successfully() {
-        let mut interpreter = interpreter_from_entry("demos/patterns/pattern_demo.prime");
+        let mut interpreter = interpreter_from_entry("workspace/demos/patterns/pattern_demo.prime");
         interpreter.bootstrap().expect("bootstrap");
         interpreter
             .call_function("main", None, &[], Vec::new())

@@ -1,6 +1,6 @@
-module demos.error_handling;
+module demos::error_handling;
 
-import core.types;
+import core::types;
 
 fn parse_energy(value: int32) -> Result[int32, string] {
   if value < 0 {

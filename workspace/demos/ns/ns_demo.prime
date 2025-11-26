@@ -1,4 +1,4 @@
-module demos.ns;
+module demos::ns;
 
 struct Foo {
   value: int32;

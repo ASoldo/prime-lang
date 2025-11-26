@@ -1,6 +1,6 @@
-module demos.heap;
+module demos::heap;
 
-import core.types;
+import core::types;
 
 fn main() {
   let Box[int32] counter = box_new(0);

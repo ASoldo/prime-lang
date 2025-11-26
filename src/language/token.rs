@@ -28,6 +28,7 @@ pub enum TokenKind {
     ModuleKw,
     LibraryKw,
     TestKw,
+    Export,
     Macro,
     Return,
     If,
