@@ -1372,11 +1372,13 @@ pub fn keyword_completion_items(
         "return",
         "defer",
         "import",
+        "export",
         "module",
         "library",
         "test",
         "break",
         "continue",
+        "prelude",
     ];
     let mut items: Vec<CompletionItem> = KEYWORDS
         .iter()
