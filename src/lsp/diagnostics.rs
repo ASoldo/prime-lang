@@ -460,7 +460,18 @@ fn resolve_import_for_manifest(
     base_path: &Path,
     import_path: &ImportPath,
 ) -> Option<ResolvedImport> {
-    let module_name = import_path.to_string();
+    let mut module_name = import_path.to_string();
+    let mut lookup_path = import_path.clone();
+    if import_path
+        .segments
+        .last()
+        .map(|s| s == "prelude")
+        .unwrap_or(false)
+        && import_path.segments.len() > 1
+    {
+        lookup_path.segments.pop();
+        module_name = lookup_path.to_string();
+    }
     if let Some(path) = manifest.module_path(&module_name) {
         return Some(ResolvedImport {
             module_name,
@@ -468,7 +479,7 @@ fn resolve_import_for_manifest(
             path,
         });
     }
-    let relative = resolve_relative_import_path(base_path, import_path);
+    let relative = resolve_relative_import_path(base_path, &lookup_path);
     let canonical = canonical_path(&relative);
     Some(ResolvedImport {
         module_name: manifest

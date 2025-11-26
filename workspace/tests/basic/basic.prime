@@ -1,6 +1,6 @@
 test tests::basic;
 
-import pkg::lib;
+import pkg::lib::{banner, promote};
 import core::types;
 
 fn adds_numbers() -> (int32, int32) {

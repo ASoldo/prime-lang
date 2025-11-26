@@ -147,16 +147,26 @@ impl ModuleLoader {
         base: &Path,
         import_path: &ImportPath,
     ) -> Result<PathBuf, PackageError> {
+        let mut lookup_path = import_path.clone();
+        if lookup_path
+            .segments
+            .last()
+            .map(|s| s == "prelude")
+            .unwrap_or(false)
+            && lookup_path.segments.len() > 1
+        {
+            lookup_path.segments.pop();
+        }
         if let Some(manifest) = &self.manifest {
             if let Some(path) = resolve_namespaced_import(manifest, import_path) {
                 return Ok(path);
             }
-            if let Some(path) = manifest.module_path(&import_path.to_string()) {
+            if let Some(path) = manifest.module_path(&lookup_path.to_string()) {
                 return Ok(path);
             }
             for dep in manifest.dependencies() {
                 let dep_name = crate::project::manifest::canonical_module_name(&dep.name);
-                let import_name = import_path.to_string();
+                let import_name = lookup_path.to_string();
                 if dep_name != import_name && !import_name.starts_with(&(dep_name.clone() + "::")) {
                     continue;
                 }

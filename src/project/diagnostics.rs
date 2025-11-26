@@ -180,6 +180,16 @@ fn import_issues(
     let mut issues = Vec::new();
     let mut seen = HashSet::new();
     for import in &module.imports {
+        let mut lookup_path = import.path.clone();
+        if lookup_path
+            .segments
+            .last()
+            .map(|s| s == "prelude")
+            .unwrap_or(false)
+            && lookup_path.segments.len() > 1
+        {
+            lookup_path.segments.pop();
+        }
         let name = import.path.to_string();
         if !seen.insert(name.clone()) {
             issues.push(ManifestIssue {
@@ -188,10 +198,11 @@ fn import_issues(
             });
             continue;
         }
-        if manifest.module_path(&name).is_some() {
+        let canonical_name = lookup_path.to_string();
+        if manifest.module_path(&canonical_name).is_some() {
             continue;
         }
-        let resolved = resolve_import_path(file_path, &import.path);
+        let resolved = resolve_import_path(file_path, &lookup_path);
         if resolved.exists() {
             let module_path = manifest_relative_string(&resolved, manifest);
             issues.push(ManifestIssue {

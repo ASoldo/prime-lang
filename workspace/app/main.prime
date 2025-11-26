@@ -1,6 +1,6 @@
 module app::main;
 
-import core::types;
+import core::types::prelude::{*};
 import libpkg_a::lib::{example};
 
 const TRAINING_LIMIT: int32 = 3;
