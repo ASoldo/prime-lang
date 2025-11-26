@@ -2298,6 +2298,9 @@ impl Compiler {
                     }
                 }
             }
+            Expr::Closure { .. } => {
+                return Err("closures are not yet supported in the compiler backend".into())
+            }
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = match self.emit_expression(base)? {
                     EvalOutcome::Value(value) => value,
@@ -3925,7 +3928,11 @@ impl Compiler {
             substitute_self_in_function(&mut method_def, &block.target);
             provided.insert(method_def.name.clone());
             if let Some(first) = method_def.params.first() {
-                if let Some(name) = type_name_from_type_expr(&first.ty.ty) {
+                if let Some(name) = first
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| type_name_from_type_expr(&ty.ty))
+                {
                     if name != block.target {
                         return Err(format!(
                             "First parameter of `{}` must be `{}`",
@@ -4058,7 +4065,9 @@ impl Compiler {
         let mut new_def = base.clone();
         new_def.type_params.clear();
         for param in &mut new_def.params {
-            param.ty = param.ty.substitute(&map);
+            if let Some(ty) = param.ty.as_mut() {
+                *ty = ty.substitute(&map);
+            }
         }
         for ret in &mut new_def.returns {
             *ret = ret.substitute(&map);
@@ -4072,8 +4081,10 @@ impl Compiler {
         args: &[Value],
     ) -> Result<(), String> {
         for (param, value) in params.iter().zip(args.iter()) {
-            if let Some((interface, type_args)) = self.interface_name_from_type(&param.ty.ty) {
-                self.ensure_interface_compat(&interface, &type_args, value)?;
+            if let Some(ty) = param.ty.as_ref() {
+                if let Some((interface, type_args)) = self.interface_name_from_type(&ty.ty) {
+                    self.ensure_interface_compat(&interface, &type_args, value)?;
+                }
             }
         }
         Ok(())
@@ -5190,14 +5201,17 @@ fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
 fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {
     def.params
         .first()
-        .and_then(|param| type_name_from_type_expr(&param.ty.ty))
+        .and_then(|param| param.ty.as_ref())
+        .and_then(|ty| type_name_from_type_expr(&ty.ty))
         .filter(|name| structs.contains_key(name))
 }
 
 fn substitute_self_in_function(def: &mut FunctionDef, target: &str) {
     let concrete = TypeExpr::Named(target.to_string(), Vec::new());
     for param in &mut def.params {
-        param.ty = param.ty.replace_self(&concrete);
+        if let Some(ty) = param.ty.as_mut() {
+            *ty = ty.replace_self(&concrete);
+        }
     }
     for ret in &mut def.returns {
         *ret = ret.replace_self(&concrete);

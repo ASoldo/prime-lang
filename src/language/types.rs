@@ -9,6 +9,10 @@ pub enum TypeExpr {
     Reference { mutable: bool, ty: Box<TypeExpr> },
     Pointer { mutable: bool, ty: Box<TypeExpr> },
     Tuple(Vec<TypeExpr>),
+    Function {
+        params: Vec<TypeExpr>,
+        returns: Vec<TypeExpr>,
+    },
     Unit,
     SelfType,
 }
@@ -48,6 +52,10 @@ impl TypeExpr {
             TypeExpr::Tuple(types) => {
                 TypeExpr::Tuple(types.iter().map(|ty| ty.substitute(map)).collect())
             }
+            TypeExpr::Function { params, returns } => TypeExpr::Function {
+                params: params.iter().map(|ty| ty.substitute(map)).collect(),
+                returns: returns.iter().map(|ty| ty.substitute(map)).collect(),
+            },
             TypeExpr::Unit => TypeExpr::Unit,
             TypeExpr::SelfType => TypeExpr::SelfType,
         }
@@ -73,6 +81,10 @@ impl TypeExpr {
             TypeExpr::Tuple(types) => {
                 TypeExpr::Tuple(types.iter().map(|ty| ty.replace_self(concrete)).collect())
             }
+            TypeExpr::Function { params, returns } => TypeExpr::Function {
+                params: params.iter().map(|ty| ty.replace_self(concrete)).collect(),
+                returns: returns.iter().map(|ty| ty.replace_self(concrete)).collect(),
+            },
             TypeExpr::Named(name, args) => TypeExpr::Named(
                 name.clone(),
                 args.iter().map(|ty| ty.replace_self(concrete)).collect(),
@@ -106,6 +118,20 @@ impl TypeExpr {
                 } else {
                     format!("*{}", ty.canonical_name())
                 }
+            }
+            TypeExpr::Function { params, returns } => {
+                let params_fmt: Vec<String> =
+                    params.iter().map(|ty| ty.canonical_name()).collect();
+                let returns_fmt: Vec<String> =
+                    returns.iter().map(|ty| ty.canonical_name()).collect();
+                let ret_part = if returns_fmt.is_empty() {
+                    "()".to_string()
+                } else if returns_fmt.len() == 1 {
+                    returns_fmt[0].clone()
+                } else {
+                    format!("({})", returns_fmt.join(","))
+                };
+                format!("fn({}) -> {}", params_fmt.join(","), ret_part)
             }
             TypeExpr::Tuple(types) => {
                 let rendered: Vec<String> = types.iter().map(|ty| ty.canonical_name()).collect();

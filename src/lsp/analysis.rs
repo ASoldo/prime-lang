@@ -1,9 +1,9 @@
 use crate::language::{
     ast::{
-        Block, ElseBranch, Expr, ForTarget, FormatSegment, FormatStringLiteral, FunctionBody,
-        FunctionDef, IfCondition, IfExpr, Item, LetStmt, Literal, MacroBody, MacroDef,
-        MacroInvocation, MatchExpr, Module, Pattern, RangeExpr, Statement, StructLiteralKind,
-        WhileCondition,
+        Block, ClosureBody, ElseBranch, Expr, ForTarget, FormatSegment, FormatStringLiteral,
+        FunctionBody, FunctionDef, IfCondition, IfExpr, Item, LetStmt, Literal, MacroBody,
+        MacroDef, MacroInvocation, MatchExpr, Module, Pattern, RangeExpr, Statement,
+        StructLiteralKind, WhileCondition,
     },
     span::Span,
     token::Token,
@@ -89,12 +89,17 @@ fn collect_decl_from_function(
     };
     let available_from = body_span.start;
     for param in &func.params {
-        let mut param_ty = param.ty.ty.clone();
+        let mut param_ty = param.ty.as_ref().map(|ann| ann.ty.clone());
         if param.name == "self" {
             if let Some(override_ty) = receiver_override.clone() {
-                param_ty = override_ty;
-            } else if let Some(resolved) = receiver_type_name(&param.ty.ty).map(TypeExpr::named) {
-                param_ty = resolved;
+                param_ty = Some(override_ty);
+            } else if let Some(resolved) =
+                param
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| receiver_type_name(&ty.ty).map(TypeExpr::named))
+            {
+                param_ty = Some(resolved);
             }
         }
         decls.push(DeclInfo {
@@ -102,7 +107,7 @@ fn collect_decl_from_function(
             span: param.span,
             scope: body_span,
             available_from,
-            ty: Some(param_ty),
+            ty: param_ty.clone(),
             value_span: None,
             mutability: param.mutability,
             kind: DeclKind::Param,
@@ -261,6 +266,10 @@ fn collect_decl_from_expr(expr: &Expr, module: &Module, decls: &mut Vec<DeclInfo
                 collect_decl_from_expr(arg, module, decls);
             }
         }
+        Expr::Closure { body, .. } => match body {
+            ClosureBody::Block(block) => collect_decl_from_block(block, module, decls),
+            ClosureBody::Expr(expr) => collect_decl_from_expr(expr.node.as_ref(), module, decls),
+        },
         Expr::FieldAccess { base, .. } => collect_decl_from_expr(base, module, decls),
         Expr::Index { base, index, .. } => {
             collect_decl_from_expr(base, module, decls);
@@ -795,6 +804,10 @@ fn collect_macro_expr_idents(expr: &Expr, params: &HashSet<String>, used: &mut H
             collect_macro_expr_idents(left, params, used);
             collect_macro_expr_idents(right, params, used);
         }
+        Expr::Closure { body, .. } => match body {
+            ClosureBody::Block(block) => collect_macro_used_in_block(block, params, used),
+            ClosureBody::Expr(expr) => collect_macro_expr_idents(expr.node.as_ref(), params, used),
+        },
         Expr::Unary { expr: inner, .. } => collect_macro_expr_idents(inner, params, used),
         Expr::Call { callee, args, .. } => {
             collect_macro_expr_idents(callee, params, used);
@@ -1033,6 +1046,10 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
                 collect_expr_idents(&arg.expr, used);
             }
         }
+        Expr::Closure { body, .. } => match body {
+            ClosureBody::Block(block) => collect_used_in_block(block, used),
+            ClosureBody::Expr(expr) => collect_expr_idents(expr.node.as_ref(), used),
+        },
         Expr::Try { block, .. } => collect_used_in_block(block, used),
         Expr::TryPropagate { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Binary { left, right, .. } => {
@@ -1336,6 +1353,10 @@ fn collect_spans_in_expr(expr: &Expr, name: &str, spans: &mut Vec<Span>) {
         | Expr::Deref { expr, .. }
         | Expr::Move { expr, .. }
         | Expr::Spawn { expr, .. } => collect_spans_in_expr(expr, name, spans),
+        Expr::Closure { body, .. } => match body {
+            ClosureBody::Block(block) => collect_spans_in_block(block, name, spans),
+            ClosureBody::Expr(expr) => collect_spans_in_expr(expr.node.as_ref(), name, spans),
+        },
         Expr::Binary { left, right, .. } => {
             collect_spans_in_expr(left, name, spans);
             collect_spans_in_expr(right, name, spans);
@@ -1859,6 +1880,7 @@ pub fn expr_span(expr: &Expr) -> Span {
         Expr::Index { span, .. } => *span,
         Expr::FormatString(literal) => literal.span,
         Expr::Spawn { span, .. } => *span,
+        Expr::Closure { span, .. } => *span,
     }
 }
 

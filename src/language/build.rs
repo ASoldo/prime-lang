@@ -464,6 +464,9 @@ impl BuildInterpreter {
                 ..
             } => self.eval_call(callee, type_args, args),
             Expr::FieldAccess { base, field, .. } => self.eval_field_access(base, field),
+            Expr::Closure { .. } => {
+                Err("closures are not supported in build expressions yet".into())
+            }
             Expr::Reference { expr, mutable, .. } => match expr.as_ref() {
                 Expr::Identifier(ident) => {
                     let (cell, mutable_flag, borrowed_mut, borrowed_shared) = {

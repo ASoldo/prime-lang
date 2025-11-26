@@ -1,0 +1,24 @@
+module demos::closures;
+
+fn apply_twice(f: fn(int32) -> int32, value: int32) -> int32 {
+  f(f(value))
+}
+
+fn make_adder() -> fn(int32) -> int32 {
+  let int32 base = 10;
+  |x: int32| base + x
+}
+
+fn main() {
+  let double = |x: int32| x * 2;
+  let twice = apply_twice(double, 3);
+  out(`apply_twice(double, 3) = {}`, twice);
+
+  let add = make_adder();
+  let sum = add(5);
+  out(`make_adder()(5) = {}`, sum);
+
+  let int32 shift = 7;
+  let shifter = |y: int32| y + shift;
+  out(`shifter(8) = {}`, shifter(8));
+}

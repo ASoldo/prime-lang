@@ -40,6 +40,8 @@ module.exports = grammar({
     [$.expression, $.struct_literal],
     [$.module_path],
     [$.type_path, $.type_expression],
+    [$.type_expression, $.generic_type],
+    [$.tuple_type, $.function_type],
   ],
 
   rules: {
@@ -329,6 +331,7 @@ module.exports = grammar({
       $.try_expression,
       $.match_expression,
       $.if_expression,
+      $.closure_expression,
       $.macro_call_expression,
       $.range_expression,
       $.simple_field_expression,
@@ -470,6 +473,22 @@ module.exports = grammar({
         field('value', $.expression),
         '?'
       )
+    ),
+
+    closure_expression: $ => prec.right(PREC.call,
+      seq(
+        '|',
+        optional(commaSep1($.closure_parameter)),
+        '|',
+        optional(seq('->', $.type_expression)),
+        choice($.block, $.expression)
+      )
+    ),
+
+    closure_parameter: $ => seq(
+      optional('mut'),
+      field('name', $.identifier),
+      optional(seq(':', field('type', $.type_expression)))
     ),
 
     macro_call_expression: $ => prec.left(PREC.call,
@@ -640,6 +659,7 @@ module.exports = grammar({
     identifier: $ => token(/[A-Za-z_][A-Za-z0-9_]*/),
 
     type_expression: $ => choice(
+      $.function_type,
       $.pointer_type,
       $.reference_type,
       $.slice_type,
@@ -656,6 +676,19 @@ module.exports = grammar({
     slice_type: $ => seq('[', ']', $.type_expression),
     array_type: $ => seq('[', $.integer_literal, ']', $.type_expression),
     tuple_type: $ => seq('(', commaSep1($.type_expression), ')'),
+    function_type: $ => seq(
+      'fn',
+      '(',
+      commaSep($.type_expression),
+      ')',
+      optional(seq(
+        '->',
+        choice(
+          $.type_expression,
+          seq('(', commaSep1($.type_expression), ')')
+        )
+      ))
+    ),
     generic_type: $ => seq(
       field('name', $.type_path),
       '[',

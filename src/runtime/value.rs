@@ -1,3 +1,4 @@
+use crate::language::ast::{ClosureBody, FunctionParam};
 use crate::runtime::error::RuntimeResult;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -25,6 +26,7 @@ pub enum Value {
     Receiver(ChannelReceiver),
     JoinHandle(Box<JoinHandleValue>),
     Pointer(PointerValue),
+    Closure(ClosureValue),
     Moved,
 }
 
@@ -45,6 +47,7 @@ impl Value {
             Value::FormatTemplate(_) => true,
             Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => true,
             Value::Pointer(_) => true,
+            Value::Closure(_) => true,
             Value::Unit => false,
             Value::Moved => panic!("attempted to read moved value"),
         }
@@ -156,6 +159,21 @@ pub struct PointerValue {
     pub mutable: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct CapturedValue {
+    pub name: String,
+    pub value: Value,
+    pub mutable: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClosureValue {
+    pub params: Vec<FunctionParam>,
+    pub body: ClosureBody,
+    pub ret: Option<crate::language::types::TypeAnnotation>,
+    pub captures: Vec<CapturedValue>,
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -225,6 +243,7 @@ impl fmt::Display for Value {
                 if ptr.mutable { "mut " } else { "" },
                 ptr.cell.lock().unwrap()
             ),
+            Value::Closure(_) => write!(f, "<closure>"),
             Value::Moved => write!(f, "<moved>"),
         }
     }

@@ -7,9 +7,9 @@ use crate::runtime::{
     environment::Environment,
     error::{RuntimeError, RuntimeResult},
     value::{
-        BoxValue, ChannelReceiver, ChannelSender, EnumValue, FormatRuntimeSegment,
-        FormatTemplateValue, JoinHandleValue, MapValue, PointerValue, RangeValue, ReferenceValue,
-        SliceValue, StructInstance, Value,
+        BoxValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue, EnumValue,
+        FormatRuntimeSegment, FormatTemplateValue, JoinHandleValue, MapValue, PointerValue,
+        RangeValue, ReferenceValue, SliceValue, StructInstance, Value,
     },
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -354,7 +354,7 @@ impl Interpreter {
             substitute_self_in_function(&mut method_def, &block.target);
             provided.insert(method_def.name.clone());
             if let Some(first) = method_def.params.first() {
-                if let Some(name) = type_name_from_annotation(&first.ty) {
+                if let Some(name) = first.ty.as_ref().and_then(type_name_from_annotation) {
                     if name != block.target {
                         return Err(RuntimeError::Panic {
                             message: format!(
@@ -493,6 +493,77 @@ impl Interpreter {
         result
     }
 
+    fn call_closure_value(
+        &mut self,
+        closure: &ClosureValue,
+        args: Vec<Value>,
+    ) -> RuntimeResult<Value> {
+        if closure.params.len() != args.len() {
+            return Err(RuntimeError::ArityMismatch {
+                name: "closure".into(),
+                expected: closure.params.len(),
+                received: args.len(),
+            });
+        }
+        self.env.push_scope();
+        for captured in &closure.captures {
+            self.env
+                .declare(
+                    &captured.name,
+                    captured.value.clone(),
+                    captured.mutable,
+                )?;
+        }
+        for (param, value) in closure.params.iter().zip(args.into_iter()) {
+            self.env
+                .declare(&param.name, value, param.mutability == Mutability::Mutable)?;
+        }
+        let result = match &closure.body {
+            ClosureBody::Block(block) => self.eval_block(block)?,
+            ClosureBody::Expr(expr) => match self.eval_expression(expr.node.as_ref())? {
+                EvalOutcome::Value(value) => BlockEval::Value(value),
+                EvalOutcome::Flow(flow) => BlockEval::Flow(flow),
+            },
+        };
+        let mut value = match result {
+            BlockEval::Value(value) => value,
+            BlockEval::Flow(FlowSignal::Return(mut values)) => {
+                if values.len() == 1 {
+                    values.remove(0)
+                } else {
+                    Value::Tuple(values)
+                }
+            }
+            BlockEval::Flow(FlowSignal::Propagate(value)) => value,
+            BlockEval::Flow(FlowSignal::Break) => {
+                return Err(RuntimeError::Panic {
+                    message: "break outside closure".into(),
+                })
+            }
+            BlockEval::Flow(FlowSignal::Continue) => {
+                return Err(RuntimeError::Panic {
+                    message: "continue outside closure".into(),
+                })
+            }
+        };
+        if let Some(flow) = self.execute_deferred()? {
+            self.env.pop_scope();
+            value = match flow {
+                FlowSignal::Propagate(value) => value,
+                other => {
+                    return Err(RuntimeError::Panic {
+                        message: format!(
+                            "Control flow {} not allowed when leaving closure",
+                            flow_name(&other)
+                        ),
+                    })
+                }
+            };
+        }
+        self.env.pop_scope();
+        Ok(value)
+    }
+
     fn resolve_function(
         &mut self,
         name: &str,
@@ -607,7 +678,9 @@ impl Interpreter {
         let mut new_def = info.def.clone();
         new_def.type_params.clear();
         for param in &mut new_def.params {
-            param.ty = param.ty.substitute(&map);
+            if let Some(ty) = param.ty.as_mut() {
+                *ty = ty.substitute(&map);
+            }
         }
         for ret in &mut new_def.returns {
             *ret = ret.substitute(&map);
@@ -625,8 +698,10 @@ impl Interpreter {
         args: &[Value],
     ) -> RuntimeResult<()> {
         for (param, value) in params.iter().zip(args.iter()) {
-            if let Some((interface, type_args)) = self.interface_name_from_type(&param.ty.ty) {
-                self.ensure_interface_compat(&interface, &type_args, value)?;
+            if let Some(ty) = param.ty.as_ref() {
+                if let Some((interface, type_args)) = self.interface_name_from_type(&ty.ty) {
+                    self.ensure_interface_compat(&interface, &type_args, value)?;
+                }
             }
         }
         Ok(())
@@ -2194,82 +2269,96 @@ impl Interpreter {
                 type_args,
                 args,
                 ..
-            } => match callee.as_ref() {
-                Expr::Identifier(ident) => {
-                    let arg_values = match self.eval_arguments(args)? {
-                        EvalOutcome::Value(values) => values,
-                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
-                    };
-                    if let Some(variant) = self.enum_variants.get(&ident.name) {
-                        let enum_name = variant.enum_name.clone();
-                        let variant_name = ident.name.clone();
-                        let value = self.instantiate_enum(&enum_name, &variant_name, arg_values)?;
-                        return Ok(EvalOutcome::Value(value));
+            } => {
+                let arg_values = match self.eval_arguments(args)? {
+                    EvalOutcome::Value(values) => values,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                match callee.as_ref() {
+                    Expr::Identifier(ident) => {
+                        if let Some(variant) = self.enum_variants.get(&ident.name) {
+                            let enum_name = variant.enum_name.clone();
+                            let variant_name = ident.name.clone();
+                            let value =
+                                self.instantiate_enum(&enum_name, &variant_name, arg_values)?;
+                            return Ok(EvalOutcome::Value(value));
+                        }
+                        if let Some(value) = self.env.get(&ident.name) {
+                            if let Value::Closure(closure) = value {
+                                let value = self.call_closure_value(&closure, arg_values)?;
+                                return Ok(EvalOutcome::Value(value));
+                            }
+                        }
+                        let results =
+                            self.call_function(&ident.name, None, type_args, arg_values)?;
+                        let value = match results.len() {
+                            0 => Value::Unit,
+                            1 => results.into_iter().next().unwrap(),
+                            _ => Value::Tuple(results),
+                        };
+                        Ok(EvalOutcome::Value(value))
                     }
-                    let results = self.call_function(&ident.name, None, type_args, arg_values)?;
-                    let value = match results.len() {
-                        0 => Value::Unit,
-                        1 => results.into_iter().next().unwrap(),
-                        _ => Value::Tuple(results),
-                    };
-                    Ok(EvalOutcome::Value(value))
-                }
-                Expr::FieldAccess { base, field, .. } => {
-                    if let Expr::Identifier(module_ident) = base.as_ref() {
-                        let qualified = format!("{}::{}", module_ident.name, field);
-                        if self.functions.contains_key(&FunctionKey {
-                            name: qualified.clone(),
-                            receiver: None,
-                            type_args: None,
-                        }) {
-                            let arg_values = match self.eval_arguments(args)? {
-                                EvalOutcome::Value(values) => values,
-                                EvalOutcome::Flow(flow) => {
-                                    return Ok(EvalOutcome::Flow(flow));
-                                }
-                            };
-                            let results =
-                                self.call_function(&qualified, None, type_args, arg_values)?;
-                            let value = match results.len() {
+                    Expr::FieldAccess { base, field, .. } => {
+                        if let Expr::Identifier(module_ident) = base.as_ref() {
+                            let qualified = format!("{}::{}", module_ident.name, field);
+                            if self.functions.contains_key(&FunctionKey {
+                                name: qualified.clone(),
+                                receiver: None,
+                                type_args: None,
+                            }) {
+                                let results =
+                                    self.call_function(&qualified, None, type_args, arg_values)?;
+                                let value = match results.len() {
+                                    0 => Value::Unit,
+                                    1 => results.into_iter().next().unwrap(),
+                                    _ => Value::Tuple(results),
+                                };
+                                return Ok(EvalOutcome::Value(value));
+                            }
+                        }
+                        let receiver = match self.eval_expression(base)? {
+                            EvalOutcome::Value(value) => value,
+                            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                        };
+                        let receiver_type = self.value_struct_name(&receiver);
+                        let mut method_args = arg_values.clone();
+                        method_args.insert(0, receiver);
+                        if let Some(result) =
+                            self.call_builtin_method(field, method_args.clone())
+                        {
+                            let values = result?;
+                            let value = match values.len() {
                                 0 => Value::Unit,
-                                1 => results.into_iter().next().unwrap(),
-                                _ => Value::Tuple(results),
+                                1 => values.into_iter().next().unwrap(),
+                                _ => Value::Tuple(values),
                             };
                             return Ok(EvalOutcome::Value(value));
                         }
-                    }
-                    let receiver = match self.eval_expression(base)? {
-                        EvalOutcome::Value(value) => value,
-                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
-                    };
-                    let receiver_type = self.value_struct_name(&receiver);
-                    let mut method_args = match self.eval_arguments(args)? {
-                        EvalOutcome::Value(values) => values,
-                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
-                    };
-                    method_args.insert(0, receiver);
-                    if let Some(result) = self.call_builtin_method(field, method_args.clone()) {
-                        let values = result?;
-                        let value = match values.len() {
+                        let results =
+                            self.call_function(field, receiver_type, type_args, method_args)?;
+                        let value = match results.len() {
                             0 => Value::Unit,
-                            1 => values.into_iter().next().unwrap(),
-                            _ => Value::Tuple(values),
+                            1 => results.into_iter().next().unwrap(),
+                            _ => Value::Tuple(results),
                         };
-                        return Ok(EvalOutcome::Value(value));
+                        Ok(EvalOutcome::Value(value))
                     }
-                    let results =
-                        self.call_function(field, receiver_type, type_args, method_args)?;
-                    let value = match results.len() {
-                        0 => Value::Unit,
-                        1 => results.into_iter().next().unwrap(),
-                        _ => Value::Tuple(results),
-                    };
-                    Ok(EvalOutcome::Value(value))
+                    _ => {
+                        let callee_value = match self.eval_expression(callee)? {
+                            EvalOutcome::Value(value) => value,
+                            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                        };
+                        if let Value::Closure(closure) = callee_value {
+                            let value = self.call_closure_value(&closure, arg_values)?;
+                            Ok(EvalOutcome::Value(value))
+                        } else {
+                            Err(RuntimeError::Unsupported {
+                                message: "Unsupported call target".into(),
+                            })
+                        }
+                    }
                 }
-                _ => Err(RuntimeError::Unsupported {
-                    message: "Unsupported call target".into(),
-                }),
-            },
+            }
             Expr::FieldAccess { base, field, .. } => {
                 let value = match self.eval_expression(base)? {
                     EvalOutcome::Value(value) => value,
@@ -2386,6 +2475,33 @@ impl Interpreter {
                 Ok(EvalOutcome::Value(Value::JoinHandle(Box::new(
                     JoinHandleValue::new(handle),
                 ))))
+            }
+            Expr::Closure {
+                params,
+                body,
+                ret,
+                captures,
+                ..
+            } => {
+                let mut captured_values = Vec::new();
+                for captured in captures.read().unwrap().iter() {
+                    let value = self.env.get(&captured.name).ok_or_else(|| {
+                        RuntimeError::UnknownSymbol {
+                            name: captured.name.clone(),
+                        }
+                    })?;
+                    captured_values.push(CapturedValue {
+                        name: captured.name.clone(),
+                        value,
+                        mutable: captured.mutable,
+                    });
+                }
+                Ok(EvalOutcome::Value(Value::Closure(ClosureValue {
+                    params: params.clone(),
+                    body: body.clone(),
+                    ret: ret.clone(),
+                    captures: captured_values,
+                })))
             }
             Expr::MacroCall { name, .. } => Err(RuntimeError::Unsupported {
                 message: format!(
@@ -3298,6 +3414,7 @@ impl Interpreter {
             Value::Receiver(_) => "channel receiver",
             Value::Pointer(_) => "pointer",
             Value::JoinHandle(_) => "join handle",
+            Value::Closure(_) => "closure",
             Value::Unit => "unit",
             Value::Moved => "moved value",
         }
@@ -3717,11 +3834,31 @@ fn broken() {
             .call_function("main", None, &[], Vec::new())
             .expect("run pattern demo");
     }
+
+    #[test]
+    fn closures_capture_and_call() {
+        let source = r#"
+module tests::runtime;
+
+fn make_adder() -> int32 {
+  let int32 base = 2;
+  let add = |y: int32| base + y;
+  add(3)
+}
+"#;
+        let mut interpreter = interpreter_from_source(source);
+        let values = interpreter
+            .call_function("make_adder", None, &[], Vec::new())
+            .expect("run closure");
+        assert_eq!(values.len(), 1);
+        assert!(matches!(values[0], Value::Int(5)));
+    }
 }
 fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {
     def.params
         .first()
-        .and_then(|param| type_name_from_annotation(&param.ty))
+        .and_then(|param| param.ty.as_ref())
+        .and_then(type_name_from_annotation)
         .filter(|name| structs.contains_key(name))
 }
 
@@ -3742,7 +3879,9 @@ fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
 fn substitute_self_in_function(def: &mut FunctionDef, target: &str) {
     let concrete = TypeExpr::Named(target.to_string(), Vec::new());
     for param in &mut def.params {
-        param.ty = param.ty.replace_self(&concrete);
+        if let Some(ty) = param.ty.as_mut() {
+            *ty = ty.replace_self(&concrete);
+        }
     }
     for ret in &mut def.returns {
         *ret = ret.replace_self(&concrete);

@@ -1011,7 +1011,10 @@ fn format_function_hover(def: &FunctionDef) -> String {
         content.push_str(
             &def.params
                 .iter()
-                .map(|p| format!("`{}`: `{}`", p.name, format_type_expr(&p.ty.ty)))
+                .map(|p| match &p.ty {
+                    Some(ty) => format!("`{}`: `{}`", p.name, format_type_expr(&ty.ty)),
+                    None => format!("`{}`", p.name),
+                })
                 .collect::<Vec<_>>()
                 .join(", "),
         );

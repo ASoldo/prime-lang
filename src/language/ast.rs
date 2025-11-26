@@ -3,6 +3,7 @@ use crate::language::{
     token::Token,
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
+use std::sync::{Arc, RwLock};
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -231,7 +232,7 @@ pub struct FunctionDef {
 #[derive(Clone, Debug)]
 pub struct FunctionParam {
     pub name: String,
-    pub ty: TypeAnnotation,
+    pub ty: Option<TypeAnnotation>,
     pub mutability: Mutability,
     pub span: Span,
 }
@@ -240,6 +241,26 @@ pub struct FunctionParam {
 pub enum FunctionBody {
     Block(Box<Block>),
     Expr(Spanned<Expr>),
+}
+
+#[derive(Clone, Debug)]
+pub enum ClosureBody {
+    Block(Box<Block>),
+    Expr(Spanned<Box<Expr>>),
+}
+
+#[derive(Clone, Debug)]
+pub enum CaptureMode {
+    Move,
+    Reference { mutable: bool },
+}
+
+#[derive(Clone, Debug)]
+pub struct CapturedVar {
+    pub name: String,
+    pub mutable: bool,
+    pub ty: Option<TypeExpr>,
+    pub mode: CaptureMode,
 }
 
 #[derive(Clone, Debug)]
@@ -450,6 +471,13 @@ pub enum Expr {
     },
     Spawn {
         expr: Box<Expr>,
+        span: Span,
+    },
+    Closure {
+        params: Vec<FunctionParam>,
+        body: ClosureBody,
+        ret: Option<TypeAnnotation>,
+        captures: Arc<RwLock<Vec<CapturedVar>>>,
         span: Span,
     },
     MacroCall {

@@ -472,7 +472,9 @@ pub fn collect_struct_info(modules: &[Module]) -> StructInfoMap {
         for item in &module.items {
             if let Item::Function(func) = item {
                 if let Some(first_param) = func.params.first() {
-                    if let Some(receiver) = receiver_type_name(&first_param.ty.ty) {
+                    if let Some(receiver) =
+                        first_param.ty.as_ref().and_then(|ty| receiver_type_name(&ty.ty))
+                    {
                         if let Some(entry) =
                             select_raw_struct_entry_mut(&mut raw, &receiver, &module.name)
                         {
@@ -488,7 +490,11 @@ pub fn collect_struct_info(modules: &[Module]) -> StructInfoMap {
                 let target = block.target.clone();
                 for method in &block.methods {
                     if let Some(first_param) = method.params.first() {
-                        if let Some(receiver) = receiver_type_name(&first_param.ty.ty) {
+                        if let Some(receiver) = first_param
+                            .ty
+                            .as_ref()
+                            .and_then(|ty| receiver_type_name(&ty.ty))
+                        {
                             if receiver == target {
                                 if let Some(entry) =
                                     select_raw_struct_entry_mut(&mut raw, &receiver, &module.name)
@@ -1541,24 +1547,33 @@ fn is_inside_function(module: &Module, offset: usize) -> Option<bool> {
 }
 
 pub fn format_function_param(param: &FunctionParam) -> String {
-    if param.name == "self" {
-        if let Some(shorthand) = format_self_param(&param.ty.ty) {
-            let mut text = String::new();
-            if param.mutability.is_mutable() {
-                text.push_str("mut ");
+    if let Some(ty) = &param.ty {
+        if param.name == "self" {
+            if let Some(shorthand) = format_self_param(&ty.ty) {
+                let mut text = String::new();
+                if param.mutability.is_mutable() {
+                    text.push_str("mut ");
+                }
+                text.push_str(&shorthand);
+                return text;
             }
-            text.push_str(&shorthand);
-            return text;
         }
+        let mut text = String::new();
+        if param.mutability.is_mutable() {
+            text.push_str("mut ");
+        }
+        text.push_str(&param.name);
+        text.push_str(": ");
+        text.push_str(&format_type_expr(&ty.ty));
+        text
+    } else {
+        let mut text = String::new();
+        if param.mutability.is_mutable() {
+            text.push_str("mut ");
+        }
+        text.push_str(&param.name);
+        text
     }
-    let mut text = String::new();
-    if param.mutability.is_mutable() {
-        text.push_str("mut ");
-    }
-    text.push_str(&param.name);
-    text.push_str(": ");
-    text.push_str(&format_type_expr(&param.ty.ty));
-    text
 }
 
 pub fn format_interface_method_signature(
@@ -1574,7 +1589,9 @@ pub fn format_interface_method_signature(
         .map(|param| {
             let mut cloned = param.clone();
             if let Some(map) = subst {
-                cloned.ty = cloned.ty.substitute(map);
+                if let Some(ty) = cloned.ty.as_mut() {
+                    *ty = ty.substitute(map);
+                }
             }
             format_function_param(&cloned)
         })
@@ -1670,6 +1687,24 @@ pub fn format_type_expr(expr: &TypeExpr) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("({})", inner)
+        }
+        TypeExpr::Function { params, returns } => {
+            let params_str = params
+                .iter()
+                .map(format_type_expr)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret_str = if returns.is_empty() {
+                "()".into()
+            } else if returns.len() == 1 {
+                format_type_expr(&returns[0])
+            } else {
+                format!(
+                    "({})",
+                    returns.iter().map(format_type_expr).collect::<Vec<_>>().join(", ")
+                )
+            };
+            format!("fn({}) -> {}", params_str, ret_str)
         }
         TypeExpr::Unit => "()".into(),
         TypeExpr::SelfType => "Self".into(),

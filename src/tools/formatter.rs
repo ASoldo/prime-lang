@@ -365,24 +365,33 @@ fn format_function_with_indent(out: &mut String, def: &FunctionDef, indent: usiz
 }
 
 fn format_param_signature(param: &FunctionParam) -> String {
-    if param.name == "self" {
-        if let Some(shorthand) = format_self_shorthand(&param.ty.ty) {
-            let mut text = String::new();
-            if param.mutability.is_mutable() {
-                text.push_str("mut ");
+    if let Some(ty) = &param.ty {
+        if param.name == "self" {
+            if let Some(shorthand) = format_self_shorthand(&ty.ty) {
+                let mut text = String::new();
+                if param.mutability.is_mutable() {
+                    text.push_str("mut ");
+                }
+                text.push_str(&shorthand);
+                return text;
             }
-            text.push_str(&shorthand);
-            return text;
         }
+        let mut text = String::new();
+        if param.mutability.is_mutable() {
+            text.push_str("mut ");
+        }
+        text.push_str(&param.name);
+        text.push_str(": ");
+        text.push_str(&format_type(&ty.ty));
+        text
+    } else {
+        let mut text = String::new();
+        if param.mutability.is_mutable() {
+            text.push_str("mut ");
+        }
+        text.push_str(&param.name);
+        text
     }
-    let mut text = String::new();
-    if param.mutability.is_mutable() {
-        text.push_str("mut ");
-    }
-    text.push_str(&param.name);
-    text.push_str(": ");
-    text.push_str(&format_type(&param.ty.ty));
-    text
 }
 
 fn format_self_shorthand(ty: &TypeExpr) -> Option<String> {
@@ -868,6 +877,36 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         Expr::FormatString(literal) => format_format_string(literal),
         Expr::Move { expr, .. } => format!("move {}", format_expr_prec(expr, 100)),
         Expr::Spawn { expr, .. } => format!("spawn {}", format_expr_prec(expr, 100)),
+        Expr::Closure {
+            params,
+            body,
+            ret,
+            ..
+        } => {
+            let params_str = params
+                .iter()
+                .map(format_param_signature)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret_str = ret
+                .as_ref()
+                .map(|ty| format!(" -> {}", format_type(&ty.ty)))
+                .unwrap_or_default();
+            let mut text = format!("|{params_str}|{ret_str} ");
+            match body {
+                ClosureBody::Block(block) => {
+                    let mut buf = String::new();
+                    buf.push_str("{\n");
+                    format_block(&mut buf, block, 2);
+                    buf.push('}');
+                    text.push_str(&buf);
+                }
+                ClosureBody::Expr(expr) => {
+                    text.push_str(&format_expr_prec(expr.node.as_ref(), 1));
+                }
+            }
+            text
+        }
         Expr::Range(range) => format_range(range),
         Expr::Reference { mutable, expr, .. } => {
             if *mutable {
@@ -1448,6 +1487,20 @@ fn format_type(ty: &TypeExpr) -> String {
         TypeExpr::Tuple(types) => {
             let inner = types.iter().map(format_type).collect::<Vec<_>>().join(", ");
             format!("({})", inner)
+        }
+        TypeExpr::Function { params, returns } => {
+            let params_str = params.iter().map(format_type).collect::<Vec<_>>().join(", ");
+            let ret_str = if returns.is_empty() {
+                "()".into()
+            } else if returns.len() == 1 {
+                format_type(&returns[0])
+            } else {
+                format!(
+                    "({})",
+                    returns.iter().map(format_type).collect::<Vec<_>>().join(", ")
+                )
+            };
+            format!("fn({}) -> {}", params_str, ret_str)
         }
         TypeExpr::Unit => "()".into(),
         TypeExpr::SelfType => "Self".into(),

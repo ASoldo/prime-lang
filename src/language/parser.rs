@@ -6,7 +6,7 @@ use crate::language::{
     token::{Token, TokenKind},
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
-use std::{ops::Range, path::PathBuf};
+use std::{ops::Range, path::PathBuf, sync::{Arc, RwLock}};
 
 pub fn parse_module(name: &str, path: PathBuf, source: &str) -> Result<Module, SyntaxErrors> {
     let tokens = match lex(source) {
@@ -349,6 +349,27 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
         } => {
             shift_span(span, delta);
             shift_expr_spans(inner, delta);
+        }
+        Expr::Closure {
+            params,
+            body,
+            ret,
+            span,
+            ..
+        } => {
+            shift_span(span, delta);
+            for param in params {
+                if let Some(ty) = &mut param.ty {
+                    shift_span(&mut ty.span, delta);
+                }
+            }
+            if let Some(ret_ty) = ret {
+                shift_span(&mut ret_ty.span, delta);
+            }
+            match body {
+                ClosureBody::Block(block) => shift_block_spans(block, delta),
+                ClosureBody::Expr(expr) => shift_expr_spans(expr.node.as_mut(), delta),
+            }
         }
     }
 }
@@ -1444,7 +1465,7 @@ impl Parser {
             let span = Span::new(ty_span_start, name.span.end);
             return Ok(FunctionParam {
                 name: name.name,
-                ty: TypeAnnotation { ty, span },
+                ty: Some(TypeAnnotation { ty, span }),
                 mutability,
                 span,
             });
@@ -1459,7 +1480,7 @@ impl Parser {
         let span = Span::new(span_start, ty.span.end);
         Ok(FunctionParam {
             name: name.name,
-            ty,
+            ty: Some(ty),
             mutability,
             span,
         })
@@ -2189,6 +2210,9 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Result<Expr, SyntaxError> {
+        if self.matches(TokenKind::Pipe) {
+            return self.parse_closure();
+        }
         if self.matches(TokenKind::Match) {
             return self.parse_match_expression();
         }
@@ -2312,6 +2336,68 @@ impl Parser {
             }
             _ => Err(self.error_here("Unexpected token in expression")),
         }
+    }
+
+    fn parse_closure(&mut self) -> Result<Expr, SyntaxError> {
+        let start = self
+            .previous_span()
+            .map(|s| s.start)
+            .unwrap_or_else(|| self.current_span_start());
+        let mut params = Vec::new();
+        if !self.check(TokenKind::Pipe) {
+            loop {
+                let param_start = self.current_span_start();
+                let mutability = if self.matches(TokenKind::Mut) {
+                    Mutability::Mutable
+                } else {
+                    Mutability::Immutable
+                };
+                let ident = self.expect_identifier("Expected parameter name")?;
+                let ty = if self.matches(TokenKind::Colon) {
+                    Some(self.parse_type_annotation()?)
+                } else {
+                    None
+                };
+                let span_end = ty
+                    .as_ref()
+                    .map(|ty| ty.span.end)
+                    .unwrap_or(ident.span.end);
+                params.push(FunctionParam {
+                    name: ident.name,
+                    ty,
+                    mutability,
+                    span: Span::new(param_start, span_end),
+                });
+                if self.matches(TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::Pipe)?;
+        let ret = if self.matches(TokenKind::Arrow) {
+            Some(self.parse_type_annotation()?)
+        } else {
+            None
+        };
+        let body = if self.check(TokenKind::LBrace) {
+            ClosureBody::Block(Box::new(self.parse_block()?))
+        } else {
+            let expr = self.parse_expression()?;
+            let span = expr_span(&expr);
+            ClosureBody::Expr(Spanned::new(Box::new(expr), span))
+        };
+        let end = match &body {
+            ClosureBody::Block(block) => block.span.end,
+            ClosureBody::Expr(expr) => expr.span.end,
+        };
+        Ok(Expr::Closure {
+            params,
+            body,
+            ret,
+            captures: Arc::new(RwLock::new(Vec::new())),
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_map_literal(&mut self) -> Result<Expr, SyntaxError> {
@@ -3105,6 +3191,38 @@ impl Parser {
     }
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr, SyntaxError> {
+        if self.matches(TokenKind::Fn) {
+            self.expect(TokenKind::LParen)?;
+            let mut params = Vec::new();
+            if !self.check(TokenKind::RParen) {
+                loop {
+                    params.push(self.parse_type_expr()?);
+                    if self.matches(TokenKind::Comma) {
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            let mut returns = Vec::new();
+            if self.matches(TokenKind::Arrow) {
+                if self.matches(TokenKind::LParen) {
+                    if !self.check(TokenKind::RParen) {
+                        loop {
+                            returns.push(self.parse_type_expr()?);
+                            if self.matches(TokenKind::Comma) {
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                } else {
+                    returns.push(self.parse_type_expr()?);
+                }
+            }
+            return Ok(TypeExpr::Function { params, returns });
+        }
         if self.matches(TokenKind::Ampersand) {
             let mutable = self.matches(TokenKind::Mut);
             let ty = self.parse_type_expr()?;
@@ -3556,5 +3674,6 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Move { span, .. } => *span,
         Expr::FormatString(literal) => literal.span,
         Expr::Spawn { span, .. } => *span,
+        Expr::Closure { span, .. } => *span,
     }
 }

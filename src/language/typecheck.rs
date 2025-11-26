@@ -3,7 +3,7 @@ use crate::language::{
     enum_utils::find_variant,
     macro_expander::ExpandedProgram,
     span::Span,
-    types::{TypeAnnotation, TypeExpr},
+    types::{Mutability, TypeAnnotation, TypeExpr},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -334,7 +334,9 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
 fn substitute_self(def: &mut FunctionDef, target: &str) {
     let concrete = TypeExpr::named(target);
     for param in &mut def.params {
-        param.ty = param.ty.replace_self(&concrete);
+        if let Some(ty) = param.ty.as_mut() {
+            *ty = ty.replace_self(&concrete);
+        }
     }
     for ret in &mut def.returns {
         *ret = ret.replace_self(&concrete);
@@ -347,7 +349,11 @@ fn register_function(
     def: FunctionDef,
     receiver: Option<String>,
 ) {
-    let params: Vec<TypeAnnotation> = def.params.iter().map(|param| param.ty.clone()).collect();
+    let params: Vec<TypeAnnotation> = def
+        .params
+        .iter()
+        .filter_map(|param| param.ty.clone())
+        .collect();
     let returns = def.returns.clone();
     let base_signature = FunctionSignature {
         name: def.name.clone(),
@@ -932,7 +938,12 @@ impl Checker {
             let expected_params: Vec<TypeAnnotation> = iface_method
                 .params
                 .iter()
-                .map(|param| param.ty.substitute(&type_arg_map).replace_self(&self_ty))
+                .filter_map(|param| {
+                    param
+                        .ty
+                        .as_ref()
+                        .map(|ty| ty.substitute(&type_arg_map).replace_self(&self_ty))
+                })
                 .collect();
             let expected_returns: Vec<TypeAnnotation> = iface_method
                 .returns
@@ -979,7 +990,18 @@ impl Checker {
                 continue;
             }
             for (param, expected) in impl_method.params.iter().zip(expected_params.iter()) {
-                if param.ty.ty != expected.ty {
+                let Some(actual) = param.ty.as_ref() else {
+                    self.errors.push(TypeError::new(
+                        &candidate.module_path,
+                        param.span,
+                        format!(
+                            "parameter `{}` in `{}` requires a type annotation",
+                            param.name, iface_method.name
+                        ),
+                    ));
+                    continue;
+                };
+                if actual.ty != expected.ty {
                     self.errors.push(TypeError::new(
                         &candidate.module_path,
                         param.span,
@@ -1054,12 +1076,28 @@ impl Checker {
         let mut env = FnEnv::new(module.path.clone(), def.type_params.clone(), imports.clone());
         let return_types: Vec<TypeExpr> = def.returns.iter().map(|ann| ann.ty.clone()).collect();
         for param in &def.params {
-            env.declare(
-                &param.name,
-                Some(param.ty.ty.clone()),
-                param.span,
-                &mut self.errors,
-            );
+            if let Some(ty) = &param.ty {
+                env.declare(
+                    &param.name,
+                    Some(ty.ty.clone()),
+                    param.mutability,
+                    param.span,
+                    &mut self.errors,
+                );
+            } else {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    param.span,
+                    format!("parameter `{}` requires a type annotation", param.name),
+                ));
+                env.declare(
+                    &param.name,
+                    None,
+                    param.mutability,
+                    param.span,
+                    &mut self.errors,
+                );
+            }
         }
         match &def.body {
             FunctionBody::Block(block) => {
@@ -1133,31 +1171,46 @@ impl Checker {
                             );
                             if let Some(expected) = expected.as_ref() {
                                 self.ensure_type(module, stmt.span, expected, ty.as_ref());
-                            } else if let Some(actual) = ty {
-                                env.infer(name, Some(actual));
+                            } else if let Some(actual) = &ty {
+                                env.infer(name, Some(actual.clone()));
                             }
                             pending_borrows = expression_borrow_targets(value, env);
+                            let binding_ty = expected.clone().or(ty);
+                            env.declare(
+                                name,
+                                binding_ty,
+                                stmt.mutability,
+                                stmt.span,
+                                &mut self.errors,
+                            );
+                        } else {
+                            env.declare(
+                                name,
+                                expected.clone(),
+                                stmt.mutability,
+                                stmt.span,
+                                &mut self.errors,
+                            );
                         }
-                        env.declare(name, expected, stmt.span, &mut self.errors);
                         for target in pending_borrows {
                             env.register_binding_borrow(name, target);
                         }
                     }
-                    pattern => {
-                        if let Some(value_expr) = &stmt.value {
-                            let ty = self.check_expression(
-                                module,
-                                value_expr,
-                                expected.as_ref(),
-                                returns,
-                                env,
-                            );
-                            self.bind_pattern(module, pattern, ty.as_ref(), env);
-                        } else {
-                            self.errors.push(TypeError::new(
-                                &module.path,
-                                stmt.span,
-                                "destructuring bindings require an initializer",
+                pattern => {
+                    if let Some(value_expr) = &stmt.value {
+                        let ty = self.check_expression(
+                            module,
+                            value_expr,
+                            expected.as_ref(),
+                            returns,
+                            env,
+                        );
+                        self.bind_pattern(module, pattern, ty.as_ref(), env, stmt.mutability);
+                    } else {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            stmt.span,
+                            "destructuring bindings require an initializer",
                             ));
                         }
                     }
@@ -1316,7 +1369,13 @@ impl Checker {
                     let entry_state = env.snapshot_borrows();
                     let (_, body_state) = env.run_branch(move |env| {
                         env.push_scope();
-                        self.bind_pattern(module, pattern, pattern_value_ty.as_ref(), env);
+                        self.bind_pattern(
+                            module,
+                            pattern,
+                            pattern_value_ty.as_ref(),
+                            env,
+                            Mutability::Immutable,
+                        );
                         self.check_block(module, &while_stmt.body, returns, env);
                         env.pop_scope();
                     });
@@ -1339,6 +1398,7 @@ impl Checker {
                         env.declare(
                             &for_stmt.binding,
                             element_ty.clone(),
+                            Mutability::Immutable,
                             for_stmt.span,
                             &mut self.errors,
                         );
@@ -1358,6 +1418,7 @@ impl Checker {
                                 env.declare(
                                     &for_stmt.binding,
                                     Some(element_ty_clone.clone()),
+                                    Mutability::Immutable,
                                     for_stmt.span,
                                     &mut self.errors,
                                 );
@@ -1395,9 +1456,12 @@ impl Checker {
     ) -> Option<TypeExpr> {
         match expr {
             Expr::Identifier(ident) => {
-                if let Some(entry) = env.lookup(&ident.name) {
+                if let Some(found_ty) = env
+                    .lookup_with_captures(&ident.name)
+                    .and_then(|entry| entry.ty.clone())
+                {
                     env.ensure_not_moved(module, ident.span, &ident.name, &mut self.errors);
-                    return entry.ty.clone();
+                    return Some(found_ty);
                 }
                 if let Some(import) = env.imported_item(&ident.name) {
                     if let Some(ty) =
@@ -1676,6 +1740,115 @@ impl Checker {
                 }
                 Some(handle_ty)
             }
+            Expr::Closure {
+                params,
+                body,
+                ret,
+                captures,
+                span,
+            } => {
+                let expected_fn = match expected {
+                    Some(TypeExpr::Function { params, returns }) => {
+                        Some((params.clone(), returns.clone()))
+                    }
+                    _ => None,
+                };
+                env.begin_closure_capture();
+                env.push_scope();
+                let mut param_types = Vec::new();
+                for (idx, param) in params.iter().enumerate() {
+                    let annotated = param.ty.as_ref().map(|ann| ann.ty.clone());
+                    let inferred = expected_fn
+                        .as_ref()
+                        .and_then(|(params, _)| params.get(idx).cloned());
+                    let final_ty = annotated.or(inferred);
+                    if let Some(ty) = final_ty {
+                        env.declare(
+                            &param.name,
+                            Some(ty.clone()),
+                            param.mutability,
+                            param.span,
+                            &mut self.errors,
+                        );
+                        param_types.push(ty);
+                    } else {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            param.span,
+                            format!(
+                                "parameter `{}` in closure requires a type annotation or an expected function type",
+                                param.name
+                            ),
+                        ));
+                        env.declare(
+                            &param.name,
+                            None,
+                            param.mutability,
+                            param.span,
+                            &mut self.errors,
+                        );
+                        param_types.push(TypeExpr::Unit);
+                    }
+                }
+                let expected_ret = expected_fn
+                    .as_ref()
+                    .and_then(|(_, returns)| returns.get(0));
+                let body_ty = match body {
+                    ClosureBody::Block(block) => self.check_block(module, block, returns, env),
+                    ClosureBody::Expr(expr) => {
+                        self.check_expression(
+                            module,
+                            expr.node.as_ref(),
+                            expected_ret,
+                            returns,
+                            env,
+                        )
+                    }
+                };
+                if let (Some(annotation), Some(actual)) = (ret, body_ty.as_ref()) {
+                    self.ensure_type(module, annotation.span, &annotation.ty, Some(actual));
+                }
+                env.pop_scope();
+                let captured_names = env.end_closure_capture();
+                let mut captured_vars = Vec::new();
+                for name in captured_names {
+                    if let Some(info) = env.lookup(&name) {
+                        captured_vars.push(CapturedVar {
+                            name: name.clone(),
+                            mutable: info.mutable,
+                            ty: info.ty.clone(),
+                            mode: CaptureMode::Move,
+                        });
+                        env.mark_moved(&name);
+                    } else {
+                        captured_vars.push(CapturedVar {
+                            name: name.clone(),
+                            mutable: false,
+                            ty: None,
+                            mode: CaptureMode::Move,
+                        });
+                    }
+                }
+                if let Ok(mut guard) = captures.write() {
+                    guard.clear();
+                    guard.extend(captured_vars.into_iter());
+                }
+                let returns_vec = if let Some(annotation) = ret {
+                    vec![annotation.ty.clone()]
+                } else if let Some(actual) = body_ty.clone() {
+                    vec![actual]
+                } else {
+                    Vec::new()
+                };
+                let closure_ty = TypeExpr::Function {
+                    params: param_types,
+                    returns: returns_vec,
+                };
+                if let Some(expected) = expected {
+                    self.ensure_type(module, *span, expected, Some(&closure_ty));
+                }
+                Some(closure_ty)
+            }
             Expr::Index { base, index, span } => {
                 let base_ty = self.check_expression(module, base, None, returns, env);
                 let Some(container_ty) = base_ty.as_ref() else {
@@ -1726,7 +1899,13 @@ impl Checker {
             IfCondition::Let { pattern, value, .. } => {
                 let value_ty = self.check_expression(module, value, None, returns, env);
                 env.push_scope();
-                self.bind_pattern(module, pattern, value_ty.as_ref(), env);
+                self.bind_pattern(
+                    module,
+                    pattern,
+                    value_ty.as_ref(),
+                    env,
+                    Mutability::Immutable,
+                );
                 let ty = self.check_block(module, &expr.then_branch, returns, env);
                 env.pop_scope();
                 ty
@@ -1768,7 +1947,13 @@ impl Checker {
         for arm in &expr.arms {
             let (value_ty, state) = env.run_branch(|env| {
                 env.push_scope();
-                self.bind_pattern(module, &arm.pattern, scrutinee_ty.as_ref(), env);
+                self.bind_pattern(
+                    module,
+                    &arm.pattern,
+                    scrutinee_ty.as_ref(),
+                    env,
+                    Mutability::Immutable,
+                );
                 if let Some(guard) = &arm.guard {
                     self.check_expression(module, guard, Some(&bool_type()), returns, env);
                 }
@@ -1984,6 +2169,17 @@ impl Checker {
                         module, sig, args, type_args, expected, returns, env, span,
                     );
                 }
+                if let Some(binding) = env.lookup(&ident.name) {
+                    if let Some(TypeExpr::Function {
+                        params,
+                        returns: fn_returns,
+                    }) = binding.ty.clone()
+                    {
+                        return self.check_function_type_call(
+                            module, &params, &fn_returns, args, expected, returns, env, span,
+                        );
+                    }
+                }
                 if let Some(variant) = self.registry.enum_variants.get(&ident.name).cloned() {
                     return self
                         .check_variant_call(module, variant, args, expected, returns, env, span);
@@ -2038,22 +2234,70 @@ impl Checker {
                 {
                     return Some(result);
                 }
-                self.errors.push(TypeError::new(
-                    &module.path,
-                    span,
-                    "Unsupported call target",
-                ));
+                if let Some(TypeExpr::Function {
+                    params,
+                    returns: fn_returns,
+                }) = self.check_expression(module, callee, None, returns, env)
+                {
+                    return self.check_function_type_call(
+                        module, &params, &fn_returns, args, expected, returns, env, span,
+                    );
+                }
+                self.errors
+                    .push(TypeError::new(&module.path, span, "Unsupported call target"));
                 None
             }
             _ => {
-                self.errors.push(TypeError::new(
-                    &module.path,
-                    span,
-                    "Unsupported call target",
-                ));
+                if let Some(TypeExpr::Function {
+                    params,
+                    returns: fn_returns,
+                }) = self.check_expression(module, callee, None, returns, env)
+                {
+                    return self.check_function_type_call(
+                        module, &params, &fn_returns, args, expected, returns, env, span,
+                    );
+                }
+                self.errors
+                    .push(TypeError::new(&module.path, span, "Unsupported call target"));
                 None
             }
         }
+    }
+
+    fn check_function_type_call(
+        &mut self,
+        module: &Module,
+        params: &[TypeExpr],
+        returns_types: &[TypeExpr],
+        args: &[Expr],
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        if params.len() != args.len() {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                format!(
+                    "function expects {} argument(s), got {}",
+                    params.len(),
+                    args.len()
+                ),
+            ));
+        }
+        for (expr, param_ty) in args.iter().zip(params.iter()) {
+            self.check_expression(module, expr, Some(param_ty), returns, env);
+        }
+        let result_ty = match returns_types.len() {
+            0 => TypeExpr::Unit,
+            1 => returns_types[0].clone(),
+            _ => TypeExpr::Tuple(returns_types.to_vec()),
+        };
+        if let Some(expected) = expected {
+            self.ensure_type(module, span, expected, Some(&result_ty));
+        }
+        Some(result_ty)
     }
 
     fn check_builtin_call(
@@ -3092,11 +3336,18 @@ impl Checker {
         pattern: &Pattern,
         ty: Option<&TypeExpr>,
         env: &mut FnEnv,
+        mutability: Mutability,
     ) {
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Identifier(name, span) => {
-                env.declare(name, ty.cloned(), *span, &mut self.errors);
+                env.declare(
+                    name,
+                    ty.cloned(),
+                    mutability,
+                    *span,
+                    &mut self.errors,
+                );
             }
             Pattern::Literal(lit) => {
                 if let Some(actual) = ty {
@@ -3168,7 +3419,7 @@ impl Checker {
                     );
                     let fields = instantiate_variant_fields(&info, ty, &self.registry);
                     for (binding, field) in bindings.iter().zip(fields.iter()) {
-                        self.bind_pattern(module, binding, Some(&field.ty), env);
+                        self.bind_pattern(module, binding, Some(&field.ty), env, mutability);
                     }
                     return;
                 }
@@ -3207,7 +3458,7 @@ impl Checker {
                     }
                     let fields = instantiate_variant_fields(&info, ty, &self.registry);
                     for (binding, field) in bindings.iter().zip(fields.iter()) {
-                        self.bind_pattern(module, binding, Some(&field.ty), env);
+                        self.bind_pattern(module, binding, Some(&field.ty), env, mutability);
                     }
                 } else {
                     self.errors.push(TypeError::new(
@@ -3228,25 +3479,25 @@ impl Checker {
                                 types.len(),
                                 elements.len()
                             ),
-                        ));
-                        return;
-                    }
-                    for (pat, elem_ty) in elements.iter().zip(types.iter()) {
-                        self.bind_pattern(module, pat, Some(elem_ty), env);
-                    }
-                } else if let Some(actual) = ty {
-                    self.errors.push(TypeError::new(
-                        &module.path,
-                        *span,
+                    ));
+                    return;
+                }
+                for (pat, elem_ty) in elements.iter().zip(types.iter()) {
+                    self.bind_pattern(module, pat, Some(elem_ty), env, mutability);
+                }
+            } else if let Some(actual) = ty {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    *span,
                         format!("expected tuple type, found `{}`", actual.canonical_name()),
                     ));
-                } else {
-                    for pat in elements {
-                        self.bind_pattern(module, pat, None, env);
-                    }
+            } else {
+                for pat in elements {
+                    self.bind_pattern(module, pat, None, env, mutability);
                 }
             }
-            Pattern::Map(entries, span) => {
+        }
+        Pattern::Map(entries, span) => {
                 let value_ty = match ty {
                     Some(actual) => match self.expect_map_type(module, *span, Some(actual)) {
                         Some((_key, value)) => Some(value),
@@ -3254,10 +3505,16 @@ impl Checker {
                     },
                     None => None,
                 };
-                for entry in entries {
-                    self.bind_pattern(module, &entry.pattern, value_ty.as_ref(), env);
-                }
+            for entry in entries {
+                self.bind_pattern(
+                    module,
+                    &entry.pattern,
+                    value_ty.as_ref(),
+                    env,
+                    mutability,
+                );
             }
+        }
             Pattern::Struct {
                 struct_name,
                 fields,
@@ -3307,7 +3564,13 @@ impl Checker {
                             format!("unknown field `{}` in struct pattern", field.name),
                         ));
                     }
-                    self.bind_pattern(module, &field.pattern, field_ty.as_ref(), env);
+                    self.bind_pattern(
+                        module,
+                        &field.pattern,
+                        field_ty.as_ref(),
+                        env,
+                        mutability,
+                    );
                 }
             }
             Pattern::Slice {
@@ -3332,16 +3595,16 @@ impl Checker {
                     None => None,
                 };
                 for pat in prefix {
-                    self.bind_pattern(module, pat, element_ty.as_ref(), env);
+                    self.bind_pattern(module, pat, element_ty.as_ref(), env, mutability);
                 }
                 if let Some(rest_pattern) = rest {
                     let rest_ty = element_ty
                         .as_ref()
                         .map(|inner| TypeExpr::Slice(Box::new(inner.clone())));
-                    self.bind_pattern(module, rest_pattern, rest_ty.as_ref(), env);
+                    self.bind_pattern(module, rest_pattern, rest_ty.as_ref(), env, mutability);
                 }
                 for pat in suffix {
-                    self.bind_pattern(module, pat, element_ty.as_ref(), env);
+                    self.bind_pattern(module, pat, element_ty.as_ref(), env, mutability);
                 }
             }
         }
@@ -4209,14 +4472,16 @@ struct BindingInfo {
     ty: Option<TypeExpr>,
     mut_borrows: Vec<String>,
     moved: bool,
+    mutable: bool,
 }
 
 impl BindingInfo {
-    fn new(ty: Option<TypeExpr>) -> Self {
+    fn new(ty: Option<TypeExpr>, mutable: Mutability) -> Self {
         Self {
             ty,
             mut_borrows: Vec::new(),
             moved: false,
+            mutable: mutable.is_mutable(),
         }
     }
 }
@@ -4240,6 +4505,7 @@ struct FnEnv {
     scopes: Vec<HashMap<String, BindingInfo>>,
     active_mut_borrows: HashMap<String, usize>,
     imports: ImportScope,
+    capture_stack: Vec<ClosureCaptureContext>,
 }
 
 #[derive(Clone)]
@@ -4247,6 +4513,11 @@ struct BorrowState {
     active_mut_borrows: HashMap<String, usize>,
     scope_borrows: Vec<HashMap<String, HashMap<String, usize>>>,
     moved_scopes: Vec<HashSet<String>>,
+}
+
+struct ClosureCaptureContext {
+    base_depth: usize,
+    captured: HashSet<String>,
 }
 
 impl FnEnv {
@@ -4257,6 +4528,23 @@ impl FnEnv {
             scopes: vec![HashMap::new()],
             active_mut_borrows: HashMap::new(),
             imports,
+            capture_stack: Vec::new(),
+        }
+    }
+
+    fn begin_closure_capture(&mut self) {
+        let base_depth = self.scopes.len();
+        self.capture_stack.push(ClosureCaptureContext {
+            base_depth,
+            captured: HashSet::new(),
+        });
+    }
+
+    fn end_closure_capture(&mut self) -> Vec<String> {
+        if let Some(ctx) = self.capture_stack.pop() {
+            ctx.captured.into_iter().collect()
+        } else {
+            Vec::new()
         }
     }
 
@@ -4474,11 +4762,12 @@ impl FnEnv {
         &mut self,
         name: &str,
         ty: Option<TypeExpr>,
+        mutable: Mutability,
         span: Span,
         errors: &mut Vec<TypeError>,
     ) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), BindingInfo::new(ty));
+            scope.insert(name.to_string(), BindingInfo::new(ty, mutable));
         } else {
             errors.push(TypeError::new(
                 &self.path,
@@ -4492,7 +4781,7 @@ impl FnEnv {
         if let Some(scope) = self.scopes.last_mut() {
             scope
                 .entry(name.to_string())
-                .or_insert_with(|| BindingInfo::new(None))
+                .or_insert_with(|| BindingInfo::new(None, Mutability::Immutable))
                 .ty = ty;
         }
     }
@@ -4500,6 +4789,22 @@ impl FnEnv {
     fn lookup(&self, name: &str) -> Option<&BindingInfo> {
         for scope in self.scopes.iter().rev() {
             if let Some(info) = scope.get(name) {
+                return Some(info);
+            }
+        }
+        None
+    }
+
+    fn lookup_with_captures(&mut self, name: &str) -> Option<&BindingInfo> {
+        let len = self.scopes.len();
+        for (rev_idx, scope) in self.scopes.iter().rev().enumerate() {
+            if let Some(info) = scope.get(name) {
+                let scope_index = len.saturating_sub(rev_idx + 1);
+                if let Some(ctx) = self.capture_stack.last_mut() {
+                    if scope_index < ctx.base_depth {
+                        ctx.captured.insert(name.to_string());
+                    }
+                }
                 return Some(info);
             }
         }
@@ -4757,6 +5062,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Move { span, .. } => *span,
         Expr::Index { span, .. } => *span,
         Expr::Spawn { span, .. } => *span,
+        Expr::Closure { span, .. } => *span,
     }
 }
 
@@ -4993,6 +5299,7 @@ fn reference_may_dangle(expr: &Expr) -> bool {
         | Expr::Binary { .. }
         | Expr::Try { .. }
         | Expr::TryPropagate { .. }
+        | Expr::Closure { .. }
         | Expr::Index { .. }
         | Expr::Range(_)
         | Expr::MacroCall { .. } => true,
@@ -5485,5 +5792,29 @@ fn report() {
             "expected placeholder count error, got {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn closure_type_annotation_allows_assignment() {
+        let src = r#"
+        fn main() {
+            let add: fn(int32) -> int32 = |x: int32| x + 1;
+            let y = add(2);
+        }
+        "#;
+        assert!(typecheck_source(src).is_ok());
+    }
+
+    #[test]
+    fn closure_capture_moves_binding() {
+        let src = r#"
+        fn main() {
+            let x: int32 = 5;
+            let f = |y: int32| x + y;
+            let _ = f(1);
+            let _ = x;
+        }
+        "#;
+        assert!(typecheck_source(src).is_err());
     }
 }

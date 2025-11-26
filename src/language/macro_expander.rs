@@ -1116,7 +1116,8 @@ impl<'a> Expander<'a> {
             Expr::Identifier(_)
             | Expr::Literal(_)
             | Expr::Try { .. }
-            | Expr::TryPropagate { .. } => expr.clone(),
+            | Expr::TryPropagate { .. }
+            | Expr::Closure { .. } => expr.clone(),
         }
     }
 
@@ -1326,6 +1327,19 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
         },
         Expr::Spawn { expr, span } => Expr::Spawn {
             expr: Box::new(substitute_expr(*expr, subst)),
+            span,
+        },
+        Expr::Closure {
+            params,
+            body,
+            ret,
+            captures,
+            span,
+        } => Expr::Closure {
+            params,
+            body,
+            ret,
+            captures,
             span,
         },
         Expr::FormatString(literal) => Expr::FormatString(FormatStringLiteral {
@@ -1697,6 +1711,10 @@ fn collect_bindings_expr(expr: &Expr) -> HashSet<String> {
                 set.extend(collect_bindings_expr(&arg.expr));
             }
         }
+        Expr::Closure { body, .. } => match body {
+            ClosureBody::Block(block) => set.extend(collect_bindings_block(block)),
+            ClosureBody::Expr(expr) => set.extend(collect_bindings_expr(expr.node.as_ref())),
+        },
         Expr::FieldAccess { base, .. } => set.extend(collect_bindings_expr(base)),
         Expr::Index { base, index, .. } => {
             set.extend(collect_bindings_expr(base));
@@ -2009,6 +2027,19 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },
+        Expr::Closure {
+            params,
+            body,
+            ret,
+            captures,
+            span,
+        } => Expr::Closure {
+            params,
+            body,
+            ret,
+            captures,
+            span,
+        },
     }
 }
 
@@ -2307,6 +2338,7 @@ fn expr_span_local(expr: &Expr) -> Span {
         | Expr::Spawn { span, .. }
         | Expr::Try { span, .. }
         | Expr::TryPropagate { span, .. }
+        | Expr::Closure { span, .. }
         | Expr::MacroCall { span, .. } => *span,
         Expr::Block(block) => block.span,
         Expr::If(expr) => expr.span,

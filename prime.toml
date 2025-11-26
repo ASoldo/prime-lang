@@ -22,6 +22,7 @@ members = [
   "workspace/demos/parallel_demo",
   "workspace/demos/input",
   "workspace/demos/pointer_demo",
+  "workspace/demos/closures",
   "workspace/tests/build_input_demo",
   "workspace/tests/basic",
   "workspace/tests/types_numeric",
