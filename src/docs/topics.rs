@@ -49,8 +49,9 @@ pub const TOPICS: &[Topic] = &[
                 snippet: r#"module app::main;
 
 import core::types;
+import core::types::prelude::*;
 import demos::error_handling;"#,
-                explanation: "Every file begins with `module path::to::module;`. Imports use the same canonical segments, allowing the manifest loader (`project::package`) and the LSP to resolve dependencies unambiguously.",
+                explanation: "Every file begins with `module path::to::module;`. Imports use the same canonical segments, allowing the manifest loader (`project::package`) and the LSP to resolve dependencies unambiguously. Modules can export a `prelude` block; importing the module applies it automatically, or you can pull it explicitly via `::prelude::*`.",
             },
             TopicSection {
                 title: "Bindings, constants, and functions",

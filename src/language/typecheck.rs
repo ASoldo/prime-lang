@@ -5049,6 +5049,7 @@ mod tests {
         check_program(&expanded)
     }
 
+    #[allow(dead_code)]
     fn typecheck_modules(mods: Vec<(&str, &str)>) -> Result<(), Vec<super::TypeError>> {
         let modules = mods
             .into_iter()
