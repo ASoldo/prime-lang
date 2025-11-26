@@ -1,96 +1,127 @@
-  ### 1) Syntax & AST
+  ## High-level shape
 
-  - Introduce closure literals, e.g.:
-      - |x: int32, y| x + y (optional types; infer where possible)
-      - Allow mut on params? (likely no)
-      - Support return type annotation: |x| -> int32 { x + 1 } and expression-bodied |x| x + 1.
-  - AST additions in src/language/ast.rs:
-      - New Expr::Closure { params: Vec<FunctionParam>, body: ClosureBody, ret: Option<TypeAnnotation>, span, captures:
-        Vec<CapturedVar> (populated later) }
-      - ClosureBody to distinguish block vs expression.
-      - CapturedVar struct to record name, mutable flag, type (later), and capture mode (by move/borrow?).
-  - Update parser (src/language/parser.rs) to parse closure literals in expression position:
-      - Recognize leading | as closure start; parse params (ident [: type]?), then either -> type or not, then block or expr.
-      - Ensure precedence: closure should bind tighter than match/if but looser than call? Typically closure is an atom like a
-        function literal.
-      - Update formatter to print closures.
-      - Update Tree-sitter grammar to include closure nodes.
+  - Represent a closure as { env_ptr, code_ptr }, where:
+      - env_ptr points to an environment struct containing captured values (by move).
+      - code_ptr points to a synthesized function with signature ret = __closure_N(env_ptr, params...).
+  - At codegen time:
+      - Collect captures for each closure expression (already done in typechecker) and materialize an LLVM struct type per
+        closure.
+      - Generate a private LLVM function for the closure body; its first argument is the env pointer (opaque pointer to the env
+        struct), followed by user params.
+      - Closure values are lowered into a small LLVM struct { i8* env, i8* fn } or a concrete struct with the function pointer
+        type; you can pick a stable shape in RuntimeAbi (e.g., { i8*, i8* }).
+      - Calling a closure means: extract fn pointer, extract env pointer, and invoke fn(env_ptr, args...).
 
-  ### 2) Type system design
+  ———
 
-  - Closure type representation in TypeExpr:
-      - Add TypeExpr::Closure { params: Vec<TypeAnnotation>, returns: Vec<TypeAnnotation>, captures: Vec<CaptureKind> } or a
-        simpler nominal shape with an environment type ID.
-      - Prefer a structural function type with captures ignored in the signature but stored in a side table: TypeExpr::Function
-        { params, returns } already exists? Reuse if present; else add. Keep runtime/env info alongside.
-  - Capture rules:
-      - Default capture by reference (&T) when used immutably; by mutable reference (&mut T) if mut borrowed; by move if ownership
-        is moved into the closure. Or pick a simpler rule: capture by value, move semantics (like Rust move closures), and later
-        extend? To minimize complexity, start with “capture by move (copy for Copy types)”; no implicit borrowing.
-      - Disallow capturing mutable borrows across closure lifetimes unless you model lifetimes; simplest is move-only capture.
-  - Type inference:
-      - Infer param types if the closure is assigned to a function-typed binding (let f: fn(int32) -> int32 = |x| x+1;). Otherwise
-        require param annotations.
-      - Return type inferred from body if omitted.
+  ## Incremental implementation plan
 
-  ### 3) Captures analysis
+  ### 1) Compiler IR/value support
 
-  - In typechecker (src/language/typecheck.rs), when encountering Expr::Closure:
-      - Push a new scope with parameters; analyze body; collect free variables from outer scopes.
-      - For each free var, decide capture mode (initially: move).
-      - Record captures on the AST node (or side table).
-      - Ensure capture visibility & borrow rules (if move-only, check the variable can be moved here).
-  - The closure gets a function signature type; store an internal synthetic function def in the registry keyed by a fresh name
-    (e.g., __closureN within the module) with an implicit first “env” param if needed for IR.
+  - Extend the compiler-side Value enum (in src/language/compiler.rs) with Closure { env: LLVMValueRef, func: LLVMValueRef,
+    signature: FnSignature }.
+  - Add a small FnSignature struct capturing params/returns for closures (reuse existing function metadata).
+  - Update helper functions for arity/return handling to accept closure signatures.
+  - Add a utility to materialize a closure LLVM struct constant/value from {env, fn}.
 
-  ### 4) IR/runtime representation
+  ### 2) Env struct type + capture materialization
 
-  - Decide runtime shape:
-      - Lower each closure to a struct { env_field(s)..., fn_ptr_or_tag }.
-      - Interpreter: represent closures as a new Value::Closure { env: Map<String, Value>, body: Rc<Expr>, params, returns } or
-        pre-lowered callable with captured values stored.
-      - Build/IR: generate an env struct type per closure, populate it with captured values, and emit a static function taking
-        (env_ptr, params...). The closure value is a pair (env_ptr, function_ptr) or a fat pointer struct.
-  - Add a callable trait/ABI:
-      - In IR builder, add a “call closure” opcode: when calling a closure value, pass env pointer as first arg.
-      - Adjust typechecker to allow calling closure-typed expressions like functions.
+  - For each Expr::Closure during codegen:
+      - Collect captured names and types from the annotated AST node (captures field).
+      - Define an LLVM struct type __closure_envN with fields for each capture (in declaration order).
+      - Allocate and populate the env struct at the closure creation site:
+          - For move-only captures: load each captured value; if it’s a heap/move-checked value, respect move semantics already
+            enforced by the typechecker; store into env fields.
+      - Keep a map from closure AST ids to env struct types and the synthesized function symbol name (e.g., __closure_fnN).
 
-  ### 5) Language surface & semantics
+  ### 3) Synthesized closure function emission
 
-  - No recursion through closures unless supported by storing self? (Could be supported by capture of a binding holding the
-    closure.)
-  - No async; just synchronous call.
-  - Borrow checker: if move-capture only, decrement/move the outer binding. If later you want borrow captures, you need lifetime-
-    like checks; defer that.
+  - Add a pass to emit functions for all closures:
+      - Signature: ret_ty __closure_fnN(%env_ty* env, param_tys...).
+      - In the function body, materialize local bindings for captures by loading from env fields.
+      - Then emit the user body exactly like a normal function body (reusing the block emitter).
+      - Handle return values as with regular functions; if multiple returns are supported, keep tuple lowering consistent with
+        existing conventions.
+  - Ensure these functions are registered in the module (private linkage).
 
-  ### 6) Tooling updates
+  ### 4) Closure literal codegen path
 
-  - Formatter: pretty-print closure params, optional return arrow, block vs expr bodies.
-  - LSP:
-      - Completion: treat closures as expressions; no special completion needed beyond params.
-      - Hover: show closure signature.
-      - Diagnostics: ensure free-var capture errors surface clearly.
-  - Docs/README: add a short section “Closures (experimental)” with syntax and simple examples.
+  - In emit_expression for Expr::Closure:
+      - Emit the env allocation/population.
+      - Obtain the LLVM function pointer for __closure_fnN.
+      - Build the closure value { env_ptr, fn_ptr }.
+      - Return it as an EvaluatedValue with the correct TypeExpr::Function signature.
 
-  ### 7) Tests
+  ### 5) Calling closures
 
-  - Parser tests for closure syntax (block/expression, typed/inferred params, return annotation).
-  - Typechecker tests:
-      - Capturing outer vars (move semantics), disallow use-after-move.
-      - Inferred param types from context.
-      - Callability: passing closures to functions expecting fn-like types.
-  - Interpreter/IR tests:
-      - Simple map/filter demo; arithmetic closure; captured counter increment; ensure captured value is moved.
-  - Integration: tiny demo file under demos/ to exercise build+run parity.
+  - Extend call emission to accept either:
+      - A known function (existing path), or
+      - A closure value (new path): load fn_ptr and env_ptr, cast fn_ptr to the synthesized function type, and call with env_ptr
+        + args.
+  - Update typechecking in the compiler path (already done logically) to allow Value::Closure as a callable target.
+  - If interfaces or function pointers are used elsewhere, ensure compatibility: a closure fn type should be invokable where a
+    function type is expected.
 
-  ### 8) Incremental rollout
+  ### 6) Runtime ABI updates (if needed)
 
-  - Start with parser + AST + formatter + grammar updates.
-  - Add TypeExpr::Function/closure-friendly type if not present; treat closure type as compatible with fn types where captures are
-    move-only.
-  - Add typechecking for closures with move captures.
-  - Interpreter support for closures.
-  - Compiler lowering to env+fn pair; calling convention update.
-  - LSP/docs/tests.
+  - If the runtime helper set assumes only free functions, add a closure-call helper or encode the calling convention directly in
+    LLVM (preferred: direct call via function pointer, no new ABI function).
+  - Keep the ABI stable by defining the closure struct shape in RuntimeAbi for C interop if necessary; otherwise, keep it
+    internal.
 
-  Given scope, I’d implement in phases (parser/AST + typeck + interpreter first) and gate build/IR last to keep progress testable.
+  ### 7) Moves and cleanup semantics
+
+  - Respect move-only captures:
+      - On closure creation, mark captured bindings as moved in the codegen environment (consistent with typechecker).
+      - Do not allow double moves; rely on typechecker correctness.
+  - Ensure env allocations are owned by the closure value; free-lifetimes can be ignored if you rely on process lifetime, or add a
+    drop path if you later support destructors.
+
+  ### 8) Tests and demos
+
+  - Add backend tests:
+      - A closure returning arithmetic with captured values.
+      - Higher-order call (passing a closure to a function and invoking).
+      - Multiple captures and multiple params.
+  - Update the closure demo build to produce a native binary and assert output.
+  - Keep interpreter tests intact for parity.
+
+  ### 9) Tooling/LSP
+
+  - Ensure hover/formatting already reflects function types; no change needed beyond verifying closure calls are recognized as
+    callable in analysis (likely already fine).
+
+  ———
+
+  ## Detailed task breakdown (landing order)
+
+  1. Data structures:
+      - Add Closure variant to compiler Value.
+      - Add FnSignature helper for closures.
+      - Add env struct registry/maps keyed by closure ids.
+  2. Env struct builder:
+      - Walk Expr::Closure nodes at codegen to define env LLVM types and capture lists.
+      - Emit allocation/population code for env instances.
+  3. Closure function emission:
+      - Emit a new LLVM function per closure with env_ptr first.
+      - In the body, bind captures from env_ptr and reuse existing block emission.
+  4. Closure literal lowering:
+      - In emit_expression, lower Expr::Closure to { env_ptr, fn_ptr }.
+  5. Call-site support:
+      - Extend call emission to recognize closure values and call them.
+      - Add any necessary casting for function pointer types.
+  6. CLI behavior:
+      - Remove/fix the interpreter fallback once backend supports closures; restore normal build errors to surface genuine issues.
+  7. Tests/demos:
+      - Add unit/integration tests to the compiler/backend test suite.
+      - Ensure workspace/demos/closures builds and runs natively (validate output).
+
+  ———
+
+  ## Notes/assumptions
+
+  - Captures are move-only; no borrow semantics modeled in backend.
+  - No recursion helpers beyond capturing a binding that references the closure value (allowed if typechecker permits).
+  - Multi-return handling should mirror existing function lowering (tuples, etc.).
+  - Memory management: env structs can be heap-allocated with the same lifetime assumptions as other heap values in your runtime;
+    if you have a GC or refcount, integrate accordingly.

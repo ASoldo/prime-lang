@@ -12,23 +12,27 @@ use crate::{
             BuildValue,
         },
         runtime_abi::RuntimeAbi,
-        types::{Mutability, TypeExpr},
+        types::{Mutability, TypeAnnotation, TypeExpr},
     },
     runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric},
 };
 use llvm_sys::{
     LLVMLinkage, LLVMTypeKind,
     core::{
-        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAlloca,
-        LLVMBuildBr, LLVMBuildCall2, LLVMBuildCondBr, LLVMBuildGlobalString, LLVMBuildICmp,
-        LLVMBuildInBoundsGEP2, LLVMBuildLoad2, LLVMBuildRet, LLVMBuildStore, LLVMConstInt,
-        LLVMConstNull, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
-        LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
-        LLVMDoubleTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetElementType,
+        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAdd,
+        LLVMBuildAlloca, LLVMBuildBitCast, LLVMBuildBr, LLVMBuildCall2, LLVMBuildCondBr,
+        LLVMBuildFAdd, LLVMBuildFDiv, LLVMBuildFMul, LLVMBuildFRem, LLVMBuildFSub,
+        LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildLoad2, LLVMBuildMul,
+        LLVMBuildRet, LLVMBuildRetVoid, LLVMBuildSDiv, LLVMBuildSExt, LLVMBuildSRem, LLVMBuildStore,
+        LLVMBuildStructGEP2, LLVMBuildSub, LLVMBuildSIToFP, LLVMConstInt, LLVMConstNull,
+        LLVMConstReal, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext,
+        LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext,
+        LLVMFloatTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetElementType,
         LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetLastInstruction, LLVMGetModuleContext,
-        LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
-        LLVMIsAFunction, LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilder,
-        LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile, LLVMSetLinkage, LLVMTypeOf,
+        LLVMGetParam, LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext,
+        LLVMInt32TypeInContext, LLVMIntTypeInContext, LLVMIsAFunction, LLVMModuleCreateWithNameInContext,
+        LLVMPointerType, LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile,
+        LLVMSetLinkage, LLVMStructCreateNamed, LLVMStructSetBody, LLVMTypeOf, LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -39,7 +43,7 @@ use std::{
     mem,
     path::Path,
     ptr,
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex, RwLock},
     thread,
 };
 
@@ -55,6 +59,18 @@ struct ImplKey {
     interface: String,
     type_args: Vec<String>,
     target: String,
+}
+
+#[derive(Clone, Debug)]
+struct FnSignature {
+    params: Vec<TypeExpr>,
+    returns: Vec<TypeExpr>,
+}
+
+impl FnSignature {
+    fn return_count(&self) -> usize {
+        self.returns.len()
+    }
 }
 
 pub struct Compiler {
@@ -80,6 +96,10 @@ pub struct Compiler {
     defer_stack: Vec<Vec<Expr>>,
     deprecated_warnings: HashSet<String>,
     module_stack: Vec<String>,
+    return_type_stack: Vec<Vec<TypeExpr>>,
+    closure_counter: usize,
+    closures: HashMap<usize, ClosureInfo>,
+    closure_value_type: LLVMTypeRef,
 }
 
 #[derive(Clone)]
@@ -102,7 +122,25 @@ enum Value {
     JoinHandle(Box<JoinHandleValue>),
     Pointer(PointerValue),
     Range(RangeValue),
+    Closure(ClosureValue),
     Moved,
+}
+
+#[derive(Clone)]
+struct ClosureValue {
+    id: usize,
+    env_ptr: LLVMValueRef,
+    fn_ptr: LLVMValueRef,
+}
+
+#[derive(Clone)]
+struct ClosureInfo {
+    env_type: LLVMTypeRef,
+    fn_type: LLVMTypeRef,
+    function: LLVMValueRef,
+    signature: FnSignature,
+    capture_types: Vec<TypeExpr>,
+    built: bool,
 }
 
 #[derive(Clone)]
@@ -552,6 +590,7 @@ fn value_to_build_value(value: &Value) -> Result<BuildValue, String> {
         Value::FormatTemplate(template) => Ok(BuildValue::FormatTemplate(
             format_template_to_build(template)?,
         )),
+        Value::Closure(_) => Err("closures cannot be captured for parallel build execution".into()),
         Value::Sender(_) | Value::Receiver(_) => {
             Err("channel endpoints cannot be captured for parallel build execution (yet)".into())
         }
@@ -796,6 +835,10 @@ impl Compiler {
                 defer_stack: Vec::new(),
                 deprecated_warnings: HashSet::new(),
                 module_stack: Vec::new(),
+                return_type_stack: Vec::new(),
+                closure_counter: 0,
+                closures: HashMap::new(),
+                closure_value_type: ptr::null_mut(),
             };
             compiler.reset_module();
             compiler
@@ -1111,7 +1154,9 @@ impl Compiler {
         self.active_mut_borrows.clear();
         self.borrow_frames.clear();
         self.defer_stack.clear();
+        self.return_type_stack.clear();
         self.push_scope();
+        self.push_return_types(&[]);
         self.structs.clear();
         self.functions.clear();
         self.enum_variants.clear();
@@ -1244,6 +1289,7 @@ impl Compiler {
             }
         }
         self.exit_scope()?;
+        self.pop_return_types();
 
         unsafe {
             let zero = LLVMConstInt(self.i32_type, 0, 0);
@@ -1399,6 +1445,7 @@ impl Compiler {
             Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => {
                 Err("Cannot print concurrency values in build mode".into())
             }
+            Value::Closure(_) => Err("Cannot print closure value in build mode".into()),
             Value::Moved => Err("Cannot print moved value in build mode".into()),
         }
     }
@@ -1427,10 +1474,23 @@ impl Compiler {
                 "unit",
             )),
             Value::Int(int_value) => {
-                let constant = int_value.constant().ok_or_else(|| {
-                    "Non-constant int not yet supported in runtime codegen".to_string()
-                })?;
-                let arg = unsafe { LLVMConstInt(self.runtime_abi.int_type, constant as u64, 1) };
+                let arg = if let Some(constant) = int_value.constant() {
+                    unsafe { LLVMConstInt(self.runtime_abi.int_type, constant as u64, 1) }
+                } else {
+                    let current = unsafe { LLVMTypeOf(int_value.llvm()) };
+                    if current == self.runtime_abi.int_type {
+                        int_value.llvm()
+                    } else {
+                        unsafe {
+                            LLVMBuildSExt(
+                                self.builder,
+                                int_value.llvm(),
+                                self.runtime_abi.int_type,
+                                CString::new("int_widen").unwrap().as_ptr(),
+                            )
+                        }
+                    }
+                };
                 Ok(self.call_runtime(
                     self.runtime_abi.prime_int_new,
                     self.runtime_abi.prime_int_new_ty,
@@ -1439,10 +1499,23 @@ impl Compiler {
                 ))
             }
             Value::Float(float_value) => {
-                let constant = float_value.constant().ok_or_else(|| {
-                    "Non-constant float not yet supported in runtime codegen".to_string()
-                })?;
-                let arg = unsafe { LLVMConstReal(self.runtime_abi.float_type, constant) };
+                let arg = if let Some(constant) = float_value.constant() {
+                    unsafe { LLVMConstReal(self.runtime_abi.float_type, constant) }
+                } else {
+                    let current = unsafe { LLVMTypeOf(float_value.llvm()) };
+                    if current == self.runtime_abi.float_type {
+                        float_value.llvm()
+                    } else {
+                        unsafe {
+                            LLVMBuildBitCast(
+                                self.builder,
+                                float_value.llvm(),
+                                self.runtime_abi.float_type,
+                                CString::new("float_cast").unwrap().as_ptr(),
+                            )
+                        }
+                    }
+                };
                 Ok(self.call_runtime(
                     self.runtime_abi.prime_float_new,
                     self.runtime_abi.prime_float_new_ty,
@@ -1871,6 +1944,621 @@ impl Compiler {
         }
     }
 
+    fn opaque_ptr_type(&self) -> LLVMTypeRef {
+        unsafe { LLVMPointerType(LLVMInt8TypeInContext(self.context), 0) }
+    }
+
+    fn llvm_type_for(&self, ty: &TypeExpr) -> Option<LLVMTypeRef> {
+        match ty {
+            TypeExpr::Named(name, _) => match name.as_str() {
+                "int8" => Some(unsafe { LLVMIntTypeInContext(self.context, 8) }),
+                "int16" => Some(unsafe { LLVMIntTypeInContext(self.context, 16) }),
+                "int32" => Some(self.i32_type),
+                "int64" => Some(unsafe { LLVMIntTypeInContext(self.context, 64) }),
+                "isize" => Some(self.runtime_abi.usize_type),
+                "uint8" => Some(unsafe { LLVMIntTypeInContext(self.context, 8) }),
+                "uint16" => Some(unsafe { LLVMIntTypeInContext(self.context, 16) }),
+                "uint32" => Some(self.i32_type),
+                "uint64" => Some(unsafe { LLVMIntTypeInContext(self.context, 64) }),
+                "usize" => Some(self.runtime_abi.usize_type),
+                "bool" => Some(self.runtime_abi.bool_type),
+                "float32" => Some(unsafe { LLVMFloatTypeInContext(self.context) }),
+                "float64" => Some(self.f64_type),
+                "rune" => Some(self.i32_type),
+                "string" => Some(self.runtime_abi.string_data_type),
+                _ => None,
+            },
+            TypeExpr::Function { .. } => Some(self.closure_value_type),
+            TypeExpr::Unit => Some(unsafe { LLVMVoidTypeInContext(self.context) }),
+            _ => None,
+        }
+    }
+
+    fn expect_llvm_type(&self, ty: &TypeExpr, ctx: &str) -> Result<LLVMTypeRef, String> {
+        self.llvm_type_for(ty)
+            .ok_or_else(|| format!("Unsupported type `{}` for {ctx}", ty.canonical_name()))
+    }
+
+    fn infer_closure_body_type(
+        &self,
+        body: &ClosureBody,
+        bindings: &HashMap<String, TypeExpr>,
+    ) -> Option<TypeExpr> {
+        match body {
+            ClosureBody::Block(block) => block
+                .tail
+                .as_ref()
+                .and_then(|expr| self.infer_expr_type(expr, bindings)),
+            ClosureBody::Expr(expr) => self.infer_expr_type(expr.node.as_ref(), bindings),
+        }
+    }
+
+    fn infer_expr_type(
+        &self,
+        expr: &Expr,
+        bindings: &HashMap<String, TypeExpr>,
+    ) -> Option<TypeExpr> {
+        match expr {
+            Expr::Identifier(ident) => bindings.get(&ident.name).cloned(),
+            Expr::Literal(lit) => match lit {
+                Literal::Int(_, _) => Some(TypeExpr::named("int32")),
+                Literal::Float(_, _) => Some(TypeExpr::named("float64")),
+                Literal::Bool(_, _) => Some(TypeExpr::named("bool")),
+                Literal::String(_, _) => Some(TypeExpr::named("string")),
+                Literal::Rune(_, _) => Some(TypeExpr::named("rune")),
+            },
+            Expr::Binary { op, left, right, .. } => {
+                let lhs = self.infer_expr_type(left, bindings)?;
+                let rhs = self.infer_expr_type(right, bindings)?;
+                match op {
+                    BinaryOp::Add
+                    | BinaryOp::Sub
+                    | BinaryOp::Mul
+                    | BinaryOp::Div
+                    | BinaryOp::Rem => {
+                        if lhs == rhs {
+                            Some(lhs)
+                        } else {
+                            None
+                        }
+                    }
+                    BinaryOp::Lt
+                    | BinaryOp::LtEq
+                    | BinaryOp::Gt
+                    | BinaryOp::GtEq
+                    | BinaryOp::Eq
+                    | BinaryOp::NotEq => Some(TypeExpr::named("bool")),
+                    _ => None,
+                }
+            }
+            Expr::Block(block) => block
+                .tail
+                .as_ref()
+                .and_then(|expr| self.infer_expr_type(expr, bindings)),
+            Expr::Closure { .. } => None,
+            Expr::Call { .. } => None,
+            Expr::Tuple(_, _) => None,
+            Expr::ArrayLiteral(_, _) => None,
+            Expr::If(if_expr) => match &if_expr.then_branch.tail {
+                Some(expr) => self.infer_expr_type(expr, bindings),
+                None => Some(TypeExpr::Unit),
+            },
+            Expr::Match(match_expr) => match_expr
+                .arms
+                .first()
+                .and_then(|arm| self.infer_expr_type(&arm.value, bindings)),
+            _ => None,
+        }
+    }
+
+    fn build_closure_signature(
+        &self,
+        params: &[FunctionParam],
+        body: &ClosureBody,
+        ret: &Option<TypeAnnotation>,
+        captures: &[CapturedVar],
+        expected: Option<&TypeExpr>,
+    ) -> Result<FnSignature, String> {
+        if let Some(TypeExpr::Function { params, returns }) = expected {
+            return Ok(FnSignature {
+                params: params.clone(),
+                returns: returns.clone(),
+            });
+        }
+
+        let mut param_types = Vec::new();
+        let mut bindings = HashMap::new();
+        for param in params {
+            let ty = param
+                .ty
+                .as_ref()
+                .ok_or_else(|| {
+                    format!(
+                        "parameter `{}` in closure requires a type annotation in build mode",
+                        param.name
+                    )
+                })?
+                .ty
+                .clone();
+            bindings.insert(param.name.clone(), ty.clone());
+            param_types.push(ty);
+        }
+        for captured in captures {
+            if let Some(ty) = &captured.ty {
+                bindings.insert(captured.name.clone(), ty.clone());
+            }
+        }
+
+        let returns = if let Some(annotation) = ret {
+            vec![annotation.ty.clone()]
+        } else if let Some(inferred) = self.infer_closure_body_type(body, &bindings) {
+            vec![inferred]
+        } else {
+            Vec::new()
+        };
+
+        Ok(FnSignature {
+            params: param_types,
+            returns,
+        })
+    }
+
+    fn take_binding_value(&mut self, name: &str) -> Result<EvaluatedValue, String> {
+        let (cell, _) = self
+            .get_binding(name)
+            .ok_or_else(|| format!("Unknown variable {}", name))?;
+        if self.is_mut_borrowed(name) {
+            return Err(format!(
+                "Cannot move `{}` while it is mutably borrowed",
+                name
+            ));
+        }
+        let mut slot = cell.lock().unwrap();
+        if matches!(slot.value(), Value::Moved) {
+            return Err(format!("Value `{}` has been moved", name));
+        }
+        let moved = std::mem::replace(&mut *slot, EvaluatedValue::from_value(Value::Moved));
+        self.register_move(name);
+        Ok(moved)
+    }
+
+    fn build_closure_repr(
+        &mut self,
+        env_ptr: LLVMValueRef,
+        fn_ptr: LLVMValueRef,
+    ) -> LLVMValueRef {
+        unsafe {
+            let slot = LLVMBuildAlloca(
+                self.builder,
+                self.closure_value_type,
+                CString::new("closure_value").unwrap().as_ptr(),
+            );
+            let env_cast = LLVMBuildBitCast(
+                self.builder,
+                env_ptr,
+                self.opaque_ptr_type(),
+                CString::new("closure_env_cast").unwrap().as_ptr(),
+            );
+            let env_gep = LLVMBuildStructGEP2(
+                self.builder,
+                self.closure_value_type,
+                slot,
+                0,
+                CString::new("closure_env_gep").unwrap().as_ptr(),
+            );
+            LLVMBuildStore(self.builder, env_cast, env_gep);
+
+            let fn_cast = LLVMBuildBitCast(
+                self.builder,
+                fn_ptr,
+                self.opaque_ptr_type(),
+                CString::new("closure_fn_cast").unwrap().as_ptr(),
+            );
+            let fn_gep = LLVMBuildStructGEP2(
+                self.builder,
+                self.closure_value_type,
+                slot,
+                1,
+                CString::new("closure_fn_gep").unwrap().as_ptr(),
+            );
+            LLVMBuildStore(self.builder, fn_cast, fn_gep);
+
+            LLVMBuildLoad2(
+                self.builder,
+                self.closure_value_type,
+                slot,
+                CString::new("closure_value_load").unwrap().as_ptr(),
+            )
+        }
+    }
+
+    fn value_to_llvm_for_type(
+        &mut self,
+        value: Value,
+        ty: &TypeExpr,
+    ) -> Result<LLVMValueRef, String> {
+        match ty {
+            TypeExpr::Named(name, _) => match name.as_str() {
+                "int8" | "int16" | "int32" | "int64" | "isize" | "uint8" | "uint16"
+                | "uint32" | "uint64" | "usize" | "rune" => match value {
+                    Value::Int(int_value) => {
+                        let target = self.expect_llvm_type(ty, "integer conversion")?;
+                        let current = unsafe { LLVMTypeOf(int_value.llvm()) };
+                        if target == current {
+                            Ok(int_value.llvm())
+                        } else {
+                            Ok(unsafe {
+                                LLVMBuildSExt(
+                                    self.builder,
+                                    int_value.llvm(),
+                                    target,
+                                    CString::new("int_cast").unwrap().as_ptr(),
+                                )
+                            })
+                        }
+                    }
+                    other => Err(format!(
+                        "Expected integer value for `{}` capture, found {}",
+                        name,
+                        describe_value(&other)
+                    )),
+                },
+                "float32" | "float64" => match value {
+                    Value::Float(float_value) => Ok(float_value.llvm()),
+                    other => Err(format!(
+                        "Expected float value for `{}` capture, found {}",
+                        name,
+                        describe_value(&other)
+                    )),
+                },
+                "bool" => match value {
+                    Value::Bool(flag) => Ok(unsafe {
+                        LLVMConstInt(self.runtime_abi.bool_type, flag as u64, 0)
+                    }),
+                    other => Err(format!(
+                        "Expected bool value for capture, found {}",
+                        describe_value(&other)
+                    )),
+                },
+                "string" => match value {
+                    Value::Str(s) => Ok(s.llvm),
+                    other => Err(format!(
+                        "Expected string value for capture, found {}",
+                        describe_value(&other)
+                    )),
+                },
+                _ => Err(format!("Unsupported capture type `{}`", name)),
+            },
+            TypeExpr::Function { .. } => match value {
+                Value::Closure(closure) => Ok(self.build_closure_repr(closure.env_ptr, closure.fn_ptr)),
+                other => Err(format!(
+                    "Expected closure value for function type, found {}",
+                    describe_value(&other)
+                )),
+            },
+            TypeExpr::Unit => Ok(std::ptr::null_mut()),
+            _ => Err(format!(
+                "Unsupported type `{}` for closure conversion",
+                ty.canonical_name()
+            )),
+        }
+    }
+
+    fn value_from_llvm(&self, llvm: LLVMValueRef, ty: &TypeExpr) -> Result<Value, String> {
+        match ty {
+            TypeExpr::Named(name, _) => match name.as_str() {
+                "int8" | "int16" | "int32" | "int64" | "isize" | "uint8" | "uint16"
+                | "uint32" | "uint64" | "usize" | "rune" => {
+                    Ok(Value::Int(IntValue::new(llvm, None)))
+                }
+                "float32" | "float64" => Ok(Value::Float(FloatValue::new(llvm, None))),
+                "bool" => Err("Dynamic bool values are not yet supported in build closures".into()),
+                "string" => Err("Dynamic string values are not yet supported in build closures".into()),
+                other => Err(format!("Unsupported captured type `{other}` in closure")),
+            },
+            TypeExpr::Unit => Ok(Value::Unit),
+            _ => Err(format!(
+                "Unsupported type `{}` in closure body",
+                ty.canonical_name()
+            )),
+        }
+    }
+
+    fn ensure_closure_info(
+        &mut self,
+        key: usize,
+        params: &[FunctionParam],
+        body: &ClosureBody,
+        ret: &Option<TypeAnnotation>,
+        captures: &[CapturedVar],
+        expected: Option<&TypeExpr>,
+    ) -> Result<(), String> {
+        if self.closures.contains_key(&key) {
+            return Ok(());
+        }
+        let signature = self.build_closure_signature(params, body, ret, captures, expected)?;
+        let mut capture_types = Vec::new();
+        for captured in captures {
+            let ty = captured.ty.clone().ok_or_else(|| {
+                format!(
+                    "Capture `{}` is missing a type; ensure typechecking ran successfully",
+                    captured.name
+                )
+            })?;
+            capture_types.push(ty);
+        }
+        let mut field_types = Vec::new();
+        for ty in &capture_types {
+            field_types.push(self.expect_llvm_type(ty, "closure environment")?);
+        }
+        let env_name = CString::new(format!("__closure_env{}", self.closure_counter)).unwrap();
+        let env_type = unsafe { LLVMStructCreateNamed(self.context, env_name.as_ptr()) };
+        unsafe {
+            LLVMStructSetBody(
+                env_type,
+                field_types.as_mut_ptr(),
+                field_types.len() as u32,
+                0,
+            );
+        }
+        self.closure_counter += 1;
+
+        let mut arg_types = Vec::with_capacity(signature.params.len() + 1);
+        arg_types.push(unsafe { LLVMPointerType(env_type, 0) });
+        for ty in &signature.params {
+            arg_types.push(self.expect_llvm_type(ty, "closure parameter")?);
+        }
+        let ret_type = match signature.return_count() {
+            0 => unsafe { LLVMVoidTypeInContext(self.context) },
+            1 => self.expect_llvm_type(&signature.returns[0], "closure return")?,
+            _ => {
+                return Err(
+                    "multiple return values are not yet supported for closures in build mode"
+                        .into(),
+                )
+            }
+        };
+        let fn_type = unsafe {
+            LLVMFunctionType(
+                ret_type,
+                arg_types.as_mut_ptr(),
+                arg_types.len() as u32,
+                0,
+            )
+        };
+        let fn_name = CString::new(format!("__closure_fn{}", key)).unwrap();
+        let function = unsafe { LLVMAddFunction(self.module, fn_name.as_ptr(), fn_type) };
+        unsafe {
+            LLVMSetLinkage(function, LLVMLinkage::LLVMPrivateLinkage);
+        }
+
+        self.closures.insert(
+            key,
+            ClosureInfo {
+                env_type,
+                fn_type,
+                function,
+                signature,
+                capture_types,
+                built: false,
+            },
+        );
+        self.emit_closure_body(key, params, body, captures)?;
+        Ok(())
+    }
+
+    fn emit_closure_body(
+        &mut self,
+        key: usize,
+        params: &[FunctionParam],
+        body: &ClosureBody,
+        captures: &[CapturedVar],
+    ) -> Result<(), String> {
+        let info = self
+            .closures
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| "closure metadata missing".to_string())?;
+        if info.built {
+            return Ok(());
+        }
+        if let Some(entry) = self.closures.get_mut(&key) {
+            entry.built = true;
+        }
+
+        let saved_block = unsafe { LLVMGetInsertBlock(self.builder) };
+        let entry_name = CString::new(format!("closure_entry_{key}")).unwrap();
+        let entry_block =
+            unsafe { LLVMAppendBasicBlockInContext(self.context, info.function, entry_name.as_ptr()) };
+        unsafe {
+            LLVMPositionBuilderAtEnd(self.builder, entry_block);
+        }
+
+        self.push_scope();
+        self.push_return_types(&info.signature.returns);
+
+        let env_param = unsafe { LLVMGetParam(info.function, 0) };
+        for (idx, (captured, ty)) in captures.iter().zip(info.capture_types.iter()).enumerate() {
+            let field_ptr = unsafe {
+                LLVMBuildStructGEP2(
+                    self.builder,
+                    info.env_type,
+                    env_param,
+                    idx as u32,
+                    CString::new(format!("env_field_{idx}")).unwrap().as_ptr(),
+                )
+            };
+            let loaded = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    self.expect_llvm_type(ty, "closure capture")?,
+                    field_ptr,
+                    CString::new(format!("env_load_{idx}")).unwrap().as_ptr(),
+                )
+            };
+            let value = self.value_from_llvm(loaded, ty)?;
+            let evaluated_value = self.evaluated(value);
+            self.insert_var(&captured.name, evaluated_value, captured.mutable)?;
+        }
+
+        for (idx, param) in params.iter().enumerate() {
+            let llvm_param = unsafe { LLVMGetParam(info.function, (idx + 1) as u32) };
+            let ty = param
+                .ty
+                .as_ref()
+                .ok_or_else(|| format!("parameter `{}` missing type", param.name))?
+                .ty
+                .clone();
+            let value = self.value_from_llvm(llvm_param, &ty)?;
+            let evaluated_value = self.evaluated(value);
+            self.insert_var(&param.name, evaluated_value, param.mutability == Mutability::Mutable)?;
+        }
+
+        let result = match body {
+            ClosureBody::Block(block) => self.execute_block_contents(block)?,
+            ClosureBody::Expr(expr) => match self.emit_expression_with_hint(
+                expr.node.as_ref(),
+                info.signature.returns.get(0),
+            )? {
+                EvalOutcome::Value(value) => BlockEval::Value(value),
+                EvalOutcome::Flow(flow) => BlockEval::Flow(flow),
+            },
+        };
+
+        self.exit_scope()?;
+        self.pop_return_types();
+
+        match result {
+            BlockEval::Value(value) => {
+                self.emit_closure_return(&info.signature, value)?;
+            }
+            BlockEval::Flow(FlowSignal::Return(values)) => {
+                if values.len() > 1 {
+                    return Err(
+                        "multiple return values are not supported for closures in build mode"
+                            .into(),
+                    );
+                }
+                let value = values.into_iter().next().unwrap_or_else(|| self.evaluated(Value::Unit));
+                self.emit_closure_return(&info.signature, value)?;
+            }
+            BlockEval::Flow(flow @ FlowSignal::Break)
+            | BlockEval::Flow(flow @ FlowSignal::Continue)
+            | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                return Err(format!(
+                    "Control flow {} cannot escape closure body in build mode",
+                    flow_name(&flow)
+                ));
+            }
+        }
+
+        if saved_block.is_null() {
+            unsafe {
+                LLVMPositionBuilderAtEnd(self.builder, entry_block);
+            }
+        } else {
+            unsafe {
+                LLVMPositionBuilderAtEnd(self.builder, saved_block);
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_closure_return(
+        &mut self,
+        signature: &FnSignature,
+        value: EvaluatedValue,
+    ) -> Result<(), String> {
+        match signature.return_count() {
+            0 => {
+                unsafe {
+                    LLVMBuildRetVoid(self.builder);
+                }
+                Ok(())
+            }
+            1 => {
+                let llvm = self.value_to_llvm_for_type(value.into_value(), &signature.returns[0])?;
+                unsafe {
+                    LLVMBuildRet(self.builder, llvm);
+                }
+                Ok(())
+            }
+            _ => Err("multiple return values are not yet supported for closures".into()),
+        }
+    }
+
+    fn emit_closure_literal(
+        &mut self,
+        params: &[FunctionParam],
+        body: &ClosureBody,
+        ret: &Option<TypeAnnotation>,
+        captures: &Arc<RwLock<Vec<CapturedVar>>>,
+        expected: Option<&TypeExpr>,
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        let key = Arc::as_ptr(captures) as usize;
+        let captures_vec = captures.read().unwrap().clone();
+        self.ensure_closure_info(key, params, body, ret, &captures_vec, expected)?;
+        let info = self
+            .closures
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| "closure metadata missing".to_string())?;
+
+        let env_alloca = unsafe {
+            LLVMBuildAlloca(
+                self.builder,
+                info.env_type,
+                CString::new(format!("closure_env_{key}")).unwrap().as_ptr(),
+            )
+        };
+        for (idx, (captured, ty)) in captures_vec.iter().zip(info.capture_types.iter()).enumerate()
+        {
+            let captured_value = match captured.mode {
+                CaptureMode::Move => self.take_binding_value(&captured.name)?,
+                CaptureMode::Reference { .. } => {
+                    return Err("Reference captures are not supported in build mode closures".into())
+                }
+            };
+            let llvm_value =
+                self.value_to_llvm_for_type(captured_value.into_value(), ty)?;
+            let field_ptr = unsafe {
+                LLVMBuildStructGEP2(
+                    self.builder,
+                    info.env_type,
+                    env_alloca,
+                    idx as u32,
+                    CString::new(format!("env_field_store_{idx}")).unwrap().as_ptr(),
+                )
+            };
+            unsafe {
+                LLVMBuildStore(self.builder, llvm_value, field_ptr);
+            }
+        }
+        let closure_value = Value::Closure(ClosureValue {
+            id: key,
+            env_ptr: env_alloca,
+            fn_ptr: info.function,
+        });
+        Ok(EvalOutcome::Value(self.evaluated(closure_value)))
+    }
+
+    fn emit_expression_with_hint(
+        &mut self,
+        expr: &Expr,
+        expected: Option<&TypeExpr>,
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        match expr {
+            Expr::Closure {
+                params,
+                body,
+                ret,
+                captures,
+                ..
+            } => self.emit_closure_literal(params, body, ret, captures, expected),
+            _ => self.emit_expression(expr),
+        }
+    }
+
     fn alloc_handle_array(&mut self, handles: &[LLVMValueRef]) -> LLVMValueRef {
         if handles.is_empty() {
             return std::ptr::null_mut();
@@ -1912,7 +2600,8 @@ impl Compiler {
             Statement::Let(stmt) => match &stmt.pattern {
                 Pattern::Identifier(name, _) => {
                     let value = if let Some(expr) = &stmt.value {
-                        match self.emit_expression(expr)? {
+                        let expected = stmt.ty.as_ref().map(|ann| &ann.ty);
+                        match self.emit_expression_with_hint(expr, expected)? {
                             EvalOutcome::Value(value) => value,
                             EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                         }
@@ -1943,8 +2632,11 @@ impl Compiler {
             }
             Statement::Return(stmt) => {
                 let mut values = Vec::new();
-                for expr in &stmt.values {
-                    match self.emit_expression(expr)? {
+                for (idx, expr) in stmt.values.iter().enumerate() {
+                    let expected = self
+                        .current_return_types()
+                        .and_then(|rets| rets.get(idx).cloned());
+                    match self.emit_expression_with_hint(expr, expected.as_ref())? {
                         EvalOutcome::Value(value) => values.push(value),
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     }
@@ -2298,9 +2990,13 @@ impl Compiler {
                     }
                 }
             }
-            Expr::Closure { .. } => {
-                return Err("closures are not yet supported in the compiler backend".into())
-            }
+            Expr::Closure {
+                params,
+                body,
+                ret,
+                captures,
+                ..
+            } => return self.emit_closure_literal(params, body, ret, captures, None),
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = match self.emit_expression(base)? {
                     EvalOutcome::Value(value) => value,
@@ -2348,6 +3044,9 @@ impl Compiler {
                         Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => {
                             return Err("Cannot access field on concurrency value".into());
                         }
+                        Value::Closure(_) => {
+                            return Err("Cannot access field on closure value".into());
+                        }
                         Value::Unit => {
                             return Err("Cannot access field on unit value".into());
                         }
@@ -2381,6 +3080,86 @@ impl Compiler {
         }
     }
 
+    fn eval_call_args_with_hints(
+        &mut self,
+        args: &[Expr],
+        hints: Option<&[TypeExpr]>,
+    ) -> Result<Vec<EvaluatedValue>, String> {
+        let mut evaluated_args = Vec::new();
+        for (idx, expr) in args.iter().enumerate() {
+            let expected = hints.and_then(|h| h.get(idx));
+            match self.emit_expression_with_hint(expr, expected)? {
+                EvalOutcome::Value(value) => evaluated_args.push(value),
+                EvalOutcome::Flow(flow) => {
+                    return Err(format!(
+                        "Control flow {} cannot escape argument position in build mode",
+                        flow_name(&flow)
+                    ));
+                }
+            }
+        }
+        Ok(evaluated_args)
+    }
+
+    fn call_closure_value(
+        &mut self,
+        closure: ClosureValue,
+        args: Vec<EvaluatedValue>,
+    ) -> Result<EvaluatedValue, String> {
+        let info = self
+            .closures
+            .get(&closure.id)
+            .cloned()
+            .ok_or_else(|| "closure metadata missing".to_string())?;
+        if info.signature.params.len() != args.len() {
+            return Err(format!(
+                "Closure expects {} arguments, got {}",
+                info.signature.params.len(),
+                args.len()
+            ));
+        }
+        let mut llvm_args = Vec::with_capacity(args.len() + 1);
+        let expected_env = unsafe { LLVMPointerType(info.env_type, 0) };
+        let env_arg = unsafe {
+            if LLVMTypeOf(closure.env_ptr) == expected_env {
+                closure.env_ptr
+            } else {
+                LLVMBuildBitCast(
+                    self.builder,
+                    closure.env_ptr,
+                    expected_env,
+                    CString::new("closure_env_cast").unwrap().as_ptr(),
+                )
+            }
+        };
+        llvm_args.push(env_arg);
+        for (value, ty) in args.into_iter().zip(info.signature.params.iter()) {
+            llvm_args.push(self.value_to_llvm_for_type(value.into_value(), ty)?);
+        }
+        let call_name = CString::new("closure_call").unwrap();
+        let result = unsafe {
+            LLVMBuildCall2(
+                self.builder,
+                info.fn_type,
+                closure.fn_ptr,
+                llvm_args.as_mut_ptr(),
+                llvm_args.len() as u32,
+                call_name.as_ptr(),
+            )
+        };
+        let value = match info.signature.return_count() {
+            0 => self.evaluated(Value::Unit),
+            1 => self.evaluated(self.value_from_llvm(result, &info.signature.returns[0])?),
+            _ => {
+                return Err(
+                    "multiple return values are not yet supported for closures in build mode"
+                        .into(),
+                )
+            }
+        };
+        Ok(value)
+    }
+
     fn emit_call_expression(
         &mut self,
         callee: &Expr,
@@ -2404,6 +3183,18 @@ impl Compiler {
                 }
                 if let Some(result) = self.try_builtin_call(&ident.name, args) {
                     return result;
+                }
+                if let Some(binding) = self.get_var(&ident.name) {
+                    if let Value::Closure(closure) = binding.value().clone() {
+                        let arg_hints = self
+                            .closures
+                            .get(&closure.id)
+                            .map(|info| info.signature.params.clone());
+                        let evaluated_args =
+                            self.eval_call_args_with_hints(args, arg_hints.as_deref())?;
+                        let value = self.call_closure_value(closure, evaluated_args)?;
+                        return Ok(EvalOutcome::Value(value));
+                    }
                 }
                 let results = self.invoke_function(&ident.name, type_args, args)?;
                 let value = self.collapse_results(results);
@@ -2433,7 +3224,24 @@ impl Compiler {
                 let value = self.collapse_results(results);
                 Ok(EvalOutcome::Value(value))
             }
-            _ => Err("Only direct function calls are supported in build mode expressions".into()),
+            _ => {
+                let callee_value = match self.emit_expression(callee)? {
+                    EvalOutcome::Value(value) => value.into_value(),
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                if let Value::Closure(closure) = callee_value {
+                    let arg_hints = self
+                        .closures
+                        .get(&closure.id)
+                        .map(|info| info.signature.params.clone());
+                    let evaluated_args =
+                        self.eval_call_args_with_hints(args, arg_hints.as_deref())?;
+                    let value = self.call_closure_value(closure, evaluated_args)?;
+                    Ok(EvalOutcome::Value(value))
+                } else {
+                    Err("Only direct function calls are supported in build mode expressions".into())
+                }
+            }
         }
     }
 
@@ -3448,11 +4256,23 @@ impl Compiler {
                 .map(|(a, b)| Value::Bool(a != b)),
             _ => None,
         };
-        result.ok_or_else(|| {
-            format!(
-                "Operation `{op:?}` not supported in build mode for integers (non-constant operands)"
-            )
-        })
+        if let Some(value) = result {
+            return Ok(value);
+        }
+        let name = CString::new("int_bin").unwrap();
+        let llvm = match op {
+            BinaryOp::Add => unsafe { LLVMBuildAdd(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr()) },
+            BinaryOp::Sub => unsafe { LLVMBuildSub(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr()) },
+            BinaryOp::Mul => unsafe { LLVMBuildMul(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr()) },
+            BinaryOp::Div => unsafe { LLVMBuildSDiv(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr()) },
+            BinaryOp::Rem => unsafe { LLVMBuildSRem(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr()) },
+            _ => {
+                return Err(format!(
+                    "Operation `{op:?}` not supported in build mode for integers (non-constant operands)"
+                ))
+            }
+        };
+        Ok(Value::Int(IntValue::new(llvm, None)))
     }
 
     fn eval_float_binary(
@@ -3476,21 +4296,39 @@ impl Compiler {
             BinaryOp::NotEq => values.map(|(a, b)| Value::Bool(a != b)),
             _ => None,
         };
-        result.ok_or_else(|| {
-            format!(
-                "Operation `{op:?}` not supported in build mode for floats (non-constant operands)"
-            )
-        })
+        if let Some(value) = result {
+            return Ok(value);
+        }
+        let name = CString::new("float_bin").unwrap();
+        let llvm = match op {
+            BinaryOp::Add => unsafe { LLVMBuildFAdd(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr()) },
+            BinaryOp::Sub => unsafe { LLVMBuildFSub(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr()) },
+            BinaryOp::Mul => unsafe { LLVMBuildFMul(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr()) },
+            BinaryOp::Div => unsafe { LLVMBuildFDiv(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr()) },
+            BinaryOp::Rem => unsafe { LLVMBuildFRem(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr()) },
+            _ => {
+                return Err(format!(
+                    "Operation `{op:?}` not supported in build mode for floats (non-constant operands)"
+                ))
+            }
+        };
+        Ok(Value::Float(FloatValue::new(llvm, None)))
     }
 
     fn int_to_float(&self, value: &IntValue) -> Result<FloatValue, String> {
-        value
-            .constant()
-            .map(|constant| self.const_float_value(constant as f64))
-            .ok_or_else(|| {
-                "Operation `IntToFloat` not supported in build mode for non-constant integers"
-                    .into()
-            })
+        if let Some(constant) = value.constant() {
+            Ok(self.const_float_value(constant as f64))
+        } else {
+            let converted = unsafe {
+                LLVMBuildSIToFP(
+                    self.builder,
+                    value.llvm(),
+                    self.f64_type,
+                    CString::new("int_to_float").unwrap().as_ptr(),
+                )
+            };
+            Ok(FloatValue::new(converted, None))
+        }
     }
 
     fn deref_if_reference(value: Value) -> Value {
@@ -3795,6 +4633,8 @@ impl Compiler {
         let value_args: Vec<Value> = evaluated_args.iter().map(|v| v.value().clone()).collect();
         self.ensure_interface_arguments(&func.params, &value_args)?;
         self.module_stack.push(func_entry.module.clone());
+        let return_types: Vec<TypeExpr> = func.returns.iter().map(|ann| ann.ty.clone()).collect();
+        self.push_return_types(&return_types);
         let result = (|| {
             self.push_scope();
             for (param, value) in func.params.iter().zip(evaluated_args.into_iter()) {
@@ -3834,6 +4674,7 @@ impl Compiler {
                 BlockEval::Flow(FlowSignal::Propagate(value)) => Ok(vec![value]),
             }
         })();
+        self.pop_return_types();
         self.module_stack.pop();
         result
     }
@@ -4983,6 +5824,18 @@ impl Compiler {
         }
     }
 
+    fn push_return_types(&mut self, returns: &[TypeExpr]) {
+        self.return_type_stack.push(returns.to_vec());
+    }
+
+    fn pop_return_types(&mut self) {
+        self.return_type_stack.pop();
+    }
+
+    fn current_return_types(&self) -> Option<&[TypeExpr]> {
+        self.return_type_stack.last().map(|v| v.as_slice())
+    }
+
     fn run_deferred(&mut self) -> Result<(), String> {
         if let Some(stack) = self.defer_stack.last_mut() {
             let mut pending = Vec::new();
@@ -5065,6 +5918,18 @@ impl Compiler {
             LLVMSetLinkage(self.printf, LLVMLinkage::LLVMExternalLinkage);
 
             self.runtime_abi = RuntimeAbi::declare(self.context, self.module);
+            self.closure_counter = 0;
+            self.closures.clear();
+            let opaque_ptr = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
+            let mut elems = [opaque_ptr, opaque_ptr];
+            self.closure_value_type =
+                LLVMStructCreateNamed(self.context, CString::new("closure_value").unwrap().as_ptr());
+            LLVMStructSetBody(
+                self.closure_value_type,
+                elems.as_mut_ptr(),
+                elems.len() as u32,
+                0,
+            );
         }
     }
 
@@ -5105,6 +5970,7 @@ impl Compiler {
                 }
                 Ok(items)
             }
+            Value::Closure(_) => Err("Cannot iterate over closure value in build mode".into()),
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.collect_iterable_values(inner)
@@ -5157,6 +6023,7 @@ impl Compiler {
             Value::Pointer(_) => "pointer",
             Value::Range(_) => "range",
             Value::JoinHandle(_) => "join handle",
+            Value::Closure(_) => "closure",
             Value::Unit => "unit",
             Value::Moved => "moved value",
         }
@@ -5238,6 +6105,7 @@ fn describe_value(value: &Value) -> &'static str {
         Value::Range(_) => "range",
         Value::Pointer(_) => "pointer",
         Value::JoinHandle(_) => "join handle",
+        Value::Closure(_) => "closure",
         Value::Moved => "moved",
     }
 }
@@ -5891,5 +6759,26 @@ fn main() {
             compile_source(source)
                 .expect("handles should be emitted for structs and pointers/references");
         });
+    }
+
+    #[test]
+    fn compiler_supports_basic_closures() {
+        let source = r#"
+module tests::closures;
+
+fn main() {
+  let int32 base = 2;
+  let add = |x: int32| base + x;
+  let result = add(5);
+  out(result);
+}
+"#;
+        compile_source(source).expect("closure creation and invocation should compile");
+    }
+
+    #[test]
+    fn closure_demo_compiles() {
+        compile_entry("workspace/demos/closures/closure_demo.prime")
+            .expect("compile closure demo in build mode");
     }
 }
