@@ -23,16 +23,18 @@ use llvm_sys::{
         LLVMBuildAlloca, LLVMBuildBitCast, LLVMBuildBr, LLVMBuildCall2, LLVMBuildCondBr,
         LLVMBuildFAdd, LLVMBuildFDiv, LLVMBuildFMul, LLVMBuildFRem, LLVMBuildFSub,
         LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildLoad2, LLVMBuildMul,
-        LLVMBuildRet, LLVMBuildRetVoid, LLVMBuildSDiv, LLVMBuildSExt, LLVMBuildSRem, LLVMBuildStore,
-        LLVMBuildStructGEP2, LLVMBuildSub, LLVMBuildSIToFP, LLVMConstInt, LLVMConstNull,
-        LLVMConstReal, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext,
-        LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext,
-        LLVMFloatTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetElementType,
-        LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetLastInstruction, LLVMGetModuleContext,
-        LLVMGetParam, LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext,
+        LLVMBuildArrayMalloc, LLVMBuildExtractValue, LLVMBuildRet, LLVMBuildRetVoid, LLVMBuildSDiv,
+        LLVMBuildSExt, LLVMBuildSRem, LLVMBuildStore, LLVMBuildStructGEP2, LLVMBuildSub,
+        LLVMBuildSIToFP, LLVMConstInt, LLVMConstIntGetZExtValue,
+        LLVMConstNull, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
+        LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
+        LLVMDoubleTypeInContext, LLVMFloatTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent,
+        LLVMGetElementType, LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetLastInstruction,
+        LLVMGetModuleContext, LLVMGetParam, LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext,
         LLVMInt32TypeInContext, LLVMIntTypeInContext, LLVMIsAFunction, LLVMModuleCreateWithNameInContext,
         LLVMPointerType, LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile,
-        LLVMSetLinkage, LLVMStructCreateNamed, LLVMStructSetBody, LLVMTypeOf, LLVMVoidTypeInContext,
+        LLVMSetLinkage, LLVMStructCreateNamed, LLVMStructSetBody, LLVMStructTypeInContext, LLVMTypeOf,
+        LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -1969,6 +1971,7 @@ impl Compiler {
                 _ => None,
             },
             TypeExpr::Function { .. } => Some(self.closure_value_type),
+            TypeExpr::Tuple(items) => self.tuple_llvm_type(items).ok(),
             TypeExpr::Unit => Some(unsafe { LLVMVoidTypeInContext(self.context) }),
             _ => None,
         }
@@ -1977,6 +1980,21 @@ impl Compiler {
     fn expect_llvm_type(&self, ty: &TypeExpr, ctx: &str) -> Result<LLVMTypeRef, String> {
         self.llvm_type_for(ty)
             .ok_or_else(|| format!("Unsupported type `{}` for {ctx}", ty.canonical_name()))
+    }
+
+    fn tuple_llvm_type(&self, elems: &[TypeExpr]) -> Result<LLVMTypeRef, String> {
+        let mut fields = Vec::with_capacity(elems.len());
+        for ty in elems {
+            fields.push(self.expect_llvm_type(ty, "tuple element")?);
+        }
+        Ok(unsafe {
+            LLVMStructTypeInContext(
+                self.context,
+                fields.as_mut_ptr(),
+                fields.len() as u32,
+                0,
+            )
+        })
     }
 
     fn infer_closure_body_type(
@@ -2035,10 +2053,55 @@ impl Compiler {
                 .tail
                 .as_ref()
                 .and_then(|expr| self.infer_expr_type(expr, bindings)),
-            Expr::Closure { .. } => None,
             Expr::Call { .. } => None,
-            Expr::Tuple(_, _) => None,
+            Expr::Tuple(values, _) => {
+                let mut types = Vec::with_capacity(values.len());
+                for expr in values {
+                    if let Some(ty) = self.infer_expr_type(expr, bindings) {
+                        types.push(ty);
+                    } else {
+                        return None;
+                    }
+                }
+                Some(TypeExpr::Tuple(types))
+            }
             Expr::ArrayLiteral(_, _) => None,
+            Expr::Closure {
+                params,
+                body,
+                ret,
+                captures,
+                ..
+            } => {
+                let mut param_types = Vec::with_capacity(params.len());
+                let mut local_bindings = bindings.clone();
+                for param in params {
+                    let Some(ty) = param.ty.as_ref().map(|ann| ann.ty.clone()) else {
+                        return None;
+                    };
+                    local_bindings.insert(param.name.clone(), ty.clone());
+                    param_types.push(ty);
+                }
+                if let Ok(guard) = captures.read() {
+                    for captured in guard.iter() {
+                        if let Some(ty) = &captured.ty {
+                            local_bindings.insert(captured.name.clone(), ty.clone());
+                        }
+                    }
+                }
+                let returns = if let Some(annotation) = ret {
+                    vec![annotation.ty.clone()]
+                } else if let Some(inferred) = self.infer_closure_body_type(body, &local_bindings)
+                {
+                    vec![inferred]
+                } else {
+                    Vec::new()
+                };
+                Some(TypeExpr::Function {
+                    params: param_types,
+                    returns,
+                })
+            }
             Expr::If(if_expr) => match &if_expr.then_branch.tail {
                 Some(expr) => self.infer_expr_type(expr, bindings),
                 None => Some(TypeExpr::Unit),
@@ -2124,6 +2187,7 @@ impl Compiler {
 
     fn build_closure_repr(
         &mut self,
+        id: usize,
         env_ptr: LLVMValueRef,
         fn_ptr: LLVMValueRef,
     ) -> LLVMValueRef {
@@ -2162,6 +2226,17 @@ impl Compiler {
                 CString::new("closure_fn_gep").unwrap().as_ptr(),
             );
             LLVMBuildStore(self.builder, fn_cast, fn_gep);
+
+            let id_const =
+                LLVMConstInt(self.runtime_abi.usize_type, id as u64, 0);
+            let id_gep = LLVMBuildStructGEP2(
+                self.builder,
+                self.closure_value_type,
+                slot,
+                2,
+                CString::new("closure_id_gep").unwrap().as_ptr(),
+            );
+            LLVMBuildStore(self.builder, id_const, id_gep);
 
             LLVMBuildLoad2(
                 self.builder,
@@ -2230,9 +2305,53 @@ impl Compiler {
                 _ => Err(format!("Unsupported capture type `{}`", name)),
             },
             TypeExpr::Function { .. } => match value {
-                Value::Closure(closure) => Ok(self.build_closure_repr(closure.env_ptr, closure.fn_ptr)),
+                Value::Closure(closure) => Ok(self.build_closure_repr(closure.id, closure.env_ptr, closure.fn_ptr)),
                 other => Err(format!(
                     "Expected closure value for function type, found {}",
+                    describe_value(&other)
+                )),
+            },
+            TypeExpr::Tuple(types) => match value {
+                Value::Tuple(values) => {
+                    if values.len() != types.len() {
+                        return Err("Tuple value length does not match tuple type".into());
+                    }
+                    let tuple_ty = self.tuple_llvm_type(types)?;
+                    let slot = unsafe {
+                        LLVMBuildAlloca(
+                            self.builder,
+                            tuple_ty,
+                            CString::new("tuple_tmp").unwrap().as_ptr(),
+                        )
+                    };
+                    for (idx, (val, ty)) in values.into_iter().zip(types.iter()).enumerate() {
+                        let elem = self.value_to_llvm_for_type(val, ty)?;
+                        let field_ptr = unsafe {
+                            LLVMBuildStructGEP2(
+                                self.builder,
+                                tuple_ty,
+                                slot,
+                                idx as u32,
+                                CString::new(format!("tuple_field_{idx}"))
+                                    .unwrap()
+                                    .as_ptr(),
+                            )
+                        };
+                        unsafe {
+                            LLVMBuildStore(self.builder, elem, field_ptr);
+                        }
+                    }
+                    Ok(unsafe {
+                        LLVMBuildLoad2(
+                            self.builder,
+                            tuple_ty,
+                            slot,
+                            CString::new("tuple_val").unwrap().as_ptr(),
+                        )
+                    })
+                }
+                other => Err(format!(
+                    "Expected tuple value for tuple type, found {}",
                     describe_value(&other)
                 )),
             },
@@ -2244,7 +2363,7 @@ impl Compiler {
         }
     }
 
-    fn value_from_llvm(&self, llvm: LLVMValueRef, ty: &TypeExpr) -> Result<Value, String> {
+    fn value_from_llvm(&mut self, llvm: LLVMValueRef, ty: &TypeExpr) -> Result<Value, String> {
         match ty {
             TypeExpr::Named(name, _) => match name.as_str() {
                 "int8" | "int16" | "int32" | "int64" | "isize" | "uint8" | "uint16"
@@ -2252,10 +2371,115 @@ impl Compiler {
                     Ok(Value::Int(IntValue::new(llvm, None)))
                 }
                 "float32" | "float64" => Ok(Value::Float(FloatValue::new(llvm, None))),
-                "bool" => Err("Dynamic bool values are not yet supported in build closures".into()),
-                "string" => Err("Dynamic string values are not yet supported in build closures".into()),
+                "bool" => Ok(Value::Int(IntValue::new(llvm, None))),
+                "string" => Ok(Value::Str(StringValue::new(llvm, Arc::new("<dynamic>".into())))),
                 other => Err(format!("Unsupported captured type `{other}` in closure")),
             },
+            TypeExpr::Function { .. } => {
+                let env_ptr = unsafe {
+                    LLVMBuildExtractValue(
+                        self.builder,
+                        llvm,
+                        0,
+                        CString::new("closure_env_extract").unwrap().as_ptr(),
+                    )
+                };
+                let fn_ptr = unsafe {
+                    LLVMBuildExtractValue(
+                        self.builder,
+                        llvm,
+                        1,
+                        CString::new("closure_fn_extract").unwrap().as_ptr(),
+                    )
+                };
+                let id_val = unsafe {
+                    LLVMBuildExtractValue(
+                        self.builder,
+                        llvm,
+                        2,
+                        CString::new("closure_id_extract").unwrap().as_ptr(),
+                    )
+                };
+                let id_const = unsafe { LLVMConstIntGetZExtValue(id_val) } as usize;
+                let closure_id = if let Some(info) = self.closures.get(&id_const) {
+                    if info.signature.params.len()
+                        == match ty {
+                            TypeExpr::Function { params, .. } => params.len(),
+                            _ => 0,
+                        }
+                    {
+                        id_const
+                    } else {
+                        usize::MAX
+                    }
+                } else {
+                    usize::MAX
+                };
+                let resolved_id = if closure_id != usize::MAX {
+                    closure_id
+                } else {
+                    let new_id = self.closure_counter;
+                    self.closure_counter += 1;
+                    let (params, returns) = match ty {
+                        TypeExpr::Function { params, returns } => (params.clone(), returns.clone()),
+                        _ => (Vec::new(), Vec::new()),
+                    };
+                    let signature = FnSignature { params, returns };
+                    let mut arg_types = Vec::with_capacity(signature.params.len() + 1);
+                    let env_type = self.opaque_ptr_type();
+                    arg_types.push(env_type);
+                    for ty in &signature.params {
+                        arg_types.push(self.expect_llvm_type(ty, "closure param")?);
+                    }
+                    let ret_type = match signature.return_count() {
+                        0 => unsafe { LLVMVoidTypeInContext(self.context) },
+                        1 => self.expect_llvm_type(&signature.returns[0], "closure return")?,
+                        _ => self.tuple_llvm_type(&signature.returns)?,
+                    };
+                    let fn_type = unsafe {
+                        LLVMFunctionType(
+                            ret_type,
+                            arg_types.as_mut_ptr(),
+                            arg_types.len() as u32,
+                            0,
+                        )
+                    };
+                    self.closures.insert(
+                        new_id,
+                        ClosureInfo {
+                            env_type,
+                            fn_type,
+                            function: ptr::null_mut(),
+                            signature,
+                            capture_types: Vec::new(),
+                            built: true,
+                        },
+                    );
+                    new_id
+                };
+                Ok(Value::Closure(ClosureValue {
+                    id: resolved_id,
+                    env_ptr,
+                    fn_ptr,
+                }))
+            }
+            TypeExpr::Tuple(types) => {
+                let mut elements = Vec::with_capacity(types.len());
+                for (idx, elem_ty) in types.iter().enumerate() {
+                    let extracted = unsafe {
+                        LLVMBuildExtractValue(
+                            self.builder,
+                            llvm,
+                            idx as u32,
+                            CString::new(format!("tuple_extract_{idx}"))
+                                .unwrap()
+                                .as_ptr(),
+                        )
+                    };
+                    elements.push(self.value_from_llvm(extracted, elem_ty)?);
+                }
+                Ok(Value::Tuple(elements))
+            }
             TypeExpr::Unit => Ok(Value::Unit),
             _ => Err(format!(
                 "Unsupported type `{}` in closure body",
@@ -2273,9 +2497,6 @@ impl Compiler {
         captures: &[CapturedVar],
         expected: Option<&TypeExpr>,
     ) -> Result<(), String> {
-        if self.closures.contains_key(&key) {
-            return Ok(());
-        }
         let signature = self.build_closure_signature(params, body, ret, captures, expected)?;
         let mut capture_types = Vec::new();
         for captured in captures {
@@ -2286,6 +2507,11 @@ impl Compiler {
                 )
             })?;
             capture_types.push(ty);
+        }
+        if let Some(existing) = self.closures.get(&key) {
+            if !existing.capture_types.is_empty() || capture_types.is_empty() {
+                return Ok(());
+            }
         }
         let mut field_types = Vec::new();
         for ty in &capture_types {
@@ -2311,12 +2537,7 @@ impl Compiler {
         let ret_type = match signature.return_count() {
             0 => unsafe { LLVMVoidTypeInContext(self.context) },
             1 => self.expect_llvm_type(&signature.returns[0], "closure return")?,
-            _ => {
-                return Err(
-                    "multiple return values are not yet supported for closures in build mode"
-                        .into(),
-                )
-            }
+            _ => self.tuple_llvm_type(&signature.returns)?,
         };
         let fn_type = unsafe {
             LLVMFunctionType(
@@ -2483,7 +2704,87 @@ impl Compiler {
                 }
                 Ok(())
             }
-            _ => Err("multiple return values are not yet supported for closures".into()),
+            _ => {
+                let tuple = match value.into_value() {
+                    Value::Tuple(items) => items,
+                    other => {
+                        return Err(format!(
+                            "Closure must return tuple with {} values, found {}",
+                            signature.return_count(),
+                            describe_value(&other)
+                        ))
+                    }
+                };
+                if tuple.len() != signature.return_count() {
+                    return Err("Returned tuple length does not match closure return type".into());
+                }
+                let tuple_ty = self.tuple_llvm_type(&signature.returns)?;
+                let slot = unsafe {
+                    LLVMBuildAlloca(
+                        self.builder,
+                        tuple_ty,
+                        CString::new("ret_tuple").unwrap().as_ptr(),
+                    )
+                };
+                for (idx, (item, ty)) in tuple.into_iter().zip(signature.returns.iter()).enumerate()
+                {
+                    let llvm = self.value_to_llvm_for_type(item, ty)?;
+                    let field_ptr = unsafe {
+                        LLVMBuildStructGEP2(
+                            self.builder,
+                            tuple_ty,
+                            slot,
+                            idx as u32,
+                            CString::new(format!("ret_field_{idx}")).unwrap().as_ptr(),
+                        )
+                    };
+                    unsafe {
+                        LLVMBuildStore(self.builder, llvm, field_ptr);
+                    }
+                }
+                let packed = unsafe {
+                    LLVMBuildLoad2(
+                        self.builder,
+                        tuple_ty,
+                        slot,
+                        CString::new("ret_tuple_val").unwrap().as_ptr(),
+                    )
+                };
+                unsafe {
+                    LLVMBuildRet(self.builder, packed);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn value_type_hint(&self, value: &Value) -> Option<TypeExpr> {
+        match value {
+            Value::Int(_) => Some(TypeExpr::named("int32")),
+            Value::Float(_) => Some(TypeExpr::named("float64")),
+            Value::Bool(_) => Some(TypeExpr::named("bool")),
+            Value::Str(_) => Some(TypeExpr::named("string")),
+            Value::Tuple(values) => {
+                let mut types = Vec::with_capacity(values.len());
+                for v in values {
+                    types.push(self.value_type_hint(v)?);
+                }
+                Some(TypeExpr::Tuple(types))
+            }
+            Value::Closure(closure) => {
+                if let Some(info) = self.closures.get(&closure.id) {
+                    Some(TypeExpr::Function {
+                        params: info.signature.params.clone(),
+                        returns: info.signature.returns.clone(),
+                    })
+                } else {
+                    Some(TypeExpr::Function {
+                        params: Vec::new(),
+                        returns: Vec::new(),
+                    })
+                }
+            }
+            _ => None,
         }
     }
 
@@ -2496,7 +2797,35 @@ impl Compiler {
         expected: Option<&TypeExpr>,
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         let key = Arc::as_ptr(captures) as usize;
-        let captures_vec = captures.read().unwrap().clone();
+        let mut captures_vec = captures.read().unwrap().clone();
+        let free = self.collect_free_closure_vars(body, params);
+        let debug_captures = env::var("PRIME_DEBUG_CLOSURE_CAPTURES").is_ok();
+        if debug_captures {
+            eprintln!("closure {} preset captures: {}", key, captures_vec.len());
+        }
+        for name in free {
+            if captures_vec.iter().any(|c| c.name == name) {
+                continue;
+            }
+            if let Some((cell, _)) = self.get_binding(&name) {
+                let value = cell.lock().unwrap().clone().into_value();
+                let ty = self
+                    .value_type_hint(&value)
+                    .unwrap_or(TypeExpr::Unit);
+                captures_vec.push(CapturedVar {
+                    name: name.clone(),
+                    mutable: false,
+                    ty: Some(ty),
+                    mode: CaptureMode::Move,
+                });
+                if debug_captures {
+                    eprintln!("capturing free var `{}` for closure", name);
+                }
+            }
+        }
+        if debug_captures && captures_vec.is_empty() {
+            eprintln!("closure {} still has no captures after free var scan", key);
+        }
         self.ensure_closure_info(key, params, body, ret, &captures_vec, expected)?;
         let info = self
             .closures
@@ -2505,10 +2834,14 @@ impl Compiler {
             .ok_or_else(|| "closure metadata missing".to_string())?;
 
         let env_alloca = unsafe {
-            LLVMBuildAlloca(
+            let one = LLVMConstInt(self.runtime_abi.usize_type, 1, 0);
+            LLVMBuildArrayMalloc(
                 self.builder,
                 info.env_type,
-                CString::new(format!("closure_env_{key}")).unwrap().as_ptr(),
+                one,
+                CString::new(format!("closure_env_{key}"))
+                    .unwrap()
+                    .as_ptr(),
             )
         };
         for (idx, (captured, ty)) in captures_vec.iter().zip(info.capture_types.iter()).enumerate()
@@ -2556,6 +2889,195 @@ impl Compiler {
                 ..
             } => self.emit_closure_literal(params, body, ret, captures, expected),
             _ => self.emit_expression(expr),
+        }
+    }
+
+    fn collect_free_closure_vars(
+        &self,
+        body: &ClosureBody,
+        params: &[FunctionParam],
+    ) -> HashSet<String> {
+        let mut locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        let mut free = HashSet::new();
+        match body {
+            ClosureBody::Block(block) => self.collect_free_in_block(block, &mut locals, &mut free),
+            ClosureBody::Expr(expr) => self.collect_free_in_expr(expr.node.as_ref(), &mut locals, &mut free),
+        }
+        free
+    }
+
+    fn collect_free_in_block(
+        &self,
+        block: &Block,
+        locals: &mut HashSet<String>,
+        free: &mut HashSet<String>,
+    ) {
+        for stmt in &block.statements {
+            match stmt {
+                Statement::Let(let_stmt) => {
+                    if let Some(value) = &let_stmt.value {
+                        self.collect_free_in_expr(value, locals, free);
+                    }
+                    if let Pattern::Identifier(name, _) = &let_stmt.pattern {
+                        locals.insert(name.clone());
+                    }
+                }
+                Statement::Assign(assign) => {
+                    self.collect_free_in_expr(&assign.target, locals, free);
+                    self.collect_free_in_expr(&assign.value, locals, free);
+                }
+                Statement::While(while_stmt) => {
+                    match &while_stmt.condition {
+                        WhileCondition::Expr(cond) => self.collect_free_in_expr(cond, locals, free),
+                        WhileCondition::Let { value, pattern, .. } => {
+                            self.collect_free_in_expr(value, locals, free);
+                            if let Pattern::Identifier(name, _) = pattern {
+                                locals.insert(name.clone());
+                            }
+                        }
+                    }
+                    self.collect_free_in_block(&while_stmt.body, locals, free);
+                }
+                Statement::Loop(loop_stmt) => {
+                    self.collect_free_in_block(&loop_stmt.body, locals, free);
+                }
+                Statement::For(for_stmt) => {
+                    match &for_stmt.target {
+                        ForTarget::Range(range) => {
+                            self.collect_free_in_expr(&range.start, locals, free);
+                            self.collect_free_in_expr(&range.end, locals, free);
+                        }
+                        ForTarget::Collection(expr) => self.collect_free_in_expr(expr, locals, free),
+                    }
+                    locals.insert(for_stmt.binding.clone());
+                    self.collect_free_in_block(&for_stmt.body, locals, free);
+                }
+                Statement::Expr(expr_stmt) => self.collect_free_in_expr(&expr_stmt.expr, locals, free),
+                Statement::Return(ret) => {
+                    for expr in &ret.values {
+                        self.collect_free_in_expr(expr, locals, free);
+                    }
+                }
+                Statement::Block(inner) => self.collect_free_in_block(inner, locals, free),
+                Statement::Defer(defer_stmt) => self.collect_free_in_expr(&defer_stmt.expr, locals, free),
+                Statement::Break | Statement::Continue | Statement::MacroSemi(_) => {}
+            }
+        }
+        if let Some(tail) = &block.tail {
+            self.collect_free_in_expr(tail, locals, free);
+        }
+    }
+
+    fn collect_free_in_expr(
+        &self,
+        expr: &Expr,
+        locals: &mut HashSet<String>,
+        free: &mut HashSet<String>,
+    ) {
+        match expr {
+            Expr::Identifier(ident) => {
+                if !locals.contains(&ident.name) {
+                    free.insert(ident.name.clone());
+                }
+            }
+            Expr::Literal(_) => {}
+            Expr::Binary { left, right, .. } => {
+                self.collect_free_in_expr(left, locals, free);
+                self.collect_free_in_expr(right, locals, free);
+            }
+            Expr::Unary { expr, .. } => self.collect_free_in_expr(expr, locals, free),
+            Expr::Call { callee, args, .. } => {
+                self.collect_free_in_expr(callee, locals, free);
+                for arg in args {
+                    self.collect_free_in_expr(arg, locals, free);
+                }
+            }
+            Expr::Block(block) => {
+                let mut nested_locals = locals.clone();
+                self.collect_free_in_block(block, &mut nested_locals, free);
+            }
+            Expr::If(if_expr) => {
+                match &if_expr.condition {
+                    IfCondition::Expr(cond) => self.collect_free_in_expr(cond, locals, free),
+                    IfCondition::Let { value, pattern, .. } => {
+                        self.collect_free_in_expr(value, locals, free);
+                        if let Pattern::Identifier(name, _) = pattern {
+                            locals.insert(name.clone());
+                        }
+                    }
+                }
+                self.collect_free_in_block(&if_expr.then_branch, locals, free);
+                if let Some(else_branch) = &if_expr.else_branch {
+                    match else_branch {
+                        ElseBranch::Block(block) => self.collect_free_in_block(block, locals, free),
+                        ElseBranch::ElseIf(nested) => self.collect_free_in_expr(&Expr::If(nested.clone()), locals, free),
+                    }
+                }
+            }
+            Expr::Tuple(values, _) => {
+                for v in values {
+                    self.collect_free_in_expr(v, locals, free);
+                }
+            }
+            Expr::ArrayLiteral(values, _) => {
+                for v in values {
+                    self.collect_free_in_expr(v, locals, free);
+                }
+            }
+            Expr::Range(range) => {
+                self.collect_free_in_expr(&range.start, locals, free);
+                self.collect_free_in_expr(&range.end, locals, free);
+            }
+            Expr::Index { base, index, .. } => {
+                self.collect_free_in_expr(base, locals, free);
+                self.collect_free_in_expr(index, locals, free);
+            }
+            Expr::StructLiteral { fields, .. } => match fields {
+                StructLiteralKind::Named(named) => {
+                    for field in named {
+                        self.collect_free_in_expr(&field.value, locals, free);
+                    }
+                }
+                StructLiteralKind::Positional(values) => {
+                    for v in values {
+                        self.collect_free_in_expr(v, locals, free);
+                    }
+                }
+            },
+            Expr::EnumLiteral { values, .. } => {
+                for v in values {
+                    self.collect_free_in_expr(v, locals, free);
+                }
+            }
+            Expr::MapLiteral { entries, .. } => {
+                for entry in entries {
+                    self.collect_free_in_expr(&entry.key, locals, free);
+                    self.collect_free_in_expr(&entry.value, locals, free);
+                }
+            }
+            Expr::Match(match_expr) => {
+                self.collect_free_in_expr(&match_expr.expr, locals, free);
+                for arm in &match_expr.arms {
+                    self.collect_free_in_expr(&arm.value, locals, free);
+                }
+            }
+            Expr::Reference { expr, .. } | Expr::Deref { expr, .. } | Expr::Move { expr, .. } => {
+                self.collect_free_in_expr(expr, locals, free)
+            }
+            Expr::Spawn { expr, .. } => self.collect_free_in_expr(expr, locals, free),
+            Expr::Closure { .. } => {}
+            Expr::FormatString(lit) => {
+                for segment in &lit.segments {
+                    if let FormatSegment::Expr { expr, .. } = segment {
+                        self.collect_free_in_expr(expr, locals, free);
+                    }
+                }
+            }
+            Expr::Try { block, .. } => self.collect_free_in_block(block, locals, free),
+            Expr::TryPropagate { expr, .. } => self.collect_free_in_expr(expr, locals, free),
+            Expr::MacroCall { .. } => {}
+            Expr::FieldAccess { base, .. } => self.collect_free_in_expr(base, locals, free),
+            Expr::StructLiteral { .. } => {}
         }
     }
 
@@ -2620,7 +3142,10 @@ impl Compiler {
                     };
                     let allow_mut = stmt.mutability == Mutability::Mutable;
                     if !self.match_pattern(value.value(), pattern, allow_mut)? {
-                        return Err("Pattern did not match value".into());
+                        return Err(format!(
+                            "Pattern did not match value {}",
+                            self.describe_value(value.value())
+                        ));
                     }
                 }
             },
@@ -3136,12 +3661,20 @@ impl Compiler {
         for (value, ty) in args.into_iter().zip(info.signature.params.iter()) {
             llvm_args.push(self.value_to_llvm_for_type(value.into_value(), ty)?);
         }
+        let fn_cast = unsafe {
+            LLVMBuildBitCast(
+                self.builder,
+                closure.fn_ptr,
+                LLVMPointerType(info.fn_type, 0),
+                CString::new("closure_fn_cast").unwrap().as_ptr(),
+            )
+        };
         let call_name = CString::new("closure_call").unwrap();
         let result = unsafe {
             LLVMBuildCall2(
                 self.builder,
                 info.fn_type,
-                closure.fn_ptr,
+                fn_cast,
                 llvm_args.as_mut_ptr(),
                 llvm_args.len() as u32,
                 call_name.as_ptr(),
@@ -3149,12 +3682,26 @@ impl Compiler {
         };
         let value = match info.signature.return_count() {
             0 => self.evaluated(Value::Unit),
-            1 => self.evaluated(self.value_from_llvm(result, &info.signature.returns[0])?),
+            1 => {
+                let ret = self.value_from_llvm(result, &info.signature.returns[0])?;
+                self.evaluated(ret)
+            }
             _ => {
-                return Err(
-                    "multiple return values are not yet supported for closures in build mode"
-                        .into(),
-                )
+                let mut items = Vec::new();
+                for (idx, ty) in info.signature.returns.iter().enumerate() {
+                    let extracted = unsafe {
+                        LLVMBuildExtractValue(
+                            self.builder,
+                            result,
+                            idx as u32,
+                            CString::new(format!("closure_ret_{idx}"))
+                                .unwrap()
+                                .as_ptr(),
+                        )
+                    };
+                    items.push(self.value_from_llvm(extracted, ty)?);
+                }
+                self.evaluated(Value::Tuple(items))
             }
         };
         Ok(value)
@@ -5921,7 +6468,7 @@ impl Compiler {
             self.closure_counter = 0;
             self.closures.clear();
             let opaque_ptr = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
-            let mut elems = [opaque_ptr, opaque_ptr];
+            let mut elems = [opaque_ptr, opaque_ptr, self.runtime_abi.usize_type];
             self.closure_value_type =
                 LLVMStructCreateNamed(self.context, CString::new("closure_value").unwrap().as_ptr());
             LLVMStructSetBody(

@@ -448,11 +448,18 @@ fn format_const(out: &mut String, def: &ConstDef) {
 }
 
 fn format_block(out: &mut String, block: &Block, indent: usize) {
+    let mut prev_kind: Option<&Statement> = None;
     for statement in &block.statements {
+        if matches!(statement, Statement::Let(_))
+            && !matches!(prev_kind, None | Some(Statement::Let(_) | Statement::Assign(_)))
+        {
+            out.push('\n');
+        }
         let extra_blank = format_statement(out, statement, indent);
         if extra_blank {
             out.push('\n');
         }
+        prev_kind = Some(statement);
     }
     if let Some(tail) = &block.tail {
         format_tail_expression(out, tail, indent);
@@ -674,6 +681,28 @@ fn emit_initializer_expression(out: &mut String, base_indent: usize, expr: &Expr
         }
         Expr::ArrayLiteral(values, _) => {
             emit_array_literal_inline_noindent(out, base_indent, values);
+            true
+        }
+        Expr::Closure {
+            params,
+            body: ClosureBody::Block(block),
+            ret,
+            ..
+        } => {
+            let params_str = params
+                .iter()
+                .map(format_param_signature)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret_str = ret
+                .as_ref()
+                .map(|ty| format!(" -> {}", format_type(&ty.ty)))
+                .unwrap_or_default();
+            out.push_str(&format!("|{params_str}|{ret_str} "));
+            out.push_str("{\n");
+            format_block(out, block, base_indent + 2);
+            write_indent(out, base_indent);
+            out.push('}');
             true
         }
         _ => false,

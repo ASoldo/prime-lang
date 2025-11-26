@@ -21,4 +21,30 @@ fn main() {
   let int32 shift = 7;
   let shifter = |y: int32| y + shift;
   out(`shifter(8) = {}`, shifter(8));
+
+  let int32 a = 2;
+  let int32 b = 3;
+  let combine = |x: int32, y: int32| -> (int32, int32) {
+    (x + a, y + b)
+  };
+  let (left, right) = combine(5, 6);
+  out(`combine returns tuple ({}, {})`, left, right);
+
+  let higher = |f: fn(int32) -> int32| -> fn(int32) -> int32 {
+    |value: int32| f(value) + 1
+  };
+  let inc_after_double = higher(double);
+  out(`higher-order closure on 4 = {}`, inc_after_double(4));
+
+  let nested = |base: int32| -> fn(int32) -> int32 {
+    let inner = |delta: int32| -> int32 {
+      let bump = |z: int32| -> int32 {
+        z + delta + base
+      };
+      bump(1)
+    };
+    inner
+  };
+  let inner_fn = nested(10);
+  out(`nested closure result = {}`, inner_fn(5));
 }
