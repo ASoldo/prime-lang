@@ -1270,6 +1270,7 @@ fn add_module(
             doc["module"] = TomlItem::Table(entry);
         }
     }
+    reorder_manifest(&mut doc);
     fs::write(&manifest_path, doc.to_string())?;
     let module_abs_path = manifest_dir.join(&rel_path);
     write_module_file(&module_abs_path, module_name, false, is_test, is_library)?;
@@ -1363,6 +1364,7 @@ fn add_dependency_entry(
     if debug {
         eprintln!("debug add-dep: writing manifest");
     }
+    reorder_manifest(&mut doc);
     fs::write(&manifest_path, doc.to_string())?;
     if let Some(url) = dep_git {
         match project::deps::ensure_git_checkout(
@@ -1493,6 +1495,39 @@ fn set_inline_table_entry(entry: toml_edit::Entry<'_>, key: String, table: Inlin
     if let Some(obj) = item.as_table_like_mut() {
         obj.insert(&key, TomlItem::Value(toml_edit::Value::InlineTable(table)));
     }
+}
+
+fn reorder_manifest(doc: &mut DocumentMut) {
+    const ORDER: &[&str] = &[
+        "manifest_version",
+        "package",
+        "dependencies",
+        "modules",
+        "libraries",
+        "tests",
+        "workspace",
+    ];
+    let mut map: std::collections::HashMap<String, TomlItem> = doc
+        .iter()
+        .map(|(k, _)| (k.to_string(), doc[k].clone()))
+        .collect();
+    let unknown_order: Vec<String> = doc
+        .iter()
+        .map(|(k, _)| k.to_string())
+        .filter(|k| !ORDER.contains(&k.as_str()))
+        .collect();
+    let mut new_doc: DocumentMut = "".parse().unwrap();
+    for key in ORDER {
+        if let Some(item) = map.remove(*key) {
+            new_doc.insert(key, item);
+        }
+    }
+    for key in unknown_order {
+        if let Some(item) = map.remove(&key) {
+            new_doc.insert(&key, item);
+        }
+    }
+    *doc = new_doc;
 }
 
 fn package_name_from_dir(dir: &Path) -> String {
