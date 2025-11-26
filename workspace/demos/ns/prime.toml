@@ -1,0 +1,10 @@
+manifest_version = "3"
+
+[package]
+name = "demos.ns"
+version = "0.1.0"
+
+[module]
+name = "demos.ns"
+path = "ns_demo.prime"
+visibility = "pub"

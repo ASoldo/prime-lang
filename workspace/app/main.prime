@@ -1,6 +1,7 @@
 module app.main;
 
 import core.types;
+import libpkg_a.lib;
 
 const TRAINING_LIMIT: int32 = 3;
 
@@ -223,6 +224,7 @@ fn main() {
   out(`divmod(22, TRAINING_LIMIT): {}`, divmod_result);
   announce_session("Session complete");
   out(`This is our uses_asserts: {}`, uses_asserts());
+  out(example());
 }
 
 fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {

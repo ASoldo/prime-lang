@@ -1,0 +1,10 @@
+manifest_version = "3"
+
+[package]
+name = "demos.macro"
+version = "0.1.0"
+
+[module]
+name = "demos.macro_demo"
+path = "macro_demo.prime"
+visibility = "pub"

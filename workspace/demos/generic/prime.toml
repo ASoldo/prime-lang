@@ -1,0 +1,13 @@
+manifest_version = "3"
+
+[package]
+name = "demos.generic"
+version = "0.1.0"
+
+[module]
+name = "demos.generic"
+path = "generic_demo.prime"
+visibility = "pub"
+
+[libraries]
+core_types = { name = "core.types", path = "../../core/types.prime", visibility = "pub" }

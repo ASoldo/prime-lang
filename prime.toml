@@ -1,124 +1,31 @@
-manifest_version = "2"
+manifest_version = "3"
 
-[package]
-entry = "app.main"
-kind = "binary"
-name = "prime-lang-playground"
-version = "0.1.0"
-
-[[modules]]
-name = "app.main"
-path = "main.prime"
-visibility = "pub"
-
-[[modules]]
-name = "core.types"
-path = "types.prime"
-visibility = "pub"
-kind = "library"
-
-[[modules]]
-name = "pkg.app"
-path = "pkg_app.prime"
-visibility = "pub"
-
-[[modules]]
-name = "pkg.lib"
-path = "pkg_lib.prime"
-visibility = "pub"
-kind = "library"
-
-[[modules]]
-name = "demos.generic"
-path = "generic_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.heap"
-path = "heap_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.heap_features"
-path = "heap_features.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.interface_demo"
-path = "interface_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.interface_generics"
-path = "interface_generics_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.error_handling"
-path = "error_handling_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.ns"
-path = "ns_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.borrow"
-path = "borrow_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.borrow_checker_errors"
-path = "borrow_error_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.patterns"
-path = "pattern_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.lab_demo"
-path = "lab_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.channel_demo"
-path = "channel_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.parallel_demo"
-path = "parallel_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.input"
-path = "input_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "tests.build_input_demo"
-path = "tests/build_input_demo.prime"
-visibility = "pub"
-
-[[modules]]
-name = "demos.pointer_demo"
-path = "pointer_demo.prime"
-visibility = "pub"
-
-[[tests]]
-name = "tests.basic"
-path = "tests/basic.prime"
-visibility = "pub"
-
-[[tests]]
-name = "tests.types_numeric"
-path = "tests/types_numeric.prime"
-visibility = "pub"
-
-[[tests]]
-name = "tests.input_read"
-path = "tests/input_read.prime"
-visibility = "pub"
+[workspace]
+members = [
+  "workspace/app",
+  "workspace/core",
+  "workspace/pkg/app",
+  "workspace/pkg/lib",
+  "workspace/demos/generic",
+  "workspace/demos/heap",
+  "workspace/demos/heap_features",
+  "workspace/demos/interface_demo",
+  "workspace/demos/interface_generics",
+  "workspace/demos/error_handling",
+  "workspace/demos/ns",
+  "workspace/demos/borrow",
+  "workspace/demos/borrow_checker_errors",
+  "workspace/demos/patterns",
+  "workspace/demos/macro",
+  "workspace/demos/lab_demo",
+  "workspace/demos/channel_demo",
+  "workspace/demos/parallel_demo",
+  "workspace/demos/input",
+  "workspace/demos/pointer_demo",
+  "workspace/tests/build_input_demo",
+  "workspace/tests/basic",
+  "workspace/tests/types_numeric",
+  "workspace/tests/input_read",
+  "workspace/tests/macros",
+  "workspace/libpkg_a",
+]

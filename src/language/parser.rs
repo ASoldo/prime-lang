@@ -3379,7 +3379,7 @@ fn main() {
 
     #[test]
     fn macros_fixture_parses() {
-        let path = PathBuf::from("tests/macros.prime");
+        let path = PathBuf::from("tests/macros/macros.prime");
         let source =
             std::fs::read_to_string(&path).expect("read macros fixture from workspace tests");
         let result = parse_module("tests::macros", path, &source);

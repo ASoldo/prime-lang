@@ -1,0 +1,10 @@
+manifest_version = "3"
+
+[package]
+name = "demos.interface_demo"
+version = "0.1.0"
+
+[module]
+name = "demos.interface_demo"
+path = "interface_demo.prime"
+visibility = "pub"

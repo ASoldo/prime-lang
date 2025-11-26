@@ -13,7 +13,7 @@ use crate::{
             CODE_DUPLICATE_IMPORT, CODE_MANIFEST_MISSING_MODULE, CODE_MISSING_MODULE_HEADER,
             CODE_UNKNOWN_IMPORT, ManifestIssue, ManifestIssueKind, analyze_manifest_issues,
         },
-        manifest::{ModuleVisibility, PackageManifest},
+        manifest::{ModuleVisibility, PackageManifest, manifest_key_for},
     },
 };
 use serde_json::json;
@@ -26,9 +26,10 @@ use tower_lsp_server::{
     UriExt,
     lsp_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, DiagnosticSeverity,
-        NumberOrString, Range, TextEdit, Uri, WorkspaceEdit,
+        NumberOrString, Position, Range, TextEdit, Uri, WorkspaceEdit,
     },
 };
+use toml_edit::{DocumentMut, InlineTable, Item as TomlItem, Table as TomlTable, Value as TomlValue};
 
 use super::{
     parser::parse_module_from_uri,
@@ -99,23 +100,24 @@ impl ManifestEntryAction {
     pub fn to_code_action(self) -> Option<CodeActionOrCommand> {
         let manifest_text = fs::read_to_string(&self.manifest_path).ok()?;
         let manifest_uri = Uri::from_file_path(&self.manifest_path)?;
+        let mut doc: DocumentMut = manifest_text.parse().ok()?;
+        let mut inline = InlineTable::new();
+        inline.insert("name", TomlValue::from(self.module_name.clone()));
+        inline.insert("path", TomlValue::from(self.module_path.clone()));
+        inline.insert("visibility", TomlValue::from(self.visibility.clone()));
+        let key = manifest_key_for(&self.module_name);
+        let entry = doc
+            .entry("libraries")
+            .or_insert(TomlItem::Table(TomlTable::new()));
+        let Some(table) = entry.as_table_like_mut() else {
+            return None;
+        };
+        table.insert(&key, TomlItem::Value(toml_edit::Value::InlineTable(inline)));
         let end_pos = offset_to_position(&manifest_text, manifest_text.len());
-        let entry = format!(
-            "[[modules]]\nname = \"{}\"\npath = \"{}\"\nvisibility = \"{}\"\n",
-            self.module_name, self.module_path, self.visibility
-        );
-        let mut insert = String::new();
-        if !manifest_text.is_empty() && !manifest_text.ends_with('\n') {
-            insert.push('\n');
-        }
-        insert.push('\n');
-        insert.push_str(&entry);
-        if !insert.ends_with('\n') {
-            insert.push('\n');
-        }
+        let new_manifest = doc.to_string();
         let edit = TextEdit {
-            range: Range::new(end_pos, end_pos),
-            new_text: insert,
+            range: Range::new(Position::new(0, 0), end_pos),
+            new_text: new_manifest,
         };
         Some(CodeActionOrCommand::CodeAction(CodeAction {
             title: format!("Add `{}` to manifest", self.module_name),

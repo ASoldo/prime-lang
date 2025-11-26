@@ -1,0 +1,8 @@
+manifest_version = "3"
+
+[package]
+name = "core"
+version = "0.1.0"
+
+[libraries]
+core_types = { name = "core.types", path = "types.prime", visibility = "pub" }

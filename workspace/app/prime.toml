@@ -1,0 +1,16 @@
+manifest_version = "3"
+
+[package]
+name = "app"
+version = "0.1.0"
+
+[module]
+name = "app.main"
+path = "main.prime"
+visibility = "pub"
+
+[dependencies]
+libpkg_lib = { name = "libpkg.lib", path = "../libpkg_a" }
+
+[libraries]
+core_types = {name = "core.types", path = "../core/types.prime", visibility = "pub"}

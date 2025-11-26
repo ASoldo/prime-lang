@@ -1,0 +1,5 @@
+library libpkg_a.lib;
+
+pub fn example() -> int32 {
+  0
+}

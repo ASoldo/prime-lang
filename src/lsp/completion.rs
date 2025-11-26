@@ -132,9 +132,9 @@ pub fn module_path_completion_context(
 
 pub fn completion_trigger_characters() -> Vec<String> {
     // Trigger on identifiers, qualification separators, macro sigils, and hygiene escapes.
-    // `:` is kept so the LSP can fire on the second colon in `::`.
+    // `.` is used for module paths.
     const TRIGGER_CHARS: &str =
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:.~@";
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.~@";
     TRIGGER_CHARS.chars().map(|ch| ch.to_string()).collect()
 }
 
@@ -150,7 +150,7 @@ fn sanitize_module_prefix(input: &str) -> Option<String> {
     if prefix.is_empty() {
         None
     } else {
-        Some(prefix)
+        Some(prefix.replace("::", "."))
     }
 }
 
@@ -163,13 +163,14 @@ pub fn module_completion_items_from_manifest(
     let mut items = Vec::new();
     let mut seen = HashSet::new();
     if let Some(exp) = expected {
-        if module_prefix_matches(exp, prefix) && seen.insert(exp.to_string()) {
+        let exp_dot = exp.replace("::", ".");
+        if module_prefix_matches(&exp_dot, prefix) && seen.insert(exp_dot.clone()) {
             let detail = entries
                 .iter()
-                .find(|entry| entry.name == exp)
+                .find(|entry| entry.name.replace("::", ".") == exp_dot)
                 .map(module_detail);
             items.push(CompletionItem {
-                label: exp.to_string(),
+                label: exp_dot,
                 kind: Some(CompletionItemKind::MODULE),
                 detail,
                 ..CompletionItem::default()
@@ -177,15 +178,16 @@ pub fn module_completion_items_from_manifest(
         }
     }
     for entry in entries.iter() {
-        if !module_prefix_matches(&entry.name, prefix) {
+        let name_dot = entry.name.replace("::", ".");
+        if !module_prefix_matches(&name_dot, prefix) {
             continue;
         }
-        if !seen.insert(entry.name.clone()) {
+        if !seen.insert(name_dot.clone()) {
             continue;
         }
         let detail = module_detail(entry);
         items.push(CompletionItem {
-            label: entry.name.clone(),
+            label: name_dot,
             kind: Some(CompletionItemKind::MODULE),
             detail: Some(detail),
             ..CompletionItem::default()
@@ -1222,6 +1224,9 @@ pub fn keyword_completion_items(
         "return",
         "defer",
         "import",
+        "module",
+        "library",
+        "test",
         "break",
         "continue",
     ];
@@ -1739,7 +1744,7 @@ fn struct_name_from_type<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
 mod tests {
     use super::*;
     use crate::language::parser::parse_module;
-    use crate::project::manifest::PackageManifest;
+    use crate::project::manifest::{PackageManifest, manifest_key_for};
     use std::fs;
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -1759,31 +1764,32 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let manifest_path = dir.path().join("prime.toml");
         let mut manifest = String::from(
-            r#"manifest_version = "2"
+            r#"manifest_version = "3"
 
 [package]
 name = "demo"
 version = "0.1.0"
-kind = "binary"
-entry = "demo::main"
 "#,
         );
+        manifest.push_str("\n[modules]\n");
         for entry in entries {
             let module_path = dir.path().join(entry.path);
             if let Some(parent) = module_path.parent() {
                 fs::create_dir_all(parent).expect("create module dir");
             }
             fs::write(&module_path, "module demo;").expect("write module");
-            manifest.push_str("\n[[modules]]\n");
-            manifest.push_str(&format!("name = \"{}\"\n", entry.name));
-            manifest.push_str(&format!("path = \"{}\"\n", entry.path));
-            manifest.push_str(&format!("visibility = \"{}\"\n", entry.visibility));
+            let key = manifest_key_for(entry.name);
+            manifest.push_str(&format!(
+                "{key} = {{ name = \"{}\", path = \"{}\", visibility = \"{}\"",
+                entry.name, entry.path, entry.visibility
+            ));
             if let Some(package) = entry.package {
-                manifest.push_str(&format!("package = \"{}\"\n", package));
+                manifest.push_str(&format!(", package = \"{package}\""));
             }
             if let Some(doc) = entry.doc {
-                manifest.push_str(&format!("doc = \"{}\"\n", doc));
+                manifest.push_str(&format!(", doc = \"{doc}\""));
             }
+            manifest.push_str(" }\n");
         }
         fs::write(&manifest_path, manifest).expect("write manifest");
         let manifest = PackageManifest::load(&manifest_path).expect("load manifest");
@@ -1792,10 +1798,10 @@ entry = "demo::main"
 
     #[test]
     fn detects_module_context_in_declarations() {
-        let text = "module demo::core;";
+        let text = "module demo.core;";
         let ctx = module_path_completion_context(text, text.len()).expect("context");
         assert!(matches!(ctx.kind, ModulePathCompletionKind::Declaration));
-        assert_eq!(ctx.prefix.as_deref(), Some("demo::core"));
+        assert_eq!(ctx.prefix.as_deref(), Some("demo.core"));
     }
 
     #[test]
@@ -1820,12 +1826,12 @@ entry = "demo::main"
         let prioritized =
             module_completion_items_from_manifest(&manifest, Some("app"), Some("app::main"));
         assert!(!prioritized.is_empty());
-        assert_eq!(prioritized[0].label, "app::main");
+        assert_eq!(prioritized[0].label, "app.main");
 
         let all_items = module_completion_items_from_manifest(&manifest, None, None);
         let lib = all_items
             .iter()
-            .find(|item| item.label == "lib::math")
+            .find(|item| item.label == "lib.math")
             .expect("lib completion item");
         let detail = lib.detail.as_ref().expect("detail");
         assert!(detail.contains("[package]"));

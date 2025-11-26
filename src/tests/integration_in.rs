@@ -4,6 +4,7 @@ use std::{
     path::PathBuf,
     process::{Command, Stdio},
 };
+use tempfile::tempdir;
 
 fn bin_path() -> String {
     if let Ok(path) = env::var("CARGO_BIN_EXE_prime-lang") {
@@ -30,12 +31,51 @@ fn root() -> String {
     env::var("CARGO_MANIFEST_DIR").expect("manifest dir not set by cargo")
 }
 
+fn git_init(dir: &PathBuf) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("init")
+        .status()
+        .expect("git init");
+    assert!(status.success(), "git init failed");
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["config", "user.name", "Prime Tests"])
+        .status()
+        .expect("git config name");
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["config", "user.email", "tests@example.invalid"])
+        .status()
+        .expect("git config email");
+}
+
+fn git_commit_all(dir: &PathBuf, msg: &str) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["add", "."])
+        .status()
+        .expect("git add");
+    assert!(status.success(), "git add failed");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["commit", "-m", msg])
+        .status()
+        .expect("git commit");
+    assert!(status.success(), "git commit failed");
+}
+
 #[test]
 fn prime_tests_support_scripted_input() {
     let mut cmd = Command::new(bin_path());
     cmd.current_dir(root())
         .arg("test")
-        .arg("tests/input_read.prime")
+        .arg("tests/input_read/input_read.prime")
         .env(
             "PRIME_TEST_INPUTS",
             "21|abc|true|maybe|98.6|nope|Prime|Y|200|42|-1|500|70000|1000000|128|3.14|badf",
@@ -61,7 +101,7 @@ fn build_mode_in_preserves_values() {
         .current_dir(root())
         .args([
             "build",
-            "tests/build_input_demo.prime",
+            "tests/build_input_demo/build_input_demo.prime",
             "--name",
             build_name,
         ])
@@ -98,5 +138,228 @@ fn build_mode_in_preserves_values() {
     assert!(
         stdout.contains("temp error: invalid integer input"),
         "missing temp error output:\n{stdout}"
+    );
+}
+
+#[test]
+fn git_dependency_is_loaded_via_manifest() {
+    let workspace = tempdir().expect("workspace tempdir");
+    let workspace_root = workspace.path().to_path_buf();
+
+    // dependency repo
+    let dep_dir = workspace_root.join("dep");
+    fs::create_dir_all(&dep_dir).expect("dep dir");
+    git_init(&dep_dir);
+    fs::write(
+        dep_dir.join("prime.toml"),
+        r#"
+manifest_version = "3"
+
+[package]
+name = "dep"
+version = "0.1.0"
+
+[libraries]
+dep_lib = { name = "dep.lib", path = "lib.prime", visibility = "pub" }
+"#,
+    )
+    .expect("write dep manifest");
+    fs::write(
+        dep_dir.join("lib.prime"),
+        r#"
+library dep::lib;
+
+pub fn value() -> int32 {
+  7
+}
+"#,
+    )
+    .expect("write dep lib");
+    git_commit_all(&dep_dir, "init dep");
+
+    // workspace with app member
+    fs::write(
+        workspace_root.join("prime.toml"),
+        r#"
+manifest_version = "3"
+
+[workspace]
+members = ["app"]
+"#,
+    )
+    .expect("write workspace manifest");
+    let app_dir = workspace_root.join("app");
+    fs::create_dir_all(&app_dir).expect("app dir");
+    fs::write(
+        app_dir.join("prime.toml"),
+        r#"
+manifest_version = "3"
+
+[package]
+name = "app"
+version = "0.1.0"
+
+[module]
+name = "app.main"
+path = "main.prime"
+visibility = "pub"
+"#,
+    )
+    .expect("write app manifest");
+    fs::write(
+        app_dir.join("main.prime"),
+        r#"
+module app::main;
+
+import dep.lib;
+
+fn main() {
+  out(7);
+}
+"#,
+    )
+    .expect("write app main");
+
+    // add dependency via CLI
+    let status = Command::new(bin_path())
+        .current_dir(&app_dir)
+        .args([
+            "add",
+            "dep.lib",
+            "--git",
+            dep_dir.to_str().unwrap(),
+            "--features",
+            "featA",
+        ])
+        .status()
+        .expect("run prime-lang add");
+    assert!(status.success(), "prime-lang add failed");
+
+    // run entry
+    let output = Command::new(bin_path())
+        .current_dir(&workspace_root)
+        .args(["run", "app/main.prime"])
+        .output()
+        .expect("run prime-lang run");
+    assert!(
+        output.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("7"),
+        "expected dependency value in output, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn tool_install_and_uninstall_manages_registry() {
+    let temp = tempdir().expect("tempdir for tools");
+    let root = temp.path();
+    // create tiny tool repo
+    let tool_dir = root.join("tool");
+    fs::create_dir_all(&tool_dir).expect("tool dir");
+    git_init(&tool_dir);
+    fs::write(tool_dir.join("README.md"), "tool").expect("write tool readme");
+    git_commit_all(&tool_dir, "init tool");
+
+    let status = Command::new(bin_path())
+        .current_dir(root)
+        .args([
+            "install",
+            "--git",
+            tool_dir.to_str().unwrap(),
+            "--name",
+            "local-tool",
+        ])
+        .status()
+        .expect("install tool");
+    assert!(status.success(), "install failed");
+    let registry_path = root.join(".prime/tools/registry.toml");
+    assert!(registry_path.exists(), "registry missing");
+
+    let uninstall = Command::new(bin_path())
+        .current_dir(root)
+        .args(["uninstall", "local-tool"])
+        .status()
+        .expect("uninstall tool");
+    assert!(uninstall.success(), "uninstall failed");
+    let registry = fs::read_to_string(&registry_path).expect("read registry");
+    assert!(
+        !registry.contains("local-tool"),
+        "registry should not list local-tool after uninstall"
+    );
+}
+
+#[test]
+fn path_dependency_from_local_library() {
+    let workspace = tempdir().expect("workspace tempdir");
+    let root = workspace.path();
+
+    // scaffold library and app projects
+    let status = Command::new(bin_path())
+        .current_dir(root)
+        .args(["new", "libpkg", "--lib"])
+        .status()
+        .expect("create lib");
+    assert!(status.success(), "lib create failed");
+    let status = Command::new(bin_path())
+        .current_dir(root)
+        .args(["new", "app"])
+        .status()
+        .expect("create app");
+    assert!(status.success(), "app create failed");
+
+    // write workspace manifest
+    fs::write(
+        root.join("prime.toml"),
+        r#"
+manifest_version = "3"
+
+[workspace]
+members = ["app", "libpkg"]
+"#,
+    )
+    .expect("write workspace prime.toml");
+
+    // add dependency from app to libpkg
+    let status = Command::new(bin_path())
+        .current_dir(root.join("app"))
+        .args(["add", "libpkg::lib", "--dep-path", "../libpkg"])
+        .status()
+        .expect("add dependency");
+    assert!(status.success(), "add dependency failed");
+
+    // rewrite app main to use the library
+    fs::write(
+        root.join("app/main.prime"),
+        r#"
+module app::main;
+
+import libpkg::lib;
+
+fn main() {
+  out(example());
+}
+"#,
+    )
+    .expect("rewrite main");
+
+    // run the app from workspace root
+    let output = Command::new(bin_path())
+        .current_dir(root)
+        .args(["run", "app.main", "--project", "app"])
+        .output()
+        .expect("run app");
+    assert!(
+        output.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("0"),
+        "expected library value in output, got:\n{stdout}"
     );
 }

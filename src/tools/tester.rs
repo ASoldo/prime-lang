@@ -1,5 +1,5 @@
 use crate::{
-    language::{macro_expander, typecheck},
+    language::{ast::ModuleKind, macro_expander, typecheck},
     project,
     project::manifest::{PackageManifest, canonical_module_name},
     runtime::{Interpreter, value::Value},
@@ -75,6 +75,15 @@ fn manifest_or_current(path_hint: Option<&Path>) -> Result<PathBuf, String> {
 fn discover_tests(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
+    if let Some(manifest_path) = project::find_manifest(root) {
+        if let Ok(manifest) = PackageManifest::load(&manifest_path) {
+            for entry in manifest.module_entries() {
+                if entry.kind == ModuleKind::Test && seen.insert(entry.path.clone()) {
+                    files.push(entry.path.clone());
+                }
+            }
+        }
+    }
     let search_roots = [root.join("tests"), root.to_path_buf()];
     for dir in search_roots {
         if !dir.exists() {

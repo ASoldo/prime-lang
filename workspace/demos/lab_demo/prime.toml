@@ -1,0 +1,10 @@
+manifest_version = "3"
+
+[package]
+name = "demos.lab_demo"
+version = "0.1.0"
+
+[module]
+name = "demos.lab_demo"
+path = "lab_demo.prime"
+visibility = "pub"

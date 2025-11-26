@@ -108,15 +108,19 @@ fresh. Highlights:
 
 | Command | Purpose |
 | --- | --- |
-| `prime-lang run <file>` | Interpret a `.prime` entry point after loading its manifest dependencies (modules only; libraries are rejected) |
-| `prime-lang build <file> --name demo` | Compile to LLVM IR/object code and write a runnable binary below `./.build.prime/demo` (modules only) |
+| `prime-lang run <target> [--project pkg]` | Interpret a module by manifest name or path after loading workspace dependencies (modules only; libraries are rejected) |
+| `prime-lang build <target> [--project pkg] --name demo` | Compile a module (by name or path) to LLVM IR/object code and write a runnable binary below `./.build.prime/demo` (modules only) |
 | `prime-lang lint <file> [--watch]` | Single-shot or watch-mode linting with the same parser used by the LSP |
 | `prime-lang fmt <file> [--write]` | Preview or apply the formatter |
 | `prime-lang lsp` | Start the language server over stdio (Neovim/VS Code use this entry point) |
-| `prime-lang init [path]` | Scaffold a fresh workspace with `prime.toml` |
-| `prime-lang add <module> [--path file.prime] [--test|--library]` | Append a module, test, or library entry to the manifest and stub the file with the correct header |
+| `prime-lang new [path] [--bin|--lib|--wrk]` | Scaffold a package or a workspace (with a single member) using `manifest_version = "3"` |
+| `prime-lang add [-p pkg] <module> [--path file.prime] [--test|--library] [--git URL|--dep-path DIR] [--features a,b]` | Append a module/test/library or register a dependency (git/path) in a package manifest (workspace-safe with `-p`) |
 | `prime-lang test [target,...]` | Run test modules (header `test ...;`) by name or file; discovers tests when no target is provided |
 | `prime-lang docs [--list|--query ...]` | Print the curated reference topics described below |
+| `prime-lang install --git URL [--name tool]` | Clone a tool into `.prime/tools` and record it in the registry |
+| `prime-lang update [--name tool]` | Update installed tools by refetching their git sources |
+| `prime-lang uninstall <tool>` | Remove a tool checkout and prune it from the registry |
+| `prime-lang sync [path]` | Resolve dependencies and write `prime.lock`; pair with `--frozen` on run/build to require the lock |
 | `prime-lang expand <file> [--offset N | --line L --column C] [--print-expanded]` | Show macro expansion trace at a cursor (line/column or byte offset). With a position, prints only the expanded items from that macro; without a position or with `--print-expanded`, prints the fully expanded module. |
 | `in[T](prompt, ...) -> Result[T, string]` | Built-in input helper. Reads a line from stdin, parses to `T`, and returns `Ok(value)`/`Err(message)`. Formatting rules mirror `out`; type arguments are required. |
 | Concurrency | `spawn expr` → `JoinHandle[T]`; `channel[T]()` → `(Sender[T], Receiver[T])`; `send` returns `Result[(), string]`; `recv` yields `Option[T]` (run uses real threads; build evaluates deterministically with the same blocking semantics) |
@@ -158,30 +162,28 @@ exits with an error code and a hint if a query doesn’t map to any topic.
 names map to which files and what the entry module is:
 
 ```toml
-manifest_version = "2"
+manifest_version = "3"
 
 [package]
-entry = "app.main"
-kind = "binary"
-name = "prime-lang-playground"
+name = "demo-app"
 version = "0.1.0"
 
-[[modules]]
-name = "app.main"
+[module]
+name = "demo_app.main"
 path = "main.prime"
 visibility = "pub"
-kind = "module"
 
-[[modules]]
-name = "core.types"
-path = "types.prime"
-visibility = "pub"
-kind = "library"
+[dependencies]
+util_logging = { name = "util.logging", git = "https://example.com/logging.git", features = ["fmt"] }
+
+[libraries]
+core_types = { name = "core.types", path = "../core/types.prime", visibility = "pub" }
 ```
 
 Module names can use either `::` or `.` separators; `core.types` and `core::types`
-resolve to the same module internally. Tests can be listed with `[[tests]]` blocks
-if you want manifest metadata; otherwise any file that starts with `test ...;` is
+resolve to the same module internally. Tests can be listed under `[tests]` (inline
+entries or an `items` array) if you want manifest metadata; otherwise any file that
+starts with `test ...;` is
 discovered by `prime-lang test`.
 
 ### Tests
@@ -198,7 +200,7 @@ discovered by `prime-lang test`.
 - Built-in helpers for tests: `assert(cond: bool)` and `expect(cond: bool, message: string)`.
 
 `prime-lang add demos.patterns --path pattern_demo.prime` will append another
-`[[modules]]` table and create the stub file automatically. Keeping the manifest
+`[modules]` entry and create the stub file automatically. Keeping the manifest
 in sync with each file’s `module ...;` declaration lets the CLI, interpreter,
 compiler, and LSP share the same package graph.
 

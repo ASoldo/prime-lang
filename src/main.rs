@@ -17,7 +17,8 @@ use miette::NamedSource;
 use project::diagnostics::analyze_manifest_issues;
 use project::{
     FileErrors, PackageError, apply_manifest_header_with_manifest, canonicalize, find_manifest,
-    load_package, manifest::PackageManifest, warn_manifest_drift,
+    load_package, load_package_with_manifest, manifest::PackageManifest,
+    manifest::canonical_module_name, manifest::manifest_key_for, warn_manifest_drift,
 };
 use runtime::Interpreter;
 use std::{
@@ -25,7 +26,11 @@ use std::{
     path::{Component, Path, PathBuf},
     process::Command,
 };
-use toml::{Value, value::Table as TomlTable};
+use toml::Value;
+use toml_edit::{
+    self, Array, DocumentMut, InlineTable, Item as TomlItem, Table as TomlEditTable,
+    Value as TomlValue,
+};
 use tools::{
     diagnostics::{
         emit_manifest_issues, emit_syntax_errors, emit_type_errors, report_io_error,
@@ -49,11 +54,29 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Interpret a Prime source file directly
-    Run { file: PathBuf },
-    /// Build a Prime source file down to LLVM IR and native binary
+    /// Interpret a Prime module by manifest name or file path
+    Run {
+        target: String,
+        #[arg(short = 'p', long = "project", value_name = "PACKAGE")]
+        project: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Require prime.lock to satisfy dependencies"
+        )]
+        frozen: bool,
+    },
+    /// Build a Prime module down to LLVM IR and a native binary
     Build {
-        file: PathBuf,
+        target: String,
+        #[arg(short = 'p', long = "project", value_name = "PACKAGE")]
+        project: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Require prime.lock to satisfy dependencies"
+        )]
+        frozen: bool,
         /// Base name for generated artifacts
         #[arg(long, default_value = "output")]
         name: String,
@@ -80,7 +103,29 @@ enum Commands {
     },
     /// Start the LSP server over stdio
     Lsp,
-    /// Initialize a new Prime workspace
+    /// Initialize a new Prime project
+    New {
+        #[arg(value_name = "DIR", default_value = ".")]
+        path: PathBuf,
+        #[arg(long, default_value_t = false, help = "Create a library project")]
+        lib: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Create a binary project (default)"
+        )]
+        bin: bool,
+        #[arg(
+            short = 'w',
+            long = "wrk",
+            alias = "workspace",
+            default_value_t = false,
+            help = "Create a workspace with a single member project scaffold"
+        )]
+        workspace: bool,
+    },
+    /// Deprecated: use `prime-lang new` instead
+    #[command(hide = true)]
     Init {
         #[arg(value_name = "DIR", default_value = ".")]
         path: PathBuf,
@@ -98,7 +143,9 @@ enum Commands {
     Add {
         #[arg(value_name = "MODULE")]
         name: String,
-        #[arg(long, value_name = "PATH")]
+        #[arg(short = 'p', long = "project", value_name = "PACKAGE")]
+        project: Option<String>,
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["git", "dep_path"])]
         path: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "pub")]
         visibility: ModuleVisibilityArg,
@@ -106,16 +153,37 @@ enum Commands {
             long,
             default_value_t = false,
             help = "Add a test entry instead of a module",
-            conflicts_with = "library"
+            conflicts_with_all = ["library", "git", "dep_path"]
         )]
         test: bool,
         #[arg(
             long,
             default_value_t = false,
             help = "Add a library entry (importable, no `main`)",
-            conflicts_with = "test"
+            conflicts_with_all = ["test", "git", "dep_path"]
         )]
         library: bool,
+        #[arg(
+            long,
+            value_name = "GIT_URL",
+            help = "Add a dependency from a git repository",
+            conflicts_with = "dep_path"
+        )]
+        git: Option<String>,
+        #[arg(
+            long = "dep-path",
+            value_name = "DIR",
+            help = "Add a dependency from a local path",
+            conflicts_with = "git"
+        )]
+        dep_path: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "FEATURES",
+            value_delimiter = ',',
+            help = "Comma-separated dependency features"
+        )]
+        features: Vec<String>,
     },
     /// Print reference snippets for Prime language features
     Docs {
@@ -160,13 +228,44 @@ enum Commands {
         )]
         print_expanded: bool,
     },
+    /// Install a tool from git
+    Install {
+        #[arg(long, value_name = "GIT_URL")]
+        git: String,
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
+    /// Update installed tools
+    Update {
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
+    /// Uninstall installed tools
+    Uninstall {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// Sync dependencies and write prime.lock
+    Sync {
+        #[arg(value_name = "PATH", default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Run { file } => run_entry(&file),
-        Commands::Build { file, name } => build_entry(&file, &name),
+        Commands::Run {
+            target,
+            project,
+            frozen,
+        } => run_entry(&target, project.as_deref(), frozen),
+        Commands::Build {
+            target,
+            project,
+            frozen,
+            name,
+        } => build_entry(&target, project.as_deref(), frozen, &name),
         Commands::Lint { file, watch } => {
             ensure_prime_file(&file);
             warn_manifest_drift(&file);
@@ -193,8 +292,34 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::New {
+            path,
+            lib,
+            bin,
+            workspace,
+        } => {
+            if lib && bin {
+                eprintln!("cannot use --lib and --bin together; pick one");
+                std::process::exit(1);
+            }
+            let kind = if workspace {
+                NewKind::Workspace {
+                    library: lib,
+                    binary: bin,
+                }
+            } else if lib {
+                NewKind::Library
+            } else {
+                NewKind::Binary
+            };
+            if let Err(err) = init_project(&path, kind, false) {
+                eprintln!("new failed: {err}");
+                std::process::exit(1);
+            }
+        }
         Commands::Init { path } => {
-            if let Err(err) = init_project(&path) {
+            eprintln!("`prime-lang init` is deprecated; use `prime-lang new` instead.");
+            if let Err(err) = init_project(&path, NewKind::Binary, true) {
                 eprintln!("init failed: {err}");
                 std::process::exit(1);
             }
@@ -208,11 +333,25 @@ fn main() {
         Commands::Add {
             name,
             path,
+            project,
             visibility,
             test,
             library,
+            git,
+            dep_path,
+            features,
         } => {
-            if let Err(err) = add_module(&name, path.as_deref(), visibility, test, library) {
+            if let Err(err) = add_module(
+                &name,
+                path.as_deref(),
+                project.as_deref(),
+                visibility,
+                test,
+                library,
+                git,
+                dep_path,
+                features,
+            ) {
                 eprintln!("add failed: {err}");
                 std::process::exit(1);
             }
@@ -233,21 +372,47 @@ fn main() {
             column,
             print_expanded,
         } => expand_entry(&file, offset, line, column, print_expanded),
+        Commands::Install { git, name } => {
+            if let Err(err) = install_tool(&git, name.as_deref()) {
+                eprintln!("install failed: {err}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Update { name } => {
+            if let Err(err) = update_tools(name.as_deref()) {
+                eprintln!("update failed: {err}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Uninstall { name } => {
+            if let Err(err) = uninstall_tool(&name) {
+                eprintln!("uninstall failed: {err}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Sync { path } => {
+            if let Err(err) = sync_deps(&path) {
+                eprintln!("sync failed: {err}");
+                std::process::exit(1);
+            }
+        }
     }
 }
-fn run_entry(path: &Path) {
-    ensure_prime_file(path);
-    if is_test_file(path) {
-        eprintln!("`prime-lang run` cannot execute test targets; use `prime-lang test`");
-        std::process::exit(1);
+fn run_entry(target: &str, project: Option<&str>, frozen: bool) {
+    let (entry, entry_path, manifest) = match resolve_entry_for_cli(target, project) {
+        Ok(values) => values,
+        Err(err) => exit_on_package_error(err),
+    };
+    ensure_prime_file(&entry_path);
+    reject_non_module_entry(&entry_path, manifest.as_ref(), "run");
+    if frozen {
+        if let Err(err) = require_frozen(manifest.as_ref(), &entry_path) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
     }
-    if is_library_file(path) {
-        eprintln!("`prime-lang run` cannot execute library targets; use a module with `main`");
-        std::process::exit(1);
-    }
-    reject_library_entry(path);
-    warn_manifest_drift(path);
-    match load_package(path) {
+    warn_manifest_drift(&entry_path);
+    match load_package_with_manifest(entry.as_entry_point(), manifest) {
         Ok(package) => {
             let expanded_program = expand_or_report(&package.program);
             let expanded_modules = expanded_program
@@ -271,18 +436,7 @@ fn run_entry(path: &Path) {
                 std::process::exit(1);
             }
         }
-        Err(PackageError::Io { path, error }) => {
-            report_io_error(&path, &error);
-            std::process::exit(1);
-        }
-        Err(PackageError::Syntax(errors)) => {
-            emit_syntax_errors(&errors);
-            std::process::exit(1);
-        }
-        Err(PackageError::Manifest { path, message }) => {
-            eprintln!("manifest error at {}: {}", path.display(), message);
-            std::process::exit(1);
-        }
+        Err(err) => exit_on_package_error(err),
     }
 }
 
@@ -308,19 +462,21 @@ fn compile_runtime_abi() -> Result<PathBuf, String> {
     Ok(output_lib)
 }
 
-fn build_entry(path: &Path, name: &str) {
-    ensure_prime_file(path);
-    if is_test_file(path) {
-        eprintln!("`prime-lang build` cannot compile test targets; use `prime-lang test`");
-        std::process::exit(1);
+fn build_entry(target: &str, project: Option<&str>, frozen: bool, name: &str) {
+    let (entry, entry_path, manifest) = match resolve_entry_for_cli(target, project) {
+        Ok(values) => values,
+        Err(err) => exit_on_package_error(err),
+    };
+    ensure_prime_file(&entry_path);
+    reject_non_module_entry(&entry_path, manifest.as_ref(), "build");
+    if frozen {
+        if let Err(err) = require_frozen(manifest.as_ref(), &entry_path) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
     }
-    if is_library_file(path) {
-        eprintln!("`prime-lang build` cannot compile library targets; use a module with `main`");
-        std::process::exit(1);
-    }
-    reject_library_entry(path);
-    warn_manifest_drift(path);
-    match load_package(path) {
+    warn_manifest_drift(&entry_path);
+    match load_package_with_manifest(entry.as_entry_point(), manifest) {
         Ok(package) => {
             let expanded_program = expand_or_report(&package.program);
             if let Err(errors) = typecheck::check_program(&expanded_program) {
@@ -379,6 +535,158 @@ fn build_entry(path: &Path, name: &str) {
             std::process::exit(1);
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NewKind {
+    Binary,
+    Library,
+    Workspace { library: bool, binary: bool },
+}
+
+#[derive(Clone)]
+enum EntryTarget {
+    Path(PathBuf),
+    Module(String),
+}
+
+impl EntryTarget {
+    fn as_entry_point(&self) -> project::EntryPoint<'_> {
+        match self {
+            EntryTarget::Path(path) => project::EntryPoint::Path(path),
+            EntryTarget::Module(name) => project::EntryPoint::Module(name),
+        }
+    }
+}
+
+fn resolve_entry_for_cli(
+    target: &str,
+    project: Option<&str>,
+) -> Result<(EntryTarget, PathBuf, Option<PackageManifest>), PackageError> {
+    let entry = parse_entry_target(target);
+    let manifest = project::load_manifest_for_entry(entry.as_entry_point(), project)?;
+    if project.is_some() && manifest.is_none() {
+        let manifest_stub = env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("prime.toml");
+        return Err(PackageError::Manifest {
+            path: manifest_stub,
+            message: "workspace manifest required when using --project".into(),
+        });
+    }
+    let entry_path =
+        project::resolve_entry_path(entry.as_entry_point(), manifest.as_ref(), project)?;
+    Ok((entry, entry_path, manifest))
+}
+
+fn parse_entry_target(target: &str) -> EntryTarget {
+    let trimmed = target.trim();
+    let path_candidate = PathBuf::from(trimmed);
+    let looks_like_path = trimmed.contains(std::path::MAIN_SEPARATOR)
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || path_candidate
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext == "prime")
+            .unwrap_or(false)
+        || path_candidate.exists();
+    if looks_like_path {
+        EntryTarget::Path(path_candidate)
+    } else {
+        EntryTarget::Module(trimmed.to_string())
+    }
+}
+
+fn reject_non_module_entry(path: &Path, manifest: Option<&PackageManifest>, command: &str) {
+    if let Some(manifest) = manifest {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if let Some(name) = manifest.module_name_for_path(&canonical) {
+            if let Some(kind) = manifest.module_kind(&name) {
+                if kind != ModuleKind::Module {
+                    eprintln!(
+                        "`{}` is listed as {:?} in {} and cannot be used with `prime-lang {}`",
+                        name,
+                        kind,
+                        manifest.path.display(),
+                        command
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+    let (test_msg, lib_msg) = entry_error_messages(command);
+    if is_test_file(path) {
+        eprintln!("{test_msg}");
+        std::process::exit(1);
+    }
+    if is_library_file(path) {
+        eprintln!("{lib_msg}");
+        std::process::exit(1);
+    }
+}
+
+fn entry_error_messages(command: &str) -> (&'static str, &'static str) {
+    match command {
+        "run" => (
+            "`prime-lang run` cannot execute test targets; use `prime-lang test`",
+            "`prime-lang run` cannot execute library targets; use a module with `main`",
+        ),
+        "build" => (
+            "`prime-lang build` cannot compile test targets; use `prime-lang test`",
+            "`prime-lang build` cannot compile library targets; use a module with `main`",
+        ),
+        _ => (
+            "`prime-lang` cannot operate on test targets for this command",
+            "`prime-lang` cannot operate on library targets for this command",
+        ),
+    }
+}
+
+fn require_frozen(manifest: Option<&PackageManifest>, entry_path: &Path) -> Result<(), String> {
+    let Some(manifest) = manifest else {
+        return Err("`--frozen` requires a manifest to resolve dependencies".into());
+    };
+    let Some(lock) = manifest.lock_entries() else {
+        return Err(format!(
+            "`--frozen` requires prime.lock (missing near {})",
+            entry_path.display()
+        ));
+    };
+    for dep in manifest.dependencies() {
+        if let project::manifest::DependencySource::Git { .. } = dep.source {
+            let entry = lock.iter().find(|locked| locked.name == dep.name);
+            if entry.is_none() {
+                return Err(format!(
+                    "`--frozen` missing lock entry for dependency `{}`",
+                    dep.name
+                ));
+            }
+            if entry.and_then(|e| e.rev.as_ref()).is_none() {
+                return Err(format!(
+                    "`--frozen` requires locked revision for dependency `{}`",
+                    dep.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn exit_on_package_error(err: PackageError) -> ! {
+    match err {
+        PackageError::Io { path, error } => {
+            report_io_error(&path, &error);
+        }
+        PackageError::Syntax(errors) => {
+            emit_syntax_errors(&errors);
+        }
+        PackageError::Manifest { path, message } => {
+            eprintln!("manifest error at {}: {}", path.display(), message);
+        }
+    }
+    std::process::exit(1);
 }
 
 fn format_file(path: &Path, write: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -736,25 +1044,6 @@ fn is_library_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn reject_library_entry(path: &Path) {
-    if let Some(manifest_path) = find_manifest(path) {
-        if let Ok(manifest) = PackageManifest::load(&manifest_path) {
-            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-            if let Some(name) = manifest.module_name_for_path(&canonical) {
-                if let Some(kind) = manifest.module_kind(&name) {
-                    if kind != ModuleKind::Module {
-                        eprintln!(
-                            "`{}` is listed as {:?} in prime.toml and cannot be used as an entrypoint",
-                            name, kind
-                        );
-                        std::process::exit(1);
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn expand_or_report(program: &language::ast::Program) -> macro_expander::ExpandedProgram {
     match macro_expander::expand_program(program) {
         Ok(expanded) => expanded,
@@ -790,73 +1079,151 @@ impl ModuleVisibilityArg {
     }
 }
 
-fn init_project(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn init_project(
+    dir: &Path,
+    kind: NewKind,
+    warn_deprecated: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if !dir.exists() {
         fs::create_dir_all(dir)?;
     }
-    let manifest_path = dir.join("prime.toml");
-    if manifest_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} already exists", manifest_path.display()),
-        )
-        .into());
-    }
-    let package_name = package_name_from_dir(dir);
-    let manifest = format!(
-        r#"manifest_version = "2"
+    match kind {
+        NewKind::Workspace { library, binary } => {
+            let package_name = package_name_from_dir(dir);
+            let member_dir = dir.join(&package_name);
+            if dir.join("prime.toml").exists() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{} already exists", dir.join("prime.toml").display()),
+                )
+                .into());
+            }
+            init_project(
+                &member_dir,
+                if library {
+                    NewKind::Library
+                } else if binary {
+                    NewKind::Binary
+                } else {
+                    NewKind::Binary
+                },
+                warn_deprecated,
+            )?;
+            let member_rel = member_dir
+                .strip_prefix(dir)
+                .unwrap_or(&member_dir)
+                .to_path_buf();
+            let workspace_manifest = format!(
+                r#"manifest_version = "3"
+
+[workspace]
+members = [
+  "{member}"
+]
+"#,
+                member = manifest_path_string(&member_rel)
+            );
+            fs::write(dir.join("prime.toml"), workspace_manifest)?;
+        }
+        NewKind::Binary | NewKind::Library => {
+            let manifest_path = dir.join("prime.toml");
+            if manifest_path.exists() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{} already exists", manifest_path.display()),
+                )
+                .into());
+            }
+            let package_name = package_name_from_dir(dir);
+            let module_name = match kind {
+                NewKind::Binary => format!("{}.main", package_name.replace('-', "_")),
+                NewKind::Library => format!("{}.lib", package_name.replace('-', "_")),
+                _ => unreachable!(),
+            };
+            let entry_path = if kind == NewKind::Binary {
+                "main.prime"
+            } else {
+                "lib.prime"
+            };
+            let manifest = if kind == NewKind::Binary {
+                format!(
+                    r#"manifest_version = "3"
 
 [package]
 name = "{package_name}"
 version = "0.1.0"
-kind = "binary"
-entry = "app::main"
 
-[[modules]]
-name = "app::main"
-path = "main.prime"
+[module]
+name = "{module_name}"
+path = "{entry_path}"
 visibility = "pub"
 "#
-    );
-    fs::write(&manifest_path, manifest)?;
-    let main_path = dir.join("main.prime");
-    write_module_file(&main_path, "app::main", true, false, false)?;
+                )
+            } else {
+                let module_key = manifest_key_for(&module_name);
+                format!(
+                    r#"manifest_version = "3"
+
+[package]
+name = "{package_name}"
+version = "0.1.0"
+
+[libraries]
+{module_key} = {{ name = "{module_name}", path = "{entry_path}", visibility = "pub" }}
+"#
+                )
+            };
+            fs::write(&manifest_path, manifest)?;
+            let main_path = manifest_path.parent().unwrap_or(dir).join(entry_path);
+            write_module_file(
+                &main_path,
+                &module_name,
+                true,
+                false,
+                matches!(kind, NewKind::Library),
+            )?;
+        }
+    }
+    if warn_deprecated {
+        eprintln!("`prime-lang init` will be removed in a future release; use `prime-lang new`.");
+    }
     Ok(())
 }
 
 fn add_module(
     module_name: &str,
     explicit_path: Option<&Path>,
+    project: Option<&str>,
     visibility: ModuleVisibilityArg,
     is_test: bool,
     is_library: bool,
+    dep_git: Option<String>,
+    dep_path: Option<PathBuf>,
+    dep_features: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if dep_git.is_some() || dep_path.is_some() {
+        return add_dependency_entry(module_name, project, dep_git, dep_path, dep_features);
+    }
     let segments = parse_module_segments(module_name)?;
     let cwd = env::current_dir()?;
-    let manifest_path = find_manifest(&cwd).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "could not locate prime.toml in current or parent directories",
-        )
-    })?;
+    let manifest_path = resolve_edit_manifest(&cwd, project)?;
     let manifest_dir = manifest_path
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid manifest path"))?;
     let manifest_text = fs::read_to_string(&manifest_path)?;
-    let mut doc: Value = toml::from_str(&manifest_text)?;
-    let table = doc
-        .as_table_mut()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "malformed manifest"))?;
-    match table
-        .get("manifest_version")
-        .and_then(|value| value.as_str())
-    {
-        Some("2") => {}
+    let mut doc: DocumentMut = manifest_text.parse().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to parse manifest: {err:?}"),
+        )
+    })?;
+    match doc["manifest_version"].as_str() {
+        Some("3") => {}
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "`prime add` requires manifest_version = \"2\"",
+                "`prime add` requires manifest_version = \"3\"",
             )
             .into());
         }
@@ -866,38 +1233,266 @@ fn add_module(
         None => default_module_path(&segments),
     };
     let manifest_path_string = manifest_path_string(&rel_path);
-    let key = if is_test { "tests" } else { "modules" };
-    let modules_value = table.entry(key).or_insert_with(|| Value::Array(Vec::new()));
-    let modules = modules_value
-        .as_array_mut()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "`modules` must be an array"))?;
     let manifest_current = PackageManifest::load(&manifest_path).map_err(|err| {
         io::Error::new(
             io::ErrorKind::Other,
             format!("failed to load manifest: {err:?}"),
         )
     })?;
-    if manifest_current.module_path(module_name).is_some() {
+    let canonical = canonical_module_name(module_name);
+    if manifest_current.module_path(&canonical).is_some() {
         return Err(
             io::Error::new(io::ErrorKind::Other, "module already exists in manifest").into(),
         );
     }
-    let mut entry = TomlTable::new();
-    entry.insert("name".into(), Value::String(module_name.to_string()));
-    entry.insert("path".into(), Value::String(manifest_path_string.clone()));
-    entry.insert(
-        "visibility".into(),
-        Value::String(visibility.as_manifest_str().to_string()),
-    );
+    let key = manifest_key_for(module_name);
+    let mut entry = TomlEditTable::new();
+    entry["name"] = toml_edit::value(&canonical);
+    entry["path"] = toml_edit::value(manifest_path_string.clone());
+    entry["visibility"] = toml_edit::value(visibility.as_manifest_str());
     if is_library {
-        entry.insert("kind".into(), Value::String("library".into()));
+        entry["kind"] = toml_edit::value("library");
     }
-    modules.push(Value::Table(entry));
-    let manifest_pretty = render_manifest(&doc)?;
-    fs::write(&manifest_path, manifest_pretty)?;
+    let mut inline = InlineTable::new();
+    inline.insert("name", TomlValue::from(&canonical));
+    inline.insert("path", TomlValue::from(manifest_path_string));
+    inline.insert("visibility", TomlValue::from(visibility.as_manifest_str()));
+    if is_library {
+        inline.insert("kind", TomlValue::from("library"));
+    }
+    if is_test {
+        set_inline_table_entry(doc.entry("tests"), key, inline);
+    } else if is_library {
+        set_inline_table_entry(doc.entry("libraries"), key, inline);
+    } else {
+        set_inline_table_entry(doc.entry("modules"), key, inline);
+        if !doc["module"].is_table() {
+            doc["module"] = TomlItem::Table(entry);
+        }
+    }
+    fs::write(&manifest_path, doc.to_string())?;
     let module_abs_path = manifest_dir.join(&rel_path);
     write_module_file(&module_abs_path, module_name, false, is_test, is_library)?;
     Ok(())
+}
+
+fn add_dependency_entry(
+    dep_name: &str,
+    project: Option<&str>,
+    dep_git: Option<String>,
+    dep_path: Option<PathBuf>,
+    dep_features: Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let debug = std::env::var_os("PRIME_DEBUG_ADD").is_some();
+    if dep_git.is_none() && dep_path.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "dependency requires --git or --dep-path",
+        )
+        .into());
+    }
+    let cwd = env::current_dir()?;
+    let manifest_path = resolve_edit_manifest(&cwd, project)?;
+    let manifest_dir = manifest_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid manifest path"))?;
+    let manifest_text = fs::read_to_string(&manifest_path)?;
+    if debug {
+        eprintln!(
+            "debug add-dep: editing manifest {}",
+            manifest_path.display()
+        );
+    }
+    let mut doc: DocumentMut = manifest_text.parse().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to parse manifest: {err:?}"),
+        )
+    })?;
+    if debug {
+        eprintln!("debug add-dep: parsed manifest");
+    }
+    match doc["manifest_version"].as_str() {
+        Some("3") => {}
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "`prime add --git/--dep-path` requires manifest_version = \"3\"",
+            )
+            .into());
+        }
+    }
+    if !doc["package"].is_table() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "dependencies must be added inside a package manifest (not workspace root)",
+        )
+        .into());
+    }
+    let deps_item = doc
+        .entry("dependencies")
+        .or_insert(TomlItem::Table(TomlEditTable::new()));
+    let deps_table = deps_item
+        .as_table_like_mut()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "`dependencies` must be a table"))?;
+    if debug {
+        eprintln!("debug add-dep: adding entry for {dep_name}");
+    }
+    let mut entry = InlineTable::new();
+    entry.insert("name", TomlValue::from(dep_name));
+    if let Some(url) = dep_git.as_ref() {
+        entry.insert("git", TomlValue::from(url));
+    }
+    if let Some(path) = dep_path.as_ref() {
+        let rel = path
+            .strip_prefix(&manifest_dir)
+            .unwrap_or(path)
+            .to_path_buf();
+        entry.insert("path", TomlValue::from(manifest_path_string(&rel)));
+    }
+    if !dep_features.is_empty() {
+        let mut arr = Array::new();
+        for feature in dep_features {
+            arr.push(feature);
+        }
+        entry.insert("features", TomlValue::Array(arr));
+    }
+    let key = manifest_key_for(dep_name);
+    deps_table.insert(&key, TomlItem::Value(toml_edit::Value::InlineTable(entry)));
+    if debug {
+        eprintln!("debug add-dep: writing manifest");
+    }
+    fs::write(&manifest_path, doc.to_string())?;
+    if let Some(url) = dep_git {
+        match project::deps::ensure_git_checkout(
+            &url,
+            dep_name,
+            None,
+            &project::deps::deps_cache_root(),
+        ) {
+            Ok(path) => {
+                println!("fetched dependency `{dep_name}` into {}", path.display());
+            }
+            Err(message) => {
+                eprintln!("warning: failed to fetch dependency `{dep_name}`: {message}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn install_tool(git: &str, name: Option<&str>) -> Result<(), String> {
+    let dest = project::deps::install_tool(git, name)?;
+    println!("Installed tool at {}", dest.display());
+    Ok(())
+}
+
+fn sync_deps(path: &Path) -> Result<(), String> {
+    let manifest_path = find_manifest(path).ok_or_else(|| {
+        "could not locate prime.toml in current or parent directories".to_string()
+    })?;
+    let manifest = PackageManifest::load(&manifest_path).map_err(|err| {
+        format!(
+            "failed to load manifest {}: {err:?}",
+            manifest_path.display()
+        )
+    })?;
+    let lock = manifest.lock_dependencies();
+    let lock_path = manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("prime.lock");
+    project::lock::write_lockfile(&lock_path, &lock)?;
+    println!("Wrote {}", lock_path.display());
+    Ok(())
+}
+
+fn resolve_edit_manifest(
+    cwd: &Path,
+    project: Option<&str>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let found = find_manifest(cwd).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not locate prime.toml in current or parent directories",
+        )
+    })?;
+    // if a workspace and project was requested, target the member manifest
+    if let Some(project) = project {
+        if let Ok(workspace) = toml::from_str::<Value>(&fs::read_to_string(&found)?) {
+            if let Some(Value::Table(ws)) = workspace.get("workspace") {
+                let members = ws
+                    .get("members")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let root = found
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                for member in members {
+                    if let Some(path_str) = member.as_str() {
+                        let member_path = root.join(path_str).join("prime.toml");
+                        if !member_path.exists() {
+                            continue;
+                        }
+                        if path_str == project {
+                            return Ok(member_path);
+                        }
+                        if let Ok(manifest_text) = fs::read_to_string(&member_path) {
+                            if let Ok(manifest) = toml::from_str::<Value>(&manifest_text) {
+                                if manifest
+                                    .get("package")
+                                    .and_then(|pkg| pkg.get("name"))
+                                    .and_then(|v| v.as_str())
+                                    == Some(project)
+                                {
+                                    return Ok(member_path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let candidate = cwd.join("prime.toml");
+    if candidate.exists() {
+        if let Ok(text) = fs::read_to_string(&candidate) {
+            if let Ok(value) = toml::from_str::<Value>(&text) {
+                if !value.get("workspace").is_some() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn update_tools(name: Option<&str>) -> Result<(), String> {
+    let updated = project::deps::update_tools(name)?;
+    if updated.is_empty() {
+        println!("No tools updated");
+    } else {
+        for path in updated {
+            println!("Updated {}", path.display());
+        }
+    }
+    Ok(())
+}
+
+fn uninstall_tool(name: &str) -> Result<(), String> {
+    project::deps::uninstall_tool(name)?;
+    println!("Uninstalled `{name}`");
+    Ok(())
+}
+
+fn set_inline_table_entry(entry: toml_edit::Entry<'_>, key: String, table: InlineTable) {
+    let item = entry.or_insert(TomlItem::Table(TomlEditTable::new()));
+    if let Some(obj) = item.as_table_like_mut() {
+        obj.insert(&key, TomlItem::Value(toml_edit::Value::InlineTable(table)));
+    }
 }
 
 fn package_name_from_dir(dir: &Path) -> String {
@@ -973,57 +1568,7 @@ fn default_module_path(segments: &[String]) -> PathBuf {
 }
 
 fn render_manifest(doc: &Value) -> Result<String, Box<dyn std::error::Error>> {
-    let table = doc
-        .as_table()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "manifest not a table"))?;
-    let mut out = String::new();
-    if let Some(Value::String(version)) = table.get("manifest_version") {
-        out.push_str(&format!("manifest_version = \"{}\"\n", version));
-    }
-    if let Some(Value::Table(pkg)) = table.get("package") {
-        out.push_str("\n[package]\n");
-        for (k, v) in pkg {
-            out.push_str(&format!("{} = {}\n", k, toml::to_string(v)?));
-        }
-    }
-    if let Some(Value::Array(mods)) = table.get("modules") {
-        if !mods.is_empty() {
-            out.push('\n');
-        }
-        for entry in mods {
-            if let Value::Table(t) = entry {
-                out.push_str("[[modules]]\n");
-                for (k, v) in t {
-                    out.push_str(&format!("{} = {}\n", k, toml::to_string(v)?));
-                }
-                out.push('\n');
-            }
-        }
-    }
-    if let Some(Value::Array(tests)) = table.get("tests") {
-        if !tests.is_empty() {
-            out.push('\n');
-        }
-        for entry in tests {
-            if let Value::Table(t) = entry {
-                out.push_str("[[tests]]\n");
-                for (k, v) in t {
-                    out.push_str(&format!("{} = {}\n", k, toml::to_string(v)?));
-                }
-                out.push('\n');
-            }
-        }
-    }
-    // append any other keys in stable order
-    for (k, v) in table {
-        if k == "manifest_version" || k == "package" || k == "modules" || k == "tests" {
-            continue;
-        }
-        out.push_str(&format!("\n[{k}]\n"));
-        out.push_str(&toml::to_string(v)?);
-        out.push('\n');
-    }
-    Ok(out)
+    Ok(toml::to_string_pretty(doc)?)
 }
 
 fn normalize_relative_path(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -1078,7 +1623,20 @@ fn write_module_file(
         "module"
     };
     let body = if include_example {
-        format!("{header} {module_name};\n\nfn main() {{\n  out(\"Hello from Prime!\");\n}}\n")
+        match header {
+            "module" => {
+                format!(
+                    "{header} {module_name};\n\nfn main() {{\n  out(\"Hello from Prime!\");\n}}\n"
+                )
+            }
+            "library" => {
+                format!("{header} {module_name};\n\npub fn example() -> int32 {{\n  0\n}}\n")
+            }
+            "test" => {
+                format!("{header} {module_name};\n\nfn example_test() -> bool {{\n  true\n}}\n")
+            }
+            _ => format!("{header} {module_name};\n\n"),
+        }
     } else {
         format!("{header} {module_name};\n\n")
     };

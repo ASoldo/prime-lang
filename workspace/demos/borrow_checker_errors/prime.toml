@@ -1,0 +1,10 @@
+manifest_version = "3"
+
+[package]
+name = "demos.borrow_checker_errors"
+version = "0.1.0"
+
+[module]
+name = "demos.borrow_checker_errors"
+path = "borrow_error_demo.prime"
+visibility = "pub"

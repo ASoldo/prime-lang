@@ -232,7 +232,7 @@ pub fn find_manifest(start: &Path) -> Option<PathBuf> {
     None
 }
 
-fn manifest_error_message(err: ManifestError) -> String {
+pub fn manifest_error_message(err: ManifestError) -> String {
     match err {
         ManifestError::Io { path, error } => format!("{}: {}", path.display(), error),
         ManifestError::Parse { path, message } => format!("{}: {}", path.display(), message),

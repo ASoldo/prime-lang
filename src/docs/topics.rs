@@ -175,33 +175,35 @@ match in[float64](`Temp {label}: `, label) {
             },
             TopicSection {
                 title: "Example programs",
-                snippet: r#"prime-lang run pattern_demo.prime        # module demos::patterns
-prime-lang run error_handling_demo.prime # demos::error_handling
-prime-lang run lab_demo.prime            # demos::lab_demo
-prime-lang run ns_demo.prime             # demos::ns"#,
-                explanation: "Demos ship in the root manifest so you can exercise patterns, error handling, namespaces, interfaces, and borrowing. Library-only modules like `types.prime` and `pkg_lib.prime` omit `main` intentionally and are meant to be imported.",
+                snippet: r#"prime-lang run demos/patterns/pattern_demo.prime        # module demos::patterns
+prime-lang run demos/error_handling/error_handling_demo.prime # demos::error_handling
+prime-lang run demos/lab_demo/lab_demo.prime                  # demos::lab_demo
+prime-lang run demos/ns/ns_demo.prime                         # demos::ns"#,
+                explanation: "Demos ship as workspace members so you can exercise patterns, error handling, namespaces, interfaces, and borrowing. Library-only modules like `core/types.prime` and `pkg/lib/pkg_lib.prime` omit `main` intentionally and are meant to be imported.",
             },
             TopicSection {
                 title: "prime.toml manifest",
-                snippet: r#"manifest_version = "2"
+                snippet: r#"manifest_version = "3"
 
 [package]
-entry = "app::main"
-kind = "binary"
-name = "prime-lang-playground"
+name = "demo-app"
 version = "0.1.0"
 
-[[modules]]
-name = "app::main"
+[module]
+name = "demo_app.main"
 path = "main.prime"
-visibility = "pub""#,
-                explanation: "`project::manifest::PackageManifest` reads `prime.toml`, mapping module names to canonical file paths. Entries must match each file's `module ...;` header so `load_package` can pull the correct dependencies before typechecking or interpretation.",
+visibility = "pub"
+
+[libraries]
+core_types = { name = "core.types", path = "../core/types.prime", visibility = "pub" }
+"#,
+                explanation: "`project::manifest::PackageManifest` reads the workspace `prime.toml`, then each member's `prime.toml` for `[module]`, `[modules]`, `[libraries]`, and `[tests]` entries. Inline tables or `items` arrays are accepted. Entries must match each file's `module ...;`, `library ...;`, or `test ...;` header so `load_package` can resolve imports across the workspace before typechecking or interpretation.",
             },
             TopicSection {
                 title: "Module & library discovery",
-                snippet: r#"$ prime-lang add demos::patterns --path pattern_demo.prime --visibility pub
-$ prime-lang add core::types --path types.prime --library
-# stubs `module demos::patterns;` or `library core::types;` and records it in prime.toml
+                snippet: r#"$ prime-lang add demos::patterns --path demos/patterns/pattern_demo.prime --visibility pub
+$ prime-lang add core::types --path core/types.prime --library
+# stubs `module demos::patterns;` or `library core::types;` and records it in the member manifest
 "#,
                 explanation: "`prime-lang add` edits the manifest and writes a stub file, keeping the graph in sync. Modules are runnable (with `main`), libraries are import-only (no `main`), and tests use `test ...;` headers. The manifest `kind` reflects the header so the loader/LSP apply the right rules.",
             },
@@ -242,25 +244,25 @@ PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh"#,
         sections: &[
             TopicSection {
                 title: "Feature tour modules",
-                snippet: r#"- main.prime – modules, structs/enums, interfaces, ownership, UI-ish printing
-- pattern_demo.prime – matches/destructuring over tuples, maps, structs, slices
-- error_handling_demo.prime – Result, try { }, and ? propagation
-- lab_demo.prime – range loops, map destructuring, mutable refs, generic interface
-- pointer_demo.prime – raw pointers derived from references plus stored ranges"#,
+                snippet: r#"- app/main.prime – modules, structs/enums, interfaces, ownership, UI-ish printing
+- demos/patterns/pattern_demo.prime – matches/destructuring over tuples, maps, structs, slices
+- demos/error_handling/error_handling_demo.prime – Result, try { }, and ? propagation
+- demos/lab_demo/lab_demo.prime – range loops, map destructuring, mutable refs, generic interface
+- demos/pointer_demo/pointer_demo.prime – raw pointers derived from references plus stored ranges"#,
                 explanation: "Each entry is runnable via `prime-lang run <file>` and mapped in the manifest under `demos::...`. They demonstrate the syntax shown throughout the README so `prime-lang docs` can quote real code.",
             },
             TopicSection {
                 title: "Libraries and namespace demos",
-                snippet: r#"- types.prime / pkg_lib.prime – library-only modules (no main)
-- ns_demo.prime – namespace overloading with foo/bar labels
-- pkg_app.prime – banner/promotion output paired with pkg_lib"#,
+                snippet: r#"- core/types.prime / pkg/lib/pkg_lib.prime – library-only modules (no main)
+- demos/ns/ns_demo.prime – namespace overloading with foo/bar labels
+- pkg/app/pkg_app.prime – banner/promotion output paired with pkg_lib"#,
                 explanation: "Library modules intentionally lack `main`, so running them directly reports `Unknown symbol main`; import them from other modules. Namespace demos show how module paths and declarations line up.",
             },
             TopicSection {
                 title: "Validated outputs snapshot",
-                snippet: r#"- borrow_demo.prime – aliasing/borrowing prints loop merges and HP/MP stats
-- heap_demo.prime / heap_features.prime – box counters, roster prints, redeploys
-- interface_demo.prime / interface_generics_demo.prime – method calls and announcements"#,
+                snippet: r#"- demos/borrow/borrow_demo.prime – aliasing/borrowing prints loop merges and HP/MP stats
+- demos/heap/heap_demo.prime / demos/heap_features/heap_features.prime – box counters, roster prints, redeploys
+- demos/interface_demo/interface_demo.prime / demos/interface_generics/interface_generics_demo.prime – method calls and announcements"#,
                 explanation: "The README lists expected outputs so you can smoke-test changes. Use them as fixtures when expanding the language—`prime-lang docs` draws from the same files for examples.",
             },
             TopicSection {
@@ -706,8 +708,8 @@ let int32 total = ~collect(@sep = ;, { 1; }, { 2; }, 3);"#,
             },
             TopicSection {
                 title: "CLI macro expansion",
-                snippet: r#"prime-lang expand tests/macros.prime --line 24 --column 7
-prime-lang expand tests/macros.prime --print-expanded"#,
+                snippet: r#"prime-lang expand tests/macros/macros.prime --line 24 --column 7
+prime-lang expand tests/macros/macros.prime --print-expanded"#,
                 explanation: "Use `prime-lang expand` to inspect generated code. With `--line/--column` (or `--offset`), it prints the macro trace and only the expanded items originating from that call—ideal for editor shortcuts. Without a position or with `--print-expanded`, it emits the fully expanded, formatted module.",
             },
         ],

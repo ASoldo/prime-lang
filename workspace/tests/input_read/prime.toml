@@ -1,0 +1,11 @@
+manifest_version = "3"
+
+[package]
+name = "tests.input_read"
+version = "0.1.0"
+
+[libraries]
+core_types = { name = "core.types", path = "../../core/types.prime", visibility = "pub" }
+
+[tests]
+tests_input_read = { name = "tests.input_read", path = "input_read.prime", visibility = "pub" }

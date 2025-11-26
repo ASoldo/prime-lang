@@ -8,11 +8,11 @@ struct Bar {
   value: int32;
 }
 
-fn label(foo: Foo) -> string {
+fn label_foo(foo: Foo) -> string {
   "foo"
 }
 
-fn label(bar: Bar) -> string {
+fn label_bar(bar: Bar) -> string {
   "bar"
 }
 
@@ -23,8 +23,8 @@ fn main() {
   let Bar b = Bar{
     2,
   };
-  let string foo_free = label(a);
-  let string bar_free = label(b);
+  let string foo_free = label_foo(a);
+  let string bar_free = label_bar(b);
   out(`Foo via free function: {foo_free}`);
   out(`Bar via free function: {bar_free}`);
   out(`Foo method label: {foo_free}`);

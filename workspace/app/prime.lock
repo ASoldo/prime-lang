@@ -1,0 +1,3 @@
+[[dependencies]]
+name = "libpkg.lib"
+path = "../libpkg_a"

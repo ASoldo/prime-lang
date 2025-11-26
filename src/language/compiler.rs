@@ -5807,12 +5807,13 @@ fn main() {
 
     #[test]
     fn borrow_demo_compiles() {
-        compile_entry("borrow_demo.prime").expect("compile borrow demo in build mode");
+        compile_entry("demos/borrow/borrow_demo.prime").expect("compile borrow demo in build mode");
     }
 
     #[test]
     fn pattern_demo_compiles() {
-        compile_entry("pattern_demo.prime").expect("compile pattern demo in build mode");
+        compile_entry("demos/patterns/pattern_demo.prime")
+            .expect("compile pattern demo in build mode");
     }
 
     #[test]
