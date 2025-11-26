@@ -110,7 +110,7 @@ impl PackageManifest {
         let (modules, reverse, tests) = parse_modules(&value, &root)?;
         let dependencies = parse_dependencies(&value, &root)?;
         let mut dependency_manifests = Vec::new();
-        let cache_root = root.join(".prime/deps");
+        let _cache_root = root.join(".prime/deps");
         for dep in &dependencies {
             match &dep.source {
                 DependencySource::Path { path } => {
@@ -158,7 +158,7 @@ impl PackageManifest {
                 return Some(path);
             }
         }
-        let cache_root = self.root.join(".prime/deps");
+        let _cache_root = self.root.join(".prime/deps");
         for dep in &self.dependencies {
             let manifest_path = match &dep.source {
                 DependencySource::Path { path } => path.join("prime.toml"),

@@ -76,7 +76,36 @@ fn discover_tests(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
     if let Some(manifest_path) = project::find_manifest(root) {
+        let mut manifests = Vec::new();
         if let Ok(manifest) = PackageManifest::load(&manifest_path) {
+            manifests.push(manifest);
+        }
+        if let Ok(text) = std::fs::read_to_string(&manifest_path) {
+            if let Ok(value) = toml::from_str::<toml::Value>(&text) {
+                if let Some(ws) = value.get("workspace").and_then(|v| v.as_table()) {
+                    let members = ws
+                        .get("members")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let root_dir = manifest_path
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."));
+                    for member in members {
+                        if let Some(path_str) = member.as_str() {
+                            let member_manifest = root_dir.join(path_str).join("prime.toml");
+                            if member_manifest.exists() {
+                                if let Ok(manifest) = PackageManifest::load(&member_manifest) {
+                                    manifests.push(manifest);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for manifest in manifests {
             for entry in manifest.module_entries() {
                 if entry.kind == ModuleKind::Test && seen.insert(entry.path.clone()) {
                     files.push(entry.path.clone());

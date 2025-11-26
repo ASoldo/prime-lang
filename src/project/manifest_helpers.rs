@@ -1,5 +1,6 @@
 use toml::Value;
 
+#[allow(dead_code)]
 pub fn get_items_array(value: Option<&Value>) -> Option<Value> {
     match value {
         Some(Value::Table(table)) => table.get("items").cloned(),

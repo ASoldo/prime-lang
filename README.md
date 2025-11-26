@@ -142,6 +142,32 @@ feeds every prompt in the bundled input tests; quote the value so shells don’t
 Alternatively point `PRIME_TEST_INPUTS_FILE` at a file containing one input per line.
 When no input env is provided, `prime-lang test` auto-seeds the above defaults to avoid blocking.
 
+### Modules, imports, and preludes
+
+- Modules are declared with `module ...;` (entrypoints) or `library ...;` (import-only). Use `test ...;` for test modules.
+- Import modules with selectors: `import core::types::{Result, Option};` or glob: `import core::types::{*};`. Plain `import core::types;` brings the module into scope and automatically applies its prelude export list.
+- Libraries can export a prelude block to surface their public API without spelling selectors at every call site:
+
+  ```prime
+  library core::types;
+
+  export prelude {
+    Option,
+    Result,
+    Iterable,
+  };
+
+  pub enum Option[T] { Some(T), None }
+  pub enum Result[T, E] { Ok(T), Err(E) }
+  ```
+
+  Consumers can:
+  - `import core::types;` (prelude auto-applied),
+  - `import core::types::prelude::*;` (explicit),
+  - or select symbols directly: `import core::types::{Result};`.
+- Qualified imports must point at modules, not symbols (`import pkg::lib::{example};` is correct; `import pkg::lib::example;` is rejected). Formatter keeps selector imports as `module::{...}`.
+- Visibility is enforced on imports: non-`pub` items aren’t imported, and LSP completions/hover respect visibility.
+
 ### `prime-lang docs`
 
 - `prime-lang docs` with no flags prints every topic in one pass (CLI, manifest,
@@ -183,11 +209,20 @@ core_types = { name = "core::types", path = "../core/types.prime", visibility = 
 Module names use `::` separators (no dots). Tests can be listed under `[tests]`
 (inline entries or an `items` array) if you want manifest metadata; otherwise
 any file that starts with `test ...;` is discovered by `prime-lang test`.
+Section order is normalized by the CLI as `manifest_version`, `package`, `dependencies`, `modules`, `libraries`, `tests`, `workspace`.
+`prime-lang add` respects that order and writes entries into the correct table; dependencies never float to the top or bottom.
+
+#### Dependencies
+
+- Local path: `prime-lang add util::logging --dep-path ../logging` writes to `[dependencies]` with `path = "../logging"`.
+- Git: `prime-lang add util::logging --git https://example.com/logging.git` writes a git entry, clones into `.prime/deps/…`, and records the current HEAD in `prime.lock`. Path deps are locked too. Use `--features a,b` to record feature flags.
+- Workspace-scoped edits: pass `-p pkgname` to edit that package’s `prime.toml` instead of the workspace root.
 
 ### Tests
 
 - Write test files with a `test my::module;` header. They can import other modules
   and define any number of functions; no `main` is required.
+- `prime-lang test` scans the nearest `prime.toml`; if it is a workspace manifest, it walks every member’s manifest to gather test entries. You can still point it at specific test files or module names.
 - `prime-lang test` runs every zero-arg function in the test module (bool return
   is treated as pass/fail). The full return list is passed to the next function
   when arity matches (supports multi-value chaining) or to a single-arg function

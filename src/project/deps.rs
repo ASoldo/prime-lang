@@ -30,6 +30,7 @@ pub fn slug(name: &str, repo: &str) -> String {
     format!("{}-{:x}", sanitize_name(name), hash)
 }
 
+#[allow(dead_code)]
 pub fn deps_cache_root() -> PathBuf {
     PathBuf::from(".prime/deps")
 }
@@ -110,6 +111,7 @@ fn checkout_rev(dest: &Path, rev: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn repo_head_rev(path: &Path) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")

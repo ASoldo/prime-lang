@@ -1354,7 +1354,7 @@ fn add_dependency_entry(
     }
     if !dep_features.is_empty() {
         let mut arr = Array::new();
-        for feature in dep_features {
+        for feature in &dep_features {
             arr.push(feature);
         }
         entry.insert("features", TomlValue::Array(arr));
@@ -1365,21 +1365,59 @@ fn add_dependency_entry(
         eprintln!("debug add-dep: writing manifest");
     }
     reorder_manifest(&mut doc);
+    reorder_manifest(&mut doc);
     fs::write(&manifest_path, doc.to_string())?;
+
+    let lock_path = manifest_dir.join("prime.lock");
+    let mut lock = crate::project::lock::load_lockfile(&lock_path)
+        .unwrap_or_else(|| PackageManifest::load(&manifest_path).map(|m| m.lock_dependencies()).unwrap_or_default());
+
+    let mut locked = crate::project::lock::LockedDependency {
+        name: dep_name.to_string(),
+        package: None,
+        git: dep_git.clone(),
+        path: dep_path
+            .as_ref()
+            .map(|p| {
+                p.strip_prefix(&manifest_dir)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .to_string()
+            }),
+        rev: None,
+        features: if dep_features.is_empty() {
+            None
+        } else {
+            Some(dep_features.clone())
+        },
+    };
+
     if let Some(url) = dep_git {
-        match project::deps::ensure_git_checkout(
-            &url,
-            dep_name,
-            None,
-            &project::deps::deps_cache_root(),
-        ) {
+        let cache_root = manifest_dir.join(".prime/deps");
+        match project::deps::ensure_git_checkout(&url, dep_name, None, &cache_root) {
             Ok(path) => {
+                if let Some(rev) = project::deps::repo_head_rev(&path) {
+                    locked.rev = Some(rev);
+                }
                 println!("fetched dependency `{dep_name}` into {}", path.display());
             }
             Err(message) => {
                 eprintln!("warning: failed to fetch dependency `{dep_name}`: {message}");
             }
         }
+    }
+
+    if let Some(existing) = lock
+        .dependencies
+        .iter_mut()
+        .find(|d| d.name == locked.name)
+    {
+        *existing = locked;
+    } else {
+        lock.dependencies.push(locked);
+    }
+    if let Err(err) = crate::project::lock::write_lockfile(&lock_path, &lock) {
+        eprintln!("warning: failed to write lockfile: {err}");
     }
     Ok(())
 }
@@ -1608,6 +1646,7 @@ fn default_module_path(segments: &[String]) -> PathBuf {
     path
 }
 
+#[allow(dead_code)]
 fn render_manifest(doc: &Value) -> Result<String, Box<dyn std::error::Error>> {
     Ok(toml::to_string_pretty(doc)?)
 }
