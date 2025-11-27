@@ -201,6 +201,7 @@ struct PointerValue {
     cell: Arc<Mutex<EvaluatedValue>>,
     mutable: bool,
     handle: Option<LLVMValueRef>,
+    origin: Option<String>,
 }
 
 #[derive(Clone)]
@@ -238,12 +239,14 @@ struct MapValue {
 struct ChannelSender {
     inner: Arc<(Mutex<ChannelState>, Condvar)>,
     handle: Option<LLVMValueRef>,
+    origin: Option<String>,
 }
 
 #[derive(Clone)]
 struct ChannelReceiver {
     inner: Arc<(Mutex<ChannelState>, Condvar)>,
     handle: Option<LLVMValueRef>,
+    origin: Option<String>,
 }
 
 enum JoinResult {
@@ -267,6 +270,7 @@ impl ChannelSender {
         Self {
             inner,
             handle: None,
+            origin: None,
         }
     }
 
@@ -274,6 +278,7 @@ impl ChannelSender {
         Self {
             inner,
             handle: None,
+            origin: None,
         }
     }
 
@@ -288,6 +293,7 @@ impl ChannelSender {
         Self {
             inner: state,
             handle: Some(handle),
+            origin: None,
         }
     }
 
@@ -315,6 +321,7 @@ impl ChannelReceiver {
         Self {
             inner,
             handle: None,
+            origin: None,
         }
     }
 
@@ -322,6 +329,7 @@ impl ChannelReceiver {
         Self {
             inner,
             handle: None,
+            origin: None,
         }
     }
 
@@ -336,6 +344,7 @@ impl ChannelReceiver {
         Self {
             inner: state,
             handle: Some(handle),
+            origin: None,
         }
     }
 
@@ -478,6 +487,10 @@ impl EvaluatedValue {
 
     fn value(&self) -> &Value {
         &self.value
+    }
+
+    fn value_mut(&mut self) -> &mut Value {
+        &mut self.value
     }
 
     fn set_runtime(&mut self, handle: LLVMValueRef) {
@@ -1867,13 +1880,18 @@ impl Compiler {
                 Ok(())
             }
             Value::Pointer(pointer) => {
-                if pointer.mutable {
-                    self.emit_printf_call("mut Pointer->", &mut []);
+                if let Some(handle) = pointer.handle {
+                    self.emit_runtime_print(handle);
+                    Ok(())
                 } else {
-                    self.emit_printf_call("Pointer->", &mut []);
+                    if pointer.mutable {
+                        self.emit_printf_call("mut Pointer->", &mut []);
+                    } else {
+                        self.emit_printf_call("Pointer->", &mut []);
+                    }
+                    let inner = pointer.cell.lock().unwrap().clone();
+                    self.print_value(inner)
                 }
-                let inner = pointer.cell.lock().unwrap().clone();
-                self.print_value(inner)
             }
             Value::Struct(_) => Err("Cannot print struct value in build mode".into()),
             Value::Unit => {
@@ -1898,8 +1916,7 @@ impl Compiler {
             }
             Value::Boxed(boxed) => {
                 if let Some(handle) = boxed.handle {
-                    let mut args = [handle];
-                    self.emit_printf_call("<box>", &mut args);
+                    self.emit_runtime_print(handle);
                     Ok(())
                 } else {
                     let inner = boxed.cell.lock().unwrap().clone();
@@ -1911,8 +1928,7 @@ impl Compiler {
             }
             Value::Slice(slice) => {
                 if let Some(handle) = slice.handle {
-                    let mut args = [handle];
-                    self.emit_printf_call("<slice>", &mut args);
+                    self.emit_runtime_print(handle);
                     return Ok(());
                 }
                 self.emit_printf_call("[", &mut []);
@@ -1928,8 +1944,7 @@ impl Compiler {
             }
             Value::Map(map) => {
                 if let Some(handle) = map.handle {
-                    let mut args = [handle];
-                    self.emit_printf_call("<map>", &mut args);
+                    self.emit_runtime_print(handle);
                     return Ok(());
                 }
                 self.emit_printf_call("#{", &mut []);
@@ -3082,6 +3097,7 @@ impl Compiler {
                 cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: *mutable,
                 handle: Some(llvm),
+                origin: None,
             })),
             _ => Err(format!(
                 "Unsupported type `{}` in closure body",
@@ -6734,6 +6750,23 @@ impl Compiler {
                     }
                 }
             }
+            Value::Pointer(pointer) => {
+                if pointer.mutable {
+                    if let Some(origin) = &pointer.origin {
+                        self.begin_mut_borrow_in_scope(origin, scope_index)?;
+                    }
+                }
+            }
+            Value::Sender(sender) => {
+                if let Some(origin) = &sender.origin {
+                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
+                }
+            }
+            Value::Receiver(receiver) => {
+                if let Some(origin) = &receiver.origin {
+                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
+                }
+            }
             Value::FormatTemplate(template) => {
                 for segment in &template.segments {
                     if let FormatRuntimeSegment::Named(named) = segment {
@@ -6753,6 +6786,23 @@ impl Compiler {
                     if let Some(origin) = &reference.origin {
                         self.end_mut_borrow(origin);
                     }
+                }
+            }
+            Value::Pointer(pointer) => {
+                if pointer.mutable {
+                    if let Some(origin) = &pointer.origin {
+                        self.end_mut_borrow(origin);
+                    }
+                }
+            }
+            Value::Sender(sender) => {
+                if let Some(origin) = &sender.origin {
+                    self.end_mut_borrow(origin);
+                }
+            }
+            Value::Receiver(receiver) => {
+                if let Some(origin) = &receiver.origin {
+                    self.end_mut_borrow(origin);
                 }
             }
             Value::FormatTemplate(template) => {
@@ -8014,12 +8064,12 @@ impl Compiler {
                 cell: reference.cell,
                 mutable,
                 handle: reference.handle,
+                origin: reference.origin.clone(),
             })),
-            Value::Pointer(ptr) => Ok(Value::Pointer(PointerValue {
-                cell: ptr.cell,
-                mutable: ptr.mutable || mutable,
-                handle: ptr.handle,
-            })),
+            Value::Pointer(mut ptr) => {
+                ptr.mutable = ptr.mutable || mutable;
+                Ok(Value::Pointer(ptr))
+            }
             other => Err(format!(
                 "{name} expects reference or pointer, found {}",
                 describe_value(&other)
@@ -8252,6 +8302,8 @@ impl Compiler {
         mutable: bool,
     ) -> Result<(), String> {
         let scope_index = self.scopes.len().saturating_sub(1);
+        let mut value = value;
+        Self::attach_origin(&mut value, name);
         let cell = Arc::new(Mutex::new(value));
         {
             let stored = cell.lock().unwrap();
@@ -8261,6 +8313,32 @@ impl Compiler {
             scope.insert(name.to_string(), Binding { cell, mutable });
         }
         Ok(())
+    }
+
+    fn attach_origin(value: &mut EvaluatedValue, name: &str) {
+        match value.value_mut() {
+            Value::Reference(reference) => {
+                if reference.origin.is_none() {
+                    reference.origin = Some(name.to_string());
+                }
+            }
+            Value::Pointer(pointer) => {
+                if pointer.origin.is_none() {
+                    pointer.origin = Some(name.to_string());
+                }
+            }
+            Value::Sender(sender) => {
+                if sender.origin.is_none() {
+                    sender.origin = Some(name.to_string());
+                }
+            }
+            Value::Receiver(receiver) => {
+                if receiver.origin.is_none() {
+                    receiver.origin = Some(name.to_string());
+                }
+            }
+            _ => {}
+        }
     }
 
     fn get_var(&self, name: &str) -> Option<EvaluatedValue> {
