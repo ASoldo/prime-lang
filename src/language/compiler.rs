@@ -34,11 +34,12 @@ use llvm_sys::{
         LLVMFloatTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetElementType,
         LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetGlobalParent, LLVMGetInsertBlock,
         LLVMGetLastInstruction, LLVMGetModuleContext, LLVMGetParam, LLVMGetReturnType,
-        LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext, LLVMIntTypeInContext,
-        LLVMIsAConstantInt, LLVMIsAFunction, LLVMModuleCreateWithNameInContext, LLVMPointerType,
-        LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore,
-        LLVMPrintModuleToFile, LLVMSetLinkage, LLVMStructCreateNamed, LLVMStructSetBody,
-        LLVMStructTypeInContext, LLVMTypeOf, LLVMVoidTypeInContext,
+        LLVMGetIntTypeWidth, LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
+        LLVMIntTypeInContext, LLVMIsAConstantInt, LLVMIsAFunction,
+        LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilder,
+        LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMPrintModuleToFile, LLVMSetLinkage,
+        LLVMStructCreateNamed, LLVMStructSetBody, LLVMStructTypeInContext, LLVMTypeOf,
+        LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -790,8 +791,8 @@ fn value_to_build_value_with_ctx(
             })
         }
         Value::Range(range) => Ok(BuildValue::Range {
-            start: expect_constant_int(&range.start)?,
-            end: expect_constant_int(&range.end)?,
+            start: expect_constant_int(&range.start).unwrap_or(0),
+            end: expect_constant_int(&range.end).unwrap_or(0),
             inclusive: range.inclusive,
         }),
         Value::Boxed(boxed) => {
@@ -4173,31 +4174,50 @@ impl Compiler {
             }
             Statement::For(stmt) => match &stmt.target {
                 ForTarget::Range(range_expr) => {
-                    let (start, end, inclusive) = match self.evaluate_range(range_expr)? {
-                        EvalOutcome::Value(values) => values,
+                    let start_value = match self.emit_expression(&range_expr.start)? {
+                        EvalOutcome::Value(value) => self.expect_int(value.into_value())?,
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
-                    let mut current = start;
-                    let limit = if inclusive { end + 1 } else { end };
-                    while current < limit {
-                        self.push_scope();
-                        self.insert_var(
-                            &stmt.binding,
-                            Value::Int(self.const_int_value(current)).into(),
-                            false,
-                        )?;
-                        let result = self.execute_block_contents(&stmt.body)?;
-                        self.exit_scope()?;
-                        match result {
-                            BlockEval::Value(_) => {}
-                            BlockEval::Flow(FlowSignal::Continue) => {}
-                            BlockEval::Flow(FlowSignal::Break) => break,
-                            BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
-                            BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                return Ok(Some(flow));
+                    let end_value = match self.emit_expression(&range_expr.end)? {
+                        EvalOutcome::Value(value) => self.expect_int(value.into_value())?,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    if let (Some(start_const), Some(end_const)) =
+                        (start_value.constant(), end_value.constant())
+                    {
+                        let mut current = start_const;
+                        let limit = if range_expr.inclusive { end_const + 1 } else { end_const };
+                        while current < limit {
+                            self.push_scope();
+                            self.insert_var(
+                                &stmt.binding,
+                                Value::Int(self.const_int_value(current)).into(),
+                                false,
+                            )?;
+                            let result = self.execute_block_contents(&stmt.body)?;
+                            self.exit_scope()?;
+                            match result {
+                                BlockEval::Value(_) => {}
+                                BlockEval::Flow(FlowSignal::Continue) => {}
+                                BlockEval::Flow(FlowSignal::Break) => break,
+                                BlockEval::Flow(flow @ FlowSignal::Return(_)) => {
+                                    return Ok(Some(flow))
+                                }
+                                BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                    return Ok(Some(flow));
+                                }
                             }
+                            current += 1;
                         }
-                        current += 1;
+                    } else {
+                        if let Some(flow) = self.emit_dynamic_range_for(
+                            start_value,
+                            end_value,
+                            range_expr.inclusive,
+                            stmt,
+                        )? {
+                            return Ok(Some(flow));
+                        }
                     }
                 }
                 ForTarget::Collection(expr) => {
@@ -5815,6 +5835,158 @@ impl Compiler {
                 "Expected integer value in build mode, got {}",
                 describe_value(&other)
             )),
+        }
+    }
+
+    fn int_constant_or_llvm(&self, value: &IntValue, ctx: &str) -> Result<i128, String> {
+        if let Some(c) = value.constant() {
+            return Ok(c);
+        }
+        unsafe {
+            if LLVMIsAConstantInt(value.llvm()).is_null() {
+                Err(format!("{ctx} must be constant in build mode"))
+            } else {
+                let width = LLVMGetIntTypeWidth(LLVMTypeOf(value.llvm()));
+                let raw = LLVMConstIntGetZExtValue(value.llvm()) as u128;
+                let signed = if width == 0 || width as usize >= u128::BITS as usize {
+                    raw as i128
+                } else {
+                    let sign_bit = 1u128 << (width - 1);
+                    let mask = (1u128 << width) - 1;
+                    let masked = raw & mask;
+                    if masked & sign_bit != 0 {
+                        (masked | (!mask)) as i128
+                    } else {
+                        masked as i128
+                    }
+                };
+                Ok(signed)
+            }
+        }
+    }
+
+    fn emit_dynamic_range_for(
+        &mut self,
+        start: IntValue,
+        end: IntValue,
+        inclusive: bool,
+        stmt: &ForStmt,
+    ) -> Result<Option<FlowSignal>, String> {
+        unsafe {
+            let current_block = LLVMGetInsertBlock(self.builder);
+            if current_block.is_null() {
+                return Err("no insertion block for range loop".into());
+            }
+            let func = LLVMGetBasicBlockParent(current_block);
+            if func.is_null() {
+                return Err("range loop outside function".into());
+            }
+            let entry = LLVMGetFirstBasicBlock(func);
+            if entry.is_null() {
+                return Err("function entry block missing for range loop".into());
+            }
+            // Allocate loop variable in the entry block.
+            let slot_builder = LLVMCreateBuilderInContext(self.context);
+            let first_inst = LLVMGetFirstInstruction(entry);
+            if first_inst.is_null() {
+                LLVMPositionBuilderAtEnd(slot_builder, entry);
+            } else {
+                LLVMPositionBuilderBefore(slot_builder, first_inst);
+            }
+            let idx_ty = LLVMTypeOf(start.llvm());
+            let loop_var = LLVMBuildAlloca(
+                slot_builder,
+                idx_ty,
+                CString::new("for_range_idx").unwrap().as_ptr(),
+            );
+            LLVMBuildStore(
+                slot_builder,
+                start.llvm(),
+                loop_var,
+            );
+            LLVMDisposeBuilder(slot_builder);
+
+            let one = LLVMConstInt(idx_ty, 1, 0);
+            let limit = if inclusive {
+                LLVMBuildAdd(
+                    self.builder,
+                    end.llvm(),
+                    one,
+                    CString::new("for_range_limit").unwrap().as_ptr(),
+                )
+            } else {
+                end.llvm()
+            };
+
+            let cond_block = LLVMAppendBasicBlockInContext(
+                self.context,
+                func,
+                CString::new("for_range_cond").unwrap().as_ptr(),
+            );
+            let body_block = LLVMAppendBasicBlockInContext(
+                self.context,
+                func,
+                CString::new("for_range_body").unwrap().as_ptr(),
+            );
+            let after_block = LLVMAppendBasicBlockInContext(
+                self.context,
+                func,
+                CString::new("for_range_after").unwrap().as_ptr(),
+            );
+            LLVMBuildBr(self.builder, cond_block);
+
+            LLVMPositionBuilderAtEnd(self.builder, cond_block);
+            let cur = LLVMBuildLoad2(
+                self.builder,
+                idx_ty,
+                loop_var,
+                CString::new("for_range_cur").unwrap().as_ptr(),
+            );
+            let cmp = LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntSLT,
+                cur,
+                limit,
+                CString::new("for_range_cmp").unwrap().as_ptr(),
+            );
+            LLVMBuildCondBr(self.builder, cmp, body_block, after_block);
+
+            LLVMPositionBuilderAtEnd(self.builder, body_block);
+            self.push_scope();
+            self.insert_var(
+                &stmt.binding,
+                Value::Int(IntValue::new(cur, None)).into(),
+                false,
+            )?;
+            let result = self.execute_block_contents(&stmt.body)?;
+            self.exit_scope()?;
+
+            match result {
+                BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {
+                    let next = LLVMBuildAdd(
+                        self.builder,
+                        cur,
+                        one,
+                        CString::new("for_range_next").unwrap().as_ptr(),
+                    );
+                    LLVMBuildStore(
+                        self.builder,
+                        next,
+                        loop_var,
+                    );
+                    LLVMBuildBr(self.builder, cond_block);
+                }
+                BlockEval::Flow(FlowSignal::Break) => {
+                    LLVMBuildBr(self.builder, after_block);
+                }
+                BlockEval::Flow(flow @ FlowSignal::Return(_))
+                | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                    return Ok(Some(flow));
+                }
+            }
+
+            LLVMPositionBuilderAtEnd(self.builder, after_block);
+            Ok(None)
         }
     }
 
@@ -7915,9 +8087,8 @@ impl Compiler {
             Value::Bool(flag) => Ok(flag),
             other => {
                 let int_value = self.expect_int(other)?;
-                let constant = int_value.constant().ok_or_else(|| {
-                    "Non-constant condition not supported in build mode".to_string()
-                })?;
+                let constant =
+                    self.int_constant_or_llvm(&int_value, "Condition expression")?;
                 Ok(constant != 0)
             }
         }
@@ -7935,12 +8106,9 @@ impl Compiler {
             EvalOutcome::Value(value) => self.expect_int(value.into_value())?,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
         };
-        let start_const = start_value
-            .constant()
-            .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
-        let end_const = end_value
-            .constant()
-            .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
+        let start_const =
+            self.int_constant_or_llvm(&start_value, "Range start")?;
+        let end_const = self.int_constant_or_llvm(&end_value, "Range end")?;
         Ok(EvalOutcome::Value((
             start_const,
             end_const,
@@ -8155,14 +8323,9 @@ impl Compiler {
     fn collect_iterable_values(&mut self, value: Value) -> Result<Vec<EvaluatedValue>, String> {
         match value {
             Value::Range(range) => {
-                let start_const = range
-                    .start
-                    .constant
-                    .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
-                let end_const = range
-                    .end
-                    .constant
-                    .ok_or_else(|| "Range bounds must be constant in build mode".to_string())?;
+                let start_const =
+                    self.int_constant_or_llvm(&range.start, "Range start")?;
+                let end_const = self.int_constant_or_llvm(&range.end, "Range end")?;
                 let end = if range.inclusive {
                     end_const + 1
                 } else {
