@@ -196,16 +196,19 @@ struct RangeValue {
 
 #[derive(Clone)]
 struct BoxValue {
+    handle: Option<LLVMValueRef>,
     cell: Arc<Mutex<Value>>,
 }
 
 #[derive(Clone)]
 struct SliceValue {
+    handle: Option<LLVMValueRef>,
     items: Arc<Mutex<Vec<Value>>>,
 }
 
 #[derive(Clone)]
 struct MapValue {
+    handle: Option<LLVMValueRef>,
     entries: Arc<Mutex<BTreeMap<String, Value>>>,
 }
 
@@ -414,6 +417,7 @@ impl StringValue {
 impl BoxValue {
     fn new(value: Value) -> Self {
         Self {
+            handle: None,
             cell: Arc::new(Mutex::new(value)),
         }
     }
@@ -421,18 +425,34 @@ impl BoxValue {
     fn replace(&self, value: Value) -> Value {
         std::mem::replace(&mut *self.cell.lock().unwrap(), value)
     }
+
+    fn with_handle(handle: LLVMValueRef) -> Self {
+        Self {
+            handle: Some(handle),
+            cell: Arc::new(Mutex::new(Value::Unit)),
+        }
+    }
 }
 
 impl SliceValue {
     fn new() -> Self {
         Self {
+            handle: None,
             items: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn from_vec(items: Vec<Value>) -> Self {
         Self {
+            handle: None,
             items: Arc::new(Mutex::new(items)),
+        }
+    }
+
+    fn with_handle(handle: LLVMValueRef) -> Self {
+        Self {
+            handle: Some(handle),
+            items: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -462,6 +482,7 @@ impl SliceValue {
 impl MapValue {
     fn new() -> Self {
         Self {
+            handle: None,
             entries: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -472,6 +493,13 @@ impl MapValue {
             map.insert(key, value);
         }
         map
+    }
+
+    fn with_handle(handle: LLVMValueRef) -> Self {
+        Self {
+            handle: Some(handle),
+            entries: Arc::new(Mutex::new(BTreeMap::new())),
+        }
     }
 
     fn insert(&self, key: String, value: Value) {
@@ -1440,8 +1468,57 @@ impl Compiler {
                 let inner = reference.cell.lock().unwrap().clone();
                 self.print_value(inner)
             }
-            Value::Boxed(_) | Value::Slice(_) | Value::Map(_) => {
-                Err("Cannot print heap value in build mode".into())
+            Value::Boxed(boxed) => {
+                if let Some(handle) = boxed.handle {
+                    let mut args = [handle];
+                    self.emit_printf_call("<box>", &mut args);
+                    Ok(())
+                } else {
+                    let inner = boxed.cell.lock().unwrap().clone();
+                    self.emit_printf_call("Box(", &mut []);
+                    self.print_value(inner.into())?;
+                    self.emit_printf_call(")", &mut []);
+                    Ok(())
+                }
+            }
+            Value::Slice(slice) => {
+                if let Some(handle) = slice.handle {
+                    let mut args = [handle];
+                    self.emit_printf_call("<slice>", &mut args);
+                    return Ok(());
+                }
+                self.emit_printf_call("[", &mut []);
+                let values = slice.items.lock().unwrap().clone();
+                for (idx, item) in values.into_iter().enumerate() {
+                    if idx > 0 {
+                        self.emit_printf_call(", ", &mut []);
+                    }
+                    self.print_value(item.into())?;
+                }
+                self.emit_printf_call("]", &mut []);
+                Ok(())
+            }
+            Value::Map(map) => {
+                if let Some(handle) = map.handle {
+                    let mut args = [handle];
+                    self.emit_printf_call("<map>", &mut args);
+                    return Ok(());
+                }
+                self.emit_printf_call("#{", &mut []);
+                let guard = map.entries.lock().unwrap();
+                let mut entries: Vec<_> = guard.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                for (idx, (key, value)) in entries.into_iter().enumerate() {
+                    if idx > 0 {
+                        self.emit_printf_call(", ", &mut []);
+                    }
+                    let (ptr, len) = self.build_runtime_bytes(key, "map_print_key")?;
+                    let mut args = [ptr, len];
+                    self.emit_printf_call("%.*s: ", &mut args);
+                    self.print_value(value.clone().into())?;
+                }
+                self.emit_printf_call("}", &mut []);
+                Ok(())
             }
             Value::FormatTemplate(_) => Err("Format string must be printed via out()".into()),
             Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => {
@@ -1541,6 +1618,20 @@ impl Compiler {
                     self.runtime_abi.prime_string_new_ty,
                     &mut [ptr, len],
                     "string_new",
+                ))
+            }
+            Value::Boxed(boxed) => {
+                if let Some(handle) = boxed.handle {
+                    return Ok(handle);
+                }
+                let inner = boxed.cell.lock().unwrap().clone();
+                let inner_handle = self.build_runtime_handle(inner)?;
+                let mut_flag = unsafe { LLVMConstInt(self.runtime_abi.bool_type, 1, 0) };
+                Ok(self.call_runtime(
+                    self.runtime_abi.prime_reference_new,
+                    self.runtime_abi.prime_reference_new_ty,
+                    &mut [inner_handle, mut_flag],
+                    "box_new",
                 ))
             }
             Value::Tuple(values) => {
@@ -1679,6 +1770,9 @@ impl Compiler {
                 ))
             }
             Value::Slice(slice) => {
+                if let Some(handle) = slice.handle {
+                    return Ok(handle);
+                }
                 let handle = self.call_runtime(
                     self.runtime_abi.prime_slice_new,
                     self.runtime_abi.prime_slice_new_ty,
@@ -1699,6 +1793,9 @@ impl Compiler {
                 Ok(handle)
             }
             Value::Map(map) => {
+                if let Some(handle) = map.handle {
+                    return Ok(handle);
+                }
                 let handle = self.call_runtime(
                     self.runtime_abi.prime_map_new,
                     self.runtime_abi.prime_map_new_ty,
@@ -1746,6 +1843,7 @@ impl Compiler {
                 | Value::Tuple(_)
                 | Value::Enum(_)
                 | Value::Range(_)
+                | Value::Boxed(_)
                 | Value::Slice(_)
                 | Value::Map(_)
                 | Value::Reference(_)
@@ -1968,8 +2066,10 @@ impl Compiler {
                 "float64" => Some(self.f64_type),
                 "rune" => Some(self.i32_type),
                 "string" => Some(self.runtime_abi.string_data_type),
+                "Map" | "Box" => Some(self.runtime_abi.handle_type),
                 _ => None,
             },
+            TypeExpr::Slice(_) => Some(self.runtime_abi.handle_type),
             TypeExpr::Function { .. } => Some(self.closure_value_type),
             TypeExpr::Tuple(items) => self.tuple_llvm_type(items).ok(),
             TypeExpr::Unit => Some(unsafe { LLVMVoidTypeInContext(self.context) }),
@@ -2302,8 +2402,16 @@ impl Compiler {
                         describe_value(&other)
                     )),
                 },
+                "Map" | "Box" => {
+                    let handle = self.build_runtime_handle(value)?;
+                    Ok(handle)
+                }
                 _ => Err(format!("Unsupported capture type `{}`", name)),
             },
+            TypeExpr::Slice(_) => {
+                let handle = self.build_runtime_handle(value)?;
+                Ok(handle)
+            }
             TypeExpr::Function { .. } => match value {
                 Value::Closure(closure) => Ok(self.build_closure_repr(closure.id, closure.env_ptr, closure.fn_ptr)),
                 other => Err(format!(
@@ -2376,6 +2484,8 @@ impl Compiler {
                     Ok(Value::Bool(flag))
                 }
                 "string" => Ok(Value::Str(StringValue::new(llvm, Arc::new(String::new())))),
+                "Map" => Ok(Value::Map(MapValue::with_handle(llvm))),
+                "Box" => Ok(Value::Boxed(BoxValue::with_handle(llvm))),
                 other => Err(format!("Unsupported captured type `{other}` in closure")),
             },
             TypeExpr::Function { .. } => {
@@ -2490,6 +2600,7 @@ impl Compiler {
                 Ok(Value::Tuple(elements))
             }
             TypeExpr::Unit => Ok(Value::Unit),
+            TypeExpr::Slice(_) => Ok(Value::Slice(SliceValue::with_handle(llvm))),
             _ => Err(format!(
                 "Unsupported type `{}` in closure body",
                 ty.canonical_name()
@@ -2790,6 +2901,47 @@ impl Compiler {
                 }
                 Some(TypeExpr::Tuple(types))
             }
+            Value::Slice(values) => values
+                .items
+                .lock()
+                .ok()
+                .and_then(|items| items.get(0).cloned())
+                .and_then(|first| self.value_type_hint(&first))
+                .map(|inner| TypeExpr::Slice(Box::new(inner)))
+                .or_else(|| {
+                    if values.handle.is_some() {
+                        Some(TypeExpr::Slice(Box::new(TypeExpr::Unit)))
+                    } else {
+                        None
+                    }
+                }),
+            Value::Map(map) => {
+                let guard = map.entries.lock().ok();
+                if let Some(values) = guard.as_ref().and_then(|g| g.values().next()) {
+                    let inner = self.value_type_hint(values)?;
+                    Some(TypeExpr::Named("Map".into(), vec![TypeExpr::named("string"), inner]))
+                } else if map.handle.is_some() {
+                    Some(TypeExpr::Named(
+                        "Map".into(),
+                        vec![TypeExpr::named("string"), TypeExpr::Unit],
+                    ))
+                } else {
+                    None
+                }
+            }
+            Value::Boxed(boxed) => boxed
+                .cell
+                .lock()
+                .ok()
+                .and_then(|inner| self.value_type_hint(&inner))
+                .map(|inner| TypeExpr::Named("Box".into(), vec![inner]))
+                .or_else(|| {
+                    if boxed.handle.is_some() {
+                        Some(TypeExpr::Named("Box".into(), vec![TypeExpr::Unit]))
+                    } else {
+                        None
+                    }
+                }),
             Value::Closure(closure) => {
                 self.closures.get(&closure.id).map(|info| TypeExpr::Function {
                     params: info.signature.params.clone(),
@@ -4038,6 +4190,9 @@ impl Compiler {
             "abs" => Some(self.invoke_builtin(args, |this, values| this.builtin_abs(values))),
             "channel" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_channel(values)))
+            }
+            "debug_show" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_debug_show(values)))
             }
             "send" => Some(self.invoke_builtin(args, |this, values| this.builtin_send(values))),
             "recv" => Some(self.invoke_builtin(args, |this, values| this.builtin_recv(values))),
@@ -5671,7 +5826,14 @@ impl Compiler {
 
     fn expect_box_value(&self, value: Value, ctx: &str) -> Result<BoxValue, String> {
         match value {
-            Value::Boxed(b) => Ok(b),
+            Value::Boxed(b) => {
+                if b.handle.is_some() {
+                    return Err(format!(
+                        "{ctx} cannot inspect captured box handle in build mode; operate on it at runtime"
+                    ));
+                }
+                Ok(b)
+            }
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_box_value(inner, ctx)
@@ -5682,7 +5844,14 @@ impl Compiler {
 
     fn expect_slice_value(&self, value: Value, ctx: &str) -> Result<SliceValue, String> {
         match value {
-            Value::Slice(slice) => Ok(slice),
+            Value::Slice(slice) => {
+                if slice.handle.is_some() {
+                    return Err(format!(
+                        "{ctx} cannot inspect captured slice handle in build mode; operate on it at runtime"
+                    ));
+                }
+                Ok(slice)
+            }
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_slice_value(inner, ctx)
@@ -5693,7 +5862,14 @@ impl Compiler {
 
     fn expect_map_value(&self, value: Value, ctx: &str) -> Result<MapValue, String> {
         match value {
-            Value::Map(map) => Ok(map),
+            Value::Map(map) => {
+                if map.handle.is_some() {
+                    return Err(format!(
+                        "{ctx} cannot inspect captured map handle in build mode; operate on it at runtime"
+                    ));
+                }
+                Ok(map)
+            }
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_map_value(inner, ctx)
@@ -6122,6 +6298,22 @@ impl Compiler {
             return Ok(Value::Float(self.const_float_value(constant.abs())));
         }
         Err("`abs` expects int or float in build mode".into())
+    }
+
+    fn builtin_debug_show(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("debug_show expects 1 argument".into());
+        }
+        let value = args.pop().unwrap();
+        let handle = self.build_runtime_handle(value)?;
+        let mut call_args = [handle];
+        self.call_runtime(
+            self.runtime_abi.prime_print,
+            self.runtime_abi.prime_print_ty,
+            &mut call_args,
+            "debug_show",
+        );
+        Ok(Value::Unit)
     }
 
     fn builtin_channel(&mut self, args: Vec<Value>) -> Result<Value, String> {
@@ -7393,5 +7585,29 @@ fn main() {
             found,
             "expected captured higher-order closure to retain its (int32) -> int32 signature"
         );
+    }
+
+    #[test]
+    fn heap_handles_round_trip_in_closure_env() {
+        let source = r#"
+            fn main() {
+                let nums = slice_new();
+                slice_push(nums, 1);
+                let scores = map_new();
+                map_insert(scores, "a", 10);
+                let counter = box_new(5);
+                let pass = |_: int32| { (nums, scores, counter) };
+                let _ = pass(0);
+            }
+        "#;
+        let module =
+            parse_module("tests::closures", PathBuf::from("heap_handles.prime"), source).expect("parse");
+        let program = Program {
+            modules: vec![module],
+        };
+        let mut compiler = Compiler::new();
+        compiler
+            .compile_program(&program)
+            .expect("heap handles should round-trip through closure env");
     }
 }

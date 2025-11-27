@@ -47,4 +47,52 @@ fn main() {
   };
   let inner_fn = nested(10);
   out(`nested closure result = {}`, inner_fn(5));
+
+  let toggle = true;
+  let flip = |value: bool| -> bool {
+    if toggle {
+      !value
+    } else {
+      value
+    }
+  };
+  out(`flip(true) = {}`, flip(true));
+
+  let suffix = "!";
+  let shout = |_: int32| -> string {
+    suffix
+  };
+  out(`shout(0) = {}`, shout(0));
+
+  let bundle = (double, flip);
+  let (use_double, use_flip) = bundle;
+  out(`bundle.use_double(9) = {}`, use_double(9));
+  out(`bundle.use_flip(false) = {}`, use_flip(false));
+
+  let flag = false;
+  let label = "ok";
+  let status = |x: int32| -> (int32, bool, string) {
+    (x + 1, flag, label)
+  };
+  let (num, active, text) = status(3);
+  out(`status tuple = ({}, {}, {})`, num, active, text);
+
+  let []int32 nums = [
+    1,
+    2,
+  ];
+  let Map[string, int32] scores = #{
+    "a": 10,
+  };
+  let Box[int32] counter = box_new(5);
+  let return_heap = |_: int32| -> ([]int32, Map[string, int32], Box[int32]) {
+    (nums, scores, counter)
+  };
+  let (_, _, returned_box) = return_heap(0);
+  let box_passthrough = |_: int32| -> Box[int32] {
+    returned_box
+  };
+  let bp = box_passthrough(0);
+  out("heap handles round-tripped through closures:");
+  debug_show(bp);
 }

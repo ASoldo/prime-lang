@@ -2372,6 +2372,19 @@ impl Checker {
                 }
                 Some(TypeExpr::Unit)
             }
+            "debug_show" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`debug_show` expects exactly 1 argument",
+                    ));
+                }
+                if let Some(arg) = args.get(0) {
+                    self.check_expression(module, arg, None, returns, env);
+                }
+                Some(TypeExpr::Unit)
+            }
             "in" => {
                 if type_args.len() != 1 {
                     self.errors.push(TypeError::new(
@@ -3763,6 +3776,7 @@ impl Checker {
                 | "max"
                 | "abs"
                 | "channel"
+                | "debug_show"
                 | "send"
                 | "recv"
                 | "recv_timeout"

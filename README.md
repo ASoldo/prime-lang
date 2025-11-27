@@ -609,8 +609,8 @@ controls—in mind.
 - Environments: heap-allocated opaque structs, currently process-lifetime (no destructor support yet).
 - Captures: move-only; reference captures are rejected in build mode. Capture layouts come from typechecking (no opaque synthesis).
 - Calling: function pointers are bitcast to the exact closure signature; arity mismatches raise an error before codegen.
-- Supported types: primitives, tuples, and nested closures (including higher-order and tuple-returning examples as in `workspace/demos/closures/closure_demo.prime`).
-- Limitations: no destructor hooks yet; capturing unsupported heap values (maps/slices/boxes) will emit a clear error.
+- Supported types: primitives, tuples, slices/maps/boxes (captured as runtime handles), and nested closures (including higher-order and tuple-returning examples as in `workspace/demos/closures/closure_demo.prime`).
+- Limitations: no destructor hooks yet; captured heap handles are opaque in build-time evaluation (manipulate them at runtime).
 
 ## CLI Usage
 
