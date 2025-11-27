@@ -93,6 +93,15 @@ fn main() {
     returned_box
   };
   let bp = box_passthrough(0);
+  let []int32 nums_again = [
+    1,
+    2,
+  ];
+  let Map[string, int32] scores_again = #{
+    "a": 10,
+  };
   out("heap handles round-tripped through closures:");
+  debug_show(nums_again);
+  debug_show(scores_again);
   debug_show(bp);
 }

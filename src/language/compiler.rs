@@ -6305,7 +6305,25 @@ impl Compiler {
             return Err("debug_show expects 1 argument".into());
         }
         let value = args.pop().unwrap();
-        let handle = self.build_runtime_handle(value)?;
+        let print_handle = match &value {
+            Value::Boxed(boxed) => {
+                // Try to read through the reference so boxes print their inner value, not `&val`.
+                let base_handle = if let Some(h) = boxed.handle {
+                    h
+                } else {
+                    self.build_runtime_handle(value.clone())?
+                };
+                let mut call_args = [base_handle];
+                Some(self.call_runtime(
+                    self.runtime_abi.prime_reference_read,
+                    self.runtime_abi.prime_reference_read_ty,
+                    &mut call_args,
+                    "debug_show_box_read",
+                ))
+            }
+            _ => None,
+        };
+        let handle = print_handle.unwrap_or_else(|| self.build_runtime_handle(value).unwrap());
         let mut call_args = [handle];
         self.call_runtime(
             self.runtime_abi.prime_print,
