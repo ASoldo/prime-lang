@@ -13,16 +13,28 @@ struct Binding {
 }
 
 #[derive(Clone)]
+pub struct DropRecord {
+    pub binding: String,
+    pub type_name: String,
+}
+
+#[derive(Clone)]
+pub enum CleanupAction {
+    Defer(Expr),
+    Drop(DropRecord),
+}
+
+#[derive(Clone)]
 struct Scope {
     bindings: HashMap<String, Binding>,
-    deferred: Vec<Expr>,
+    cleanups: Vec<CleanupAction>,
 }
 
 impl Scope {
     fn new() -> Self {
         Self {
             bindings: HashMap::new(),
-            deferred: Vec::new(),
+            cleanups: Vec::new(),
         }
     }
 }
@@ -199,14 +211,20 @@ impl Environment {
 
     pub fn defer(&mut self, expr: Expr) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.deferred.push(expr);
+            scope.cleanups.push(CleanupAction::Defer(expr));
         }
     }
 
-    pub fn drain_deferred(&mut self) -> Vec<Expr> {
+    pub fn schedule_drop(&mut self, record: DropRecord) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.cleanups.push(CleanupAction::Drop(record));
+        }
+    }
+
+    pub fn drain_cleanups(&mut self) -> Vec<CleanupAction> {
         if let Some(scope) = self.scopes.last_mut() {
             let mut drained = Vec::new();
-            std::mem::swap(&mut drained, &mut scope.deferred);
+            std::mem::swap(&mut drained, &mut scope.cleanups);
             drained
         } else {
             Vec::new()

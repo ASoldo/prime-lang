@@ -61,6 +61,18 @@ pub enum BuildValue {
 }
 
 #[derive(Clone, Debug)]
+pub struct BuildDropRecord {
+    pub binding: String,
+    pub type_name: String,
+}
+
+#[derive(Clone, Debug)]
+pub enum BuildCleanup {
+    Defer(Expr),
+    Drop(BuildDropRecord),
+}
+
+#[derive(Clone, Debug)]
 pub struct BuildReference {
     pub cell: Arc<Mutex<BuildValue>>,
     pub mutable: bool,
@@ -137,6 +149,7 @@ pub struct BuildSnapshot {
     pub functions: HashMap<BuildFunctionKey, BuildFunction>,
     pub struct_fields: HashMap<String, Vec<String>>,
     pub next_channel_id: u64,
+    pub cleanup_stack: Vec<Vec<BuildCleanup>>,
 }
 
 #[allow(dead_code)]
@@ -222,10 +235,11 @@ pub struct BuildInterpreter {
     functions: HashMap<BuildFunctionKey, BuildFunction>,
     struct_fields: HashMap<String, Vec<String>>,
     next_channel_id: u64,
+    drop_impls: HashMap<String, BuildFunctionKey>,
     active_mut_borrows: HashSet<String>,
     borrow_frames: Vec<Vec<BorrowMark>>,
     captured_borrows: HashSet<String>,
-    defer_stack: Vec<Vec<Expr>>,
+    cleanup_stack: Vec<Vec<BuildCleanup>>,
 }
 
 #[derive(Clone, Debug)]
@@ -397,6 +411,14 @@ impl BuildChannelReceiver {
 impl BuildInterpreter {
     pub fn new(snapshot: BuildSnapshot) -> Self {
         let scope_frames = snapshot.scopes.len().max(1);
+        let mut drop_impls = HashMap::new();
+        for (key, func) in &snapshot.functions {
+            if func.def.name == "drop" {
+                if let Some(receiver) = key.receiver.clone() {
+                    drop_impls.insert(receiver, key.clone());
+                }
+            }
+        }
         Self {
             scopes: snapshot.scopes,
             effects: Vec::new(),
@@ -404,10 +426,15 @@ impl BuildInterpreter {
             functions: snapshot.functions,
             struct_fields: snapshot.struct_fields,
             next_channel_id: snapshot.next_channel_id,
+            drop_impls,
             active_mut_borrows: HashSet::new(),
             borrow_frames: vec![Vec::new(); scope_frames],
             captured_borrows: HashSet::new(),
-            defer_stack: vec![Vec::new(); scope_frames],
+            cleanup_stack: if snapshot.cleanup_stack.is_empty() {
+                vec![Vec::new(); scope_frames]
+            } else {
+                snapshot.cleanup_stack
+            },
         }
     }
 
@@ -416,7 +443,7 @@ impl BuildInterpreter {
         clone.effects = Vec::new();
         clone.active_mut_borrows = HashSet::new();
         clone.borrow_frames = vec![Vec::new(); clone.scopes.len()];
-        clone.defer_stack = vec![Vec::new(); clone.scopes.len().max(1)];
+        clone.cleanup_stack = self.cleanup_stack.clone();
         clone.captured_borrows = self.captured_borrows.clone();
         clone
     }
@@ -752,8 +779,8 @@ impl BuildInterpreter {
             Statement::Loop(loop_stmt) => self.eval_loop(loop_stmt),
             Statement::For(for_stmt) => self.eval_for(for_stmt),
             Statement::Defer(defer_stmt) => {
-                if let Some(frame) = self.defer_stack.last_mut() {
-                    frame.push(defer_stmt.expr.clone());
+                if let Some(frame) = self.cleanup_stack.last_mut() {
+                    frame.push(BuildCleanup::Defer(defer_stmt.expr.clone()));
                 }
                 Ok(Flow::Value(BuildValue::Unit))
             }
@@ -1629,24 +1656,50 @@ impl BuildInterpreter {
             bindings: HashMap::new(),
         });
         self.borrow_frames.push(Vec::new());
-        self.defer_stack.push(Vec::new());
+        self.cleanup_stack.push(Vec::new());
     }
 
-    fn run_defers(&mut self) -> Result<(), String> {
-        if let Some(defers) = self.defer_stack.last_mut() {
+    fn run_cleanups(&mut self) -> Result<(), String> {
+        if let Some(cleanups) = self.cleanup_stack.last_mut() {
             let mut pending = Vec::new();
-            while let Some(expr) = defers.pop() {
-                pending.push(expr);
+            while let Some(action) = cleanups.pop() {
+                pending.push(action);
             }
-            for expr in pending {
-                self.eval_expr_mut(&expr)?;
+            for action in pending {
+                match action {
+                    BuildCleanup::Defer(expr) => {
+                        self.eval_expr_mut(&expr)?;
+                    }
+                    BuildCleanup::Drop(record) => self.run_drop(record)?,
+                }
             }
         }
         Ok(())
     }
 
+    fn run_drop(&mut self, record: BuildDropRecord) -> Result<(), String> {
+        let Some(_key) = self.drop_impls.get(&record.type_name).cloned() else {
+            return Ok(());
+        };
+        let Some(binding) = self.find_binding_mut(&record.binding) else {
+            return Ok(());
+        };
+        let guard = binding.cell.lock().unwrap();
+        if let BuildValue::Moved = *guard {
+            return Ok(());
+        }
+        let receiver_value = guard.clone();
+        let reference = BuildValue::Reference(BuildReference {
+            cell: binding.cell.clone(),
+            mutable: true,
+        });
+        drop(guard);
+        let _ = self.call_user_function("drop", &Some(receiver_value), vec![reference], &[])?;
+        Ok(())
+    }
+
     fn pop_scope(&mut self) -> Result<(), String> {
-        self.run_defers()?;
+        self.run_cleanups()?;
         self.scopes.pop();
         if let Some(frame) = self.borrow_frames.pop() {
             for mark in frame {
@@ -1671,12 +1724,12 @@ impl BuildInterpreter {
                 }
             }
         }
-        self.defer_stack.pop();
+        self.cleanup_stack.pop();
         if self.borrow_frames.is_empty() {
             self.borrow_frames.push(Vec::new());
         }
-        if self.defer_stack.is_empty() {
-            self.defer_stack.push(Vec::new());
+        if self.cleanup_stack.is_empty() {
+            self.cleanup_stack.push(Vec::new());
         }
         Ok(())
     }
@@ -1708,6 +1761,7 @@ impl BuildInterpreter {
                     if mutable && self.active_mut_borrows.contains(name) {
                         return Err(format!("`{}` is already mutably borrowed", name));
                     }
+                    let value_for_drop = value.clone();
                     scope.bindings.insert(
                         name.clone(),
                         BuildBinding {
@@ -1718,6 +1772,7 @@ impl BuildInterpreter {
                             borrowed_shared_names: HashSet::new(),
                         },
                     );
+                    self.schedule_drop_for_value(name, &value_for_drop);
                     Ok(true)
                 } else {
                     Ok(false)
@@ -1859,6 +1914,27 @@ impl BuildInterpreter {
                     Ok(false)
                 }
             }
+        }
+    }
+
+    fn schedule_drop_for_value(&mut self, name: &str, value: &BuildValue) {
+        if let Some(type_name) = self.drop_type_for_value(value) {
+            if self.drop_impls.contains_key(&type_name) {
+                if let Some(frame) = self.cleanup_stack.last_mut() {
+                    frame.push(BuildCleanup::Drop(BuildDropRecord {
+                        binding: name.to_string(),
+                        type_name,
+                    }));
+                }
+            }
+        }
+    }
+
+    fn drop_type_for_value(&self, value: &BuildValue) -> Option<String> {
+        match value {
+            BuildValue::Struct { name, .. } => Some(name.clone()),
+            BuildValue::Enum { enum_name, .. } => Some(enum_name.clone()),
+            _ => None,
         }
     }
 
@@ -2290,6 +2366,7 @@ impl BuildInterpreter {
     fn receiver_key(receiver: &Option<BuildValue>) -> Option<String> {
         match receiver {
             Some(BuildValue::Struct { name, .. }) => Some(name.clone()),
+            Some(BuildValue::Enum { enum_name, .. }) => Some(enum_name.clone()),
             _ => None,
         }
     }
@@ -2376,7 +2453,9 @@ enum Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::language::ast::{Block, DeferStmt, LetStmt, MatchArmExpr, MatchExpr};
+    use crate::language::ast::{
+        Block, DeferStmt, ExprStmt, FunctionBody, LetStmt, MatchArmExpr, MatchExpr, Visibility,
+    };
     use crate::language::span::{Span, Spanned};
     use std::sync::mpsc;
     use std::thread;
@@ -2391,11 +2470,86 @@ mod tests {
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
             next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
         }
     }
 
     fn span() -> Span {
         Span::new(0, 0)
+    }
+
+    fn drop_function(type_name: &str, tag: i128) -> (BuildFunctionKey, BuildFunction) {
+        let s = span();
+        let param = FunctionParam {
+            name: "self".into(),
+            ty: Some(TypeAnnotation {
+                ty: TypeExpr::Reference {
+                    mutable: true,
+                    ty: Box::new(TypeExpr::SelfType),
+                },
+                span: s,
+            }),
+            mutability: Mutability::Mutable,
+            span: s,
+        };
+        let body = FunctionBody::Block(Box::new(Block {
+            statements: vec![Statement::Expr(ExprStmt {
+                expr: Expr::Call {
+                    callee: Box::new(Expr::Identifier(Identifier {
+                        name: "out".into(),
+                        span: s,
+                    })),
+                    type_args: Vec::new(),
+                    args: vec![Expr::Literal(Literal::Int(tag, s))],
+                    span: s,
+                },
+            })],
+            tail: None,
+            span: s,
+        }));
+        let def = FunctionDef {
+            name: "drop".into(),
+            name_span: s,
+            type_params: Vec::new(),
+            params: vec![param],
+            returns: Vec::new(),
+            body,
+            span: s,
+            visibility: Visibility::Private,
+        };
+        let key = BuildFunctionKey {
+            name: "drop".into(),
+            receiver: Some(type_name.to_string()),
+        };
+        let func = BuildFunction {
+            def,
+            receiver: Some(type_name.to_string()),
+        };
+        (key, func)
+    }
+
+    fn struct_literal(name: &str, span: Span) -> Expr {
+        Expr::StructLiteral {
+            name: name.into(),
+            fields: StructLiteralKind::Named(Vec::new()),
+            span,
+        }
+    }
+
+    fn collect_out_tags(effects: &[BuildEffect]) -> Vec<i128> {
+        effects
+            .iter()
+            .filter_map(|effect| {
+                if let BuildEffect::Out(values) = effect {
+                    match values.as_slice() {
+                        [BuildValue::Int(tag)] => Some(*tag),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn build_channel_pair() -> (BuildChannelSender, BuildChannelReceiver) {
@@ -2480,6 +2634,7 @@ mod tests {
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
             next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
         };
         let block = Block {
             statements: vec![Statement::Assign(AssignStmt {
@@ -3047,6 +3202,7 @@ mod tests {
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
             next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter
@@ -3088,6 +3244,7 @@ mod tests {
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
             next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter.eval_expr(&Expr::Reference {
@@ -3138,6 +3295,7 @@ mod tests {
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
             next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let captures = Arc::new(RwLock::new(vec![CapturedVar {
@@ -3180,7 +3338,7 @@ mod tests {
     #[test]
     fn defers_run_inside_closure() {
         let s = span();
-        let mut scope = BuildScope {
+        let scope = BuildScope {
             bindings: HashMap::new(),
         };
         let snapshot = BuildSnapshot {
@@ -3189,6 +3347,7 @@ mod tests {
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
             next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let closure = interpreter
@@ -3231,6 +3390,229 @@ mod tests {
     }
 
     #[test]
+    fn drops_run_lifo_with_defers() {
+        let s = span();
+        let mut functions = HashMap::new();
+        let (a_key, a_fn) = drop_function("A", 1);
+        functions.insert(a_key, a_fn);
+        let (b_key, b_fn) = drop_function("B", 2);
+        functions.insert(b_key, b_fn);
+        let snapshot = BuildSnapshot {
+            scopes: vec![BuildScope {
+                bindings: HashMap::new(),
+            }],
+            enum_variants: HashMap::new(),
+            functions,
+            struct_fields: HashMap::new(),
+            next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        let block = Block {
+            statements: vec![
+                Statement::Let(LetStmt {
+                    pattern: Pattern::Identifier("first".into(), s),
+                    ty: None,
+                    value: Some(struct_literal("A", s)),
+                    mutability: Mutability::Immutable,
+                    span: s,
+                }),
+                Statement::Defer(DeferStmt {
+                    expr: Expr::Call {
+                        callee: Box::new(Expr::Identifier(Identifier {
+                            name: "out".into(),
+                            span: s,
+                        })),
+                        type_args: Vec::new(),
+                        args: vec![Expr::Literal(Literal::Int(99, s))],
+                        span: s,
+                    },
+                }),
+                Statement::Let(LetStmt {
+                    pattern: Pattern::Identifier("second".into(), s),
+                    ty: None,
+                    value: Some(struct_literal("B", s)),
+                    mutability: Mutability::Immutable,
+                    span: s,
+                }),
+            ],
+            tail: None,
+            span: s,
+        };
+        interpreter.eval_block(&block).expect("block drops");
+        assert_eq!(collect_out_tags(&interpreter.effects), vec![2, 99, 1]);
+    }
+
+    #[test]
+    fn drop_runs_once_after_move() {
+        let s = span();
+        let mut functions = HashMap::new();
+        let (key, func) = drop_function("Mover", 7);
+        functions.insert(key, func);
+        let snapshot = BuildSnapshot {
+            scopes: vec![BuildScope {
+                bindings: HashMap::new(),
+            }],
+            enum_variants: HashMap::new(),
+            functions,
+            struct_fields: HashMap::new(),
+            next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        let block = Block {
+            statements: vec![
+                Statement::Let(LetStmt {
+                    pattern: Pattern::Identifier("a".into(), s),
+                    ty: None,
+                    value: Some(struct_literal("Mover", s)),
+                    mutability: Mutability::Immutable,
+                    span: s,
+                }),
+                Statement::Let(LetStmt {
+                    pattern: Pattern::Identifier("b".into(), s),
+                    ty: None,
+                    value: Some(Expr::Move {
+                        expr: Box::new(Expr::Identifier(Identifier {
+                            name: "a".into(),
+                            span: s,
+                        })),
+                        span: s,
+                    }),
+                    mutability: Mutability::Immutable,
+                    span: s,
+                }),
+            ],
+            tail: None,
+            span: s,
+        };
+        interpreter.eval_block(&block).expect("move block");
+        assert_eq!(collect_out_tags(&interpreter.effects), vec![7]);
+    }
+
+    #[test]
+    fn drop_executes_on_break() {
+        let s = span();
+        let mut functions = HashMap::new();
+        let (key, func) = drop_function("Loop", 5);
+        functions.insert(key, func);
+        let snapshot = BuildSnapshot {
+            scopes: vec![BuildScope {
+                bindings: HashMap::new(),
+            }],
+            enum_variants: HashMap::new(),
+            functions,
+            struct_fields: HashMap::new(),
+            next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        let loop_block = Block {
+            statements: vec![
+                Statement::Let(LetStmt {
+                    pattern: Pattern::Identifier("item".into(), s),
+                    ty: None,
+                    value: Some(struct_literal("Loop", s)),
+                    mutability: Mutability::Immutable,
+                    span: s,
+                }),
+                Statement::Break,
+            ],
+            tail: None,
+            span: s,
+        };
+        let block = Block {
+            statements: vec![Statement::Loop(crate::language::ast::LoopStmt {
+                body: loop_block,
+                span: s,
+            })],
+            tail: None,
+            span: s,
+        };
+        interpreter.eval_block(&block).expect("loop drops");
+        assert_eq!(collect_out_tags(&interpreter.effects), vec![5]);
+    }
+
+    #[test]
+    fn captured_values_drop_after_closure_call() {
+        let s = span();
+        let mut functions = HashMap::new();
+        let (key, func) = drop_function("Cap", 3);
+        functions.insert(key, func);
+        let snapshot = BuildSnapshot {
+            scopes: vec![BuildScope {
+                bindings: HashMap::new(),
+            }],
+            enum_variants: HashMap::new(),
+            functions,
+            struct_fields: HashMap::new(),
+            next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        let captured = BuildCaptured {
+            name: "cap".into(),
+            mutable: false,
+            mode: CaptureMode::Move,
+            value: BuildValue::Struct {
+                name: "Cap".into(),
+                fields: BTreeMap::new(),
+            },
+            ty: None,
+            origin: s,
+        };
+        let closure = BuildClosure {
+            params: Vec::new(),
+            body: ClosureBody::Block(Box::new(Block {
+                statements: Vec::new(),
+                tail: None,
+                span: s,
+            })),
+            ret: None,
+            captures: vec![captured],
+            origin: s,
+        };
+        let result = interpreter
+            .call_closure_value(closure, Vec::new())
+            .expect("closure call");
+        assert!(matches!(result, BuildValue::Unit));
+        assert_eq!(collect_out_tags(&interpreter.effects), vec![3]);
+    }
+
+    #[test]
+    fn drop_actions_replay_from_snapshots() {
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "snap".into(),
+            BuildBinding {
+                cell: Arc::new(Mutex::new(BuildValue::Struct {
+                    name: "Snap".into(),
+                    fields: BTreeMap::new(),
+                })),
+                mutable: false,
+                borrowed_mut: false,
+                borrowed_shared: 0,
+                borrowed_shared_names: HashSet::new(),
+            },
+        );
+        let (key, func) = drop_function("Snap", 11);
+        let snapshot = BuildSnapshot {
+            scopes: vec![BuildScope { bindings }],
+            enum_variants: HashMap::new(),
+            functions: HashMap::from([(key, func)]),
+            struct_fields: HashMap::new(),
+            next_channel_id: 0,
+            cleanup_stack: vec![vec![BuildCleanup::Drop(BuildDropRecord {
+                binding: "snap".into(),
+                type_name: "Snap".into(),
+            })]],
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        interpreter.pop_scope().expect("pop scope runs drops");
+        assert_eq!(collect_out_tags(&interpreter.effects), vec![11]);
+    }
+
+    #[test]
     fn deref_assignment_updates_reference() {
         let s = span();
         let mut scope = BuildScope {
@@ -3252,6 +3634,7 @@ mod tests {
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
             next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {
@@ -3314,6 +3697,7 @@ mod tests {
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
             next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {

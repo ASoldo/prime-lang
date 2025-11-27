@@ -55,6 +55,7 @@ struct TypeRegistry {
     enum_variants: HashMap<String, EnumVariantInfo>,
     impls: HashSet<ImplKey>,
     pending_impls: Vec<ImplCandidate>,
+    drop_impls: Vec<ImplCandidate>,
     errors: Vec<TypeError>,
 }
 
@@ -67,6 +68,7 @@ impl Default for TypeRegistry {
             enum_variants: HashMap::new(),
             impls: HashSet::new(),
             pending_impls: Vec::new(),
+            drop_impls: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -219,6 +221,7 @@ pub fn check_program(expanded: &ExpandedProgram) -> Result<(), Vec<TypeError>> {
         current_module: None,
     };
     checker.errors.extend(checker.registry.errors.drain(..));
+    checker.validate_drop_impls();
     checker.validate_impls();
     checker.check_program(program);
     if checker.errors.is_empty() {
@@ -297,10 +300,15 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
                         Some(block.target.clone()),
                     );
                 }
-                registry.pending_impls.push(ImplCandidate {
+                let candidate = ImplCandidate {
                     module_path: module.path.clone(),
                     block: block.clone(),
-                });
+                };
+                if block.inherent || block.interface == "Drop" {
+                    registry.drop_impls.push(candidate);
+                } else {
+                    registry.pending_impls.push(candidate);
+                }
             }
             Item::Interface(def) => {
                 let symbols = registry.module_symbols_mut(&module.name);
@@ -825,6 +833,109 @@ impl Checker {
             }
         }
         None
+    }
+
+    fn validate_drop_impls(&mut self) {
+        let mut seen: HashSet<String> = HashSet::new();
+        for candidate in self.registry.drop_impls.clone() {
+            let block = candidate.block.clone();
+            let span = block
+                .methods
+                .first()
+                .map(|m| m.span)
+                .unwrap_or_else(|| Span::new(0, 0));
+            if !self.registry.structs.contains_key(&block.target)
+                && !self.registry.enums.contains_key(&block.target)
+            {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    span,
+                    format!("unknown target type `{}` for drop impl", block.target),
+                ));
+                continue;
+            }
+            if !block.type_args.is_empty() {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    span,
+                    "drop implementations do not support type arguments",
+                ));
+            }
+            if !seen.insert(block.target.clone()) {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    span,
+                    format!("`{}` already has a drop implementation", block.target),
+                ));
+                continue;
+            }
+            let Some(drop_method) = block.methods.iter().find(|m| m.name == "drop") else {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    span,
+                    format!("`{}` is missing required method `drop`", block.target),
+                ));
+                continue;
+            };
+            if block.methods.len() > 1 {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    span,
+                    "drop impls may only contain `drop`",
+                ));
+            }
+            let mut method = drop_method.clone();
+            substitute_self(&mut method, &block.target);
+            if !method.returns.is_empty() {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    method.span,
+                    "`drop` cannot return values",
+                ));
+            }
+            if method.params.len() != 1 {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    method.span,
+                    "`drop` must take exactly `&mut self`",
+                ));
+                continue;
+            }
+            let param = &method.params[0];
+            let Some(param_ty) = param.ty.as_ref() else {
+                self.errors.push(TypeError::new(
+                    &candidate.module_path,
+                    param.span,
+                    "`drop` parameter requires type annotation",
+                ));
+                continue;
+            };
+            match &param_ty.ty {
+                TypeExpr::Reference { mutable: true, ty } => match &**ty {
+                    TypeExpr::Named(name, _) if name == &block.target => {}
+                    _ => {
+                        self.errors.push(TypeError::new(
+                            &candidate.module_path,
+                            param_ty.span,
+                            format!(
+                                "`drop` expects type `&mut {}`",
+                                block.target
+                            ),
+                        ));
+                    }
+                },
+                _ => {
+                    self.errors.push(TypeError::new(
+                        &candidate.module_path,
+                        param_ty.span,
+                        format!(
+                            "`drop` expects type `&mut {}`",
+                            block.target
+                        ),
+                    ));
+                }
+            }
+        }
     }
 
     fn validate_impls(&mut self) {

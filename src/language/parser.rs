@@ -904,10 +904,20 @@ impl Parser {
     }
 
     fn parse_impl(&mut self) -> Result<ImplBlock, SyntaxError> {
-        let interface = self.expect_identifier("Expected interface name")?;
-        let type_args = self.parse_type_args()?;
-        self.expect(TokenKind::For)?;
-        let target = self.expect_identifier("Expected target type")?;
+        let interface_ident = self.expect_identifier("Expected interface or type name")?;
+        let mut type_args = self.parse_type_args()?;
+        let (interface, target, inherent) = if self.matches(TokenKind::For) {
+            let target = self.expect_identifier("Expected target type")?;
+            (interface_ident.name, target.name, false)
+        } else {
+            if !type_args.is_empty() {
+                return Err(self.error_here(
+                    "Type arguments are not supported on inherent impl blocks",
+                ));
+            }
+            type_args = Vec::new();
+            (interface_ident.name.clone(), interface_ident.name, true)
+        };
         self.expect(TokenKind::LBrace)?;
         let mut methods = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.is_eof() {
@@ -919,10 +929,11 @@ impl Parser {
         }
         self.expect(TokenKind::RBrace)?;
         Ok(ImplBlock {
-            interface: interface.name,
+            interface,
             type_args,
-            target: target.name,
+            target,
             methods,
+            inherent,
         })
     }
 

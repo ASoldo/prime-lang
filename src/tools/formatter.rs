@@ -172,11 +172,15 @@ fn format_interface(out: &mut String, def: &InterfaceDef) {
 }
 
 fn format_impl(out: &mut String, block: &ImplBlock) {
-    let args = format_type_arguments(&block.type_args);
-    out.push_str(&format!(
-        "impl {}{} for {} {{\n",
-        block.interface, args, block.target
-    ));
+    if block.inherent {
+        out.push_str(&format!("impl {} {{\n", block.target));
+    } else {
+        let args = format_type_arguments(&block.type_args);
+        out.push_str(&format!(
+            "impl {}{} for {} {{\n",
+            block.interface, args, block.target
+        ));
+    }
     for (idx, method) in block.methods.iter().enumerate() {
         format_function_with_indent(out, method, 2);
         if idx + 1 < block.methods.len() {

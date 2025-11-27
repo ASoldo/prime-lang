@@ -1,25 +1,36 @@
-• Here’s the remaining parity gap list with concrete fixes to get to a v1.0-ready state:
+  1. Language surface
 
-  - Build snapshot coverage
-      - Allow capturing channel endpoints, join handles, pointers/references, and closures when PRIME_BUILD_PARALLEL=1.
-      - Implement a serializable handle form for these types (similar to closures we just added) and ensure value_to_build_value/
-        build_value_to_value round-trip them safely.
-  - Dynamic operands in build mode
-      - Lift “constant only” constraints where safe: slice/map indexing, recv_timeout millis, and range bounds.
-      - For any ops that must stay constant (e.g., array lengths), surface explicit diagnostics and document them.
-  - Boxes/pointers in build mode
-      - Allow introspection of captured box handles (e.g., box_get/box_set) and pointer-derived values during build-mode runs, not
-        just at runtime.
-      - Ensure pointer captures can be serialized in snapshots if parallel build is enabled.
-  - Channel semantics in build snapshots
-      - Permit channel endpoints in snapshots and replay their queues/closed state deterministically when applying build effects,
-        mirroring runtime behavior.
-  - Printing/formatting parity
-      - Make out/debug_show handle structs and other runtime-only values in build mode, matching runtime formatting (or explicitly
-        document any remaining limits).
-  - Borrow/defer parity for captured handles
-      - Extend the captured-borrow tracking we added for references to boxes/pointers/channels so borrow diagnostics match runtime
-        behavior for all handle types.
-  - Docs/tests
-      - Document the above behaviors and add regression tests that cover the newly supported capture/handle scenarios in build
-        mode (channels, join handles, pointers, boxes, dynamic indices).
+  - Allow impl Drop for Type { fn drop(&mut self) { ... } } or fn drop(&mut self) inside impl Type.
+  - Restrict to no return values; allow &mut self and no captures.
+  - Disallow panics during drop or treat them as runtime errors.
+
+  2. Compiler/lowering
+
+  - For stack-bound values, enqueue a deferred drop when the binding is created; run drops on scope exit (reuse defer stack).
+  - For moves, transfer ownership and drop only once; moved-from bindings no longer schedule the drop.
+  - For references/pointers/handles, either skip drop or allow a separate DropHandle trait for handle wrappers.
+  - Run drops in reverse insertion order per scope (LIFO), mirroring typical RAII.
+
+  3. Build mode specifics
+
+  - Track scheduled drops in both interpreter and build modes; drops should execute in build snapshots and be replayed (effects-
+    only) in parallel builds.
+  - Ensure drops are side-effect ordered with defers; likely run defers after drops or vice versa, but document the order.
+
+  4. Runtime ABI
+
+  - Expose a stable “drop call” ABI for types that hold runtime handles (boxes/slices/maps) to release retained runtime handles
+    safely.
+  - For pure types, drop bodies stay in compiled code; no runtime shim needed.
+
+  5. Testing
+
+  - Add regression tests for scopes with multiple bindings, control-flow exits (return/break/continue), moves, captured closures,
+    and build snapshot replay with drop side effects.
+  - Add a test that drop runs exactly once and after the last use.
+
+  What it’s useful for
+
+  - Resource cleanup (files/sockets once you add FFI), releasing runtime handles early, and symmetry with Rust-like RAII so users
+    don’t hand-roll defers.
+  - Simplifies patterns like “ensure channel close” or “release borrow guard” by putting the logic in drop.

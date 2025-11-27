@@ -4,7 +4,7 @@ use crate::language::{
 };
 use crate::project::Package;
 use crate::runtime::{
-    environment::Environment,
+    environment::{CleanupAction, DropRecord, Environment},
     error::{RuntimeError, RuntimeResult},
     value::{
         BoxValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue, EnumValue,
@@ -28,6 +28,7 @@ pub struct Interpreter {
     interfaces: HashMap<String, InterfaceEntry>,
     impls: HashSet<ImplKey>,
     consts: Vec<(String, ConstDef)>,
+    drop_impls: HashMap<String, FunctionKey>,
     deprecated_warnings: HashSet<String>,
     module_stack: Vec<String>,
     bootstrapped: bool,
@@ -104,6 +105,7 @@ impl Interpreter {
             interfaces: HashMap::new(),
             impls: HashSet::new(),
             consts: Vec::new(),
+            drop_impls: HashMap::new(),
             deprecated_warnings: HashSet::new(),
             module_stack: Vec::new(),
             bootstrapped: false,
@@ -267,6 +269,18 @@ impl Interpreter {
                 },
             });
         }
+        if def.name == "drop" {
+            if let Some(ref recv) = receiver {
+                if let Some(existing) = self.drop_impls.insert(recv.clone(), base_key.clone()) {
+                    return Err(RuntimeError::Panic {
+                        message: format!(
+                            "`{}` already has a drop implementation (previously registered {:?})",
+                            recv, existing
+                        ),
+                    });
+                }
+            }
+        }
         let info = FunctionInfo {
             module: module.to_string(),
             receiver: receiver.clone(),
@@ -308,14 +322,28 @@ impl Interpreter {
     }
 
     fn register_impl(&mut self, module: &str, block: ImplBlock) -> RuntimeResult<()> {
+        let is_drop_like = block.inherent || block.interface == "Drop";
+        let target_is_struct = self.structs.contains_key(&block.target);
+        let target_is_enum = self
+            .enum_variants
+            .values()
+            .any(|info| info.enum_name == block.target);
+        if !target_is_struct && !(is_drop_like && target_is_enum) {
+            return Err(RuntimeError::Panic {
+                message: format!("Unknown target type `{}`", block.target),
+            });
+        }
+        if is_drop_like {
+            for method in &block.methods {
+                let mut method_def = method.clone();
+                substitute_self_in_function(&mut method_def, &block.target);
+                self.register_function(module, method_def)?;
+            }
+            return Ok(());
+        }
         if !self.interfaces.contains_key(&block.interface) {
             return Err(RuntimeError::Panic {
                 message: format!("Unknown interface `{}`", block.interface),
-            });
-        }
-        if !self.structs.contains_key(&block.target) {
-            return Err(RuntimeError::Panic {
-                message: format!("Unknown target type `{}`", block.target),
             });
         }
         let iface_entry = self.interfaces.get(&block.interface).cloned().unwrap();
@@ -434,8 +462,11 @@ impl Interpreter {
         let result = (|| {
             self.env.push_scope();
             for (param, value) in info.def.params.iter().zip(args.into_iter()) {
-                self.env
-                    .declare(&param.name, value, param.mutability == Mutability::Mutable)?;
+                self.declare_with_drop(
+                    &param.name,
+                    value,
+                    param.mutability == Mutability::Mutable,
+                )?;
             }
 
             let result = match &info.def.body {
@@ -474,7 +505,7 @@ impl Interpreter {
                 }
             };
 
-            if let Some(flow) = self.execute_deferred()? {
+            if let Some(flow) = self.execute_cleanups()? {
                 self.env.pop_scope();
                 return match flow {
                     FlowSignal::Propagate(value) => Ok(vec![value]),
@@ -507,12 +538,14 @@ impl Interpreter {
         }
         self.env.push_scope();
         for captured in &closure.captures {
-            self.env
-                .declare(&captured.name, captured.value.clone(), captured.mutable)?;
+            self.declare_with_drop(&captured.name, captured.value.clone(), captured.mutable)?;
         }
         for (param, value) in closure.params.iter().zip(args.into_iter()) {
-            self.env
-                .declare(&param.name, value, param.mutability == Mutability::Mutable)?;
+            self.declare_with_drop(
+                &param.name,
+                value,
+                param.mutability == Mutability::Mutable,
+            )?;
         }
         let result = match &closure.body {
             ClosureBody::Block(block) => self.eval_block(block)?,
@@ -542,7 +575,7 @@ impl Interpreter {
                 });
             }
         };
-        if let Some(flow) = self.execute_deferred()? {
+        if let Some(flow) = self.execute_cleanups()? {
             self.env.pop_scope();
             value = match flow {
                 FlowSignal::Propagate(value) => value,
@@ -713,6 +746,7 @@ impl Interpreter {
             interfaces: self.interfaces.clone(),
             impls: self.impls.clone(),
             consts: self.consts.clone(),
+            drop_impls: self.drop_impls.clone(),
             deprecated_warnings: HashSet::new(),
             module_stack: Vec::new(),
             bootstrapped: true,
@@ -1866,8 +1900,11 @@ impl Interpreter {
                             },
                             None => Value::Unit,
                         };
-                        self.env
-                            .declare(name, value, stmt.mutability == Mutability::Mutable)?;
+                        self.declare_with_drop(
+                            name,
+                            value,
+                            stmt.mutability == Mutability::Mutable,
+                        )?;
                     }
                     pattern => {
                         let expr = stmt.value.as_ref().ok_or_else(|| RuntimeError::Panic {
@@ -2012,7 +2049,7 @@ impl Interpreter {
                             break;
                         }
                         let result = self.eval_block(&stmt.body)?;
-                        if let Some(flow) = self.execute_deferred()? {
+                        if let Some(flow) = self.execute_cleanups()? {
                             self.env.pop_scope();
                             return Ok(Some(flow));
                         }
@@ -2056,9 +2093,9 @@ impl Interpreter {
                     };
                     for i in range.start..end {
                         self.env.push_scope();
-                        self.env.declare(&stmt.binding, Value::Int(i), false)?;
+                        self.declare_with_drop(&stmt.binding, Value::Int(i), false)?;
                         let result = self.eval_block(&stmt.body)?;
-                        if let Some(flow) = self.execute_deferred()? {
+                        if let Some(flow) = self.execute_cleanups()? {
                             self.env.pop_scope();
                             return Ok(Some(flow));
                         }
@@ -2083,9 +2120,9 @@ impl Interpreter {
                     let elements = self.collect_iterable_values(iterable)?;
                     for element in elements {
                         self.env.push_scope();
-                        self.env.declare(&stmt.binding, element, false)?;
+                        self.declare_with_drop(&stmt.binding, element, false)?;
                         let result = self.eval_block(&stmt.body)?;
-                        if let Some(flow) = self.execute_deferred()? {
+                        if let Some(flow) = self.execute_cleanups()? {
                             self.env.pop_scope();
                             return Ok(Some(flow));
                         }
@@ -2120,7 +2157,7 @@ impl Interpreter {
         self.env.push_scope();
         for statement in &block.statements {
             if let Some(flow) = self.eval_statement(statement)? {
-                if let Some(defer_flow) = self.execute_deferred()? {
+                if let Some(defer_flow) = self.execute_cleanups()? {
                     self.env.pop_scope();
                     return Ok(BlockEval::Flow(defer_flow));
                 }
@@ -2136,7 +2173,7 @@ impl Interpreter {
         } else {
             BlockEval::Value(Value::Unit)
         };
-        if let Some(flow) = self.execute_deferred()? {
+        if let Some(flow) = self.execute_cleanups()? {
             self.env.pop_scope();
             return Ok(BlockEval::Flow(flow));
         }
@@ -2144,28 +2181,55 @@ impl Interpreter {
         Ok(outcome)
     }
 
-    fn execute_deferred(&mut self) -> RuntimeResult<Option<FlowSignal>> {
-        let mut deferred = self.env.drain_deferred();
+    fn execute_cleanups(&mut self) -> RuntimeResult<Option<FlowSignal>> {
+        let mut cleanups = self.env.drain_cleanups();
         let mut pending_flow: Option<FlowSignal> = None;
-        while let Some(expr) = deferred.pop() {
-            match self.eval_expression(&expr)? {
-                EvalOutcome::Value(_) => {}
-                EvalOutcome::Flow(FlowSignal::Propagate(value)) => {
-                    if pending_flow.is_none() {
-                        pending_flow = Some(FlowSignal::Propagate(value));
+        while let Some(action) = cleanups.pop() {
+            match action {
+                CleanupAction::Defer(expr) => match self.eval_expression(&expr)? {
+                    EvalOutcome::Value(_) => {}
+                    EvalOutcome::Flow(FlowSignal::Propagate(value)) => {
+                        if pending_flow.is_none() {
+                            pending_flow = Some(FlowSignal::Propagate(value));
+                        }
                     }
-                }
-                EvalOutcome::Flow(flow) => {
-                    return Err(RuntimeError::Panic {
-                        message: format!(
-                            "Control flow {} not allowed in deferred expression",
-                            flow_name(&flow)
-                        ),
-                    });
+                    EvalOutcome::Flow(flow) => {
+                        return Err(RuntimeError::Panic {
+                            message: format!(
+                                "Control flow {} not allowed in deferred expression",
+                                flow_name(&flow)
+                            ),
+                        });
+                    }
+                },
+                CleanupAction::Drop(record) => {
+                    self.run_drop(record)?;
                 }
             }
         }
         Ok(pending_flow)
+    }
+
+    fn run_drop(&mut self, record: DropRecord) -> RuntimeResult<()> {
+        let Some(key) = self.drop_impls.get(&record.type_name).cloned() else {
+            return Ok(());
+        };
+        let Some((cell, _)) = self.env.get_cell(&record.binding) else {
+            return Ok(());
+        };
+        {
+            let guard = cell.lock().unwrap();
+            if matches!(*guard, Value::Moved) {
+                return Ok(());
+            }
+        }
+        let reference = Value::Reference(ReferenceValue {
+            cell: cell.clone(),
+            mutable: true,
+            origin: Some(record.binding.clone()),
+        });
+        let _ = self.call_function(&key.name, key.receiver.clone(), &[], vec![reference])?;
+        Ok(())
     }
 
     fn eval_arguments(&mut self, args: &[Expr]) -> RuntimeResult<EvalOutcome<Vec<Value>>> {
@@ -2179,12 +2243,42 @@ impl Interpreter {
         Ok(EvalOutcome::Value(values))
     }
 
+    fn declare_with_drop(
+        &mut self,
+        name: &str,
+        value: Value,
+        mutable: bool,
+    ) -> RuntimeResult<()> {
+        self.env.declare(name, value.clone(), mutable)?;
+        self.schedule_drop_for_value(name, &value);
+        Ok(())
+    }
+
+    fn schedule_drop_for_value(&mut self, name: &str, value: &Value) {
+        if let Some(type_name) = self.drop_type_for_value(value) {
+            if self.drop_impls.contains_key(&type_name) {
+                self.env.schedule_drop(DropRecord {
+                    binding: name.to_string(),
+                    type_name,
+                });
+            }
+        }
+    }
+
     fn value_struct_name(&self, value: &Value) -> Option<String> {
         match value {
             Value::Struct(instance) => Some(instance.name.clone()),
             Value::Reference(reference) => self.value_struct_name(&reference.cell.lock().unwrap()),
             Value::Pointer(pointer) => self.value_struct_name(&pointer.cell.lock().unwrap()),
             Value::Boxed(inner) => self.value_struct_name(&inner.cell.lock().unwrap()),
+            _ => None,
+        }
+    }
+
+    fn drop_type_for_value(&self, value: &Value) -> Option<String> {
+        match value {
+            Value::Struct(instance) => Some(instance.name.clone()),
+            Value::Enum(enum_value) => Some(enum_value.enum_name.clone()),
             _ => None,
         }
     }
@@ -2659,22 +2753,26 @@ impl Interpreter {
                         }
                     };
                     let guard_passed = guard_value.as_bool();
-                    if let Some(flow) = self.execute_deferred()? {
-                        self.env.pop_scope();
-                        return Ok(EvalOutcome::Flow(flow));
-                    }
                     if !guard_passed {
+                        if let Some(flow) = self.execute_cleanups()? {
+                            self.env.pop_scope();
+                            return Ok(EvalOutcome::Flow(flow));
+                        }
                         self.env.pop_scope();
                         continue;
                     }
                 }
                 let outcome = self.eval_expression(&arm.value)?;
-                if let Some(flow) = self.execute_deferred()? {
+                if let Some(flow) = self.execute_cleanups()? {
                     self.env.pop_scope();
                     return Ok(EvalOutcome::Flow(flow));
                 }
                 self.env.pop_scope();
                 return Ok(outcome);
+            }
+            if let Some(flow) = self.execute_cleanups()? {
+                self.env.pop_scope();
+                return Ok(EvalOutcome::Flow(flow));
             }
             self.env.pop_scope();
         }
@@ -2696,7 +2794,7 @@ impl Interpreter {
                     Value::Reference(reference) => reference.cell.lock().unwrap().clone(),
                     other => other.clone(),
                 };
-                self.env.declare(name, concrete, mutable_bindings)?;
+                self.declare_with_drop(name, concrete, mutable_bindings)?;
                 Ok(true)
             }
             Pattern::Literal(lit) => {
@@ -3143,17 +3241,21 @@ impl Interpreter {
                 self.env.push_scope();
                 let matches = self.match_pattern(pattern, &scrutinee, false)?;
                 if matches {
-                    match self.eval_block(&if_expr.then_branch)? {
-                        BlockEval::Value(value) => {
-                            self.env.pop_scope();
-                            Ok(EvalOutcome::Value(value))
-                        }
-                        BlockEval::Flow(flow) => {
-                            self.env.pop_scope();
-                            Ok(EvalOutcome::Flow(flow))
-                        }
+                    let outcome = match self.eval_block(&if_expr.then_branch)? {
+                        BlockEval::Value(value) => EvalOutcome::Value(value),
+                        BlockEval::Flow(flow) => EvalOutcome::Flow(flow),
+                    };
+                    if let Some(flow) = self.execute_cleanups()? {
+                        self.env.pop_scope();
+                        return Ok(EvalOutcome::Flow(flow));
                     }
+                    self.env.pop_scope();
+                    Ok(outcome)
                 } else {
+                    if let Some(flow) = self.execute_cleanups()? {
+                        self.env.pop_scope();
+                        return Ok(EvalOutcome::Flow(flow));
+                    }
                     self.env.pop_scope();
                     if let Some(else_branch) = &if_expr.else_branch {
                         match else_branch {

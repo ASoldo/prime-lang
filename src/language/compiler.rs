@@ -3,6 +3,7 @@ use crate::runtime::abi::{
     TYPE_INT64, TYPE_ISIZE, TYPE_RUNE, TYPE_STRING, TYPE_UINT8, TYPE_UINT16, TYPE_UINT32,
     TYPE_UINT64, TYPE_USIZE,
 };
+use crate::runtime::environment::{CleanupAction, DropRecord};
 use crate::{
     language::{
         ast::*,
@@ -11,7 +12,7 @@ use crate::{
             BuildCaptured, BuildClosure, BuildEffect, BuildEnumVariant, BuildEvaluation,
             BuildFormatTemplate, BuildFunction, BuildFunctionKey, BuildInterpreter,
             BuildJoinHandle, BuildJoinOutcome, BuildReference, BuildScope, BuildSnapshot,
-            BuildValue,
+            BuildValue, BuildCleanup, BuildDropRecord,
         },
         runtime_abi::RuntimeAbi,
         span::Span,
@@ -102,9 +103,10 @@ pub struct Compiler {
     interfaces: HashMap<String, InterfaceEntry>,
     impls: HashSet<ImplKey>,
     consts: Vec<(String, ConstDef)>,
+    drop_impls: HashMap<String, FunctionKey>,
     active_mut_borrows: HashSet<String>,
     borrow_frames: Vec<Vec<String>>,
-    defer_stack: Vec<Vec<Expr>>,
+    cleanup_stack: Vec<Vec<CleanupAction>>,
     deprecated_warnings: HashSet<String>,
     module_stack: Vec<String>,
     return_type_stack: Vec<Vec<TypeExpr>>,
@@ -1169,9 +1171,10 @@ impl Compiler {
                 interfaces: HashMap::new(),
                 impls: HashSet::new(),
                 consts: Vec::new(),
+                drop_impls: HashMap::new(),
                 active_mut_borrows: HashSet::new(),
                 borrow_frames: Vec::new(),
-                defer_stack: Vec::new(),
+                cleanup_stack: Vec::new(),
                 deprecated_warnings: HashSet::new(),
                 module_stack: Vec::new(),
                 return_type_stack: Vec::new(),
@@ -1613,8 +1616,9 @@ impl Compiler {
         self.scopes.clear();
         self.active_mut_borrows.clear();
         self.borrow_frames.clear();
-        self.defer_stack.clear();
+        self.cleanup_stack.clear();
         self.return_type_stack.clear();
+        self.drop_impls.clear();
         self.push_scope();
         self.push_return_types(&[]);
         self.structs.clear();
@@ -4069,8 +4073,8 @@ impl Compiler {
                 }
             }
             Statement::Defer(stmt) => {
-                if let Some(stack) = self.defer_stack.last_mut() {
-                    stack.push(stmt.expr.clone());
+                if let Some(stack) = self.cleanup_stack.last_mut() {
+                    stack.push(CleanupAction::Defer(stmt.expr.clone()));
                 } else {
                     return Err("No scope available for defer".into());
                 }
@@ -6395,6 +6399,16 @@ impl Compiler {
                 func.name, receiver
             ));
         }
+        if func.name == "drop" {
+            if let Some(ref recv) = receiver {
+                if let Some(existing) = self.drop_impls.insert(recv.clone(), key.clone()) {
+                    return Err(format!(
+                        "`{}` already has a drop implementation (previously {:?})",
+                        recv, existing
+                    ));
+                }
+            }
+        }
         self.functions.insert(
             key,
             FunctionEntry {
@@ -6418,11 +6432,25 @@ impl Compiler {
     }
 
     fn register_impl_block(&mut self, module: &str, block: &ImplBlock) -> Result<(), String> {
+        let is_drop_like = block.inherent || block.interface == "Drop";
+        let target_is_struct = self.structs.contains_key(&block.target);
+        let target_is_enum = self
+            .enum_variants
+            .values()
+            .any(|info| info.enum_name == block.target);
+        if !target_is_struct && !(is_drop_like && target_is_enum) {
+            return Err(format!("Unknown target type `{}`", block.target));
+        }
+        if is_drop_like {
+            for method in &block.methods {
+                let mut method_def = method.clone();
+                substitute_self_in_function(&mut method_def, &block.target);
+                self.register_function(&method_def, module)?;
+            }
+            return Ok(());
+        }
         if !self.interfaces.contains_key(&block.interface) {
             return Err(format!("Unknown interface `{}`", block.interface));
-        }
-        if !self.structs.contains_key(&block.target) {
-            return Err(format!("Unknown target type `{}`", block.target));
         }
         let iface = self
             .interfaces
@@ -6714,6 +6742,25 @@ impl Compiler {
             _ => None,
         }
     }
+
+    fn drop_type_for_value(&self, value: &Value) -> Option<String> {
+        match value {
+            Value::Struct(instance) => Some(instance.name.clone()),
+            Value::Enum(enum_value) => Some(enum_value.enum_name.clone()),
+            _ => None,
+        }
+    }
+
+    fn queue_drop(&mut self, name: &str, type_name: String) {
+        if self.drop_impls.contains_key(&type_name) {
+            if let Some(stack) = self.cleanup_stack.last_mut() {
+                stack.push(CleanupAction::Drop(DropRecord {
+                    binding: name.to_string(),
+                    type_name,
+                }));
+            }
+        }
+    }
     fn begin_mut_borrow_in_scope(&mut self, name: &str, scope_index: usize) -> Result<(), String> {
         if self.active_mut_borrows.contains(name) {
             return Err(format!("`{}` is already mutably borrowed", name));
@@ -6757,7 +6804,7 @@ impl Compiler {
                     }
                 }
             }
-            Value::Boxed(boxed) => {
+            Value::Boxed(_boxed) => {
                 // Box borrows are represented by references/pointers to their inner cell; do not
                 // treat the box binding itself as a borrow origin to avoid double-counting moves.
             }
@@ -6799,7 +6846,7 @@ impl Compiler {
                     }
                 }
             }
-            Value::Boxed(boxed) => {
+            Value::Boxed(_boxed) => {
                 // Box lifetimes are managed via inner references; no explicit borrow release needed.
             }
             Value::Sender(sender) => {
@@ -8151,28 +8198,6 @@ impl Compiler {
         }
     }
 
-    fn evaluate_range(
-        &mut self,
-        range: &RangeExpr,
-    ) -> Result<EvalOutcome<(i128, i128, bool)>, String> {
-        let start_value = match self.emit_expression(&range.start)? {
-            EvalOutcome::Value(value) => self.expect_int(value.into_value())?,
-            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
-        };
-        let end_value = match self.emit_expression(&range.end)? {
-            EvalOutcome::Value(value) => self.expect_int(value.into_value())?,
-            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
-        };
-        let start_const =
-            self.int_constant_or_llvm(&start_value, "Range start")?;
-        let end_const = self.int_constant_or_llvm(&end_value, "Range end")?;
-        Ok(EvalOutcome::Value((
-            start_const,
-            end_const,
-            range.inclusive,
-        )))
-    }
-
     fn snapshot_build_state(&self) -> Result<BuildSnapshot, String> {
         let mut capture_ctx = BuildCaptureContext::new();
         capture_ctx.closure_snapshots = self.closure_snapshots.clone();
@@ -8234,19 +8259,38 @@ impl Compiler {
                 .collect();
             struct_fields.insert(name.clone(), field_names);
         }
+        let cleanup_stack: Vec<Vec<BuildCleanup>> = self
+            .cleanup_stack
+            .iter()
+            .map(|frame| {
+                frame
+                    .iter()
+                    .filter_map(|action| match action {
+                        CleanupAction::Defer(expr) => Some(BuildCleanup::Defer(expr.clone())),
+                        CleanupAction::Drop(record) => {
+                            Some(BuildCleanup::Drop(BuildDropRecord {
+                                binding: record.binding.clone(),
+                                type_name: record.type_name.clone(),
+                            }))
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
         Ok(BuildSnapshot {
             scopes,
             enum_variants,
             functions,
             struct_fields,
             next_channel_id: capture_ctx.next_channel_id,
+            cleanup_stack,
         })
     }
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
         self.borrow_frames.push(Vec::new());
-        self.defer_stack.push(Vec::new());
+        self.cleanup_stack.push(Vec::new());
     }
 
     fn pop_scope(&mut self) {
@@ -8256,12 +8300,12 @@ impl Compiler {
                 self.active_mut_borrows.remove(&name);
             }
         }
-        self.defer_stack.pop();
+        self.cleanup_stack.pop();
         if self.borrow_frames.is_empty() {
             self.borrow_frames.push(Vec::new());
         }
-        if self.defer_stack.is_empty() {
-            self.defer_stack.push(Vec::new());
+        if self.cleanup_stack.is_empty() {
+            self.cleanup_stack.push(Vec::new());
         }
     }
 
@@ -8277,19 +8321,22 @@ impl Compiler {
         self.return_type_stack.last().map(|v| v.as_slice())
     }
 
-    fn run_deferred(&mut self) -> Result<(), String> {
-        if let Some(stack) = self.defer_stack.last_mut() {
+    fn run_cleanups(&mut self) -> Result<(), String> {
+        if let Some(stack) = self.cleanup_stack.last_mut() {
             let mut pending = Vec::new();
             mem::swap(stack, &mut pending);
-            while let Some(expr) = pending.pop() {
-                match self.emit_expression(&expr)? {
-                    EvalOutcome::Value(_) => {}
-                    EvalOutcome::Flow(flow) => {
-                        return Err(format!(
-                            "Control flow {} not allowed in deferred expression",
-                            flow_name(&flow)
-                        ));
-                    }
+            while let Some(action) = pending.pop() {
+                match action {
+                    CleanupAction::Defer(expr) => match self.emit_expression(&expr)? {
+                        EvalOutcome::Value(_) => {}
+                        EvalOutcome::Flow(flow) => {
+                            return Err(format!(
+                                "Control flow {} not allowed in deferred expression",
+                                flow_name(&flow)
+                            ));
+                        }
+                    },
+                    CleanupAction::Drop(record) => self.run_drop(record)?,
                 }
             }
         }
@@ -8297,8 +8344,32 @@ impl Compiler {
     }
 
     fn exit_scope(&mut self) -> Result<(), String> {
-        self.run_deferred()?;
+        self.run_cleanups()?;
         self.pop_scope();
+        Ok(())
+    }
+
+    fn run_drop(&mut self, record: DropRecord) -> Result<(), String> {
+        let Some(key) = self.drop_impls.get(&record.type_name).cloned() else {
+            return Ok(());
+        };
+        let Some((cell, _)) = self.get_binding(&record.binding) else {
+            return Ok(());
+        };
+        {
+            let guard = cell.lock().unwrap();
+            if matches!(guard.value(), Value::Moved) {
+                return Ok(());
+            }
+        }
+        let reference = Value::Reference(ReferenceValue {
+            cell: cell.clone(),
+            mutable: true,
+            origin: Some(record.binding.clone()),
+            handle: None,
+        });
+        let eval = self.evaluated(reference);
+        let _ = self.call_function_with_values(&key.name, key.receiver.as_deref(), &[], vec![eval])?;
         Ok(())
     }
 
@@ -8309,6 +8380,7 @@ impl Compiler {
         mutable: bool,
     ) -> Result<(), String> {
         let scope_index = self.scopes.len().saturating_sub(1);
+        let drop_target = self.drop_type_for_value(value.value());
         let mut value = value;
         Self::attach_origin(&mut value, name);
         let cell = Arc::new(Mutex::new(value));
@@ -8318,6 +8390,9 @@ impl Compiler {
         }
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_string(), Binding { cell, mutable });
+            if let Some(type_name) = drop_target {
+                self.queue_drop(name, type_name);
+            }
         }
         Ok(())
     }
@@ -9346,6 +9421,7 @@ fn main() {
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
             next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
         };
         let handle = thread::spawn(move || {
             let interpreter = BuildInterpreter::new(snapshot);

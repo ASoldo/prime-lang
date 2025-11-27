@@ -160,6 +160,7 @@ pub struct ImplBlock {
     pub type_args: Vec<TypeExpr>,
     pub target: String,
     pub methods: Vec<FunctionDef>,
+    pub inherent: bool,
 }
 
 #[derive(Clone, Debug)]
