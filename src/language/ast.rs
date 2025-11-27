@@ -250,6 +250,7 @@ pub enum ClosureBody {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum CaptureMode {
     Move,
     Reference { mutable: bool },

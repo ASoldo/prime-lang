@@ -2371,8 +2371,11 @@ impl Compiler {
                     Ok(Value::Int(IntValue::new(llvm, None)))
                 }
                 "float32" | "float64" => Ok(Value::Float(FloatValue::new(llvm, None))),
-                "bool" => Ok(Value::Int(IntValue::new(llvm, None))),
-                "string" => Ok(Value::Str(StringValue::new(llvm, Arc::new("<dynamic>".into())))),
+                "bool" => {
+                    let flag = unsafe { LLVMConstIntGetZExtValue(llvm) != 0 };
+                    Ok(Value::Bool(flag))
+                }
+                "string" => Ok(Value::Str(StringValue::new(llvm, Arc::new(String::new())))),
                 other => Err(format!("Unsupported captured type `{other}` in closure")),
             },
             TypeExpr::Function { .. } => {
@@ -2401,33 +2404,38 @@ impl Compiler {
                     )
                 };
                 let id_const = unsafe { LLVMConstIntGetZExtValue(id_val) } as usize;
-                let closure_id = if let Some(info) = self.closures.get(&id_const) {
-                    if info.signature.params.len()
-                        == match ty {
-                            TypeExpr::Function { params, .. } => params.len(),
-                            _ => 0,
-                        }
-                    {
-                        id_const
-                    } else {
-                        usize::MAX
-                    }
-                } else {
-                    usize::MAX
-                };
-                let resolved_id = if closure_id != usize::MAX {
-                    closure_id
-                } else {
-                    let new_id = self.closure_counter;
-                    self.closure_counter += 1;
-                    let (params, returns) = match ty {
-                        TypeExpr::Function { params, returns } => (params.clone(), returns.clone()),
-                        _ => (Vec::new(), Vec::new()),
+                if let Some(existing) = self.closures.get(&id_const) {
+                    let expected_sig = match ty {
+                        TypeExpr::Function { params, returns } => FnSignature {
+                            params: params.clone(),
+                            returns: returns.clone(),
+                        },
+                        _ => FnSignature {
+                            params: Vec::new(),
+                            returns: Vec::new(),
+                        },
                     };
-                    let signature = FnSignature { params, returns };
+                    if existing.signature.params != expected_sig.params
+                        || existing.signature.returns != expected_sig.returns
+                    {
+                        return Err(format!(
+                            "Closure metadata mismatch for id {}: expected ({:?} -> {:?}), have ({:?} -> {:?})",
+                            id_const,
+                            expected_sig.params,
+                            expected_sig.returns,
+                            existing.signature.params,
+                            existing.signature.returns
+                        ));
+                    }
+                } else if let TypeExpr::Function { params, returns } = ty {
+                    let signature = FnSignature {
+                        params: params.clone(),
+                        returns: returns.clone(),
+                    };
+                    let env_name = CString::new(format!("__closure_env{id_const}")).unwrap();
+                    let env_type = unsafe { LLVMStructCreateNamed(self.context, env_name.as_ptr()) };
                     let mut arg_types = Vec::with_capacity(signature.params.len() + 1);
-                    let env_type = self.opaque_ptr_type();
-                    arg_types.push(env_type);
+                    arg_types.push(unsafe { LLVMPointerType(env_type, 0) });
                     for ty in &signature.params {
                         arg_types.push(self.expect_llvm_type(ty, "closure param")?);
                     }
@@ -2445,7 +2453,7 @@ impl Compiler {
                         )
                     };
                     self.closures.insert(
-                        new_id,
+                        id_const,
                         ClosureInfo {
                             env_type,
                             fn_type,
@@ -2455,10 +2463,11 @@ impl Compiler {
                             built: true,
                         },
                     );
-                    new_id
-                };
+                } else {
+                    return Err("Closure value missing function type during reconstruction".into());
+                }
                 Ok(Value::Closure(ClosureValue {
-                    id: resolved_id,
+                    id: id_const,
                     env_ptr,
                     fn_ptr,
                 }))
@@ -2551,6 +2560,16 @@ impl Compiler {
         let function = unsafe { LLVMAddFunction(self.module, fn_name.as_ptr(), fn_type) };
         unsafe {
             LLVMSetLinkage(function, LLVMLinkage::LLVMPrivateLinkage);
+        }
+
+        if env::var("PRIME_DEBUG_CLOSURE_CAPTURES").is_ok() {
+            let params_fmt: Vec<String> = signature.params.iter().map(|t| t.canonical_name()).collect();
+            let returns_fmt: Vec<String> = signature.returns.iter().map(|t| t.canonical_name()).collect();
+            let captures_fmt: Vec<String> = capture_types.iter().map(|t| t.canonical_name()).collect();
+            eprintln!(
+                "closure {} signature params={:?} returns={:?} captures={:?}",
+                key, params_fmt, returns_fmt, captures_fmt
+            );
         }
 
         self.closures.insert(
@@ -2772,19 +2791,27 @@ impl Compiler {
                 Some(TypeExpr::Tuple(types))
             }
             Value::Closure(closure) => {
-                if let Some(info) = self.closures.get(&closure.id) {
-                    Some(TypeExpr::Function {
-                        params: info.signature.params.clone(),
-                        returns: info.signature.returns.clone(),
-                    })
-                } else {
-                    Some(TypeExpr::Function {
-                        params: Vec::new(),
-                        returns: Vec::new(),
-                    })
-                }
+                self.closures.get(&closure.id).map(|info| TypeExpr::Function {
+                    params: info.signature.params.clone(),
+                    returns: info.signature.returns.clone(),
+                })
             }
             _ => None,
+        }
+    }
+
+    fn allocate_closure_env(&mut self, env_type: LLVMTypeRef, key: usize) -> LLVMValueRef {
+        // Closure environments currently live for the duration of the process; no destructor support yet.
+        unsafe {
+            let one = LLVMConstInt(self.runtime_abi.usize_type, 1, 0);
+            LLVMBuildArrayMalloc(
+                self.builder,
+                env_type,
+                one,
+                CString::new(format!("closure_env_{key}"))
+                    .unwrap()
+                    .as_ptr(),
+            )
         }
     }
 
@@ -2809,9 +2836,12 @@ impl Compiler {
             }
             if let Some((cell, _)) = self.get_binding(&name) {
                 let value = cell.lock().unwrap().clone().into_value();
-                let ty = self
-                    .value_type_hint(&value)
-                    .unwrap_or(TypeExpr::Unit);
+                let ty = self.value_type_hint(&value).ok_or_else(|| {
+                    format!(
+                        "Capture `{}` is missing a type after typechecking; cannot synthesize opaque capture",
+                        name
+                    )
+                })?;
                 captures_vec.push(CapturedVar {
                     name: name.clone(),
                     mutable: false,
@@ -2833,17 +2863,7 @@ impl Compiler {
             .cloned()
             .ok_or_else(|| "closure metadata missing".to_string())?;
 
-        let env_alloca = unsafe {
-            let one = LLVMConstInt(self.runtime_abi.usize_type, 1, 0);
-            LLVMBuildArrayMalloc(
-                self.builder,
-                info.env_type,
-                one,
-                CString::new(format!("closure_env_{key}"))
-                    .unwrap()
-                    .as_ptr(),
-            )
-        };
+        let env_alloca = self.allocate_closure_env(info.env_type, key);
         for (idx, (captured, ty)) in captures_vec.iter().zip(info.capture_types.iter()).enumerate()
         {
             let captured_value = match captured.mode {
@@ -3077,7 +3097,6 @@ impl Compiler {
             Expr::TryPropagate { expr, .. } => self.collect_free_in_expr(expr, locals, free),
             Expr::MacroCall { .. } => {}
             Expr::FieldAccess { base, .. } => self.collect_free_in_expr(base, locals, free),
-            Expr::StructLiteral { .. } => {}
         }
     }
 
@@ -6214,7 +6233,16 @@ impl Compiler {
             }
         }
         if let Some(tail) = &block.tail {
-            match self.emit_expression(tail)? {
+            let single_return_hint = self
+                .current_return_types()
+                .and_then(|returns| if returns.len() == 1 { returns.get(0) } else { None })
+                .cloned();
+            let tail_result = if let Some(ret) = single_return_hint.as_ref() {
+                self.emit_expression_with_hint(tail, Some(ret))
+            } else {
+                self.emit_expression(tail)
+            };
+            match tail_result? {
                 EvalOutcome::Value(value) => Ok(BlockEval::Value(value)),
                 EvalOutcome::Flow(flow) => Ok(BlockEval::Flow(flow)),
             }
@@ -7327,5 +7355,43 @@ fn main() {
     fn closure_demo_compiles() {
         compile_entry("workspace/demos/closures/closure_demo.prime")
             .expect("compile closure demo in build mode");
+    }
+
+    #[test]
+    fn higher_order_closure_carries_signature() {
+        let source = r#"
+            fn main() {
+                let higher = |f: fn(int32) -> int32| -> fn(int32) -> int32 {
+                    |value: int32| f(value) + 1
+                };
+                let double = |x: int32| x * 2;
+                let inc_after_double = higher(double);
+                let _ = inc_after_double(4);
+            }
+        "#;
+        let module =
+            parse_module("tests::closures", PathBuf::from("higher.prime"), source).expect("parse");
+        let program = Program {
+            modules: vec![module],
+        };
+        let mut compiler = Compiler::new();
+        compiler
+            .compile_program(&program)
+            .expect("higher-order closure should compile");
+        let mut found = false;
+        for info in compiler.closures.values() {
+            if info.signature.params.len() == 1
+                && info.signature.params[0].canonical_name() == "int32"
+                && info.signature.returns.len() == 1
+                && info.signature.returns[0].canonical_name() == "int32"
+            {
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "expected captured higher-order closure to retain its (int32) -> int32 signature"
+        );
     }
 }

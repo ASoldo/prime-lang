@@ -170,6 +170,7 @@ pub struct CapturedValue {
 pub struct ClosureValue {
     pub params: Vec<FunctionParam>,
     pub body: ClosureBody,
+    #[allow(dead_code)]
     pub ret: Option<crate::language::types::TypeAnnotation>,
     pub captures: Vec<CapturedValue>,
 }
