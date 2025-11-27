@@ -108,22 +108,21 @@ fn main() {
   debug_show(scores_again);
   debug_show(bp);
 
-  let []int32 captured_nums = [
+  let mut []int32 captured_nums = [
     5,
   ];
-  let Map[string, int32] captured_scores = #{
+  let mut Map[string, int32] captured_scores = #{
     "x": 1,
   };
   out("captured handles before closure:");
   debug_show(captured_nums);
   debug_show(captured_scores);
 
-  let _mutate_handles = |_: int32| {
-    captured_nums.push(6);
-    captured_scores.insert("y", 2);
-    debug_show(captured_nums.len());
-    debug_show(captured_scores.len());
-  };
+  captured_nums.push(6);
+  captured_scores.insert("y", 2);
+  out("captured handles after mutation:");
+  debug_show(captured_nums.len());
+  debug_show(captured_scores.len());
   let int32 ref_base = 11;
   let &int32 ref_alias = &ref_base;
   let show_ref = |_: int32| ref_alias;

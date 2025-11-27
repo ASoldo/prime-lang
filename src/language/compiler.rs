@@ -4130,15 +4130,24 @@ impl Compiler {
                     return result;
                 }
                 if let Some(binding) = self.get_var(&ident.name) {
-                    if let Value::Closure(closure) = binding.value().clone() {
-                        let arg_hints = self
-                            .closures
-                            .get(&closure.id)
-                            .map(|info| info.signature.params.clone());
-                        let evaluated_args =
-                            self.eval_call_args_with_hints(args, arg_hints.as_deref())?;
-                        let value = self.call_closure_value(closure, evaluated_args)?;
-                        return Ok(EvalOutcome::Value(value));
+                    match binding.value().clone() {
+                        Value::Closure(closure) => {
+                            let arg_hints = self
+                                .closures
+                                .get(&closure.id)
+                                .map(|info| info.signature.params.clone());
+                            let evaluated_args =
+                                self.eval_call_args_with_hints(args, arg_hints.as_deref())?;
+                            let value = self.call_closure_value(closure, evaluated_args)?;
+                            return Ok(EvalOutcome::Value(value));
+                        }
+                        other => {
+                            return Err(format!(
+                                "`{}` is not callable in build mode (found {})",
+                                ident.name,
+                                describe_value(&other)
+                            ));
+                        }
                     }
                 }
                 let results = self.invoke_function(&ident.name, type_args, args)?;
