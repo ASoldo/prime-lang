@@ -136,6 +136,7 @@ pub struct BuildSnapshot {
     pub enum_variants: HashMap<String, BuildEnumVariant>,
     pub functions: HashMap<BuildFunctionKey, BuildFunction>,
     pub struct_fields: HashMap<String, Vec<String>>,
+    pub next_channel_id: u64,
 }
 
 #[allow(dead_code)]
@@ -166,24 +167,50 @@ pub struct BuildFunctionKey {
 }
 
 #[derive(Clone, Debug)]
+pub enum BuildJoinState {
+    Pending(Arc<Mutex<Option<thread::JoinHandle<Result<BuildEvaluation, String>>>>>),
+    Ready(Box<BuildEvaluation>),
+}
+
+#[derive(Clone, Debug)]
 pub struct BuildJoinHandle {
-    handle: Arc<Mutex<Option<thread::JoinHandle<Result<BuildEvaluation, String>>>>>,
+    pub(crate) state: BuildJoinState,
 }
 
 impl BuildJoinHandle {
     fn new(handle: thread::JoinHandle<Result<BuildEvaluation, String>>) -> Self {
         Self {
-            handle: Arc::new(Mutex::new(Some(handle))),
+            state: BuildJoinState::Pending(Arc::new(Mutex::new(Some(handle)))),
         }
     }
 
-    pub fn into_thread(self) -> thread::JoinHandle<Result<BuildEvaluation, String>> {
-        self.handle
-            .lock()
-            .unwrap()
-            .take()
-            .expect("join handle already taken")
+    pub fn ready(evaluation: BuildEvaluation) -> Self {
+        Self {
+            state: BuildJoinState::Ready(Box::new(evaluation)),
+        }
     }
+
+    pub fn into_outcome(
+        self,
+    ) -> Result<BuildJoinOutcome, String> {
+        match self.state {
+            BuildJoinState::Pending(handle) => {
+                let thread = handle
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .ok_or_else(|| "join handle already taken".to_string())?;
+                Ok(BuildJoinOutcome::Thread(thread))
+            }
+            BuildJoinState::Ready(eval) => Ok(BuildJoinOutcome::Ready(*eval)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum BuildJoinOutcome {
+    Thread(thread::JoinHandle<Result<BuildEvaluation, String>>),
+    Ready(BuildEvaluation),
 }
 
 #[allow(dead_code)]
@@ -233,19 +260,19 @@ pub enum BuildEffect {
 #[derive(Clone, Debug)]
 pub struct BuildChannelSender {
     pub id: u64,
-    inner: Arc<(Mutex<BuildChannelState>, Condvar)>,
+    pub(crate) inner: Arc<(Mutex<BuildChannelState>, Condvar)>,
 }
 
 #[derive(Clone, Debug)]
 pub struct BuildChannelReceiver {
     pub id: u64,
-    inner: Arc<(Mutex<BuildChannelState>, Condvar)>,
+    pub(crate) inner: Arc<(Mutex<BuildChannelState>, Condvar)>,
 }
 
 #[derive(Debug)]
-struct BuildChannelState {
-    queue: VecDeque<BuildValue>,
-    closed: bool,
+pub(crate) struct BuildChannelState {
+    pub queue: VecDeque<BuildValue>,
+    pub closed: bool,
 }
 
 fn build_values_equal(left: &BuildValue, right: &BuildValue) -> bool {
@@ -288,8 +315,14 @@ fn build_values_equal(left: &BuildValue, right: &BuildValue) -> bool {
 }
 
 impl BuildChannelSender {
-    fn new(id: u64, inner: Arc<(Mutex<BuildChannelState>, Condvar)>) -> Self {
+    pub(crate) fn new(id: u64, inner: Arc<(Mutex<BuildChannelState>, Condvar)>) -> Self {
         Self { id, inner }
+    }
+
+    pub(crate) fn snapshot(&self) -> (VecDeque<BuildValue>, bool) {
+        let (lock, _) = &*self.inner;
+        let guard = lock.lock().unwrap();
+        (guard.queue.clone(), guard.closed)
     }
 
     fn send(&self, value: BuildValue) -> Result<(), String> {
@@ -312,7 +345,7 @@ impl BuildChannelSender {
 }
 
 impl BuildChannelReceiver {
-    fn new(id: u64, inner: Arc<(Mutex<BuildChannelState>, Condvar)>) -> Self {
+    pub(crate) fn new(id: u64, inner: Arc<(Mutex<BuildChannelState>, Condvar)>) -> Self {
         Self { id, inner }
     }
 
@@ -370,7 +403,7 @@ impl BuildInterpreter {
             enum_variants: snapshot.enum_variants,
             functions: snapshot.functions,
             struct_fields: snapshot.struct_fields,
-            next_channel_id: 0,
+            next_channel_id: snapshot.next_channel_id,
             active_mut_borrows: HashSet::new(),
             borrow_frames: vec![Vec::new(); scope_frames],
             captured_borrows: HashSet::new(),
@@ -2147,10 +2180,14 @@ impl BuildInterpreter {
                         return Err(format!("join expects join handle, found {}", other.kind()));
                     }
                 };
-                let evaluation = handle
-                    .into_thread()
-                    .join()
-                    .map_err(|_| "join handle panicked".to_string())??;
+                let evaluation = match handle.into_outcome()? {
+                    BuildJoinOutcome::Thread(thread) => {
+                        thread
+                            .join()
+                            .map_err(|_| "join handle panicked".to_string())??
+                    }
+                    BuildJoinOutcome::Ready(eval) => eval,
+                };
                 self.effects.extend(evaluation.effects);
                 Ok(evaluation.value)
             }
@@ -2353,6 +2390,7 @@ mod tests {
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
+            next_channel_id: 0,
         }
     }
 
@@ -2441,6 +2479,7 @@ mod tests {
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
+            next_channel_id: 0,
         };
         let block = Block {
             statements: vec![Statement::Assign(AssignStmt {
@@ -3007,6 +3046,7 @@ mod tests {
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
+            next_channel_id: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter
@@ -3047,6 +3087,7 @@ mod tests {
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
+            next_channel_id: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter.eval_expr(&Expr::Reference {
@@ -3096,6 +3137,7 @@ mod tests {
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
+            next_channel_id: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let captures = Arc::new(RwLock::new(vec![CapturedVar {
@@ -3146,6 +3188,7 @@ mod tests {
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
+            next_channel_id: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let closure = interpreter
@@ -3208,6 +3251,7 @@ mod tests {
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
+            next_channel_id: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {
@@ -3269,6 +3313,7 @@ mod tests {
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
+            next_channel_id: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {

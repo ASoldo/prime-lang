@@ -7,9 +7,11 @@ use crate::{
     language::{
         ast::*,
         build::{
-            BuildBinding, BuildEffect, BuildEnumVariant, BuildEvaluation, BuildFormatTemplate,
-            BuildFunction, BuildFunctionKey, BuildInterpreter, BuildScope, BuildSnapshot,
-            BuildValue, BuildClosure,
+            BuildBinding, BuildChannelReceiver, BuildChannelSender, BuildChannelState,
+            BuildCaptured, BuildClosure, BuildEffect, BuildEnumVariant, BuildEvaluation,
+            BuildFormatTemplate, BuildFunction, BuildFunctionKey, BuildInterpreter,
+            BuildJoinHandle, BuildJoinOutcome, BuildReference, BuildScope, BuildSnapshot,
+            BuildValue,
         },
         runtime_abi::RuntimeAbi,
         span::Span,
@@ -107,6 +109,7 @@ pub struct Compiler {
     return_type_stack: Vec<Vec<TypeExpr>>,
     closure_counter: usize,
     closures: HashMap<usize, ClosureInfo>,
+    closure_snapshots: HashMap<usize, ClosureSnapshot>,
     closure_value_type: LLVMTypeRef,
     closure_envs: Vec<(usize, LLVMValueRef)>,
 }
@@ -140,6 +143,15 @@ struct ClosureValue {
     id: usize,
     env_ptr: LLVMValueRef,
     fn_ptr: LLVMValueRef,
+}
+
+#[derive(Clone)]
+struct ClosureSnapshot {
+    params: Vec<FunctionParam>,
+    body: ClosureBody,
+    ret: Option<TypeAnnotation>,
+    captures: Vec<CapturedVar>,
+    values: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -413,8 +425,8 @@ impl JoinHandleValue {
                     .ok_or_else(|| "join handle already consumed".to_string())?;
                 match handle.join() {
                     Ok(Ok(build)) => {
-                        let channels = compiler.apply_build_effects(build.effects)?;
-                        compiler.build_value_to_value(build.value, Some(&channels))
+                        let mut channels = compiler.apply_build_effects(build.effects)?;
+                        compiler.build_value_to_value(build.value, &mut channels)
                     }
                     Ok(Err(err)) => Err(err),
                     Err(_) => Err("spawned task panicked".into()),
@@ -631,16 +643,94 @@ fn expect_constant_float(float: &FloatValue) -> Result<f64, String> {
         .ok_or_else(|| "Non-constant float cannot be captured for parallel build execution".into())
 }
 
-fn format_template_to_build(template: &FormatTemplateValue) -> Result<BuildFormatTemplate, String> {
+struct BuildCaptureContext {
+    channels: HashMap<*const (), (u64, Arc<(Mutex<BuildChannelState>, Condvar)>)>,
+    references: HashMap<*const (), BuildReference>,
+    next_channel_id: u64,
+    closure_snapshots: HashMap<usize, ClosureSnapshot>,
+    join_handles: HashMap<*const (), BuildJoinHandle>,
+}
+
+impl BuildCaptureContext {
+    fn new() -> Self {
+        Self {
+            channels: HashMap::new(),
+            references: HashMap::new(),
+            next_channel_id: 0,
+            closure_snapshots: HashMap::new(),
+            join_handles: HashMap::new(),
+        }
+    }
+
+    fn channel_from_inner(
+        &mut self,
+        inner: &Arc<(Mutex<ChannelState>, Condvar)>,
+    ) -> Result<(u64, Arc<(Mutex<BuildChannelState>, Condvar)>), String> {
+        let key = Arc::as_ptr(inner) as *const ();
+        if let Some((id, existing)) = self.channels.get(&key) {
+            return Ok((*id, existing.clone()));
+        }
+        let (queue, closed) = {
+            let (lock, _) = &**inner;
+            let guard = lock
+                .lock()
+                .map_err(|_| "Channel poisoned while capturing build snapshot".to_string())?;
+            (guard.queue.clone(), guard.closed)
+        };
+        let mut converted = VecDeque::new();
+        for value in queue {
+            converted.push_back(value_to_build_value_with_ctx(&value, self)?);
+        }
+        let state = BuildChannelState { queue: converted, closed };
+        let shared = Arc::new((Mutex::new(state), Condvar::new()));
+        let id = self.next_channel_id;
+        self.next_channel_id += 1;
+        self.channels.insert(key, (id, shared.clone()));
+        Ok((id, shared))
+    }
+
+    fn reference_from_cell(
+        &mut self,
+        cell: &Arc<Mutex<EvaluatedValue>>,
+        mutable: bool,
+    ) -> Result<BuildReference, String> {
+        let key = Arc::as_ptr(cell) as *const ();
+        if let Some(existing) = self.references.get(&key) {
+            return Ok(existing.clone());
+        }
+        let guard = cell
+            .lock()
+            .map_err(|_| "Reference poisoned while capturing build snapshot".to_string())?;
+        let inner = value_to_build_value_with_ctx(guard.value(), self)?;
+        let build_ref = BuildReference {
+            cell: Arc::new(Mutex::new(inner)),
+            mutable,
+        };
+        self.references.insert(key, build_ref.clone());
+        Ok(build_ref)
+    }
+}
+
+fn closure_body_span(body: &ClosureBody) -> Span {
+    match body {
+        ClosureBody::Block(block) => block.span,
+        ClosureBody::Expr(expr) => expr.span,
+    }
+}
+
+fn format_template_to_build(
+    template: &FormatTemplateValue,
+    ctx: &mut BuildCaptureContext,
+) -> Result<BuildFormatTemplate, String> {
     let mut segments = Vec::with_capacity(template.segments.len());
     for segment in &template.segments {
         let converted = match segment {
             FormatRuntimeSegment::Literal(text) => {
                 FormatRuntimeSegmentGeneric::Literal(text.clone())
             }
-            FormatRuntimeSegment::Named(value) => {
-                FormatRuntimeSegmentGeneric::Named(value_to_build_value(value.value())?)
-            }
+            FormatRuntimeSegment::Named(value) => FormatRuntimeSegmentGeneric::Named(
+                value_to_build_value_with_ctx(value.value(), ctx)?,
+            ),
             FormatRuntimeSegment::Implicit => FormatRuntimeSegmentGeneric::Implicit,
         };
         segments.push(converted);
@@ -651,7 +741,16 @@ fn format_template_to_build(template: &FormatTemplateValue) -> Result<BuildForma
     })
 }
 
+#[allow(dead_code)]
 fn value_to_build_value(value: &Value) -> Result<BuildValue, String> {
+    let mut ctx = BuildCaptureContext::new();
+    value_to_build_value_with_ctx(value, &mut ctx)
+}
+
+fn value_to_build_value_with_ctx(
+    value: &Value,
+    ctx: &mut BuildCaptureContext,
+) -> Result<BuildValue, String> {
     match value {
         Value::Unit => Ok(BuildValue::Unit),
         Value::Int(int) => Ok(BuildValue::Int(expect_constant_int(int)?)),
@@ -661,14 +760,17 @@ fn value_to_build_value(value: &Value) -> Result<BuildValue, String> {
         Value::Tuple(items) => {
             let mut converted = Vec::with_capacity(items.len());
             for item in items {
-                converted.push(value_to_build_value(item)?);
+                converted.push(value_to_build_value_with_ctx(item, ctx)?);
             }
             Ok(BuildValue::Tuple(converted))
         }
         Value::Struct(instance) => {
             let mut fields = BTreeMap::new();
             for (name, field) in &instance.fields {
-                fields.insert(name.clone(), value_to_build_value(field)?);
+                fields.insert(
+                    name.clone(),
+                    value_to_build_value_with_ctx(field, ctx)?,
+                );
             }
             Ok(BuildValue::Struct {
                 name: instance.name.clone(),
@@ -678,7 +780,7 @@ fn value_to_build_value(value: &Value) -> Result<BuildValue, String> {
         Value::Enum(value) => {
             let mut converted = Vec::with_capacity(value.values.len());
             for val in &value.values {
-                converted.push(value_to_build_value(val)?);
+                converted.push(value_to_build_value_with_ctx(val, ctx)?);
             }
             Ok(BuildValue::Enum {
                 enum_name: value.enum_name.clone(),
@@ -697,7 +799,9 @@ fn value_to_build_value(value: &Value) -> Result<BuildValue, String> {
                 .cell
                 .lock()
                 .map_err(|_| "Box value poisoned while capturing build snapshot")?;
-            Ok(BuildValue::Boxed(Box::new(value_to_build_value(&guard)?)))
+            Ok(BuildValue::Boxed(Box::new(
+                value_to_build_value_with_ctx(&guard, ctx)?,
+            )))
         }
         Value::Slice(slice) => {
             let guard = slice
@@ -706,7 +810,7 @@ fn value_to_build_value(value: &Value) -> Result<BuildValue, String> {
                 .map_err(|_| "Slice value poisoned while capturing build snapshot")?;
             let mut converted = Vec::with_capacity(guard.len());
             for item in guard.iter() {
-                converted.push(value_to_build_value(item)?);
+                converted.push(value_to_build_value_with_ctx(item, ctx)?);
             }
             Ok(BuildValue::Slice(converted))
         }
@@ -717,23 +821,107 @@ fn value_to_build_value(value: &Value) -> Result<BuildValue, String> {
                 .map_err(|_| "Map value poisoned while capturing build snapshot")?;
             let mut converted = BTreeMap::new();
             for (key, value) in guard.iter() {
-                converted.insert(key.clone(), value_to_build_value(value)?);
+                converted.insert(
+                    key.clone(),
+                    value_to_build_value_with_ctx(value, ctx)?,
+                );
             }
             Ok(BuildValue::Map(converted))
         }
         Value::FormatTemplate(template) => Ok(BuildValue::FormatTemplate(
-            format_template_to_build(template)?,
+            format_template_to_build(template, ctx)?,
         )),
-        Value::Closure(_) => Err("closures cannot be captured for parallel build execution".into()),
-        Value::Sender(_) | Value::Receiver(_) => {
-            Err("channel endpoints cannot be captured for parallel build execution (yet)".into())
+        Value::Sender(sender) => {
+            let (id, inner) = ctx.channel_from_inner(&sender.inner)?;
+            Ok(BuildValue::ChannelSender(BuildChannelSender::new(id, inner)))
         }
-        Value::Reference(_) | Value::Pointer(_) | Value::JoinHandle(_) | Value::Moved => {
-            Err(format!(
-                "{} cannot be captured for parallel build execution",
-                describe_value(value)
-            ))
+        Value::Receiver(receiver) => {
+            let (id, inner) = ctx.channel_from_inner(&receiver.inner)?;
+            Ok(BuildValue::ChannelReceiver(BuildChannelReceiver::new(
+                id, inner,
+            )))
         }
+        Value::Reference(reference) => {
+            let captured = ctx.reference_from_cell(&reference.cell, reference.mutable)?;
+            Ok(BuildValue::Reference(captured))
+        }
+        Value::Pointer(pointer) => {
+            let captured = ctx.reference_from_cell(&pointer.cell, pointer.mutable)?;
+            Ok(BuildValue::Reference(captured))
+        }
+        Value::Closure(closure) => {
+            let snapshot = ctx
+                .closure_snapshots
+                .get(&closure.id)
+                .ok_or_else(|| "closure capture metadata missing for build snapshot".to_string())?
+                .clone();
+            let mut captures = Vec::with_capacity(snapshot.captures.len());
+            for (captured, raw_value) in snapshot.captures.iter().zip(snapshot.values.iter()) {
+                captures.push(BuildCaptured {
+                    name: captured.name.clone(),
+                    mutable: captured.mutable,
+                    mode: captured.mode.clone(),
+                    value: value_to_build_value_with_ctx(raw_value, ctx)?,
+                    ty: captured.ty.clone(),
+                    origin: captured.span,
+                });
+            }
+            let origin_span = snapshot
+                .ret
+                .as_ref()
+                .map(|ann| ann.span)
+                .unwrap_or_else(|| closure_body_span(&snapshot.body));
+            Ok(BuildValue::Closure(BuildClosure {
+                params: snapshot.params.clone(),
+                body: snapshot.body.clone(),
+                ret: snapshot.ret.clone(),
+                captures,
+                origin: origin_span,
+            }))
+        }
+        Value::JoinHandle(handle) => {
+            let key = Arc::as_ptr(&handle.result) as *const ();
+            if let Some(existing) = ctx.join_handles.get(&key) {
+                return Ok(BuildValue::JoinHandle(existing.clone()));
+            }
+            let mut guard = handle.result.lock().unwrap();
+            match &mut *guard {
+                JoinResult::Immediate(Some(value)) => {
+                    let build_val = value_to_build_value_with_ctx(value, ctx)?;
+                    let eval = BuildEvaluation {
+                        value: build_val,
+                        effects: Vec::new(),
+                    };
+                    *guard = JoinResult::Immediate(None);
+                    let captured = BuildJoinHandle::ready(eval);
+                    ctx.join_handles.insert(key, captured.clone());
+                    Ok(BuildValue::JoinHandle(captured))
+                }
+                JoinResult::BuildThread(slot) => {
+                    if let Some(thread) = slot.take() {
+                        match thread.join() {
+                            Ok(result) => {
+                                let eval = result.map_err(|e| e)?;
+                                *guard = JoinResult::Immediate(None);
+                                let captured = BuildJoinHandle::ready(eval.clone());
+                                ctx.join_handles.insert(key, captured.clone());
+                                Ok(BuildValue::JoinHandle(captured))
+                            }
+                            Err(_) => Err("spawned task panicked".into()),
+                        }
+                    } else {
+                        Err("join handle already consumed".into())
+                    }
+                }
+                JoinResult::Immediate(None) => {
+                    Err("join handle already consumed".into())
+                }
+            }
+        }
+        Value::Moved => Err(format!(
+            "{} cannot be captured for parallel build execution",
+            describe_value(value)
+        )),
     }
 }
 
@@ -972,6 +1160,7 @@ impl Compiler {
                 return_type_stack: Vec::new(),
                 closure_counter: 0,
                 closures: HashMap::new(),
+                closure_snapshots: HashMap::new(),
                 closure_value_type: ptr::null_mut(),
                 closure_envs: Vec::new(),
             };
@@ -993,12 +1182,12 @@ impl Compiler {
                     }
                     let mut iter = values.into_iter();
                     let first = iter.next().unwrap();
-                    let first_value = self.build_value_to_value(first, Some(&channel_handles))?;
+                    let first_value = self.build_value_to_value(first, &mut channel_handles)?;
                     match first_value {
                         Value::FormatTemplate(template) => {
                             let provided: Result<Vec<EvaluatedValue>, String> = iter
                                 .map(|v| {
-                                    self.build_value_to_value(v, Some(&channel_handles))
+                                    self.build_value_to_value(v, &mut channel_handles)
                                         .map(EvaluatedValue::from_value)
                                 })
                                 .collect();
@@ -1038,9 +1227,10 @@ impl Compiler {
                 BuildEffect::ChannelSend { id, value } => {
                     let inner = channel_handles
                         .get(&id)
+                        .cloned()
                         .ok_or_else(|| "channel send without creation".to_string())?;
-                    let built = self.build_value_to_value(value, Some(&channel_handles))?;
-                    let (lock, cv) = &**inner;
+                    let built = self.build_value_to_value(value, &mut channel_handles)?;
+                    let (lock, cv) = inner.as_ref();
                     let mut guard = lock.lock().unwrap();
                     if guard.closed {
                         continue;
@@ -1050,7 +1240,7 @@ impl Compiler {
                 }
                 BuildEffect::ChannelClose { id } => {
                     if let Some(inner) = channel_handles.get(&id) {
-                        let (lock, cv) = &**inner;
+                        let (lock, cv) = inner.as_ref();
                         let mut guard = lock.lock().unwrap();
                         guard.closed = true;
                         cv.notify_all();
@@ -1078,7 +1268,7 @@ impl Compiler {
     fn build_value_to_value(
         &mut self,
         value: BuildValue,
-        channels: Option<&HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>>>,
+        channels: &mut HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>>,
     ) -> Result<Value, String> {
         match value {
             BuildValue::Unit => Ok(Value::Unit),
@@ -1143,9 +1333,15 @@ impl Compiler {
                 }
                 Ok(Value::Map(MapValue::from_entries(converted)))
             }
-            BuildValue::JoinHandle(handle) => Ok(Value::JoinHandle(Box::new(
-                JoinHandleValue::new_build(handle.into_thread()),
-            ))),
+            BuildValue::JoinHandle(handle) => match handle.into_outcome()? {
+                BuildJoinOutcome::Thread(thread) => Ok(Value::JoinHandle(Box::new(
+                    JoinHandleValue::new_build(thread),
+                ))),
+                BuildJoinOutcome::Ready(eval) => {
+                    let mut local_channels = self.apply_build_effects(eval.effects)?;
+                    self.build_value_to_value(eval.value, &mut local_channels)
+                }
+            },
             BuildValue::Reference(reference) => {
                 let inner = self.build_value_to_value(
                     reference
@@ -1188,15 +1384,57 @@ impl Compiler {
                 }))
             }
             BuildValue::ChannelSender(sender) => {
-                let inner = channels
-                    .and_then(|map| map.get(&sender.id).cloned())
-                    .ok_or_else(|| "channel handle missing during join".to_string())?;
+                let inner = if let Some(existing) = channels.get(&sender.id).cloned() {
+                    existing
+                } else {
+                    let (queue, closed) = sender.snapshot();
+                    let shared = Arc::new((
+                        Mutex::new(ChannelState {
+                            queue: VecDeque::new(),
+                            closed,
+                        }),
+                        Condvar::new(),
+                    ));
+                    channels.insert(sender.id, shared.clone());
+                    {
+                        let (lock, _) = &*shared;
+                        let mut guard = lock.lock().unwrap();
+                        for item in queue {
+                            let built = self.build_value_to_value(item, channels)?;
+                            guard.queue.push_back(built);
+                        }
+                    }
+                    shared
+                };
                 Ok(Value::Sender(ChannelSender::new_with_state(inner)))
             }
             BuildValue::ChannelReceiver(receiver) => {
-                let inner = channels
-                    .and_then(|map| map.get(&receiver.id).cloned())
-                    .ok_or_else(|| "channel handle missing during join".to_string())?;
+                let inner = if let Some(existing) = channels.get(&receiver.id).cloned() {
+                    existing
+                } else {
+                    let (queue, closed) = {
+                        let (lock, _) = &*receiver.inner;
+                        let guard = lock.lock().unwrap();
+                        (guard.queue.clone(), guard.closed)
+                    };
+                    let shared = Arc::new((
+                        Mutex::new(ChannelState {
+                            queue: VecDeque::new(),
+                            closed,
+                        }),
+                        Condvar::new(),
+                    ));
+                    channels.insert(receiver.id, shared.clone());
+                    {
+                        let (lock, _) = &*shared;
+                        let mut guard = lock.lock().unwrap();
+                        for item in queue {
+                            let built = self.build_value_to_value(item, channels)?;
+                            guard.queue.push_back(built);
+                        }
+                    }
+                    shared
+                };
                 Ok(Value::Receiver(ChannelReceiver::new_with_state(inner)))
             }
             BuildValue::DeferredCall {
@@ -1235,7 +1473,7 @@ impl Compiler {
     fn build_closure_from_build(
         &mut self,
         closure: BuildClosure,
-        channels: Option<&HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>>>,
+        channels: &mut HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>>,
     ) -> Result<Value, String> {
         let mut key = self.closure_counter + self.closures.len() + 1;
         while self.closures.contains_key(&key) {
@@ -1368,6 +1606,7 @@ impl Compiler {
         self.interfaces.clear();
         self.impls.clear();
         self.consts.clear();
+        self.closure_snapshots.clear();
         // First collect types and interfaces so impls are validated without depending on module order.
         for module in &program.modules {
             for item in &module.items {
@@ -3449,6 +3688,7 @@ impl Compiler {
             .ok_or_else(|| "closure metadata missing".to_string())?;
 
         let env_alloca = self.allocate_closure_env(info.env_type, key);
+        let mut captured_values_raw = Vec::with_capacity(captures_vec.len());
         for (idx, (captured, ty)) in captures_vec
             .iter()
             .zip(info.capture_types.iter())
@@ -3460,6 +3700,8 @@ impl Compiler {
                     .get_var(&captured.name)
                     .ok_or_else(|| format!("Unknown capture {}", captured.name))?,
             };
+            let captured_clone = captured_value.clone();
+            captured_values_raw.push(captured_clone.into_value());
             let llvm_value = self.value_to_llvm_for_type(captured_value.into_value(), ty)?;
             let field_ptr = unsafe {
                 LLVMBuildStructGEP2(
@@ -3481,6 +3723,16 @@ impl Compiler {
             env_ptr: env_alloca,
             fn_ptr: info.function,
         });
+        self.closure_snapshots.insert(
+            key,
+            ClosureSnapshot {
+                params: params.to_vec(),
+                body: body.clone(),
+                ret: ret.clone(),
+                captures: captures_vec.clone(),
+                values: captured_values_raw,
+            },
+        );
         Ok(EvalOutcome::Value(self.evaluated(closure_value)))
     }
 
@@ -5587,6 +5839,44 @@ impl Compiler {
         }
     }
 
+    fn int_to_usize(&mut self, value: &IntValue, ctx: &str) -> Result<LLVMValueRef, String> {
+        unsafe {
+            let current = LLVMTypeOf(value.llvm());
+            if current == self.runtime_abi.usize_type {
+                Ok(value.llvm())
+            } else if !self.runtime_abi.usize_type.is_null() {
+                Ok(LLVMBuildIntCast(
+                    self.builder,
+                    value.llvm(),
+                    self.runtime_abi.usize_type,
+                    CString::new(ctx).unwrap().as_ptr(),
+                ))
+            } else {
+                Err("usize type unavailable while lowering index".into())
+            }
+        }
+    }
+
+    fn int_to_runtime_int(&mut self, value: &IntValue, ctx: &str) -> Result<LLVMValueRef, String> {
+        unsafe {
+            let target = self.runtime_abi.int_type;
+            if target.is_null() {
+                return Err("runtime int type unavailable".into());
+            }
+            let current = LLVMTypeOf(value.llvm());
+            if current == target {
+                Ok(value.llvm())
+            } else {
+                Ok(LLVMBuildIntCast(
+                    self.builder,
+                    value.llvm(),
+                    target,
+                    CString::new(ctx).unwrap().as_ptr(),
+                ))
+            }
+        }
+    }
+
     fn build_struct_literal(
         &mut self,
         name: &str,
@@ -6578,16 +6868,27 @@ impl Compiler {
             return Err("slice_get expects 2 arguments".into());
         }
         let index_value = args.pop().unwrap();
-        let slice = self.expect_slice_value(args.pop().unwrap(), "slice_get")?;
+        let mut slice = self.expect_slice_value(args.pop().unwrap(), "slice_get")?;
         let int_value = self.expect_int(index_value)?;
-        let idx = int_value
-            .constant()
-            .ok_or_else(|| "slice_get index must be constant in build mode".to_string())?;
-        if idx < 0 {
-            return self.instantiate_enum_variant("None", Vec::new());
+        let idx_const = int_value.constant();
+        let mut handle = slice.handle;
+        if handle.is_none() && idx_const.is_none() {
+            if let Ok(runtime) = self.build_runtime_handle(Value::Slice(slice.clone())) {
+                slice.handle = Some(runtime);
+                handle = Some(runtime);
+            }
         }
-        if let Some(handle) = slice.handle {
-            let idx_const = unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) };
+        if let Some(handle) = handle {
+            if let Some(idx) = idx_const {
+                if idx < 0 {
+                    return self.instantiate_enum_variant("None", Vec::new());
+                }
+            }
+            let idx_arg = if let Some(idx) = idx_const {
+                unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) }
+            } else {
+                self.int_to_usize(&int_value, "slice_get_index")?
+            };
             let slot = unsafe {
                 LLVMBuildAlloca(
                     self.builder,
@@ -6595,7 +6896,7 @@ impl Compiler {
                     CString::new("slice_get_out").unwrap().as_ptr(),
                 )
             };
-            let mut call_args = [handle, idx_const, slot];
+            let mut call_args = [handle, idx_arg, slot];
             self.call_runtime(
                 self.runtime_abi.prime_slice_get_handle,
                 self.runtime_abi.prime_slice_get_handle_ty,
@@ -6620,6 +6921,11 @@ impl Compiler {
                 .instantiate_enum_variant("Some", vec![Value::Reference(reference.clone())])
                 .or_else(|_| Ok(Value::Reference(reference)));
         }
+        let idx = idx_const
+            .ok_or_else(|| "slice_get index must be constant in build mode".to_string())?;
+        if idx < 0 {
+            return self.instantiate_enum_variant("None", Vec::new());
+        }
         let value = slice.get(idx as usize);
         if value.is_none() {
             return self.instantiate_enum_variant("None", Vec::new());
@@ -6633,16 +6939,27 @@ impl Compiler {
             return Err("remove expects receiver and index".into());
         }
         let index_value = args.pop().unwrap();
-        let slice = self.expect_slice_value(args.pop().unwrap(), "remove")?;
+        let mut slice = self.expect_slice_value(args.pop().unwrap(), "remove")?;
         let int_value = self.expect_int(index_value)?;
-        let idx = int_value
-            .constant()
-            .ok_or_else(|| "remove index must be constant in build mode".to_string())?;
-        if idx < 0 {
-            return self.instantiate_enum_variant("None", Vec::new());
+        let idx_const = int_value.constant();
+        let mut handle = slice.handle;
+        if handle.is_none() && idx_const.is_none() {
+            if let Ok(runtime) = self.build_runtime_handle(Value::Slice(slice.clone())) {
+                slice.handle = Some(runtime);
+                handle = Some(runtime);
+            }
         }
-        if let Some(handle) = slice.handle {
-            let idx_const = unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) };
+        if let Some(handle) = handle {
+            if let Some(idx) = idx_const {
+                if idx < 0 {
+                    return self.instantiate_enum_variant("None", Vec::new());
+                }
+            }
+            let idx_arg = if let Some(idx) = idx_const {
+                unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) }
+            } else {
+                self.int_to_usize(&int_value, "slice_remove_index")?
+            };
             let slot = unsafe {
                 LLVMBuildAlloca(
                     self.builder,
@@ -6650,7 +6967,7 @@ impl Compiler {
                     CString::new("slice_remove_out").unwrap().as_ptr(),
                 )
             };
-            let mut call_args = [handle, idx_const, slot];
+            let mut call_args = [handle, idx_arg, slot];
             self.call_runtime(
                 self.runtime_abi.prime_slice_remove_handle,
                 self.runtime_abi.prime_slice_remove_handle_ty,
@@ -6672,6 +6989,11 @@ impl Compiler {
                 handle: Some(loaded),
             };
             return self.instantiate_enum_variant("Some", vec![Value::Reference(reference)]);
+        }
+        let idx = idx_const
+            .ok_or_else(|| "remove index must be constant in build mode".to_string())?;
+        if idx < 0 {
+            return self.instantiate_enum_variant("None", Vec::new());
         }
         let removed = slice.remove(idx as usize);
         match removed {
@@ -6896,15 +7218,26 @@ impl Compiler {
         match receiver {
             Value::Slice(slice) => {
                 let int_value = self.expect_int(args.remove(0))?;
-                let idx = int_value
-                    .constant()
-                    .ok_or_else(|| "get index must be constant in build mode".to_string())?;
-                if idx < 0 {
-                    return self.instantiate_enum_variant("None", Vec::new());
+                let idx_const = int_value.constant();
+                let mut slice = slice;
+                let mut handle = slice.handle;
+                if handle.is_none() && idx_const.is_none() {
+                    if let Ok(runtime) = self.build_runtime_handle(Value::Slice(slice.clone())) {
+                        slice.handle = Some(runtime);
+                        handle = Some(runtime);
+                    }
                 }
-                if let Some(handle) = slice.handle {
-                    let idx_const =
-                        unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) };
+                if let Some(handle) = handle {
+                    if let Some(idx) = idx_const {
+                        if idx < 0 {
+                            return self.instantiate_enum_variant("None", Vec::new());
+                        }
+                    }
+                    let idx_arg = if let Some(idx) = idx_const {
+                        unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) }
+                    } else {
+                        self.int_to_usize(&int_value, "get_index")?
+                    };
                     let slot = unsafe {
                         LLVMBuildAlloca(
                             self.builder,
@@ -6912,7 +7245,7 @@ impl Compiler {
                             CString::new("slice_get_out").unwrap().as_ptr(),
                         )
                     };
-                    let mut call_args = [handle, idx_const, slot];
+                    let mut call_args = [handle, idx_arg, slot];
                     self.call_runtime(
                         self.runtime_abi.prime_slice_get_handle,
                         self.runtime_abi.prime_slice_get_handle_ty,
@@ -6936,6 +7269,11 @@ impl Compiler {
                     return self
                         .instantiate_enum_variant("Some", vec![Value::Reference(reference.clone())])
                         .or_else(|_| Ok(Value::Reference(reference)));
+                }
+                let idx = idx_const
+                    .ok_or_else(|| "get index must be constant in build mode".to_string())?;
+                if idx < 0 {
+                    return self.instantiate_enum_variant("None", Vec::new());
                 }
                 let value = slice.get(idx as usize);
                 match value {
@@ -7364,13 +7702,13 @@ impl Compiler {
         }
         let millis_val = args.pop().unwrap();
         let millis = self.expect_int(millis_val)?;
-        let millis_const = millis
-            .constant()
-            .ok_or_else(|| "recv_timeout expects constant millis in build mode".to_string())?;
         let receiver = self.expect_receiver(args.pop().unwrap(), "recv_timeout")?;
         if let Some(handle) = receiver.handle {
-            let duration =
-                unsafe { LLVMConstInt(self.runtime_abi.int_type, millis_const as u64, 1) };
+            let duration = if let Some(constant) = millis.constant() {
+                unsafe { LLVMConstInt(self.runtime_abi.int_type, constant as u64, 1) }
+            } else {
+                self.int_to_runtime_int(&millis, "recv_timeout_millis")?
+            };
             let slot = unsafe {
                 LLVMBuildAlloca(
                     self.builder,
@@ -7417,6 +7755,9 @@ impl Compiler {
             };
             return self.instantiate_enum_variant("Some", vec![Value::Reference(reference)]);
         }
+        let millis_const = millis.constant().ok_or_else(|| {
+            "recv_timeout expects constant millis in build mode without runtime handles".to_string()
+        })?;
         let millis_i64: i64 = millis_const.try_into().unwrap_or_else(|_| {
             if millis_const.is_negative() {
                 0
@@ -7608,6 +7949,8 @@ impl Compiler {
     }
 
     fn snapshot_build_state(&self) -> Result<BuildSnapshot, String> {
+        let mut capture_ctx = BuildCaptureContext::new();
+        capture_ctx.closure_snapshots = self.closure_snapshots.clone();
         let mut scopes = Vec::with_capacity(self.scopes.len());
         for scope in &self.scopes {
             let mut bindings = HashMap::new();
@@ -7618,7 +7961,10 @@ impl Compiler {
                 bindings.insert(
                     name.clone(),
                     BuildBinding {
-                        cell: Arc::new(Mutex::new(value_to_build_value(guard.value())?)),
+                        cell: Arc::new(Mutex::new(value_to_build_value_with_ctx(
+                            guard.value(),
+                            &mut capture_ctx,
+                        )?)),
                         mutable: binding.mutable,
                         borrowed_mut: false,
                         borrowed_shared: 0,
@@ -7668,6 +8014,7 @@ impl Compiler {
             enum_variants,
             functions,
             struct_fields,
+            next_channel_id: capture_ctx.next_channel_id,
         })
     }
 
@@ -8733,6 +9080,7 @@ fn main() {
             enum_variants: HashMap::new(),
             functions: HashMap::new(),
             struct_fields: HashMap::new(),
+            next_channel_id: 0,
         };
         let handle = thread::spawn(move || {
             let interpreter = BuildInterpreter::new(snapshot);
