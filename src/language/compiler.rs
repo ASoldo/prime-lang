@@ -33,9 +33,9 @@ use llvm_sys::{
         LLVMGetElementType, LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetLastInstruction,
         LLVMGetModuleContext, LLVMGetParam, LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext,
         LLVMInt32TypeInContext, LLVMIntTypeInContext, LLVMIsAFunction, LLVMModuleCreateWithNameInContext,
-        LLVMPointerType, LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPrintModuleToFile,
+        LLVMPointerType, LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMPrintModuleToFile,
         LLVMSetLinkage, LLVMStructCreateNamed, LLVMStructSetBody, LLVMStructTypeInContext, LLVMTypeOf,
-        LLVMVoidTypeInContext,
+        LLVMVoidTypeInContext, LLVMGetFirstBasicBlock, LLVMGetFirstInstruction,
     },
     prelude::*,
 };
@@ -72,7 +72,11 @@ struct FnSignature {
 
 impl FnSignature {
     fn return_count(&self) -> usize {
-        self.returns.len()
+        if self.returns.len() == 1 && matches!(self.returns.first(), Some(TypeExpr::Unit)) {
+            0
+        } else {
+            self.returns.len()
+        }
     }
 }
 
@@ -103,6 +107,7 @@ pub struct Compiler {
     closure_counter: usize,
     closures: HashMap<usize, ClosureInfo>,
     closure_value_type: LLVMTypeRef,
+    closure_envs: Vec<(usize, LLVMValueRef)>,
 }
 
 #[derive(Clone)]
@@ -174,6 +179,7 @@ struct ReferenceValue {
     cell: Arc<Mutex<EvaluatedValue>>,
     mutable: bool,
     origin: Option<String>,
+    handle: Option<LLVMValueRef>,
 }
 
 #[derive(Clone)]
@@ -870,6 +876,7 @@ impl Compiler {
                 closure_counter: 0,
                 closures: HashMap::new(),
                 closure_value_type: ptr::null_mut(),
+                closure_envs: Vec::new(),
             };
             compiler.reset_module();
             compiler
@@ -1056,6 +1063,7 @@ impl Compiler {
                     cell,
                     mutable: reference.mutable,
                     origin: None,
+                    handle: None,
                 }))
             }
             BuildValue::FormatTemplate(template) => {
@@ -1321,6 +1329,7 @@ impl Compiler {
         }
         self.exit_scope()?;
         self.pop_return_types();
+        self.release_closure_envs()?;
 
         unsafe {
             let zero = LLVMConstInt(self.i32_type, 0, 0);
@@ -1465,9 +1474,20 @@ impl Compiler {
                 Ok(())
             }
             Value::Reference(reference) => {
-                self.emit_printf_call("&", &mut []);
-                let inner = reference.cell.lock().unwrap().clone();
-                self.print_value(inner)
+                if let Some(handle) = reference.handle {
+                    let mut args = [handle];
+                    self.call_runtime(
+                        self.runtime_abi.prime_print,
+                        self.runtime_abi.prime_print_ty,
+                        &mut args,
+                        "print_ref_handle",
+                    );
+                    Ok(())
+                } else {
+                    self.emit_printf_call("&", &mut []);
+                    let inner = reference.cell.lock().unwrap().clone();
+                    self.print_value(inner)
+                }
             }
             Value::Boxed(boxed) => {
                 if let Some(handle) = boxed.handle {
@@ -1816,6 +1836,16 @@ impl Compiler {
                 Ok(handle)
             }
             Value::Reference(reference) => {
+                if let Some(handle) = reference.handle {
+                    let mut args = [handle];
+                    let inner = self.call_runtime(
+                        self.runtime_abi.prime_reference_read,
+                        self.runtime_abi.prime_reference_read_ty,
+                        &mut args,
+                        "ref_read_handle",
+                    );
+                    return Ok(inner);
+                }
                 let inner = reference.cell.lock().unwrap().clone().into_value();
                 let target = self.build_runtime_handle(inner)?;
                 let mut_flag = unsafe {
@@ -2070,6 +2100,7 @@ impl Compiler {
                 "Map" | "Box" => Some(self.runtime_abi.handle_type),
                 _ => None,
             },
+            TypeExpr::Reference { .. } => Some(self.runtime_abi.handle_type),
             TypeExpr::Slice(_) => Some(self.runtime_abi.handle_type),
             TypeExpr::Function { .. } => Some(self.closure_value_type),
             TypeExpr::Tuple(items) => self.tuple_llvm_type(items).ok(),
@@ -2409,6 +2440,13 @@ impl Compiler {
                 }
                 _ => Err(format!("Unsupported capture type `{}`", name)),
             },
+            TypeExpr::Reference { .. } => match value {
+                Value::Reference(reference) => self.reference_handle(&reference),
+                other => Err(format!(
+                    "Expected reference value for capture, found {}",
+                    describe_value(&other)
+                )),
+            },
             TypeExpr::Slice(_) => {
                 let handle = self.build_runtime_handle(value)?;
                 Ok(handle)
@@ -2474,6 +2512,12 @@ impl Compiler {
 
     fn value_from_llvm(&mut self, llvm: LLVMValueRef, ty: &TypeExpr) -> Result<Value, String> {
         match ty {
+            TypeExpr::Reference { mutable, .. } => Ok(Value::Reference(ReferenceValue {
+                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                mutable: *mutable,
+                origin: None,
+                handle: Some(llvm),
+            })),
             TypeExpr::Named(name, _) => match name.as_str() {
                 "int8" | "int16" | "int32" | "int64" | "isize" | "uint8" | "uint16"
                 | "uint32" | "uint64" | "usize" | "rune" => {
@@ -2949,13 +2993,52 @@ impl Compiler {
                     returns: info.signature.returns.clone(),
                 })
             }
+            Value::Reference(reference) => reference
+                .cell
+                .lock()
+                .ok()
+                .and_then(|inner| self.value_type_hint(&inner.clone().into_value()))
+                .map(|inner_ty| TypeExpr::Reference {
+                    mutable: reference.mutable,
+                    ty: Box::new(inner_ty),
+                }),
             _ => None,
         }
     }
 
     fn allocate_closure_env(&mut self, env_type: LLVMTypeRef, key: usize) -> LLVMValueRef {
-        // Closure environments currently live for the duration of the process; no destructor support yet.
-        unsafe {
+        // Allocate a slot in the entry block to hold the env pointer; fill it when building the closure.
+        let current_block = unsafe { LLVMGetInsertBlock(self.builder) };
+        let func = unsafe { LLVMGetBasicBlockParent(current_block) };
+        let track_env = func == self.main_fn;
+        let slot = if track_env {
+            unsafe {
+                let entry = LLVMGetFirstBasicBlock(func);
+                let slot_builder = LLVMCreateBuilderInContext(self.context);
+                let ptr_ty = LLVMPointerType(env_type, 0);
+                let first_inst = LLVMGetFirstInstruction(entry);
+                if first_inst.is_null() {
+                    LLVMPositionBuilderAtEnd(slot_builder, entry);
+                } else {
+                    LLVMPositionBuilderBefore(slot_builder, first_inst);
+                }
+                let alloca = LLVMBuildAlloca(
+                    slot_builder,
+                    ptr_ty,
+                    CString::new(format!("closure_env_slot_{key}"))
+                        .unwrap()
+                        .as_ptr(),
+                );
+                let null = LLVMConstNull(ptr_ty);
+                LLVMBuildStore(slot_builder, null, alloca);
+                LLVMDisposeBuilder(slot_builder);
+                alloca
+            }
+        } else {
+            std::ptr::null_mut()
+        };
+
+        let ptr = unsafe {
             let one = LLVMConstInt(self.runtime_abi.usize_type, 1, 0);
             LLVMBuildArrayMalloc(
                 self.builder,
@@ -2965,7 +3048,149 @@ impl Compiler {
                     .unwrap()
                     .as_ptr(),
             )
+        };
+        if track_env {
+            unsafe {
+                LLVMBuildStore(
+                    self.builder,
+                    ptr,
+                    slot,
+                );
+            }
+            self.closure_envs.push((key, slot));
         }
+        ptr
+    }
+
+    fn capture_type_needs_release(&self, ty: &TypeExpr) -> bool {
+        matches!(ty, TypeExpr::Slice(_))
+            || matches!(ty, TypeExpr::Named(name, _) if name == "Map" || name == "Box")
+            || matches!(ty, TypeExpr::Reference { .. })
+    }
+
+    fn release_closure_envs(&mut self) -> Result<(), String> {
+        let envs = std::mem::take(&mut self.closure_envs);
+        for (key, env_ptr) in envs {
+            if env_ptr.is_null() {
+                continue;
+            }
+            let Some(info) = self.closures.get(&key).cloned() else {
+                continue;
+            };
+            let expected_env = unsafe { LLVMPointerType(info.env_type, 0) };
+            let loaded_env = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    expected_env,
+                    env_ptr,
+                    CString::new("closure_env_slot_load").unwrap().as_ptr(),
+                )
+            };
+            let null_env = unsafe { LLVMConstNull(expected_env) };
+            let is_null = unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                    loaded_env,
+                    null_env,
+                    CString::new("closure_env_is_null").unwrap().as_ptr(),
+                )
+            };
+            let current_block = unsafe { LLVMGetInsertBlock(self.builder) };
+            let skip_block = unsafe {
+                LLVMAppendBasicBlockInContext(
+                    self.context,
+                    LLVMGetBasicBlockParent(current_block),
+                    CString::new(format!("env_drop_skip_{key}"))
+                        .unwrap()
+                        .as_ptr(),
+                )
+            };
+            let drop_block = unsafe {
+                LLVMAppendBasicBlockInContext(
+                    self.context,
+                    LLVMGetBasicBlockParent(current_block),
+                    CString::new(format!("env_drop_apply_{key}"))
+                        .unwrap()
+                        .as_ptr(),
+                )
+            };
+            let cont_block = unsafe {
+                LLVMAppendBasicBlockInContext(
+                    self.context,
+                    LLVMGetBasicBlockParent(current_block),
+                    CString::new(format!("env_drop_cont_{key}"))
+                        .unwrap()
+                        .as_ptr(),
+                )
+            };
+            unsafe {
+                LLVMBuildCondBr(self.builder, is_null, skip_block, drop_block);
+                LLVMPositionBuilderAtEnd(self.builder, drop_block);
+            }
+            let typed_env = loaded_env;
+            for (idx, ty) in info.capture_types.iter().enumerate() {
+                if !self.capture_type_needs_release(ty) {
+                    continue;
+                }
+                let field_ptr = unsafe {
+                    LLVMBuildStructGEP2(
+                        self.builder,
+                        info.env_type,
+                        typed_env,
+                        idx as u32,
+                        CString::new(format!("env_drop_field_{idx}"))
+                            .unwrap()
+                            .as_ptr(),
+                    )
+                };
+                let llvm_ty = self.expect_llvm_type(ty, "closure env drop")?;
+                let loaded = unsafe {
+                    LLVMBuildLoad2(
+                        self.builder,
+                        llvm_ty,
+                        field_ptr,
+                        CString::new(format!("env_drop_load_{idx}"))
+                            .unwrap()
+                            .as_ptr(),
+                    )
+                };
+                let mut args = [loaded];
+                self.call_runtime(
+                    self.runtime_abi.prime_value_release,
+                    self.runtime_abi.prime_value_release_ty,
+                    &mut args,
+                    "closure_env_release",
+                );
+            }
+            let env_i8 = unsafe {
+                LLVMBuildBitCast(
+                    self.builder,
+                    typed_env,
+                    self.runtime_abi.handle_type,
+                    CString::new("closure_env_free_cast")
+                        .unwrap()
+                        .as_ptr(),
+                )
+            };
+            let mut free_args = [env_i8];
+            self.call_runtime(
+                self.runtime_abi.prime_env_free,
+                self.runtime_abi.prime_env_free_ty,
+                &mut free_args,
+                "closure_env_free",
+            );
+            unsafe {
+                LLVMBuildBr(
+                    self.builder,
+                    cont_block,
+                );
+                LLVMPositionBuilderAtEnd(self.builder, skip_block);
+                LLVMBuildBr(self.builder, cont_block);
+                LLVMPositionBuilderAtEnd(self.builder, cont_block);
+            }
+        }
+        Ok(())
     }
 
     fn emit_closure_literal(
@@ -3021,9 +3246,9 @@ impl Compiler {
         {
             let captured_value = match captured.mode {
                 CaptureMode::Move => self.take_binding_value(&captured.name)?,
-                CaptureMode::Reference { .. } => {
-                    return Err("Reference captures are not supported in build mode closures".into())
-                }
+                CaptureMode::Reference { .. } => self
+                    .get_var(&captured.name)
+                    .ok_or_else(|| format!("Unknown capture {}", captured.name))?,
             };
             let llvm_value =
                 self.value_to_llvm_for_type(captured_value.into_value(), ty)?;
@@ -3371,14 +3596,11 @@ impl Compiler {
                     };
                     match target {
                         Value::Reference(reference) => {
-                            if !reference.mutable {
-                                return Err("Cannot assign through immutable reference".into());
-                            }
                             let value = match self.emit_expression(&stmt.value)? {
                                 EvalOutcome::Value(value) => value,
                                 EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                             };
-                            *reference.cell.lock().unwrap() = value;
+                            self.write_reference(&reference, value)?;
                         }
                         Value::Pointer(pointer) => {
                             if !pointer.mutable {
@@ -3841,7 +4063,11 @@ impl Compiler {
                 CString::new("closure_fn_cast").unwrap().as_ptr(),
             )
         };
-        let call_name = CString::new("closure_call").unwrap();
+        let call_name = if info.signature.return_count() == 0 {
+            CString::new("").unwrap()
+        } else {
+            CString::new("closure_call").unwrap()
+        };
         let result = unsafe {
             LLVMBuildCall2(
                 self.builder,
@@ -4324,6 +4550,7 @@ impl Compiler {
                         cell,
                         mutable,
                         origin: Some(ident.name.clone()),
+                        handle: None,
                     })
                     .into(),
                 ))
@@ -4334,6 +4561,7 @@ impl Compiler {
                         cell: Arc::new(Mutex::new(value)),
                         mutable,
                         origin: None,
+                        handle: None,
                     })
                     .into(),
                 )),
@@ -5825,7 +6053,53 @@ impl Compiler {
         }
     }
 
-    fn expect_box_value(&self, value: Value, ctx: &str) -> Result<BoxValue, String> {
+    fn reference_handle(&mut self, reference: &ReferenceValue) -> Result<LLVMValueRef, String> {
+        if let Some(handle) = reference.handle {
+            let mut args = [handle];
+            return Ok(self.call_runtime(
+                self.runtime_abi.prime_value_retain,
+                self.runtime_abi.prime_value_retain_ty,
+                &mut args,
+                "reference_retain",
+            ));
+        }
+        let inner = reference.cell.lock().unwrap().clone().into_value();
+        let target = self.build_runtime_handle(inner)?;
+        let mut_flag =
+            unsafe { LLVMConstInt(self.runtime_abi.bool_type, reference.mutable as u64, 0) };
+        Ok(self.call_runtime(
+            self.runtime_abi.prime_reference_new,
+            self.runtime_abi.prime_reference_new_ty,
+            &mut [target, mut_flag],
+            "reference_new",
+        ))
+    }
+
+    fn write_reference(
+        &mut self,
+        reference: &ReferenceValue,
+        value: EvaluatedValue,
+    ) -> Result<(), String> {
+        if !reference.mutable {
+            return Err("Cannot assign through immutable reference".into());
+        }
+        if let Some(handle) = reference.handle {
+            let new_handle = self.build_runtime_handle(value.into_value())?;
+            let mut args = [handle, new_handle];
+            self.call_runtime(
+                self.runtime_abi.prime_reference_write,
+                self.runtime_abi.prime_reference_write_ty,
+                &mut args,
+                "reference_write",
+            );
+            Ok(())
+        } else {
+            *reference.cell.lock().unwrap() = value;
+            Ok(())
+        }
+    }
+
+    fn expect_box_value(&mut self, value: Value, ctx: &str) -> Result<BoxValue, String> {
         match value {
             Value::Boxed(b) => {
                 if b.handle.is_some() {
@@ -5836,44 +6110,67 @@ impl Compiler {
                 Ok(b)
             }
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone().into_value();
-                self.expect_box_value(inner, ctx)
+                if let Some(reference_handle) = reference.handle {
+                    let mut call_args = [reference_handle];
+                    let handle = self.call_runtime(
+                        self.runtime_abi.prime_reference_read,
+                        self.runtime_abi.prime_reference_read_ty,
+                        &mut call_args,
+                        "box_ref_read",
+                    );
+                    Ok(BoxValue::with_handle(handle))
+                } else {
+                    let inner = reference.cell.lock().unwrap().clone().into_value();
+                    self.expect_box_value(inner, ctx)
+                }
             }
             _ => Err(format!("{ctx} expects Box value")),
         }
     }
 
-    fn expect_slice_value(&self, value: Value, ctx: &str) -> Result<SliceValue, String> {
+    fn expect_slice_value(&mut self, value: Value, ctx: &str) -> Result<SliceValue, String> {
         match value {
             Value::Slice(slice) => {
-                if slice.handle.is_some() {
-                    return Err(format!(
-                        "{ctx} cannot inspect captured slice handle in build mode; operate on it at runtime"
-                    ));
-                }
                 Ok(slice)
             }
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone().into_value();
-                self.expect_slice_value(inner, ctx)
+                if let Some(reference_handle) = reference.handle {
+                    let mut call_args = [reference_handle];
+                    let handle = self.call_runtime(
+                        self.runtime_abi.prime_reference_read,
+                        self.runtime_abi.prime_reference_read_ty,
+                        &mut call_args,
+                        "slice_ref_read",
+                    );
+                    Ok(SliceValue::with_handle(handle))
+                } else {
+                    let inner = reference.cell.lock().unwrap().clone().into_value();
+                    self.expect_slice_value(inner, ctx)
+                }
             }
             _ => Err(format!("{ctx} expects slice value")),
         }
     }
 
-    fn expect_map_value(&self, value: Value, ctx: &str) -> Result<MapValue, String> {
+    fn expect_map_value(&mut self, value: Value, ctx: &str) -> Result<MapValue, String> {
         match value {
             Value::Map(map) => {
-                if map.handle.is_some() {
-                    return Err(format!(
-                        "{ctx} cannot inspect captured map handle in build mode; operate on it at runtime"
-                    ));
-                }
                 Ok(map)
             }
             Value::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone().into_value();
-                self.expect_map_value(inner, ctx)
+                if let Some(reference_handle) = reference.handle {
+                    let mut call_args = [reference_handle];
+                    let handle = self.call_runtime(
+                        self.runtime_abi.prime_reference_read,
+                        self.runtime_abi.prime_reference_read_ty,
+                        &mut call_args,
+                        "map_ref_read",
+                    );
+                    Ok(MapValue::with_handle(handle))
+                } else {
+                    let inner = reference.cell.lock().unwrap().clone().into_value();
+                    self.expect_map_value(inner, ctx)
+                }
             }
             _ => Err(format!("{ctx} expects map value")),
         }
@@ -5931,7 +6228,7 @@ impl Compiler {
         Ok(Value::Boxed(BoxValue::new(value)))
     }
 
-    fn builtin_box_get(&self, mut args: Vec<Value>) -> Result<Value, String> {
+    fn builtin_box_get(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
         if args.len() != 1 {
             return Err("box_get expects 1 argument".into());
         }
@@ -5939,7 +6236,7 @@ impl Compiler {
         Ok(boxed.cell.lock().unwrap().clone())
     }
 
-    fn builtin_box_set(&self, mut args: Vec<Value>) -> Result<Value, String> {
+    fn builtin_box_set(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
         if args.len() != 2 {
             return Err("box_set expects 2 arguments".into());
         }
@@ -5949,7 +6246,7 @@ impl Compiler {
         Ok(Value::Unit)
     }
 
-    fn builtin_box_take(&self, mut args: Vec<Value>) -> Result<Value, String> {
+    fn builtin_box_take(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
         if args.len() != 1 {
             return Err("box_take expects 1 argument".into());
         }
@@ -5972,7 +6269,18 @@ impl Compiler {
         }
         let value = args.pop().unwrap();
         let slice = self.expect_slice_value(args.pop().unwrap(), "slice_push")?;
-        slice.push(value);
+        if let Some(handle) = slice.handle {
+            let value_handle = self.build_runtime_handle(value)?;
+            let mut call_args = [handle, value_handle];
+            self.call_runtime(
+                self.runtime_abi.prime_slice_push_handle,
+                self.runtime_abi.prime_slice_push_handle_ty,
+                &mut call_args,
+                "slice_push_handle",
+            );
+        } else {
+            slice.push(value);
+        }
         Ok(Value::Unit)
     }
 
@@ -6000,6 +6308,44 @@ impl Compiler {
         if idx < 0 {
             return self.instantiate_enum_variant("None", Vec::new());
         }
+        if let Some(handle) = slice.handle {
+            let idx_const =
+                unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) };
+            let slot = unsafe {
+                LLVMBuildAlloca(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    CString::new("slice_get_out").unwrap().as_ptr(),
+                )
+            };
+            let mut call_args = [handle, idx_const, slot];
+            self.call_runtime(
+                self.runtime_abi.prime_slice_get_handle,
+                self.runtime_abi.prime_slice_get_handle_ty,
+                &mut call_args,
+                "slice_get_handle",
+            );
+            let loaded = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    slot,
+                    CString::new("slice_get_loaded").unwrap().as_ptr(),
+                )
+            };
+            let reference = ReferenceValue {
+                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                mutable: false,
+                origin: None,
+                handle: Some(loaded),
+            };
+            return self
+                .instantiate_enum_variant(
+                    "Some",
+                    vec![Value::Reference(reference.clone())],
+                )
+                .or_else(|_| Ok(Value::Reference(reference)));
+        }
         let value = slice.get(idx as usize);
         if value.is_none() {
             return self.instantiate_enum_variant("None", Vec::new());
@@ -6024,7 +6370,19 @@ impl Compiler {
         let value = args.pop().unwrap();
         let key = self.expect_string_value(args.pop().unwrap(), "map_insert")?;
         let map = self.expect_map_value(args.pop().unwrap(), "map_insert")?;
-        map.insert(key, value);
+        if let Some(handle) = map.handle {
+            let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_insert_key")?;
+            let value_handle = self.build_runtime_handle(value)?;
+            let mut call_args = [handle, key_ptr, key_len, value_handle];
+            self.call_runtime(
+                self.runtime_abi.prime_map_insert_handle,
+                self.runtime_abi.prime_map_insert_handle_ty,
+                &mut call_args,
+                "map_insert_handle",
+            );
+        } else {
+            map.insert(key, value);
+        }
         Ok(Value::Unit)
     }
 
@@ -6035,6 +6393,41 @@ impl Compiler {
         }
         let key = self.expect_string_value(args.pop().unwrap(), "map_get")?;
         let map = self.expect_map_value(args.pop().unwrap(), "map_get")?;
+        if let Some(handle) = map.handle {
+            let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_get_key")?;
+            let slot = unsafe {
+                LLVMBuildAlloca(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    CString::new("map_get_out").unwrap().as_ptr(),
+                )
+            };
+            let mut call_args = [handle, key_ptr, key_len, slot];
+            self.call_runtime(
+                self.runtime_abi.prime_map_get_handle,
+                self.runtime_abi.prime_map_get_handle_ty,
+                &mut call_args,
+                "map_get_handle",
+            );
+            let loaded = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    slot,
+                    CString::new("map_get_loaded").unwrap().as_ptr(),
+                )
+            };
+            let reference = ReferenceValue {
+                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                mutable: false,
+                origin: None,
+                handle: Some(loaded),
+            };
+            return self.instantiate_enum_variant(
+                "Some",
+                vec![Value::Reference(reference)],
+            );
+        }
         match map.get(&key) {
             Some(value) => self.instantiate_enum_variant("Some", vec![value]),
             None => self.instantiate_enum_variant("None", Vec::new()),
@@ -6113,6 +6506,44 @@ impl Compiler {
                 if idx < 0 {
                     return self.instantiate_enum_variant("None", Vec::new());
                 }
+                if let Some(handle) = slice.handle {
+                    let idx_const =
+                        unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) };
+                    let slot = unsafe {
+                        LLVMBuildAlloca(
+                            self.builder,
+                            self.runtime_abi.handle_type,
+                            CString::new("slice_get_out").unwrap().as_ptr(),
+                        )
+                    };
+                    let mut call_args = [handle, idx_const, slot];
+                    self.call_runtime(
+                        self.runtime_abi.prime_slice_get_handle,
+                        self.runtime_abi.prime_slice_get_handle_ty,
+                        &mut call_args,
+                        "slice_get_handle",
+                    );
+                    let loaded = unsafe {
+                        LLVMBuildLoad2(
+                            self.builder,
+                            self.runtime_abi.handle_type,
+                            slot,
+                            CString::new("slice_get_loaded").unwrap().as_ptr(),
+                        )
+                    };
+                    let reference = ReferenceValue {
+                        cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                        mutable: false,
+                        origin: None,
+                        handle: Some(loaded),
+                    };
+                    return self
+                        .instantiate_enum_variant(
+                            "Some",
+                            vec![Value::Reference(reference.clone())],
+                        )
+                        .or_else(|_| Ok(Value::Reference(reference)));
+                }
                 let value = slice.get(idx as usize);
                 match value {
                     Some(value) => self.instantiate_enum_variant("Some", vec![value]),
@@ -6121,6 +6552,43 @@ impl Compiler {
             }
             Value::Map(map) => {
                 let key = self.expect_string_value(args.remove(0), "get")?;
+                if let Some(handle) = map.handle {
+                    let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_get_key")?;
+                    let slot = unsafe {
+                        LLVMBuildAlloca(
+                            self.builder,
+                            self.runtime_abi.handle_type,
+                            CString::new("map_get_out").unwrap().as_ptr(),
+                        )
+                    };
+                    let mut call_args = [handle, key_ptr, key_len, slot];
+                    self.call_runtime(
+                        self.runtime_abi.prime_map_get_handle,
+                        self.runtime_abi.prime_map_get_handle_ty,
+                        &mut call_args,
+                        "map_get_handle",
+                    );
+                    let loaded = unsafe {
+                        LLVMBuildLoad2(
+                            self.builder,
+                            self.runtime_abi.handle_type,
+                            slot,
+                            CString::new("map_get_loaded").unwrap().as_ptr(),
+                        )
+                    };
+                    let reference = ReferenceValue {
+                        cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                        mutable: false,
+                        origin: None,
+                        handle: Some(loaded),
+                    };
+                    return self
+                        .instantiate_enum_variant(
+                            "Some",
+                            vec![Value::Reference(reference.clone())],
+                        )
+                        .or_else(|_| Ok(Value::Reference(reference)));
+                }
                 match map.get(&key) {
                     Some(value) => self.instantiate_enum_variant("Some", vec![value]),
                     None => self.instantiate_enum_variant("None", Vec::new()),
@@ -6166,8 +6634,26 @@ impl Compiler {
                 if !reference.mutable {
                     return Err("Cannot assign through immutable reference".into());
                 }
-                let inner = reference.cell.lock().unwrap().clone().into_value();
-                self.assign_index_value(inner, index, value)
+                if reference.handle.is_some() {
+                    let mut call_args = [reference.handle.unwrap()];
+                    let handle = self.call_runtime(
+                        self.runtime_abi.prime_reference_read,
+                        self.runtime_abi.prime_reference_read_ty,
+                        &mut call_args,
+                        "index_ref_read",
+                    );
+                    let forwarded = match &index {
+                        Value::Int(_) => Value::Slice(SliceValue::with_handle(handle)),
+                        Value::Str(_) => Value::Map(MapValue::with_handle(handle)),
+                        _ => {
+                            return Err("reference index assignment expects slice or map".into());
+                        }
+                    };
+                    self.assign_index_value(forwarded, index, value)
+                } else {
+                    let inner = reference.cell.lock().unwrap().clone().into_value();
+                    self.assign_index_value(inner, index, value)
+                }
             }
             Value::Pointer(pointer) => {
                 if !pointer.mutable {
@@ -6186,7 +6672,18 @@ impl Compiler {
         }
         let value = args.pop().unwrap();
         let slice = self.expect_slice_value(args.pop().unwrap(), "push")?;
-        slice.push(value);
+        if let Some(handle) = slice.handle {
+            let value_handle = self.build_runtime_handle(value)?;
+            let mut call_args = [handle, value_handle];
+            self.call_runtime(
+                self.runtime_abi.prime_slice_push_handle,
+                self.runtime_abi.prime_slice_push_handle_ty,
+                &mut call_args,
+                "slice_push_handle",
+            );
+        } else {
+            slice.push(value);
+        }
         Ok(Value::Unit)
     }
 
@@ -6197,7 +6694,19 @@ impl Compiler {
         let value = args.pop().unwrap();
         let key = self.expect_string_value(args.pop().unwrap(), "insert")?;
         let map = self.expect_map_value(args.pop().unwrap(), "insert")?;
-        map.insert(key, value);
+        if let Some(handle) = map.handle {
+            let (key_ptr, key_len) = self.build_runtime_bytes(&key, "insert_key")?;
+            let value_handle = self.build_runtime_handle(value)?;
+            let mut call_args = [handle, key_ptr, key_len, value_handle];
+            self.call_runtime(
+                self.runtime_abi.prime_map_insert_handle,
+                self.runtime_abi.prime_map_insert_handle_ty,
+                &mut call_args,
+                "map_insert_handle",
+            );
+        } else {
+            map.insert(key, value);
+        }
         Ok(Value::Unit)
     }
 
@@ -6748,6 +7257,7 @@ impl Compiler {
             self.runtime_abi = RuntimeAbi::declare(self.context, self.module);
             self.closure_counter = 0;
             self.closures.clear();
+            self.closure_envs.clear();
             let opaque_ptr = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
             let mut elems = [opaque_ptr, opaque_ptr, self.runtime_abi.usize_type];
             self.closure_value_type =
@@ -7670,5 +8180,41 @@ fn main() {
         compiler
             .compile_program(&program)
             .expect("heap handles should round-trip through closure env");
+    }
+
+    #[test]
+    fn closures_capture_references() {
+        let source = r#"
+module tests::closures;
+
+fn main() {
+  let int32 base = 5;
+  let &int32 alias = &base;
+  let reader = |_: int32| alias;
+  let _ = reader(0);
+}
+"#;
+        compile_source(source).expect("reference captures should compile");
+    }
+
+    #[test]
+    fn captured_handles_support_runtime_ops() {
+        let source = r#"
+module tests::closures;
+
+fn main() {
+  let []int32 nums = slice_new();
+  slice_push(nums, 1);
+  let Map[string, int32] scores = map_new();
+  map_insert(scores, "a", 10);
+  let mutate = |_: int32| {
+    push(nums, 2);
+    insert(scores, "b", 20);
+    let _ = get(nums, 1);
+    let _ = get(scores, "b");
+  };
+}
+"#;
+        compile_source(source).expect("captured handles should support mutation and read");
     }
 }

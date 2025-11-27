@@ -41,14 +41,22 @@ pub struct RuntimeAbi {
     pub prime_slice_new_ty: LLVMTypeRef,
     pub prime_slice_push: LLVMValueRef,
     pub prime_slice_push_ty: LLVMTypeRef,
+    pub prime_slice_push_handle: LLVMValueRef,
+    pub prime_slice_push_handle_ty: LLVMTypeRef,
     pub prime_slice_len_handle: LLVMValueRef,
     pub prime_slice_len_handle_ty: LLVMTypeRef,
+    pub prime_slice_get_handle: LLVMValueRef,
+    pub prime_slice_get_handle_ty: LLVMTypeRef,
     pub prime_map_new: LLVMValueRef,
     pub prime_map_new_ty: LLVMTypeRef,
     pub prime_map_len_handle: LLVMValueRef,
     pub prime_map_len_handle_ty: LLVMTypeRef,
     pub prime_map_insert: LLVMValueRef,
     pub prime_map_insert_ty: LLVMTypeRef,
+    pub prime_map_insert_handle: LLVMValueRef,
+    pub prime_map_insert_handle_ty: LLVMTypeRef,
+    pub prime_map_get_handle: LLVMValueRef,
+    pub prime_map_get_handle_ty: LLVMTypeRef,
     pub prime_enum_new: LLVMValueRef,
     pub prime_enum_new_ty: LLVMTypeRef,
     pub prime_enum_tag: LLVMValueRef,
@@ -59,6 +67,8 @@ pub struct RuntimeAbi {
     pub prime_reference_new_ty: LLVMTypeRef,
     pub prime_reference_read: LLVMValueRef,
     pub prime_reference_read_ty: LLVMTypeRef,
+    pub prime_reference_write: LLVMValueRef,
+    pub prime_reference_write_ty: LLVMTypeRef,
     pub prime_channel_new: LLVMValueRef,
     pub prime_channel_new_ty: LLVMTypeRef,
     pub prime_send: LLVMValueRef,
@@ -79,6 +89,8 @@ pub struct RuntimeAbi {
     pub prime_struct_new_ty: LLVMTypeRef,
     pub prime_struct_insert: LLVMValueRef,
     pub prime_struct_insert_ty: LLVMTypeRef,
+    pub prime_env_free: LLVMValueRef,
+    pub prime_env_free_ty: LLVMTypeRef,
 }
 
 impl RuntimeAbi {
@@ -128,11 +140,23 @@ impl RuntimeAbi {
             status_type,
             &mut [handle_type, handle_type],
         );
+        let (prime_slice_push_handle, prime_slice_push_handle_ty) = declare_fn(
+            module,
+            "prime_slice_push_handle",
+            status_type,
+            &mut [handle_type, handle_type],
+        );
         let (prime_slice_len_handle, prime_slice_len_handle_ty) = declare_fn(
             module,
             "prime_slice_len_handle",
             usize_type,
             &mut [handle_type],
+        );
+        let (prime_slice_get_handle, prime_slice_get_handle_ty) = declare_fn(
+            module,
+            "prime_slice_get_handle",
+            status_type,
+            &mut [handle_type, usize_type, LLVMPointerType(handle_type, 0)],
         );
         let (prime_map_new, prime_map_new_ty) =
             declare_fn(module, "prime_map_new", handle_type, &mut []);
@@ -147,6 +171,18 @@ impl RuntimeAbi {
             "prime_map_insert",
             status_type,
             &mut [handle_type, string_data_type, usize_type, handle_type],
+        );
+        let (prime_map_insert_handle, prime_map_insert_handle_ty) = declare_fn(
+            module,
+            "prime_map_insert_handle",
+            status_type,
+            &mut [handle_type, string_data_type, usize_type, handle_type],
+        );
+        let (prime_map_get_handle, prime_map_get_handle_ty) = declare_fn(
+            module,
+            "prime_map_get_handle",
+            status_type,
+            &mut [handle_type, string_data_type, usize_type, LLVMPointerType(handle_type, 0)],
         );
         let (prime_enum_new, prime_enum_new_ty) = declare_fn(
             module,
@@ -181,6 +217,12 @@ impl RuntimeAbi {
             "prime_reference_read",
             handle_type,
             &mut [handle_type],
+        );
+        let (prime_reference_write, prime_reference_write_ty) = declare_fn(
+            module,
+            "prime_reference_write",
+            status_type,
+            &mut [handle_type, handle_type],
         );
         let (prime_channel_new, prime_channel_new_ty) = declare_fn(
             module,
@@ -242,6 +284,12 @@ impl RuntimeAbi {
             status_type,
             &mut [handle_type, string_data_type, usize_type, handle_type],
         );
+        let (prime_env_free, prime_env_free_ty) = declare_fn(
+            module,
+            "prime_env_free",
+            void_type,
+            &mut [handle_type],
+        );
 
         Self {
             handle_type,
@@ -271,14 +319,22 @@ impl RuntimeAbi {
             prime_slice_new_ty,
             prime_slice_push,
             prime_slice_push_ty,
+            prime_slice_push_handle,
+            prime_slice_push_handle_ty,
             prime_slice_len_handle,
             prime_slice_len_handle_ty,
+            prime_slice_get_handle,
+            prime_slice_get_handle_ty,
             prime_map_new,
             prime_map_new_ty,
             prime_map_len_handle,
             prime_map_len_handle_ty,
             prime_map_insert,
             prime_map_insert_ty,
+            prime_map_insert_handle,
+            prime_map_insert_handle_ty,
+            prime_map_get_handle,
+            prime_map_get_handle_ty,
             prime_enum_new,
             prime_enum_new_ty,
             prime_enum_tag,
@@ -289,6 +345,8 @@ impl RuntimeAbi {
             prime_reference_new_ty,
             prime_reference_read,
             prime_reference_read_ty,
+            prime_reference_write,
+            prime_reference_write_ty,
             prime_channel_new,
             prime_channel_new_ty,
             prime_send,
@@ -309,6 +367,8 @@ impl RuntimeAbi {
             prime_struct_new_ty,
             prime_struct_insert,
             prime_struct_insert_ty,
+            prime_env_free,
+            prime_env_free_ty,
         }
     }
 
@@ -341,14 +401,22 @@ impl RuntimeAbi {
             prime_slice_new_ty: std::ptr::null_mut(),
             prime_slice_push: std::ptr::null_mut(),
             prime_slice_push_ty: std::ptr::null_mut(),
+            prime_slice_push_handle: std::ptr::null_mut(),
+            prime_slice_push_handle_ty: std::ptr::null_mut(),
             prime_slice_len_handle: std::ptr::null_mut(),
             prime_slice_len_handle_ty: std::ptr::null_mut(),
+            prime_slice_get_handle: std::ptr::null_mut(),
+            prime_slice_get_handle_ty: std::ptr::null_mut(),
             prime_map_new: std::ptr::null_mut(),
             prime_map_new_ty: std::ptr::null_mut(),
             prime_map_len_handle: std::ptr::null_mut(),
             prime_map_len_handle_ty: std::ptr::null_mut(),
             prime_map_insert: std::ptr::null_mut(),
             prime_map_insert_ty: std::ptr::null_mut(),
+            prime_map_insert_handle: std::ptr::null_mut(),
+            prime_map_insert_handle_ty: std::ptr::null_mut(),
+            prime_map_get_handle: std::ptr::null_mut(),
+            prime_map_get_handle_ty: std::ptr::null_mut(),
             prime_enum_new: std::ptr::null_mut(),
             prime_enum_new_ty: std::ptr::null_mut(),
             prime_enum_tag: std::ptr::null_mut(),
@@ -359,6 +427,8 @@ impl RuntimeAbi {
             prime_reference_new_ty: std::ptr::null_mut(),
             prime_reference_read: std::ptr::null_mut(),
             prime_reference_read_ty: std::ptr::null_mut(),
+            prime_reference_write: std::ptr::null_mut(),
+            prime_reference_write_ty: std::ptr::null_mut(),
             prime_channel_new: std::ptr::null_mut(),
             prime_channel_new_ty: std::ptr::null_mut(),
             prime_send: std::ptr::null_mut(),
@@ -379,6 +449,8 @@ impl RuntimeAbi {
             prime_struct_new_ty: std::ptr::null_mut(),
             prime_struct_insert: std::ptr::null_mut(),
             prime_struct_insert_ty: std::ptr::null_mut(),
+            prime_env_free: std::ptr::null_mut(),
+            prime_env_free_ty: std::ptr::null_mut(),
         }
     }
 }

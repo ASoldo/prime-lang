@@ -3443,10 +3443,12 @@ mod tests {
         let program = Program {
             modules: vec![module],
         };
-        Interpreter::new(Package {
+        let mut interpreter = Interpreter::new(Package {
             program,
             modules: Vec::new(),
-        })
+        });
+        interpreter.bootstrap().expect("bootstrap");
+        interpreter
     }
 
     fn call_unit(interpreter: &mut Interpreter, name: &str) {

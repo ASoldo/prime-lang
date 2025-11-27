@@ -1,47 +1,47 @@
-  1. Closure metadata fidelity (highest priority)
+• Detailed plan to close the remaining closure gaps
 
-  - Always use typechecker-populated captures; remove or gate opaque capture synthesis. If captures are empty, derive them
-    structurally from free-vars and annotate with real types (using typechecker info), not opaque placeholders.
-  - When reconstructing closure values from runtime structs (env, fn, id), preserve the original signature/arity. Reject or patch
-    up mismatches rather than defaulting to empty signatures.
+  1. Env lifetime management (destructors/cleanup)
 
-  2. Env allocation & lifetime
+  - Compiler: introduce a closure-env drop path in build mode. Track allocated env handles and emit runtime free calls at end of
+    build execution (or per-function scope if safe).
+  - Runtime: add an env-free entry point (e.g., prime_env_free(ptr)) that frees malloc’d env structs; ensure handle-owned heap
+    values are reference-counted or explicitly freed.
+  - Tests: add a build-mode test that allocates many closures and asserts no double-free/crash and bounded malloc usage (if
+    measurable).
+  - Docs: document lifetime change and any caveats (still no user-defined destructors).
 
-  - Keep envs heap-allocated (already done) but centralize allocation (helper) to avoid mistakes; document lifetime as process-
-    long for now.
+  2. Reference captures in build mode
 
-  3. Type coverage parity
+  - Typecheck: allow CaptureMode::Reference { mutable } in build mode when the referenced value outlives the closure; reject
+    otherwise with clear diagnostics.
+  - Codegen: store a pointer to the original value in the env, adjust value_to_llvm_for_type/value_from_llvm to wrap/unwarp
+    references. Update call sites to respect mutability and borrow rules.
+  - Safety: enforce borrow checks so reference captures don’t outlive scopes; error on illegal captures.
+  - Tests: add nested/higher-order closures that capture refs (mutable and immutable) and verify correct results and borrow
+    errors.
 
-  - Extend closure value_to/from_llvm to support:
-      - bool and string values properly (no placeholder bool-as-int; string shouldn’t be opaque).
-      - Structs/tuples of structs, slices/maps/boxes if allowed; otherwise emit clear errors.
-  - Verify multi-return tuple lowering works for closures and calls.
+  3. Heap handle mutation/read on captured handles
 
-  4. Call correctness
+  - Runtime: add handle-friendly ops: prime_slice_get_handle, prime_slice_push_handle, prime_map_get_handle,
+    prime_map_insert_handle that operate on captured handles.
+  - Compiler: wire builtins (get/push/insert for slices/maps) to call the handle variants when a handle is present; keep current
+    in-memory path when locally available.
+  - Tests: add integration tests where a closure captures a slice/map, then get/push/insert is called on the captured handle and
+    results are observable via debug_show/len.
 
-  - Ensure fn pointer bitcasts use the correct function type derived from the closure’s signature. Validate arity before calls and
-    error clearly on mismatch.
+  4. Docs and demos
 
-  5. Diagnostics and safety nets
+  - README/AGENTS: update build-mode closures section to describe env lifetime changes, reference capture support, and handle-
+    aware heap ops.
+  - Demo: extend heap section to mutate captured slice/map (push, insert, get) and print results; show reference-capture example
+    if enabled.
+  - LSP: ensure method completions include new handle-aware ops (no change if names stay the same).
 
-  - Emit clear errors when captures are missing types after typecheck.
-  - Add a debug flag to dump closure capture sets/signatures during codegen for tricky cases.
-  - Remove unreachable patterns/warnings (formatter unreachable arm, dead CaptureMode::Reference, unused ClosureValue::ret).
+  Milestones/testing
 
-  6. Tests
+  - After each major step, run: cargo run --quiet -- build workspace/demos/closures/closure_demo.prime --name closures_demo and
+    targeted tests.
+  - Add new integration tests for ref captures and handle mutations; consider a stress test for env freeing if feasible.
 
-  - Unit/integration:
-      - Higher-order closures returning closures (correct return values).
-      - Nested closures capturing outer vars and returning closures.
-      - Multi-capture, tuple return closure.
-      - Closure passed through a tuple/struct and invoked later.
-  - Demo: keep the enriched closure demo; add an assertion or output check in the test harness.
-
-  7. Docs/CLI
-
-  - README/CLI docs: describe build-mode closure support, env layout {env_ptr, fn_ptr}, calling convention (fn(env, args…)),
-    capture semantics (move-only), current limitations (no destructors, process-lifetime env), and examples (higher-order, tuple
-    returns, nested captures).
-
-  Execution order: 1 → 4 → 3 → 5 → 6 → 7, verifying prime-lang build workspace/demos/closures/closure_demo.prime --name
-  closures_demo after each major fix.
+  This sequence keeps dependencies sane: 1 and 2 are most intrusive (safety/lifetime), 3 builds on runtime bridges, 4 is cleanup/
+  docs.

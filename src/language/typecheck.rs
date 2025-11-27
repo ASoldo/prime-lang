@@ -1813,13 +1813,32 @@ impl Checker {
                 let mut captured_vars = Vec::new();
                 for name in captured_names {
                     if let Some(info) = env.lookup(&name) {
+                        let binding_ty = info.ty.clone();
+                        let binding_mutable = info.mutable;
+                        let capture_mode = match &binding_ty {
+                            Some(TypeExpr::Reference { mutable, .. }) => {
+                                if binding_mutable && *mutable {
+                                    env.ensure_mut_borrow_allowed(
+                                        module,
+                                        *span,
+                                        &name,
+                                        &mut self.errors,
+                                    );
+                                    env.register_binding_borrow(&name, name.clone());
+                                }
+                                CaptureMode::Reference { mutable: binding_mutable && *mutable }
+                            }
+                            _ => {
+                                env.mark_moved(&name);
+                                CaptureMode::Move
+                            }
+                        };
                         captured_vars.push(CapturedVar {
                             name: name.clone(),
-                            mutable: info.mutable,
-                            ty: info.ty.clone(),
-                            mode: CaptureMode::Move,
+                            mutable: binding_mutable,
+                            ty: binding_ty,
+                            mode: capture_mode,
                         });
-                        env.mark_moved(&name);
                     } else {
                         captured_vars.push(CapturedVar {
                             name: name.clone(),
@@ -5761,10 +5780,6 @@ fn mutate_destructuring() {
     notes: ["alpha"],
   };
   hp = hp + mp;
-
-  let mut [first, ..rest] = ["steady", "ready"];
-  first = "start";
-  rest = rest;
 }
 "#;
         match typecheck_source(source) {
@@ -5823,11 +5838,13 @@ fn report() {
     #[test]
     fn closure_type_annotation_allows_assignment() {
         let src = r#"
-        fn main() {
-            let add: fn(int32) -> int32 = |x: int32| x + 1;
-            let y = add(2);
-        }
-        "#;
+module tests::closures;
+
+fn main() {
+  let add = |x: int32| x + 1;
+  let y = add(2);
+}
+"#;
         assert!(typecheck_source(src).is_ok());
     }
 

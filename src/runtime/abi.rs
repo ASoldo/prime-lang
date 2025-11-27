@@ -460,6 +460,43 @@ pub unsafe extern "C" fn prime_slice_len_handle(handle: PrimeHandle) -> usize {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_slice_get_handle(
+    slice: PrimeHandle,
+    idx: usize,
+    value_out: *mut PrimeHandle,
+) -> PrimeStatus {
+    if value_out.is_null() {
+        return PrimeStatus::Invalid;
+    }
+    match as_payload(slice, PrimeTag::Slice) {
+        Some(PrimePayload::Slice(inner)) => {
+            let items = inner.snapshot();
+            if let Some(item) = items.get(idx) {
+                *value_out = retain_value(*item);
+            } else {
+                *value_out = PrimeHandle::null();
+            }
+            PrimeStatus::Ok
+        }
+        _ => PrimeStatus::Invalid,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_slice_push_handle(
+    slice: PrimeHandle,
+    value: PrimeHandle,
+) -> PrimeStatus {
+    match as_payload_mut(slice, PrimeTag::Slice) {
+        Some(PrimePayload::Slice(inner)) => {
+            inner.push(value);
+            PrimeStatus::Ok
+        }
+        _ => PrimeStatus::Invalid,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn prime_map_new() -> PrimeHandle {
     PrimeValue::new(PrimeTag::Map, PrimePayload::Map(PrimeMap::new()))
 }
@@ -483,6 +520,61 @@ pub unsafe extern "C" fn prime_map_insert(
         return PrimeStatus::Invalid;
     }
     let key_bytes = unsafe { std::slice::from_raw_parts(key_ptr as *const u8, key_len) };
+    let key = match String::from_utf8(key_bytes.to_vec()) {
+        Ok(k) => k,
+        Err(_) => return PrimeStatus::Invalid,
+    };
+
+    match as_payload_mut(map, PrimeTag::Map) {
+        Some(PrimePayload::Map(inner)) => {
+            inner.insert(key, value);
+            PrimeStatus::Ok
+        }
+        _ => PrimeStatus::Invalid,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_map_get_handle(
+    map: PrimeHandle,
+    key_ptr: *const c_char,
+    key_len: usize,
+    value_out: *mut PrimeHandle,
+) -> PrimeStatus {
+    if key_ptr.is_null() || value_out.is_null() {
+        return PrimeStatus::Invalid;
+    }
+    let key_bytes = std::slice::from_raw_parts(key_ptr as *const u8, key_len);
+    let key = match String::from_utf8(key_bytes.to_vec()) {
+        Ok(k) => k,
+        Err(_) => return PrimeStatus::Invalid,
+    };
+
+    match as_payload(map, PrimeTag::Map) {
+        Some(PrimePayload::Map(inner)) => {
+            let guard = inner.entries.lock().unwrap();
+            if let Some(handle) = guard.get(&key) {
+                *value_out = retain_value(*handle);
+            } else {
+                *value_out = PrimeHandle::null();
+            }
+            PrimeStatus::Ok
+        }
+        _ => PrimeStatus::Invalid,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_map_insert_handle(
+    map: PrimeHandle,
+    key_ptr: *const c_char,
+    key_len: usize,
+    value: PrimeHandle,
+) -> PrimeStatus {
+    if key_ptr.is_null() {
+        return PrimeStatus::Invalid;
+    }
+    let key_bytes = std::slice::from_raw_parts(key_ptr as *const u8, key_len);
     let key = match String::from_utf8(key_bytes.to_vec()) {
         Ok(k) => k,
         Err(_) => return PrimeStatus::Invalid,
@@ -567,6 +659,23 @@ pub unsafe extern "C" fn prime_reference_read(target: PrimeHandle) -> PrimeHandl
     match as_payload(target, PrimeTag::Reference) {
         Some(PrimePayload::Reference(r)) => r.load(),
         _ => PrimeHandle::null(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_reference_write(
+    target: PrimeHandle,
+    value: PrimeHandle,
+) -> PrimeStatus {
+    match as_payload_mut(target, PrimeTag::Reference) {
+        Some(PrimePayload::Reference(r)) => {
+            let mut guard = r.cell.lock().unwrap();
+            let old = *guard;
+            *guard = retain_value(value);
+            release_value(old);
+            PrimeStatus::Ok
+        }
+        _ => PrimeStatus::Invalid,
     }
 }
 
@@ -800,6 +909,7 @@ pub unsafe extern "C" fn prime_print(value: PrimeHandle) {
 
 unsafe extern "C" {
     fn fflush(stream: *mut c_void) -> i32;
+    fn free(ptr: *mut c_void);
 }
 
 fn format_value(handle: PrimeHandle) -> String {
@@ -1023,6 +1133,14 @@ unsafe fn as_payload_mut<'a>(
     handle
         .as_mut()
         .and_then(|value| (value.tag == expected).then_some(&mut value.payload))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_env_free(env_ptr: *mut c_void) {
+    if env_ptr.is_null() {
+        return;
+    }
+    free(env_ptr);
 }
 
 #[cfg(test)]
