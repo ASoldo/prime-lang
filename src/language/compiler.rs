@@ -221,6 +221,7 @@ struct RangeValue {
 struct BoxValue {
     handle: Option<LLVMValueRef>,
     cell: Arc<Mutex<Value>>,
+    origin: Option<String>,
 }
 
 #[derive(Clone)]
@@ -537,6 +538,7 @@ impl BoxValue {
         Self {
             handle: None,
             cell: Arc::new(Mutex::new(value)),
+            origin: None,
         }
     }
 
@@ -548,6 +550,7 @@ impl BoxValue {
         Self {
             handle: Some(handle),
             cell: Arc::new(Mutex::new(Value::Unit)),
+            origin: None,
         }
     }
 }
@@ -6707,10 +6710,7 @@ impl Compiler {
                 let inner = pointer.cell.lock().unwrap();
                 self.value_struct_name(inner.value())
             }
-            Value::Boxed(inner) => {
-                let value = inner.cell.lock().unwrap();
-                self.value_struct_name(&value)
-            }
+            Value::Boxed(_) => None,
             _ => None,
         }
     }
@@ -6757,6 +6757,10 @@ impl Compiler {
                     }
                 }
             }
+            Value::Boxed(boxed) => {
+                // Box borrows are represented by references/pointers to their inner cell; do not
+                // treat the box binding itself as a borrow origin to avoid double-counting moves.
+            }
             Value::Sender(sender) => {
                 if let Some(origin) = &sender.origin {
                     self.begin_mut_borrow_in_scope(origin, scope_index)?;
@@ -6794,6 +6798,9 @@ impl Compiler {
                         self.end_mut_borrow(origin);
                     }
                 }
+            }
+            Value::Boxed(boxed) => {
+                // Box lifetimes are managed via inner references; no explicit borrow release needed.
             }
             Value::Sender(sender) => {
                 if let Some(origin) = &sender.origin {
@@ -8856,6 +8863,23 @@ mod tests {
             snapshot_err.contains("Non-constant integer"),
             "unexpected error: {snapshot_err}"
         );
+    }
+
+    #[test]
+    fn for_range_accepts_dynamic_bounds() {
+        let source = r#"
+module tests::dynamic_range;
+
+fn loop_from(n: int32) {
+  for i in n..(n + 3) {
+    out(i);
+  }
+}
+
+fn main() { loop_from(2); }
+"#;
+        let result = compile_source(source);
+        assert!(result.is_ok(), "{}", result.unwrap_err());
     }
 
     #[test]

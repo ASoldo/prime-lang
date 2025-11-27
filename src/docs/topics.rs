@@ -604,7 +604,7 @@ fn main() {
     Err(msg) => out(msg),
   }
 }"#,
-                explanation: "Channels (`channel[T]`), `spawn expr`, and `join(handle)` work in both the interpreter and build mode. Build-mode execution stays deterministic unless you opt into `PRIME_BUILD_PARALLEL=1`; emitted binaries always use OS threads. See `parallel_demo.prime` for a two-worker aggregation example.",
+                explanation: "Channels (`channel[T]`), `spawn expr`, and `join(handle)` work in both the interpreter and build mode. Build-mode execution stays deterministic unless you opt into `PRIME_BUILD_PARALLEL=1`; emitted binaries always use OS threads. Build snapshots now serialize channel endpoints, queued messages, pointers/boxes/references, closures, and join results so captured work mirrors runtime on replay. Dynamic indices and ranges also work when a runtime handle exists. See `parallel_demo.prime` for a two-worker aggregation example.",
             },
         ],
     },
