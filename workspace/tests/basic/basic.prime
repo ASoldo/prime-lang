@@ -129,3 +129,24 @@ fn index_assignment_inserts_map() -> bool {
     None => false,
   }
 }
+
+fn closure_mut_ref_capture_mutates() -> bool {
+  let mut int32 hp = 10;
+  let int32 after = {
+    hp = hp + 5;
+    hp
+  };
+  hp == 15 && after == 15
+}
+
+fn closure_defer_runs() -> bool {
+  let mut []int32 log = [];
+  {
+    defer log.push(2);
+    log.push(1);
+  }
+  match log[1] {
+    Some(v) => log.len() == 2 && v == 2,
+    None => false,
+  }
+}
