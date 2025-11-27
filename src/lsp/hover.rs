@@ -492,24 +492,21 @@ fn hover_for_imported_symbol(
 ) -> Option<Hover> {
     for import in &module.imports {
         let import_name = import.path.to_string();
-        let imported = modules
-            .iter()
-            .find(|m| m.name == import_name)
-            .or_else(|| {
-                if import
-                    .path
-                    .segments
-                    .last()
-                    .map(|s| s == "prelude")
-                    .unwrap_or(false)
-                    && import.path.segments.len() > 1
-                {
-                    let base = import.path.segments[..import.path.segments.len() - 1].join("::");
-                    modules.iter().find(|m| m.name == base)
-                } else {
-                    None
-                }
-            })?;
+        let imported = modules.iter().find(|m| m.name == import_name).or_else(|| {
+            if import
+                .path
+                .segments
+                .last()
+                .map(|s| s == "prelude")
+                .unwrap_or(false)
+                && import.path.segments.len() > 1
+            {
+                let base = import.path.segments[..import.path.segments.len() - 1].join("::");
+                modules.iter().find(|m| m.name == base)
+            } else {
+                None
+            }
+        })?;
         let mut allowed: Option<HashSet<String>> = None;
         if let Some(selectors) = &import.selectors {
             let mut names = HashSet::new();

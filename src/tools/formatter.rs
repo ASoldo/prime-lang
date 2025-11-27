@@ -451,7 +451,10 @@ fn format_block(out: &mut String, block: &Block, indent: usize) {
     let mut prev_kind: Option<&Statement> = None;
     for statement in &block.statements {
         if matches!(statement, Statement::Let(_))
-            && !matches!(prev_kind, None | Some(Statement::Let(_) | Statement::Assign(_)))
+            && !matches!(
+                prev_kind,
+                None | Some(Statement::Let(_) | Statement::Assign(_))
+            )
         {
             out.push('\n');
         }
@@ -907,10 +910,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         Expr::Move { expr, .. } => format!("move {}", format_expr_prec(expr, 100)),
         Expr::Spawn { expr, .. } => format!("spawn {}", format_expr_prec(expr, 100)),
         Expr::Closure {
-            params,
-            body,
-            ret,
-            ..
+            params, body, ret, ..
         } => {
             let params_str = params
                 .iter()
@@ -1518,7 +1518,11 @@ fn format_type(ty: &TypeExpr) -> String {
             format!("({})", inner)
         }
         TypeExpr::Function { params, returns } => {
-            let params_str = params.iter().map(format_type).collect::<Vec<_>>().join(", ");
+            let params_str = params
+                .iter()
+                .map(format_type)
+                .collect::<Vec<_>>()
+                .join(", ");
             let ret_str = if returns.is_empty() {
                 "()".into()
             } else if returns.len() == 1 {
@@ -1526,7 +1530,11 @@ fn format_type(ty: &TypeExpr) -> String {
             } else {
                 format!(
                     "({})",
-                    returns.iter().map(format_type).collect::<Vec<_>>().join(", ")
+                    returns
+                        .iter()
+                        .map(format_type)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             };
             format!("fn({}) -> {}", params_str, ret_str)
@@ -1605,8 +1613,9 @@ mod tests {
     fn formatter_interface_self() {
         let input = fs::read_to_string("workspace/tests/golden/formatter_interface_self_in.prime")
             .expect("fixture input");
-        let output = fs::read_to_string("workspace/tests/golden/formatter_interface_self_out.prime")
-            .expect("fixture out");
+        let output =
+            fs::read_to_string("workspace/tests/golden/formatter_interface_self_out.prime")
+                .expect("fixture out");
         let formatted = format_fixture(&input);
         assert_eq!(formatted, output);
     }

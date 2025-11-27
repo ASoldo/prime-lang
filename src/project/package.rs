@@ -188,7 +188,8 @@ impl ModuleLoader {
                     }
                 }
                 let dep_segments: Vec<_> = dep_name.split("::").collect();
-                let import_segments: Vec<_> = import_path.segments.iter().map(|s| s.as_str()).collect();
+                let import_segments: Vec<_> =
+                    import_path.segments.iter().map(|s| s.as_str()).collect();
                 if import_segments.starts_with(&dep_segments[..]) {
                     let rel_segments = &import_segments[dep_segments.len()..];
                     let mut candidate_root = match &dep.source {
@@ -256,7 +257,10 @@ fn resolve_import_relative(base: &Path, import_path: &ImportPath) -> PathBuf {
     base_dir.join(path)
 }
 
-fn resolve_namespaced_import(manifest: &PackageManifest, import_path: &ImportPath) -> Option<PathBuf> {
+fn resolve_namespaced_import(
+    manifest: &PackageManifest,
+    import_path: &ImportPath,
+) -> Option<PathBuf> {
     if import_path.segments.is_empty() {
         return None;
     }

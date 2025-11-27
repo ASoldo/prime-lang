@@ -3,8 +3,8 @@ use crate::language::{
     token::Token,
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
-use std::sync::{Arc, RwLock};
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
 pub struct Program {

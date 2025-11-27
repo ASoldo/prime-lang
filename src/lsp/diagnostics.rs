@@ -22,6 +22,9 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use toml_edit::{
+    DocumentMut, InlineTable, Item as TomlItem, Table as TomlTable, Value as TomlValue,
+};
 use tower_lsp_server::{
     UriExt,
     lsp_types::{
@@ -29,7 +32,6 @@ use tower_lsp_server::{
         NumberOrString, Position, Range, TextEdit, Uri, WorkspaceEdit,
     },
 };
-use toml_edit::{DocumentMut, InlineTable, Item as TomlItem, Table as TomlTable, Value as TomlValue};
 
 use super::{
     parser::parse_module_from_uri,

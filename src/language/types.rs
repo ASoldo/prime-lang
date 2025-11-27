@@ -5,9 +5,18 @@ use std::collections::HashMap;
 pub enum TypeExpr {
     Named(String, Vec<TypeExpr>),
     Slice(Box<TypeExpr>),
-    Array { size: usize, ty: Box<TypeExpr> },
-    Reference { mutable: bool, ty: Box<TypeExpr> },
-    Pointer { mutable: bool, ty: Box<TypeExpr> },
+    Array {
+        size: usize,
+        ty: Box<TypeExpr>,
+    },
+    Reference {
+        mutable: bool,
+        ty: Box<TypeExpr>,
+    },
+    Pointer {
+        mutable: bool,
+        ty: Box<TypeExpr>,
+    },
     Tuple(Vec<TypeExpr>),
     Function {
         params: Vec<TypeExpr>,
@@ -120,8 +129,7 @@ impl TypeExpr {
                 }
             }
             TypeExpr::Function { params, returns } => {
-                let params_fmt: Vec<String> =
-                    params.iter().map(|ty| ty.canonical_name()).collect();
+                let params_fmt: Vec<String> = params.iter().map(|ty| ty.canonical_name()).collect();
                 let returns_fmt: Vec<String> =
                     returns.iter().map(|ty| ty.canonical_name()).collect();
                 let ret_part = if returns_fmt.is_empty() {

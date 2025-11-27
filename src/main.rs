@@ -1369,21 +1369,22 @@ fn add_dependency_entry(
     fs::write(&manifest_path, doc.to_string())?;
 
     let lock_path = manifest_dir.join("prime.lock");
-    let mut lock = crate::project::lock::load_lockfile(&lock_path)
-        .unwrap_or_else(|| PackageManifest::load(&manifest_path).map(|m| m.lock_dependencies()).unwrap_or_default());
+    let mut lock = crate::project::lock::load_lockfile(&lock_path).unwrap_or_else(|| {
+        PackageManifest::load(&manifest_path)
+            .map(|m| m.lock_dependencies())
+            .unwrap_or_default()
+    });
 
     let mut locked = crate::project::lock::LockedDependency {
         name: dep_name.to_string(),
         package: None,
         git: dep_git.clone(),
-        path: dep_path
-            .as_ref()
-            .map(|p| {
-                p.strip_prefix(&manifest_dir)
-                    .unwrap_or(p)
-                    .to_string_lossy()
-                    .to_string()
-            }),
+        path: dep_path.as_ref().map(|p| {
+            p.strip_prefix(&manifest_dir)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .to_string()
+        }),
         rev: None,
         features: if dep_features.is_empty() {
             None
@@ -1407,11 +1408,7 @@ fn add_dependency_entry(
         }
     }
 
-    if let Some(existing) = lock
-        .dependencies
-        .iter_mut()
-        .find(|d| d.name == locked.name)
-    {
+    if let Some(existing) = lock.dependencies.iter_mut().find(|d| d.name == locked.name) {
         *existing = locked;
     } else {
         lock.dependencies.push(locked);
@@ -1604,13 +1601,11 @@ fn parse_module_segments(name: &str) -> Result<Vec<String>, Box<dyn std::error::
         );
     }
     if name.contains('.') {
-        return Err(
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "module name cannot contain '.'; use '::' or '/' separators",
-            )
-            .into(),
-        );
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "module name cannot contain '.'; use '::' or '/' separators",
+        )
+        .into());
     }
     let parts: Vec<_> = name
         .split(|ch| ch == ':' || ch == '/')
@@ -1625,7 +1620,10 @@ fn parse_module_segments(name: &str) -> Result<Vec<String>, Box<dyn std::error::
     }
     let mut segments = Vec::new();
     for part in parts {
-        if !part.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+        if !part
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("invalid module segment `{part}`"),

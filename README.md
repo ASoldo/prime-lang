@@ -609,7 +609,7 @@ controls—in mind.
 - Environments: heap-allocated opaque structs; build-mode compilation now tracks allocations and frees them via the runtime `prime_env_free` shim once execution finishes.
 - Captures: move captures remain, and immutable/mutable reference captures are allowed when the borrow is valid for the closure lifetime (mutable references respect the existing borrow checker). Capture layouts come from typechecking (no opaque synthesis).
 - Calling: function pointers are bitcast to the exact closure signature; arity mismatches raise an error before codegen.
-- Supported types: primitives, tuples, slices/maps/boxes (captured as runtime handles), references, and nested closures (including higher-order and tuple-returning examples as in `workspace/demos/closures/closure_demo.prime`).
+- Supported types: primitives, tuples (including multi-return), slices/maps/boxes (captured as runtime handles), references, channels/join handles, pointers, and nested closures (including higher-order and tuple-returning examples as in `workspace/demos/closures/closure_demo.prime`).
 - Limitations: captured heap handles are still opaque in build-time evaluation but can be mutated/read through handle-aware builtins (`push`/`insert`/`get` route to runtime ops when a handle is present); user-defined destructors are still absent.
 
 ## CLI Usage

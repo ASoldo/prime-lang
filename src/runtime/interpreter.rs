@@ -508,11 +508,7 @@ impl Interpreter {
         self.env.push_scope();
         for captured in &closure.captures {
             self.env
-                .declare(
-                    &captured.name,
-                    captured.value.clone(),
-                    captured.mutable,
-                )?;
+                .declare(&captured.name, captured.value.clone(), captured.mutable)?;
         }
         for (param, value) in closure.params.iter().zip(args.into_iter()) {
             self.env
@@ -538,12 +534,12 @@ impl Interpreter {
             BlockEval::Flow(FlowSignal::Break) => {
                 return Err(RuntimeError::Panic {
                     message: "break outside closure".into(),
-                })
+                });
             }
             BlockEval::Flow(FlowSignal::Continue) => {
                 return Err(RuntimeError::Panic {
                     message: "continue outside closure".into(),
-                })
+                });
             }
         };
         if let Some(flow) = self.execute_deferred()? {
@@ -556,7 +552,7 @@ impl Interpreter {
                             "Control flow {} not allowed when leaving closure",
                             flow_name(&other)
                         ),
-                    })
+                    });
                 }
             };
         }
@@ -2323,9 +2319,7 @@ impl Interpreter {
                         let receiver_type = self.value_struct_name(&receiver);
                         let mut method_args = arg_values.clone();
                         method_args.insert(0, receiver);
-                        if let Some(result) =
-                            self.call_builtin_method(field, method_args.clone())
-                        {
+                        if let Some(result) = self.call_builtin_method(field, method_args.clone()) {
                             let values = result?;
                             let value = match values.len() {
                                 0 => Value::Unit,

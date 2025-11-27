@@ -6,7 +6,11 @@ use crate::language::{
     token::{Token, TokenKind},
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
-use std::{ops::Range, path::PathBuf, sync::{Arc, RwLock}};
+use std::{
+    ops::Range,
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 
 pub fn parse_module(name: &str, path: PathBuf, source: &str) -> Result<Module, SyntaxErrors> {
     let tokens = match lex(source) {
@@ -564,9 +568,9 @@ impl Parser {
         let path = if matches!(self.peek_kind(), Some(TokenKind::String(_))) {
             let literal = self.expect_string_literal("Expected import path string")?;
             if literal.contains('.') {
-                return Err(self.error_here(
-                    "Import paths cannot contain '.'; use '::' or '/' separators",
-                ));
+                return Err(
+                    self.error_here("Import paths cannot contain '.'; use '::' or '/' separators")
+                );
             }
             ImportPath {
                 segments: legacy_import_segments(&literal),
@@ -587,8 +591,7 @@ impl Parser {
                         selectors = Some(vec![ImportSelector::Glob(span)]);
                         break;
                     }
-                    let ident =
-                        self.expect_identifier("Expected segment after separator")?;
+                    let ident = self.expect_identifier("Expected segment after separator")?;
                     segments.push(ident.name);
                 } else {
                     break;
@@ -2358,10 +2361,7 @@ impl Parser {
                 } else {
                     None
                 };
-                let span_end = ty
-                    .as_ref()
-                    .map(|ty| ty.span.end)
-                    .unwrap_or(ident.span.end);
+                let span_end = ty.as_ref().map(|ty| ty.span.end).unwrap_or(ident.span.end);
                 params.push(FunctionParam {
                     name: ident.name,
                     ty,

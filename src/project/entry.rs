@@ -15,8 +15,7 @@ pub fn load_manifest_for_entry(
     entry: EntryPoint<'_>,
     project: Option<&str>,
 ) -> Result<Option<PackageManifest>, PackageError> {
-    let cwd = env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let search_path_buf;
     let search_path = match entry {
         EntryPoint::Path(path) => path,
@@ -95,10 +94,12 @@ pub fn load_manifest_for_entry(
             }
         }
     }
-    PackageManifest::load(&manifest_path).map(Some).map_err(|err| PackageError::Manifest {
-        path: manifest_path.clone(),
-        message: package::manifest_error_message(err),
-    })
+    PackageManifest::load(&manifest_path)
+        .map(Some)
+        .map_err(|err| PackageError::Manifest {
+            path: manifest_path.clone(),
+            message: package::manifest_error_message(err),
+        })
 }
 
 pub fn resolve_entry_path(

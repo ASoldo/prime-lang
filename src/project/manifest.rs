@@ -1,7 +1,7 @@
-use crate::language::ast::ModuleKind;
 use super::deps;
-use super::lock::{Lockfile, LockedDependency};
+use super::lock::{LockedDependency, Lockfile};
 use super::manifest_helpers::entries_from_value;
+use crate::language::ast::ModuleKind;
 use serde::Deserialize;
 use std::{
     collections::HashMap,
@@ -312,14 +312,7 @@ fn parse_modules(
     }
     for entry in entries_from_value(value.get("tests")) {
         let raw = parse_raw_entry(entry, None, Some("test"))?;
-        insert_entry(
-            &mut tests,
-            &mut reverse,
-            root,
-            raw,
-            Some("test"),
-            "test",
-        )?;
+        insert_entry(&mut tests, &mut reverse, root, raw, Some("test"), "test")?;
     }
     Ok((modules, reverse, tests))
 }
@@ -398,10 +391,12 @@ fn parse_raw_entry(
                 .map(|s| s.to_string());
         }
     }
-    value.try_into().map_err(|error| ManifestError::InvalidModule {
-        module: name_for_error,
-        message: error.to_string(),
-    })
+    value
+        .try_into()
+        .map_err(|error| ManifestError::InvalidModule {
+            module: name_for_error,
+            message: error.to_string(),
+        })
 }
 
 fn insert_entry(
@@ -522,11 +517,7 @@ pub fn manifest_key_for(name: &str) -> String {
             _ => out.push('-'),
         }
     }
-    if out.is_empty() {
-        "entry".into()
-    } else {
-        out
-    }
+    if out.is_empty() { "entry".into() } else { out }
 }
 
 fn parse_module_visibility(value: Option<&str>) -> Result<ModuleVisibility, String> {

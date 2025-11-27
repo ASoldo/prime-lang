@@ -182,7 +182,12 @@ impl RuntimeAbi {
             module,
             "prime_map_get_handle",
             status_type,
-            &mut [handle_type, string_data_type, usize_type, LLVMPointerType(handle_type, 0)],
+            &mut [
+                handle_type,
+                string_data_type,
+                usize_type,
+                LLVMPointerType(handle_type, 0),
+            ],
         );
         let (prime_enum_new, prime_enum_new_ty) = declare_fn(
             module,
@@ -284,12 +289,8 @@ impl RuntimeAbi {
             status_type,
             &mut [handle_type, string_data_type, usize_type, handle_type],
         );
-        let (prime_env_free, prime_env_free_ty) = declare_fn(
-            module,
-            "prime_env_free",
-            void_type,
-            &mut [handle_type],
-        );
+        let (prime_env_free, prime_env_free_ty) =
+            declare_fn(module, "prime_env_free", void_type, &mut [handle_type]);
 
         Self {
             handle_type,

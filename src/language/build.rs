@@ -1,14 +1,14 @@
 use crate::language::ast::{
-    AssignStmt, BinaryOp, Block, Expr, FormatSegment, FormatStringLiteral, FunctionDef, Identifier,
-    IfCondition, IfExpr, Literal, MatchExpr, Pattern, RangeExpr, Statement, StructLiteralField,
-    StructLiteralKind, UnaryOp,
+    AssignStmt, BinaryOp, Block, CaptureMode, CapturedVar, ClosureBody, Expr, FormatSegment,
+    FormatStringLiteral, FunctionDef, FunctionParam, Identifier, IfCondition, IfExpr, Literal,
+    MatchExpr, Pattern, RangeExpr, Statement, StructLiteralField, StructLiteralKind, UnaryOp,
 };
 use crate::language::span::Span;
-use crate::language::types::{Mutability, TypeExpr};
+use crate::language::types::{Mutability, TypeAnnotation, TypeExpr};
 use crate::runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric};
 use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -49,6 +49,7 @@ pub enum BuildValue {
     },
     JoinHandle(BuildJoinHandle),
     Reference(BuildReference),
+    Closure(BuildClosure),
     Moved,
 }
 
@@ -56,6 +57,22 @@ pub enum BuildValue {
 pub struct BuildReference {
     pub cell: Arc<Mutex<BuildValue>>,
     pub mutable: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildCaptured {
+    pub name: String,
+    pub mutable: bool,
+    pub mode: CaptureMode,
+    pub value: BuildValue,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildClosure {
+    pub params: Vec<FunctionParam>,
+    pub body: ClosureBody,
+    pub ret: Option<TypeAnnotation>,
+    pub captures: Vec<BuildCaptured>,
 }
 
 #[allow(dead_code)]
@@ -80,6 +97,7 @@ impl BuildValue {
             BuildValue::DeferredCall { .. } => "function call",
             BuildValue::JoinHandle(_) => "join handle",
             BuildValue::Reference(_) => "reference",
+            BuildValue::Closure(_) => "closure",
             BuildValue::Moved => "moved value",
         }
     }
@@ -386,6 +404,57 @@ impl BuildInterpreter {
         Ok(guard.clone())
     }
 
+    fn take_binding_value(&mut self, name: &str) -> Result<BuildValue, String> {
+        let binding = self
+            .find_binding_mut(name)
+            .ok_or_else(|| format!("Unknown identifier `{}` for move", name))?;
+        if binding.borrowed_mut || binding.borrowed_shared > 0 {
+            return Err(format!("Identifier `{}` is borrowed", name));
+        }
+        let mut cell = binding.cell.lock().unwrap();
+        if let BuildValue::Moved = *cell {
+            return Err(format!("Identifier `{}` already moved", name));
+        }
+        let value = std::mem::replace(&mut *cell, BuildValue::Moved);
+        Ok(value)
+    }
+
+    fn capture_reference_by_name(
+        &mut self,
+        name: &str,
+        mutable: bool,
+    ) -> Result<BuildReference, String> {
+        let (cell, mutable_flag, borrowed_mut, borrowed_shared) = {
+            let binding = self
+                .find_binding_mut(name)
+                .ok_or_else(|| format!("Unknown identifier `{}` for reference", name))?;
+            (
+                binding.cell.clone(),
+                binding.mutable,
+                binding.borrowed_mut,
+                binding.borrowed_shared,
+            )
+        };
+        if mutable && !mutable_flag {
+            return Err(format!("Identifier `{}` is immutable", name));
+        }
+        if mutable && borrowed_mut {
+            return Err(format!("Identifier `{}` is already mutably borrowed", name));
+        }
+        if mutable && borrowed_shared > 0 {
+            return Err(format!("Identifier `{}` has active shared borrows", name));
+        }
+        if mutable {
+            self.begin_mut_borrow(name)?;
+            if let Some(binding) = self.find_binding_mut(name) {
+                binding.borrowed_mut = true;
+            }
+        } else {
+            self.begin_shared_borrow(name, name)?;
+        }
+        Ok(BuildReference { cell, mutable })
+    }
+
     fn eval_expr_mut(&mut self, expr: &Expr) -> Result<BuildValue, String> {
         match expr {
             Expr::Literal(lit) => self.eval_literal(lit),
@@ -464,9 +533,13 @@ impl BuildInterpreter {
                 ..
             } => self.eval_call(callee, type_args, args),
             Expr::FieldAccess { base, field, .. } => self.eval_field_access(base, field),
-            Expr::Closure { .. } => {
-                Err("closures are not supported in build expressions yet".into())
-            }
+            Expr::Closure {
+                params,
+                body,
+                ret,
+                captures,
+                ..
+            } => self.eval_closure_literal(params, body, ret, captures),
             Expr::Reference { expr, mutable, .. } => match expr.as_ref() {
                 Expr::Identifier(ident) => {
                     let (cell, mutable_flag, borrowed_mut, borrowed_shared) = {
@@ -1068,6 +1141,15 @@ impl BuildInterpreter {
                 Ok(BuildValue::Unit)
             }
             Expr::Identifier(Identifier { name, .. }) => {
+                if let Ok(value) = self.load_identifier(name) {
+                    if let Some(closure) = self.extract_closure(value.clone()) {
+                        let mut evaluated_args = Vec::with_capacity(args.len());
+                        for arg in args {
+                            evaluated_args.push(self.eval_expr_mut(arg)?);
+                        }
+                        return self.call_closure_value(closure, evaluated_args);
+                    }
+                }
                 self.eval_builtin_or_deferred(name, None, type_args, args)
             }
             Expr::FieldAccess { base, field, .. } => {
@@ -1075,6 +1157,14 @@ impl BuildInterpreter {
                 self.eval_builtin_or_deferred(field, Some(receiver), type_args, args)
             }
             _ => {
+                let callee_value = self.eval_expr_mut(callee)?;
+                if let Some(closure) = self.extract_closure(callee_value) {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.eval_expr_mut(arg)?);
+                    }
+                    return self.call_closure_value(closure, evaluated_args);
+                }
                 Err("only identifier and method calls supported in build spawn interpreter".into())
             }
         }
@@ -1099,6 +1189,62 @@ impl BuildInterpreter {
         Err("match expression had no matching arm in build spawn".into())
     }
 
+    fn extract_closure(&self, value: BuildValue) -> Option<BuildClosure> {
+        match value {
+            BuildValue::Closure(closure) => Some(closure),
+            BuildValue::Reference(reference) => {
+                let guard = reference.cell.lock().ok()?;
+                self.extract_closure(guard.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn call_closure_value(
+        &mut self,
+        closure: BuildClosure,
+        args: Vec<BuildValue>,
+    ) -> Result<BuildValue, String> {
+        if closure.params.len() != args.len() {
+            return Err(format!(
+                "closure expects {} arguments, got {}",
+                closure.params.len(),
+                args.len()
+            ));
+        }
+        self.push_scope();
+        let result = (|| {
+            for captured in closure.captures {
+                let pattern = Pattern::Identifier(captured.name.clone(), Span::new(0, 0));
+                self.bind_pattern(
+                    &pattern,
+                    captured.value.clone(),
+                    if captured.mutable {
+                        Mutability::Mutable
+                    } else {
+                        Mutability::Immutable
+                    },
+                )?;
+            }
+            for (param, value) in closure.params.iter().zip(args.into_iter()) {
+                let pattern = Pattern::Identifier(param.name.clone(), param.span);
+                self.bind_pattern(&pattern, value, param.mutability)?;
+            }
+            let result = match &closure.body {
+                ClosureBody::Block(block) => self.eval_block(block)?,
+                ClosureBody::Expr(expr) => Flow::Value(self.eval_expr_mut(expr.node.as_ref())?),
+            };
+            match result {
+                Flow::Value(v) | Flow::Return(v) => Ok(v),
+                Flow::Break | Flow::Continue => {
+                    Err("Control flow cannot escape closure body in build mode".into())
+                }
+            }
+        })();
+        self.pop_scope()?;
+        result
+    }
+
     fn eval_move(&mut self, expr: &Expr) -> Result<BuildValue, String> {
         match expr {
             Expr::Identifier(ident) => {
@@ -1117,6 +1263,36 @@ impl BuildInterpreter {
             }
             _ => self.eval_expr_mut(expr),
         }
+    }
+
+    fn eval_closure_literal(
+        &mut self,
+        params: &[FunctionParam],
+        body: &ClosureBody,
+        ret: &Option<TypeAnnotation>,
+        captures: &Arc<RwLock<Vec<CapturedVar>>>,
+    ) -> Result<BuildValue, String> {
+        let mut captured_values = Vec::new();
+        for captured in captures.read().unwrap().iter() {
+            let value = match captured.mode {
+                CaptureMode::Move => self.take_binding_value(&captured.name)?,
+                CaptureMode::Reference { mutable } => {
+                    BuildValue::Reference(self.capture_reference_by_name(&captured.name, mutable)?)
+                }
+            };
+            captured_values.push(BuildCaptured {
+                name: captured.name.clone(),
+                mutable: captured.mutable,
+                mode: captured.mode.clone(),
+                value,
+            });
+        }
+        Ok(BuildValue::Closure(BuildClosure {
+            params: params.to_vec(),
+            body: body.clone(),
+            ret: ret.clone(),
+            captures: captured_values,
+        }))
     }
 
     fn eval_try(&mut self, block: &Block) -> Result<BuildValue, String> {

@@ -70,6 +70,9 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let first = entries[0].as_table().expect("table entry");
         assert_eq!(first.get("name").and_then(|v| v.as_str()), Some("demo"));
-        assert_eq!(first.get("path").and_then(|v| v.as_str()), Some("demo.prime"));
+        assert_eq!(
+            first.get("path").and_then(|v| v.as_str()),
+            Some("demo.prime")
+        );
     }
 }

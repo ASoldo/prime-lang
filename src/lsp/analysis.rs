@@ -93,11 +93,10 @@ fn collect_decl_from_function(
         if param.name == "self" {
             if let Some(override_ty) = receiver_override.clone() {
                 param_ty = Some(override_ty);
-            } else if let Some(resolved) =
-                param
-                    .ty
-                    .as_ref()
-                    .and_then(|ty| receiver_type_name(&ty.ty).map(TypeExpr::named))
+            } else if let Some(resolved) = param
+                .ty
+                .as_ref()
+                .and_then(|ty| receiver_type_name(&ty.ty).map(TypeExpr::named))
             {
                 param_ty = Some(resolved);
             }
@@ -601,9 +600,7 @@ fn infer_expr_type(expr: &Expr, module: &Module) -> Option<TypeExpr> {
             Expr::Identifier(ident) => function_return_type(module, &ident.name),
             _ => None,
         },
-        Expr::Closure {
-            params, ret, ..
-        } => {
+        Expr::Closure { params, ret, .. } => {
             let mut param_tys = Vec::new();
             for param in params {
                 if let Some(ann) = &param.ty {

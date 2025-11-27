@@ -89,11 +89,7 @@ impl TypeRegistry {
             .find_map(|symbols| symbols.interfaces.get(name).cloned())
     }
 
-    fn find_function_in_module(
-        &self,
-        module: &str,
-        key: &FunctionKey,
-    ) -> Option<FunctionInfo> {
+    fn find_function_in_module(&self, module: &str, key: &FunctionKey) -> Option<FunctionInfo> {
         self.module_symbols(module)
             .and_then(|symbols| symbols.functions.get(key).cloned())
     }
@@ -104,9 +100,7 @@ impl TypeRegistry {
     }
 
     fn find_struct_in_module(&self, module: &str, name: &str) -> Option<&StructInfo> {
-        self.structs
-            .get(name)
-            .filter(|info| info._module == module)
+        self.structs.get(name).filter(|info| info._module == module)
     }
 
     fn find_enum_in_module(&self, module: &str, name: &str) -> Option<&EnumInfo> {
@@ -395,11 +389,7 @@ impl Checker {
             let mut private = false;
             let enum_info = self.lookup_enum(env, name, &mut private).ok_or_else(|| {
                 if private {
-                    TypeError::new(
-                        &module.path,
-                        span,
-                        format!("enum `{}` is not public", name),
-                    )
+                    TypeError::new(&module.path, span, format!("enum `{}` is not public", name))
                 } else {
                     TypeError::new(&module.path, span, format!("Unknown enum `{}`", name))
                 }
@@ -423,8 +413,7 @@ impl Checker {
     }
 
     fn can_access(&self, module: &str, visibility: Visibility) -> bool {
-        matches!(visibility, Visibility::Public)
-            || self.current_module.as_deref() == Some(module)
+        matches!(visibility, Visibility::Public) || self.current_module.as_deref() == Some(module)
     }
 
     fn build_import_scope(&mut self, module: &Module) -> ImportScope {
@@ -489,12 +478,8 @@ impl Checker {
                                 ));
                                 continue;
                             }
-                            if !self.validate_public_symbol(
-                                &module_name,
-                                name,
-                                &module.path,
-                                *span,
-                            ) {
+                            if !self.validate_public_symbol(&module_name, name, &module.path, *span)
+                            {
                                 continue;
                             }
                             scope.selected.insert(
@@ -538,8 +523,7 @@ impl Checker {
                     for selector in prelude {
                         match selector {
                             ImportSelector::Name { name, alias, span } => {
-                                let local_name =
-                                    alias.clone().unwrap_or_else(|| name.clone());
+                                let local_name = alias.clone().unwrap_or_else(|| name.clone());
                                 if let Some(existing) = scope.selected.get(&local_name) {
                                     if existing.module == module_name && existing.name == name {
                                         continue;
@@ -767,8 +751,9 @@ impl Checker {
         found_private: &mut bool,
     ) -> Option<StructInfo> {
         if let Some(import) = env.imported_item(name) {
-            if let Some(info) =
-                self.registry.find_struct_in_module(&import.module, &import.name)
+            if let Some(info) = self
+                .registry
+                .find_struct_in_module(&import.module, &import.name)
             {
                 if self.can_access(&import.module, info.def.visibility) {
                     return Some(info.clone());
@@ -803,15 +788,11 @@ impl Checker {
         None
     }
 
-    fn lookup_enum(
-        &self,
-        env: &FnEnv,
-        name: &str,
-        found_private: &mut bool,
-    ) -> Option<EnumInfo> {
+    fn lookup_enum(&self, env: &FnEnv, name: &str, found_private: &mut bool) -> Option<EnumInfo> {
         if let Some(import) = env.imported_item(name) {
-            if let Some(info) =
-                self.registry.find_enum_in_module(&import.module, &import.name)
+            if let Some(info) = self
+                .registry
+                .find_enum_in_module(&import.module, &import.name)
             {
                 if self.can_access(&import.module, info.def.visibility) {
                     return Some(info.clone());
@@ -1073,7 +1054,11 @@ impl Checker {
     }
 
     fn check_function(&mut self, module: &Module, def: &FunctionDef, imports: &ImportScope) {
-        let mut env = FnEnv::new(module.path.clone(), def.type_params.clone(), imports.clone());
+        let mut env = FnEnv::new(
+            module.path.clone(),
+            def.type_params.clone(),
+            imports.clone(),
+        );
         let return_types: Vec<TypeExpr> = def.returns.iter().map(|ann| ann.ty.clone()).collect();
         for param in &def.params {
             if let Some(ty) = &param.ty {
@@ -1196,21 +1181,21 @@ impl Checker {
                             env.register_binding_borrow(name, target);
                         }
                     }
-                pattern => {
-                    if let Some(value_expr) = &stmt.value {
-                        let ty = self.check_expression(
-                            module,
-                            value_expr,
-                            expected.as_ref(),
-                            returns,
-                            env,
-                        );
-                        self.bind_pattern(module, pattern, ty.as_ref(), env, stmt.mutability);
-                    } else {
-                        self.errors.push(TypeError::new(
-                            &module.path,
-                            stmt.span,
-                            "destructuring bindings require an initializer",
+                    pattern => {
+                        if let Some(value_expr) = &stmt.value {
+                            let ty = self.check_expression(
+                                module,
+                                value_expr,
+                                expected.as_ref(),
+                                returns,
+                                env,
+                            );
+                            self.bind_pattern(module, pattern, ty.as_ref(), env, stmt.mutability);
+                        } else {
+                            self.errors.push(TypeError::new(
+                                &module.path,
+                                stmt.span,
+                                "destructuring bindings require an initializer",
                             ));
                         }
                     }
@@ -1464,9 +1449,7 @@ impl Checker {
                     return Some(found_ty);
                 }
                 if let Some(import) = env.imported_item(&ident.name) {
-                    if let Some(ty) =
-                        self.lookup_const_in_module(&import.module, &import.name)
-                    {
+                    if let Some(ty) = self.lookup_const_in_module(&import.module, &import.name) {
                         return Some(ty);
                     }
                 }
@@ -1531,12 +1514,9 @@ impl Checker {
             Expr::FieldAccess { base, field, span } => {
                 if let Expr::Identifier(module_ident) = base.as_ref() {
                     if let Some(module_name) = self.resolve_module_name(env, &module_ident.name) {
-                        if let Some(ty) = self.lookup_module_const_type(
-                            &module.path,
-                            module_name,
-                            field,
-                            *span,
-                        ) {
+                        if let Some(ty) =
+                            self.lookup_module_const_type(&module.path, module_name, field, *span)
+                        {
                             return Some(ty);
                         } else {
                             return None;
@@ -1568,13 +1548,14 @@ impl Checker {
                         }
                     }
                 }
-                let info = match self.resolve_enum_literal(module, env, resolved_name, variant, *span) {
-                    Ok(info) => info,
-                    Err(err) => {
-                        self.errors.push(err);
-                        return None;
-                    }
-                };
+                let info =
+                    match self.resolve_enum_literal(module, env, resolved_name, variant, *span) {
+                        Ok(info) => info,
+                        Err(err) => {
+                            self.errors.push(err);
+                            return None;
+                        }
+                    };
                 for (field, expr) in info.def.fields.iter().zip(values.iter()) {
                     self.check_expression(module, expr, Some(&field.ty), returns, env);
                 }
@@ -1790,20 +1771,16 @@ impl Checker {
                         param_types.push(TypeExpr::Unit);
                     }
                 }
-                let expected_ret = expected_fn
-                    .as_ref()
-                    .and_then(|(_, returns)| returns.get(0));
+                let expected_ret = expected_fn.as_ref().and_then(|(_, returns)| returns.get(0));
                 let body_ty = match body {
                     ClosureBody::Block(block) => self.check_block(module, block, returns, env),
-                    ClosureBody::Expr(expr) => {
-                        self.check_expression(
-                            module,
-                            expr.node.as_ref(),
-                            expected_ret,
-                            returns,
-                            env,
-                        )
-                    }
+                    ClosureBody::Expr(expr) => self.check_expression(
+                        module,
+                        expr.node.as_ref(),
+                        expected_ret,
+                        returns,
+                        env,
+                    ),
                 };
                 if let (Some(annotation), Some(actual)) = (ret, body_ty.as_ref()) {
                     self.ensure_type(module, annotation.span, &annotation.ty, Some(actual));
@@ -1826,7 +1803,9 @@ impl Checker {
                                     );
                                     env.register_binding_borrow(&name, name.clone());
                                 }
-                                CaptureMode::Reference { mutable: binding_mutable && *mutable }
+                                CaptureMode::Reference {
+                                    mutable: binding_mutable && *mutable,
+                                }
                             }
                             _ => {
                                 env.mark_moved(&name);
@@ -2195,7 +2174,14 @@ impl Checker {
                     }) = binding.ty.clone()
                     {
                         return self.check_function_type_call(
-                            module, &params, &fn_returns, args, expected, returns, env, span,
+                            module,
+                            &params,
+                            &fn_returns,
+                            args,
+                            expected,
+                            returns,
+                            env,
+                            span,
                         );
                     }
                 }
@@ -2213,19 +2199,15 @@ impl Checker {
             Expr::FieldAccess { base, field, .. } => {
                 if let Expr::Identifier(module_ident) = base.as_ref() {
                     if let Some(module_name) = self.resolve_module_name(env, &module_ident.name) {
-                        if let Some(sig) =
-                            self.lookup_function_in_module(module_name, field, None)
+                        if let Some(sig) = self.lookup_function_in_module(module_name, field, None)
                         {
                             return self.check_function_call(
                                 module, sig, args, type_args, expected, returns, env, span,
                             );
                         }
-                        if let Some(const_ty) = self.lookup_module_const_type(
-                            &module.path,
-                            module_name,
-                            field,
-                            span,
-                        ) {
+                        if let Some(const_ty) =
+                            self.lookup_module_const_type(&module.path, module_name, field, span)
+                        {
                             if !args.is_empty() {
                                 self.errors.push(TypeError::new(
                                     &module.path,
@@ -2259,11 +2241,21 @@ impl Checker {
                 }) = self.check_expression(module, callee, None, returns, env)
                 {
                     return self.check_function_type_call(
-                        module, &params, &fn_returns, args, expected, returns, env, span,
+                        module,
+                        &params,
+                        &fn_returns,
+                        args,
+                        expected,
+                        returns,
+                        env,
+                        span,
                     );
                 }
-                self.errors
-                    .push(TypeError::new(&module.path, span, "Unsupported call target"));
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "Unsupported call target",
+                ));
                 None
             }
             _ => {
@@ -2273,11 +2265,21 @@ impl Checker {
                 }) = self.check_expression(module, callee, None, returns, env)
                 {
                     return self.check_function_type_call(
-                        module, &params, &fn_returns, args, expected, returns, env, span,
+                        module,
+                        &params,
+                        &fn_returns,
+                        args,
+                        expected,
+                        returns,
+                        env,
+                        span,
                     );
                 }
-                self.errors
-                    .push(TypeError::new(&module.path, span, "Unsupported call target"));
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "Unsupported call target",
+                ));
                 None
             }
         }
@@ -2662,11 +2664,8 @@ impl Checker {
             }
             "len" => {
                 if args.len() != 1 {
-                    self.errors.push(TypeError::new(
-                        &module.path,
-                        span,
-                        "len expects 1 argument",
-                    ));
+                    self.errors
+                        .push(TypeError::new(&module.path, span, "len expects 1 argument"));
                 }
                 self.check_expression(module, &args[0], None, returns, env);
                 Some(TypeExpr::named("int32"))
@@ -3357,9 +3356,7 @@ impl Checker {
             }
         }
         if let Some((module_path, func_name)) = name.rsplit_once("::") {
-            if let Some(sig) =
-                self.lookup_function_in_module(module_path, func_name, receiver)
-            {
+            if let Some(sig) = self.lookup_function_in_module(module_path, func_name, receiver) {
                 return Some(sig);
             }
         }
@@ -3384,13 +3381,7 @@ impl Checker {
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Identifier(name, span) => {
-                env.declare(
-                    name,
-                    ty.cloned(),
-                    mutability,
-                    *span,
-                    &mut self.errors,
-                );
+                env.declare(name, ty.cloned(), mutability, *span, &mut self.errors);
             }
             Pattern::Literal(lit) => {
                 if let Some(actual) = ty {
@@ -3421,11 +3412,8 @@ impl Checker {
                         } else {
                             format!("Unknown enum `{}`", name)
                         };
-                        self.errors.push(TypeError::new(
-                            &module.path,
-                            pattern_span(pattern),
-                            msg,
-                        ));
+                        self.errors
+                            .push(TypeError::new(&module.path, pattern_span(pattern), msg));
                         return;
                     };
                     let Ok(variant_def) = find_variant(
@@ -3522,25 +3510,25 @@ impl Checker {
                                 types.len(),
                                 elements.len()
                             ),
-                    ));
-                    return;
-                }
-                for (pat, elem_ty) in elements.iter().zip(types.iter()) {
-                    self.bind_pattern(module, pat, Some(elem_ty), env, mutability);
-                }
-            } else if let Some(actual) = ty {
-                self.errors.push(TypeError::new(
-                    &module.path,
-                    *span,
+                        ));
+                        return;
+                    }
+                    for (pat, elem_ty) in elements.iter().zip(types.iter()) {
+                        self.bind_pattern(module, pat, Some(elem_ty), env, mutability);
+                    }
+                } else if let Some(actual) = ty {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        *span,
                         format!("expected tuple type, found `{}`", actual.canonical_name()),
                     ));
-            } else {
-                for pat in elements {
-                    self.bind_pattern(module, pat, None, env, mutability);
+                } else {
+                    for pat in elements {
+                        self.bind_pattern(module, pat, None, env, mutability);
+                    }
                 }
             }
-        }
-        Pattern::Map(entries, span) => {
+            Pattern::Map(entries, span) => {
                 let value_ty = match ty {
                     Some(actual) => match self.expect_map_type(module, *span, Some(actual)) {
                         Some((_key, value)) => Some(value),
@@ -3548,16 +3536,10 @@ impl Checker {
                     },
                     None => None,
                 };
-            for entry in entries {
-                self.bind_pattern(
-                    module,
-                    &entry.pattern,
-                    value_ty.as_ref(),
-                    env,
-                    mutability,
-                );
+                for entry in entries {
+                    self.bind_pattern(module, &entry.pattern, value_ty.as_ref(), env, mutability);
+                }
             }
-        }
             Pattern::Struct {
                 struct_name,
                 fields,
@@ -3607,13 +3589,7 @@ impl Checker {
                             format!("unknown field `{}` in struct pattern", field.name),
                         ));
                     }
-                    self.bind_pattern(
-                        module,
-                        &field.pattern,
-                        field_ty.as_ref(),
-                        env,
-                        mutability,
-                    );
+                    self.bind_pattern(module, &field.pattern, field_ty.as_ref(), env, mutability);
                 }
             }
             Pattern::Slice {
@@ -5405,7 +5381,9 @@ mod tests {
     fn typecheck_modules(mods: Vec<(&str, &str)>) -> Result<(), Vec<super::TypeError>> {
         let modules = mods
             .into_iter()
-            .map(|(name, src)| parse_module(name, PathBuf::from(format!("{}.prime", name)), src).expect("parse"))
+            .map(|(name, src)| {
+                parse_module(name, PathBuf::from(format!("{}.prime", name)), src).expect("parse")
+            })
             .collect();
         let program = Program { modules };
         let expanded = ExpandedProgram {

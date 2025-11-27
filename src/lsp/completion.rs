@@ -1,6 +1,9 @@
 use crate::{
     language::{
-        ast::{FunctionDef, FunctionParam, Import, ImportSelector, InterfaceMethod, Item, MacroDef, Module, Visibility},
+        ast::{
+            FunctionDef, FunctionParam, Import, ImportSelector, InterfaceMethod, Item, MacroDef,
+            Module, Visibility,
+        },
         span::Span,
         types::TypeExpr,
     },
@@ -206,10 +209,7 @@ pub fn module_selector_items_from_modules(
     modules: &[Module],
 ) -> Vec<CompletionItem> {
     let target_name = if module_name.ends_with("::prelude") && module_name.contains("::") {
-        module_name
-            .rsplitn(2, "::")
-            .nth(1)
-            .unwrap_or(module_name)
+        module_name.rsplitn(2, "::").nth(1).unwrap_or(module_name)
     } else {
         module_name
     };
@@ -218,23 +218,21 @@ pub fn module_selector_items_from_modules(
     };
     let mut items = Vec::new();
     let mut seen = HashSet::new();
-    let mut push_name = |name: &str,
-                         kind: CompletionItemKind,
-                         detail: Option<String>,
-                         visibility: Visibility| {
-        if !matches!(visibility, Visibility::Public | Visibility::Package) {
-            return;
-        }
-        if !seen.insert(name.to_string()) {
-            return;
-        }
-        items.push(CompletionItem {
-            label: name.to_string(),
-            kind: Some(kind),
-            detail,
-            ..CompletionItem::default()
-        });
-    };
+    let mut push_name =
+        |name: &str, kind: CompletionItemKind, detail: Option<String>, visibility: Visibility| {
+            if !matches!(visibility, Visibility::Public | Visibility::Package) {
+                return;
+            }
+            if !seen.insert(name.to_string()) {
+                return;
+            }
+            items.push(CompletionItem {
+                label: name.to_string(),
+                kind: Some(kind),
+                detail,
+                ..CompletionItem::default()
+            });
+        };
 
     for item in &module.items {
         match item {
@@ -472,8 +470,10 @@ pub fn collect_struct_info(modules: &[Module]) -> StructInfoMap {
         for item in &module.items {
             if let Item::Function(func) = item {
                 if let Some(first_param) = func.params.first() {
-                    if let Some(receiver) =
-                        first_param.ty.as_ref().and_then(|ty| receiver_type_name(&ty.ty))
+                    if let Some(receiver) = first_param
+                        .ty
+                        .as_ref()
+                        .and_then(|ty| receiver_type_name(&ty.ty))
                     {
                         if let Some(entry) =
                             select_raw_struct_entry_mut(&mut raw, &receiver, &module.name)
@@ -1701,7 +1701,11 @@ pub fn format_type_expr(expr: &TypeExpr) -> String {
             } else {
                 format!(
                     "({})",
-                    returns.iter().map(format_type_expr).collect::<Vec<_>>().join(", ")
+                    returns
+                        .iter()
+                        .map(format_type_expr)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             };
             format!("fn({}) -> {}", params_str, ret_str)
