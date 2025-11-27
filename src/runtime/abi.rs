@@ -452,8 +452,24 @@ pub unsafe extern "C" fn prime_slice_push(slice: PrimeHandle, value: PrimeHandle
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_slice_len_handle(handle: PrimeHandle) -> usize {
+    match as_payload(handle, PrimeTag::Slice) {
+        Some(PrimePayload::Slice(inner)) => inner.snapshot().len(),
+        _ => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn prime_map_new() -> PrimeHandle {
     PrimeValue::new(PrimeTag::Map, PrimePayload::Map(PrimeMap::new()))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_map_len_handle(handle: PrimeHandle) -> usize {
+    match as_payload(handle, PrimeTag::Map) {
+        Some(PrimePayload::Map(inner)) => inner.entries.lock().unwrap().len(),
+        _ => 0,
+    }
 }
 
 #[unsafe(no_mangle)]

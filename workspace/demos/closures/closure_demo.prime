@@ -88,7 +88,7 @@ fn main() {
   let return_heap = |_: int32| -> ([]int32, Map[string, int32], Box[int32]) {
     (nums, scores, counter)
   };
-  let (_, _, returned_box) = return_heap(0);
+  let (nums_rt, scores_rt, returned_box) = return_heap(0);
   let box_passthrough = |_: int32| -> Box[int32] {
     returned_box
   };
@@ -100,7 +100,10 @@ fn main() {
   let Map[string, int32] scores_again = #{
     "a": 10,
   };
+  let nums_rt_len = nums_rt.len();
+  let scores_rt_len = scores_rt.len();
   out("heap handles round-tripped through closures:");
+  out(`lens -> nums_rt.len() = {}, scores_rt.len() = {}`, nums_rt_len, scores_rt_len);
   debug_show(nums_again);
   debug_show(scores_again);
   debug_show(bp);

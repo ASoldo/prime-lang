@@ -22,7 +22,8 @@ use llvm_sys::{
         LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAdd,
         LLVMBuildAlloca, LLVMBuildBitCast, LLVMBuildBr, LLVMBuildCall2, LLVMBuildCondBr,
         LLVMBuildFAdd, LLVMBuildFDiv, LLVMBuildFMul, LLVMBuildFRem, LLVMBuildFSub,
-        LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildLoad2, LLVMBuildMul,
+        LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildIntCast,
+        LLVMBuildLoad2, LLVMBuildMul,
         LLVMBuildArrayMalloc, LLVMBuildExtractValue, LLVMBuildRet, LLVMBuildRetVoid, LLVMBuildSDiv,
         LLVMBuildSExt, LLVMBuildSRem, LLVMBuildStore, LLVMBuildStructGEP2, LLVMBuildSub,
         LLVMBuildSIToFP, LLVMConstInt, LLVMConstIntGetZExtValue,
@@ -6046,8 +6047,50 @@ impl Compiler {
         }
         let receiver = args.pop().unwrap();
         match receiver {
-            Value::Slice(slice) => Ok(Value::Int(self.const_int_value(slice.len() as i128))),
-            Value::Map(map) => Ok(Value::Int(self.const_int_value(map.len() as i128))),
+            Value::Slice(slice) => {
+                if let Some(handle) = slice.handle {
+                    let mut call_args = [handle];
+                    let len = self.call_runtime(
+                        self.runtime_abi.prime_slice_len_handle,
+                        self.runtime_abi.prime_slice_len_handle_ty,
+                        &mut call_args,
+                        "slice_len_handle",
+                    );
+                    let len_i32 = unsafe {
+                        LLVMBuildIntCast(
+                            self.builder,
+                            len,
+                            self.i32_type,
+                            CString::new("slice_len_cast").unwrap().as_ptr(),
+                        )
+                    };
+                    Ok(Value::Int(IntValue::new(len_i32, None)))
+                } else {
+                    Ok(Value::Int(self.const_int_value(slice.len() as i128)))
+                }
+            }
+            Value::Map(map) => {
+                if let Some(handle) = map.handle {
+                    let mut call_args = [handle];
+                    let len = self.call_runtime(
+                        self.runtime_abi.prime_map_len_handle,
+                        self.runtime_abi.prime_map_len_handle_ty,
+                        &mut call_args,
+                        "map_len_handle",
+                    );
+                    let len_i32 = unsafe {
+                        LLVMBuildIntCast(
+                            self.builder,
+                            len,
+                            self.i32_type,
+                            CString::new("map_len_cast").unwrap().as_ptr(),
+                        )
+                    };
+                    Ok(Value::Int(IntValue::new(len_i32, None)))
+                } else {
+                    Ok(Value::Int(self.const_int_value(map.len() as i128)))
+                }
+            }
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.builtin_len(vec![inner])

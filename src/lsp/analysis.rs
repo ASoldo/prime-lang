@@ -159,7 +159,7 @@ fn collect_decl_from_block(block: &Block, module: &Module, decls: &mut Vec<DeclI
                 let inferred_value_ty = stmt
                     .value
                     .as_ref()
-                    .and_then(|value| infer_expr_type(value, module));
+                    .and_then(|value| infer_expr_type_with_decls(value, module, decls));
                 let mut ty = stmt.ty.as_ref().map(|annotation| annotation.ty.clone());
                 if ty.is_none() {
                     ty = infer_type_from_let_value(stmt);
@@ -601,6 +601,26 @@ fn infer_expr_type(expr: &Expr, module: &Module) -> Option<TypeExpr> {
             Expr::Identifier(ident) => function_return_type(module, &ident.name),
             _ => None,
         },
+        Expr::Closure {
+            params, ret, ..
+        } => {
+            let mut param_tys = Vec::new();
+            for param in params {
+                if let Some(ann) = &param.ty {
+                    param_tys.push(ann.ty.clone());
+                } else {
+                    return None;
+                }
+            }
+            let returns = ret
+                .as_ref()
+                .map(|ann| vec![ann.ty.clone()])
+                .unwrap_or_else(Vec::new);
+            Some(TypeExpr::Function {
+                params: param_tys,
+                returns,
+            })
+        }
         Expr::Tuple(values, _) => {
             let mut types = Vec::new();
             for value in values {
@@ -640,6 +660,36 @@ fn infer_expr_type(expr: &Expr, module: &Module) -> Option<TypeExpr> {
             })
         }
         _ => None,
+    }
+}
+
+fn infer_expr_type_with_decls(
+    expr: &Expr,
+    module: &Module,
+    decls: &[DeclInfo],
+) -> Option<TypeExpr> {
+    match expr {
+        Expr::Call { callee, .. } => match &**callee {
+            Expr::Identifier(ident) => {
+                if let Some(decl_ty) = decls
+                    .iter()
+                    .rev()
+                    .find(|decl| decl.name == ident.name)
+                    .and_then(|decl| decl.ty.clone())
+                {
+                    if let TypeExpr::Function { returns, .. } = decl_ty {
+                        return match returns.len() {
+                            0 => Some(TypeExpr::Unit),
+                            1 => Some(returns[0].clone()),
+                            _ => Some(TypeExpr::Tuple(returns)),
+                        };
+                    }
+                }
+                function_return_type(module, &ident.name)
+            }
+            _ => infer_expr_type(expr, module),
+        },
+        _ => infer_expr_type(expr, module),
     }
 }
 

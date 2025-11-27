@@ -2641,6 +2641,17 @@ impl Checker {
                 }
                 None
             }
+            "len" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "len expects 1 argument",
+                    ));
+                }
+                self.check_expression(module, &args[0], None, returns, env);
+                Some(TypeExpr::named("int32"))
+            }
             "channel" => {
                 if args.len() != 0 {
                     self.errors.push(TypeError::new(
@@ -3768,6 +3779,7 @@ impl Checker {
                 | "map_get"
                 | "assert"
                 | "expect"
+                | "len"
                 | "str_len"
                 | "str_contains"
                 | "str_trim"

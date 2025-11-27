@@ -41,8 +41,12 @@ pub struct RuntimeAbi {
     pub prime_slice_new_ty: LLVMTypeRef,
     pub prime_slice_push: LLVMValueRef,
     pub prime_slice_push_ty: LLVMTypeRef,
+    pub prime_slice_len_handle: LLVMValueRef,
+    pub prime_slice_len_handle_ty: LLVMTypeRef,
     pub prime_map_new: LLVMValueRef,
     pub prime_map_new_ty: LLVMTypeRef,
+    pub prime_map_len_handle: LLVMValueRef,
+    pub prime_map_len_handle_ty: LLVMTypeRef,
     pub prime_map_insert: LLVMValueRef,
     pub prime_map_insert_ty: LLVMTypeRef,
     pub prime_enum_new: LLVMValueRef,
@@ -124,8 +128,20 @@ impl RuntimeAbi {
             status_type,
             &mut [handle_type, handle_type],
         );
+        let (prime_slice_len_handle, prime_slice_len_handle_ty) = declare_fn(
+            module,
+            "prime_slice_len_handle",
+            usize_type,
+            &mut [handle_type],
+        );
         let (prime_map_new, prime_map_new_ty) =
             declare_fn(module, "prime_map_new", handle_type, &mut []);
+        let (prime_map_len_handle, prime_map_len_handle_ty) = declare_fn(
+            module,
+            "prime_map_len_handle",
+            usize_type,
+            &mut [handle_type],
+        );
         let (prime_map_insert, prime_map_insert_ty) = declare_fn(
             module,
             "prime_map_insert",
@@ -255,8 +271,12 @@ impl RuntimeAbi {
             prime_slice_new_ty,
             prime_slice_push,
             prime_slice_push_ty,
+            prime_slice_len_handle,
+            prime_slice_len_handle_ty,
             prime_map_new,
             prime_map_new_ty,
+            prime_map_len_handle,
+            prime_map_len_handle_ty,
             prime_map_insert,
             prime_map_insert_ty,
             prime_enum_new,
@@ -321,8 +341,12 @@ impl RuntimeAbi {
             prime_slice_new_ty: std::ptr::null_mut(),
             prime_slice_push: std::ptr::null_mut(),
             prime_slice_push_ty: std::ptr::null_mut(),
+            prime_slice_len_handle: std::ptr::null_mut(),
+            prime_slice_len_handle_ty: std::ptr::null_mut(),
             prime_map_new: std::ptr::null_mut(),
             prime_map_new_ty: std::ptr::null_mut(),
+            prime_map_len_handle: std::ptr::null_mut(),
+            prime_map_len_handle_ty: std::ptr::null_mut(),
             prime_map_insert: std::ptr::null_mut(),
             prime_map_insert_ty: std::ptr::null_mut(),
             prime_enum_new: std::ptr::null_mut(),
