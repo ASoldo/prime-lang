@@ -611,6 +611,7 @@ controls—in mind.
 - Calling: function pointers are bitcast to the exact closure signature; arity mismatches raise an error before codegen.
 - Supported types: primitives, tuples (including multi-return), slices/maps/boxes (captured as runtime handles), references, channels/join handles, pointers, and nested closures (including higher-order and tuple-returning examples as in `workspace/demos/closures/closure_demo.prime`).
 - Limitations: captured heap handles are still opaque in build-time evaluation but can be mutated/read through handle-aware builtins (`push`/`insert`/`get` route to runtime ops when a handle is present); user-defined destructors are still absent.
+- Build snapshots (with `PRIME_BUILD_PARALLEL=1`) now serialize closures, channel endpoints with queued messages/closed state, join results, pointers/references, and boxed/slice/map handles so parallel build replay mirrors runtime captures. Dynamic indices/ranges route through runtime handles when present to keep build/run parity for collection access.
 
 ## CLI Usage
 
