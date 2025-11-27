@@ -2595,6 +2595,20 @@ impl Checker {
                 self.expect_slice_type(module, span, slice_ty.as_ref())
                     .map(|elem| make_option_type(elem))
             }
+            "slice_remove" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`slice_remove` expects 2 arguments, got {}", args.len()),
+                    ));
+                    return None;
+                }
+                let slice_ty = self.check_expression(module, &args[0], None, returns, env);
+                self.check_expression(module, &args[1], Some(&int_type()), returns, env);
+                self.expect_slice_type(module, span, slice_ty.as_ref())
+                    .map(|elem| make_option_type(elem))
+            }
             "map_new" => {
                 if !args.is_empty() {
                     self.errors.push(TypeError::new(
@@ -2653,6 +2667,24 @@ impl Checker {
                         &module.path,
                         span,
                         format!("`map_get` expects 2 arguments, got {}", args.len()),
+                    ));
+                    return None;
+                }
+                let map_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some((key_ty, value_ty)) =
+                    self.expect_map_type(module, span, map_ty.as_ref())
+                {
+                    self.check_expression(module, &args[1], Some(&key_ty), returns, env);
+                    return Some(make_option_type(value_ty));
+                }
+                None
+            }
+            "map_remove" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`map_remove` expects 2 arguments, got {}", args.len()),
                     ));
                     return None;
                 }
@@ -3116,6 +3148,18 @@ impl Checker {
                 self.check_expression(module, &args[0], Some(&int_type()), returns, env);
                 Some(make_option_type(inner.clone()))
             }
+            "slice_remove" | "remove" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`slice_remove` expects 1 argument after receiver",
+                    ));
+                    return Some(make_option_type(inner.clone()));
+                }
+                self.check_expression(module, &args[0], Some(&int_type()), returns, env);
+                Some(make_option_type(inner.clone()))
+            }
             "slice_push" | "push" => {
                 if args.len() != 1 {
                     self.errors.push(TypeError::new(
@@ -3176,6 +3220,18 @@ impl Checker {
                     value_ty_expr.as_ref(),
                 );
                 Some(TypeExpr::Unit)
+            }
+            "map_remove" | "remove" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`map_remove` expects 1 argument after receiver",
+                    ));
+                    return Some(make_option_type(value_ty));
+                }
+                self.check_expression(module, &args[0], Some(&key_ty), returns, env);
+                Some(make_option_type(value_ty))
             }
             "map_len" | "len" => {
                 if !args.is_empty() {

@@ -33,10 +33,10 @@ use llvm_sys::{
         LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetGlobalParent, LLVMGetInsertBlock,
         LLVMGetLastInstruction, LLVMGetModuleContext, LLVMGetParam, LLVMGetReturnType,
         LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext, LLVMIntTypeInContext,
-        LLVMIsAFunction, LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilder,
-        LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMPrintModuleToFile, LLVMSetLinkage,
-        LLVMStructCreateNamed, LLVMStructSetBody, LLVMStructTypeInContext, LLVMTypeOf,
-        LLVMVoidTypeInContext,
+        LLVMIsAConstantInt, LLVMIsAFunction, LLVMModuleCreateWithNameInContext, LLVMPointerType,
+        LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore,
+        LLVMPrintModuleToFile, LLVMSetLinkage, LLVMStructCreateNamed, LLVMStructSetBody,
+        LLVMStructTypeInContext, LLVMTypeOf, LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -569,6 +569,14 @@ impl SliceValue {
             false
         }
     }
+
+    fn remove(&self, index: usize) -> Option<Value> {
+        let mut guard = self.items.lock().unwrap();
+        if index >= guard.len() {
+            return None;
+        }
+        Some(guard.remove(index))
+    }
 }
 
 impl MapValue {
@@ -604,6 +612,10 @@ impl MapValue {
 
     fn len(&self) -> usize {
         self.entries.lock().unwrap().len()
+    }
+
+    fn remove(&self, key: &str) -> Option<Value> {
+        self.entries.lock().unwrap().remove(key)
     }
 }
 
@@ -4535,6 +4547,9 @@ impl Compiler {
             "slice_get" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_slice_get(values)))
             }
+            "slice_remove" => Some(self.invoke_builtin(args, |this, values| {
+                this.builtin_slice_remove(values)
+            })),
             "map_new" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_map_new(values)))
             }
@@ -4544,8 +4559,14 @@ impl Compiler {
             "map_get" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_map_get(values)))
             }
+            "map_remove" => Some(self.invoke_builtin(args, |this, values| {
+                this.builtin_map_remove(values)
+            })),
             "len" => Some(self.invoke_builtin(args, |this, values| this.builtin_len(values))),
             "get" => Some(self.invoke_builtin(args, |this, values| this.builtin_get(values))),
+            "remove" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_remove(values)))
+            }
             "push" => Some(self.invoke_builtin(args, |this, values| this.builtin_push(values))),
             "insert" => Some(self.invoke_builtin(args, |this, values| this.builtin_insert(values))),
             "assert" => Some(self.invoke_builtin(args, |this, values| this.builtin_assert(values))),
@@ -6541,6 +6562,86 @@ impl Compiler {
         self.instantiate_enum_variant("Some", vec![value])
     }
 
+    fn builtin_slice_remove(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("remove expects receiver and index".into());
+        }
+        let index_value = args.pop().unwrap();
+        let slice = self.expect_slice_value(args.pop().unwrap(), "remove")?;
+        let int_value = self.expect_int(index_value)?;
+        let idx = int_value
+            .constant()
+            .ok_or_else(|| "remove index must be constant in build mode".to_string())?;
+        if idx < 0 {
+            return self.instantiate_enum_variant("None", Vec::new());
+        }
+        if let Some(handle) = slice.handle {
+            let idx_const = unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) };
+            let slot = unsafe {
+                LLVMBuildAlloca(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    CString::new("slice_remove_out").unwrap().as_ptr(),
+                )
+            };
+            let mut call_args = [handle, idx_const, slot];
+            self.call_runtime(
+                self.runtime_abi.prime_slice_remove_handle,
+                self.runtime_abi.prime_slice_remove_handle_ty,
+                &mut call_args,
+                "slice_remove_handle",
+            );
+            let loaded = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    slot,
+                    CString::new("slice_remove_loaded").unwrap().as_ptr(),
+                )
+            };
+            let reference = ReferenceValue {
+                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                mutable: false,
+                origin: None,
+                handle: Some(loaded),
+            };
+            return self.instantiate_enum_variant("Some", vec![Value::Reference(reference)]);
+        }
+        let removed = slice.remove(idx as usize);
+        match removed {
+            Some(value) => self.instantiate_enum_variant("Some", vec![value]),
+            None => self.instantiate_enum_variant("None", Vec::new()),
+        }
+    }
+
+    fn builtin_remove(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("remove expects receiver and argument".into());
+        }
+        let receiver = args.remove(0);
+        match receiver {
+            Value::Slice(slice) => {
+                let mut forwarded = Vec::with_capacity(2);
+                forwarded.push(Value::Slice(slice));
+                forwarded.push(args.remove(0));
+                self.builtin_slice_remove(forwarded)
+            }
+            Value::Map(map) => {
+                let mut forwarded = Vec::with_capacity(2);
+                forwarded.push(Value::Map(map));
+                forwarded.push(args.remove(0));
+                self.builtin_map_remove(forwarded)
+            }
+            Value::Reference(reference) => {
+                let mut forwarded = Vec::new();
+                forwarded.push(reference.cell.lock().unwrap().clone().into_value());
+                forwarded.extend(args);
+                self.builtin_remove(forwarded)
+            }
+            _ => Err("remove expects slice or map".into()),
+        }
+    }
+
     fn builtin_map_new(&mut self, args: Vec<Value>) -> Result<Value, String> {
         self.warn_deprecated("map_new");
         if !args.is_empty() {
@@ -6613,6 +6714,51 @@ impl Compiler {
             return self.instantiate_enum_variant("Some", vec![Value::Reference(reference)]);
         }
         match map.get(&key) {
+            Some(value) => self.instantiate_enum_variant("Some", vec![value]),
+            None => self.instantiate_enum_variant("None", Vec::new()),
+        }
+    }
+
+    fn builtin_map_remove(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("remove expects receiver and key".into());
+        }
+        let key = self.expect_string_value(args.pop().unwrap(), "remove")?;
+        let map = self.expect_map_value(args.pop().unwrap(), "remove")?;
+        if let Some(handle) = map.handle {
+            let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_remove_key")?;
+            let slot = unsafe {
+                LLVMBuildAlloca(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    CString::new("map_remove_out").unwrap().as_ptr(),
+                )
+            };
+            let mut call_args = [handle, key_ptr, key_len, slot];
+            self.call_runtime(
+                self.runtime_abi.prime_map_remove_handle,
+                self.runtime_abi.prime_map_remove_handle_ty,
+                &mut call_args,
+                "map_remove_handle",
+            );
+            let loaded = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    slot,
+                    CString::new("map_remove_loaded").unwrap().as_ptr(),
+                )
+            };
+            let reference = ReferenceValue {
+                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                mutable: false,
+                origin: None,
+                handle: Some(loaded),
+            };
+            return self.instantiate_enum_variant("Some", vec![Value::Reference(reference)]);
+        }
+        let removed = map.remove(&key);
+        match removed {
             Some(value) => self.instantiate_enum_variant("Some", vec![value]),
             None => self.instantiate_enum_variant("None", Vec::new()),
         }
@@ -7614,6 +7760,60 @@ impl Compiler {
                     .collect())
             }
             Value::Slice(slice) => {
+                if let Some(handle) = slice.handle {
+                    let mut items = Vec::new();
+                    let mut len_args = [handle];
+                    let len_val = self.call_runtime(
+                        self.runtime_abi.prime_slice_len_handle,
+                        self.runtime_abi.prime_slice_len_handle_ty,
+                        &mut len_args,
+                        "slice_iter_len",
+                    );
+                    let maybe_len = unsafe {
+                        if LLVMIsAConstantInt(len_val).is_null() {
+                            None
+                        } else {
+                            Some(LLVMConstIntGetZExtValue(len_val) as usize)
+                        }
+                    };
+                    let len = maybe_len.ok_or_else(|| {
+                        "slice length must be constant to iterate in build mode".to_string()
+                    })?;
+                    for idx in 0..len {
+                        let idx_const =
+                            unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) };
+                        let slot = unsafe {
+                            LLVMBuildAlloca(
+                                self.builder,
+                                self.runtime_abi.handle_type,
+                                CString::new("slice_iter_out").unwrap().as_ptr(),
+                            )
+                        };
+                        let mut call_args = [handle, idx_const, slot];
+                        self.call_runtime(
+                            self.runtime_abi.prime_slice_get_handle,
+                            self.runtime_abi.prime_slice_get_handle_ty,
+                            &mut call_args,
+                            "slice_iter_get",
+                        );
+                        let loaded = unsafe {
+                            LLVMBuildLoad2(
+                                self.builder,
+                                self.runtime_abi.handle_type,
+                                slot,
+                                CString::new("slice_iter_loaded").unwrap().as_ptr(),
+                            )
+                        };
+                        let reference = ReferenceValue {
+                            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                            mutable: false,
+                            origin: None,
+                            handle: Some(loaded),
+                        };
+                        items.push(Value::Reference(reference).into());
+                    }
+                    return Ok(items);
+                }
                 let mut items = Vec::new();
                 for idx in 0..slice.len() {
                     if let Some(item) = slice.get(idx) {
@@ -7623,6 +7823,87 @@ impl Compiler {
                 Ok(items)
             }
             Value::Map(map) => {
+                if let Some(handle) = map.handle {
+                    let mut items = Vec::new();
+                    let mut len_args = [handle];
+                    let len_val = self.call_runtime(
+                        self.runtime_abi.prime_map_len_handle,
+                        self.runtime_abi.prime_map_len_handle_ty,
+                        &mut len_args,
+                        "map_iter_len",
+                    );
+                    let maybe_len = unsafe {
+                        if LLVMIsAConstantInt(len_val).is_null() {
+                            None
+                        } else {
+                            Some(LLVMConstIntGetZExtValue(len_val) as usize)
+                        }
+                    };
+                    let len = maybe_len.ok_or_else(|| {
+                        "map length must be constant to iterate in build mode".to_string()
+                    })?;
+                    for idx in 0..len {
+                        let idx_const =
+                            unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) };
+                        let key_slot = unsafe {
+                            LLVMBuildAlloca(
+                                self.builder,
+                                self.runtime_abi.handle_type,
+                                CString::new("map_iter_key").unwrap().as_ptr(),
+                            )
+                        };
+                        let value_slot = unsafe {
+                            LLVMBuildAlloca(
+                                self.builder,
+                                self.runtime_abi.handle_type,
+                                CString::new("map_iter_val").unwrap().as_ptr(),
+                            )
+                        };
+                        let mut call_args = [handle, idx_const, key_slot, value_slot];
+                        self.call_runtime(
+                            self.runtime_abi.prime_map_entry_handle,
+                            self.runtime_abi.prime_map_entry_handle_ty,
+                            &mut call_args,
+                            "map_iter_entry",
+                        );
+                        let key_handle = unsafe {
+                            LLVMBuildLoad2(
+                                self.builder,
+                                self.runtime_abi.handle_type,
+                                key_slot,
+                                CString::new("map_iter_key_loaded").unwrap().as_ptr(),
+                            )
+                        };
+                        let value_handle = unsafe {
+                            LLVMBuildLoad2(
+                                self.builder,
+                                self.runtime_abi.handle_type,
+                                value_slot,
+                                CString::new("map_iter_val_loaded").unwrap().as_ptr(),
+                            )
+                        };
+                        let key_ref = ReferenceValue {
+                            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                            mutable: false,
+                            origin: None,
+                            handle: Some(key_handle),
+                        };
+                        let value_ref = ReferenceValue {
+                            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                            mutable: false,
+                            origin: None,
+                            handle: Some(value_handle),
+                        };
+                        items.push(
+                            Value::Tuple(vec![
+                                Value::Reference(key_ref),
+                                Value::Reference(value_ref),
+                            ])
+                            .into(),
+                        );
+                    }
+                    return Ok(items);
+                }
                 let mut items = Vec::new();
                 for (key, value) in map.entries.lock().unwrap().iter() {
                     let key_value = self.make_string_value(key)?;

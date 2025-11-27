@@ -222,6 +222,14 @@ impl PrimeSlice {
         self.items.lock().unwrap().push(retain_value(value));
     }
 
+    fn remove(&self, index: usize) -> Option<PrimeHandle> {
+        let mut guard = self.items.lock().unwrap();
+        if index >= guard.len() {
+            return None;
+        }
+        Some(guard.remove(index))
+    }
+
     fn snapshot(&self) -> Vec<PrimeHandle> {
         self.items.lock().unwrap().clone()
     }
@@ -248,6 +256,10 @@ impl PrimeMap {
             .values()
             .copied()
             .collect::<Vec<_>>()
+    }
+
+    fn remove(&self, key: &str) -> Option<PrimeHandle> {
+        self.entries.lock().unwrap().remove(key)
     }
 }
 
@@ -508,6 +520,25 @@ pub unsafe extern "C" fn prime_slice_get_handle(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_slice_remove_handle(
+    slice: PrimeHandle,
+    idx: usize,
+    value_out: *mut PrimeHandle,
+) -> PrimeStatus {
+    if value_out.is_null() {
+        return PrimeStatus::Invalid;
+    }
+    match as_payload_mut(slice, PrimeTag::Slice) {
+        Some(PrimePayload::Slice(inner)) => {
+            let removed = inner.remove(idx);
+            *value_out = removed.unwrap_or_else(PrimeHandle::null);
+            PrimeStatus::Ok
+        }
+        _ => PrimeStatus::Invalid,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn prime_slice_push_handle(
     slice: PrimeHandle,
     value: PrimeHandle,
@@ -608,6 +639,61 @@ pub unsafe extern "C" fn prime_map_insert_handle(
     match as_payload_mut(map, PrimeTag::Map) {
         Some(PrimePayload::Map(inner)) => {
             inner.insert(key, value);
+            PrimeStatus::Ok
+        }
+        _ => PrimeStatus::Invalid,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_map_remove_handle(
+    map: PrimeHandle,
+    key_ptr: *const c_char,
+    key_len: usize,
+    value_out: *mut PrimeHandle,
+) -> PrimeStatus {
+    if key_ptr.is_null() || value_out.is_null() {
+        return PrimeStatus::Invalid;
+    }
+    let key_bytes = std::slice::from_raw_parts(key_ptr as *const u8, key_len);
+    let key = match String::from_utf8(key_bytes.to_vec()) {
+        Ok(k) => k,
+        Err(_) => return PrimeStatus::Invalid,
+    };
+
+    match as_payload_mut(map, PrimeTag::Map) {
+        Some(PrimePayload::Map(inner)) => {
+            let removed = inner.remove(&key);
+            *value_out = removed.unwrap_or_else(PrimeHandle::null);
+            PrimeStatus::Ok
+        }
+        _ => PrimeStatus::Invalid,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_map_entry_handle(
+    map: PrimeHandle,
+    idx: usize,
+    key_out: *mut PrimeHandle,
+    value_out: *mut PrimeHandle,
+) -> PrimeStatus {
+    if key_out.is_null() || value_out.is_null() {
+        return PrimeStatus::Invalid;
+    }
+    match as_payload(map, PrimeTag::Map) {
+        Some(PrimePayload::Map(inner)) => {
+            let entries = inner.entries.lock().unwrap();
+            if let Some((key, value)) = entries.iter().nth(idx) {
+                *key_out = PrimeValue::new(
+                    PrimeTag::String,
+                    PrimePayload::String(key.clone()),
+                );
+                *value_out = retain_value(*value);
+            } else {
+                *key_out = PrimeHandle::null();
+                *value_out = PrimeHandle::null();
+            }
             PrimeStatus::Ok
         }
         _ => PrimeStatus::Invalid,
@@ -1255,6 +1341,67 @@ mod tests {
             release_value(arg);
             release_value(join_handle);
             release_value(result);
+        }
+    }
+
+    #[test]
+    fn removes_from_slice() {
+        unsafe {
+            let slice = prime_slice_new();
+            let a = prime_int_new(1);
+            let b = prime_int_new(2);
+            assert_eq!(prime_slice_push(slice, a), PrimeStatus::Ok);
+            assert_eq!(prime_slice_push(slice, b), PrimeStatus::Ok);
+            let mut removed = PrimeHandle::null();
+            assert_eq!(
+                prime_slice_remove_handle(slice, 0, &mut removed),
+                PrimeStatus::Ok
+            );
+            assert_eq!(format_value(removed), "1".to_string());
+            assert_eq!(prime_slice_len_handle(slice), 1);
+            release_value(slice);
+            release_value(a);
+            release_value(b);
+            release_value(removed);
+        }
+    }
+
+    #[test]
+    fn removes_and_iters_map_handles() {
+        unsafe {
+            let map = prime_map_new();
+            let key = std::ffi::CString::new("k").unwrap();
+            let val = prime_int_new(9);
+            assert_eq!(
+                prime_map_insert(map, key.as_ptr(), 1, val),
+                PrimeStatus::Ok
+            );
+            let mut removed = PrimeHandle::null();
+            assert_eq!(
+                prime_map_remove_handle(map, key.as_ptr(), 1, &mut removed),
+                PrimeStatus::Ok
+            );
+            assert_eq!(format_value(removed), "9".to_string());
+
+            // Reinsert and iterate
+            assert_eq!(
+                prime_map_insert(map, key.as_ptr(), 1, val),
+                PrimeStatus::Ok
+            );
+            let mut key_out = PrimeHandle::null();
+            let mut val_out = PrimeHandle::null();
+            assert_eq!(
+                prime_map_entry_handle(map, 0, &mut key_out, &mut val_out),
+                PrimeStatus::Ok
+            );
+            assert_eq!(format_value(key_out), "k".to_string());
+            assert_eq!(format_value(val_out), "9".to_string());
+
+            release_value(map);
+            release_value(val);
+            release_value(removed);
+            release_value(key_out);
+            release_value(val_out);
         }
     }
 }
