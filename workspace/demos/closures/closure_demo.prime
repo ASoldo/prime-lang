@@ -127,4 +127,14 @@ fn main() {
   let &int32 ref_alias = &ref_base;
   let show_ref = |_: int32| ref_alias;
   out(`reference capture returns {}`, show_ref(0));
+
+  let logger = |_: int32| -> []int32 {
+    let mut []int32 local_log = [];
+    defer local_log.push(2);
+    local_log.push(1);
+    local_log
+  };
+  let []int32 log_result = logger(0);
+  out("defer inside closure ran:");
+  debug_show(log_result);
 }
