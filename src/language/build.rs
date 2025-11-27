@@ -12,6 +12,13 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
+fn closure_body_span(body: &ClosureBody) -> Span {
+    match body {
+        ClosureBody::Block(block) => block.span,
+        ClosureBody::Expr(expr) => expr.span,
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum BuildValue {
@@ -65,6 +72,7 @@ pub struct BuildCaptured {
     pub mutable: bool,
     pub mode: CaptureMode,
     pub value: BuildValue,
+    pub origin: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +81,7 @@ pub struct BuildClosure {
     pub body: ClosureBody,
     pub ret: Option<TypeAnnotation>,
     pub captures: Vec<BuildCaptured>,
+    pub origin: Span,
 }
 
 #[allow(dead_code)]
@@ -1285,6 +1294,7 @@ impl BuildInterpreter {
                 mutable: captured.mutable,
                 mode: captured.mode.clone(),
                 value,
+                origin: captured.span,
             });
         }
         Ok(BuildValue::Closure(BuildClosure {
@@ -1292,6 +1302,10 @@ impl BuildInterpreter {
             body: body.clone(),
             ret: ret.clone(),
             captures: captured_values,
+            origin: ret
+                .as_ref()
+                .map(|ann| ann.span)
+                .unwrap_or_else(|| closure_body_span(body)),
         }))
     }
 

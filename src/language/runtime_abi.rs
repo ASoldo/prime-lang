@@ -75,6 +75,8 @@ pub struct RuntimeAbi {
     pub prime_send_ty: LLVMTypeRef,
     pub prime_recv: LLVMValueRef,
     pub prime_recv_ty: LLVMTypeRef,
+    pub prime_recv_timeout: LLVMValueRef,
+    pub prime_recv_timeout_ty: LLVMTypeRef,
     pub prime_close: LLVMValueRef,
     pub prime_close_ty: LLVMTypeRef,
     pub prime_spawn: LLVMValueRef,
@@ -247,6 +249,12 @@ impl RuntimeAbi {
             status_type,
             &mut [handle_type, channel_out_type],
         );
+        let (prime_recv_timeout, prime_recv_timeout_ty) = declare_fn(
+            module,
+            "prime_recv_timeout",
+            status_type,
+            &mut [handle_type, int_type, channel_out_type],
+        );
         let (prime_close, prime_close_ty) =
             declare_fn(module, "prime_close", status_type, &mut [handle_type]);
         let (prime_spawn, prime_spawn_ty) = declare_fn(
@@ -354,6 +362,8 @@ impl RuntimeAbi {
             prime_send_ty,
             prime_recv,
             prime_recv_ty,
+            prime_recv_timeout,
+            prime_recv_timeout_ty,
             prime_close,
             prime_close_ty,
             prime_spawn,
@@ -436,6 +446,8 @@ impl RuntimeAbi {
             prime_send_ty: std::ptr::null_mut(),
             prime_recv: std::ptr::null_mut(),
             prime_recv_ty: std::ptr::null_mut(),
+            prime_recv_timeout: std::ptr::null_mut(),
+            prime_recv_timeout_ty: std::ptr::null_mut(),
             prime_close: std::ptr::null_mut(),
             prime_close_ty: std::ptr::null_mut(),
             prime_spawn: std::ptr::null_mut(),

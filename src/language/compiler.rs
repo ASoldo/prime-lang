@@ -1,7 +1,7 @@
 use crate::runtime::abi::{
-    TYPE_BOOL, TYPE_FLOAT32, TYPE_FLOAT64, TYPE_INT8, TYPE_INT16, TYPE_INT32, TYPE_INT64,
-    TYPE_ISIZE, TYPE_RUNE, TYPE_STRING, TYPE_UINT8, TYPE_UINT16, TYPE_UINT32, TYPE_UINT64,
-    TYPE_USIZE,
+    PrimeStatus, TYPE_BOOL, TYPE_FLOAT32, TYPE_FLOAT64, TYPE_INT8, TYPE_INT16, TYPE_INT32,
+    TYPE_INT64, TYPE_ISIZE, TYPE_RUNE, TYPE_STRING, TYPE_UINT8, TYPE_UINT16, TYPE_UINT32,
+    TYPE_UINT64, TYPE_USIZE,
 };
 use crate::{
     language::{
@@ -12,9 +12,10 @@ use crate::{
             BuildValue,
         },
         runtime_abi::RuntimeAbi,
+        span::Span,
         types::{Mutability, TypeAnnotation, TypeExpr},
     },
-    runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric},
+    runtime::value::{CapturedValue, FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric},
 };
 use llvm_sys::{
     LLVMLinkage, LLVMTypeKind,
@@ -336,6 +337,31 @@ impl ChannelReceiver {
                 return None;
             }
             guard = cv.wait(guard).unwrap();
+        }
+    }
+
+    fn recv_timeout(&self, millis: i64) -> Option<Value> {
+        let (lock, cv) = &*self.inner;
+        let mut guard = lock.lock().unwrap();
+        let end = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(millis.max(0) as u64));
+        loop {
+            if let Some(v) = guard.queue.pop_front() {
+                return Some(v);
+            }
+            if guard.closed {
+                return None;
+            }
+            if let Some(deadline) = end {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return None;
+                }
+                let remaining = deadline - now;
+                guard = cv.wait_timeout(guard, remaining).unwrap().0;
+            } else {
+                guard = cv.wait(guard).unwrap();
+            }
         }
     }
 
@@ -1458,6 +1484,7 @@ impl Compiler {
 
     fn print_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         let mut value = value;
+        let owned = value.clone().into_value();
         if let Some(handle) = value
             .runtime_handle()
             .or_else(|| self.maybe_attach_runtime_handle(&mut value))
@@ -1465,7 +1492,7 @@ impl Compiler {
             self.emit_runtime_print(handle);
             return Ok(());
         }
-        match value.into_value() {
+        match owned {
             Value::Int(int_value) => {
                 self.emit_printf_call("%d", &mut [int_value.llvm()]);
                 Ok(())
@@ -1605,9 +1632,17 @@ impl Compiler {
             }
             Value::FormatTemplate(_) => Err("Format string must be printed via out()".into()),
             Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => {
-                Err("Cannot print concurrency values in build mode".into())
+                let handle = self.build_runtime_handle(value.value().clone())?;
+                self.emit_runtime_print(handle);
+                self.runtime_release(handle);
+                Ok(())
             }
-            Value::Closure(_) => Err("Cannot print closure value in build mode".into()),
+            Value::Closure(_) => {
+                let (ptr, len) = self.build_runtime_bytes("<closure>", "print_closure")?;
+                let mut args = [ptr, len];
+                self.emit_printf_call("%.*s", &mut args);
+                Ok(())
+            }
             Value::Moved => Err("Cannot print moved value in build mode".into()),
         }
     }
@@ -3318,6 +3353,7 @@ impl Compiler {
                     mutable: false,
                     ty: Some(ty),
                     mode: CaptureMode::Move,
+                    span: Span::new(0, 0),
                 });
                 if debug_captures {
                     eprintln!("capturing free var `{}` for closure", name);
@@ -4537,6 +4573,9 @@ impl Compiler {
             }
             "send" => Some(self.invoke_builtin(args, |this, values| this.builtin_send(values))),
             "recv" => Some(self.invoke_builtin(args, |this, values| this.builtin_recv(values))),
+            "recv_timeout" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_recv_timeout(values)))
+            }
             "close" => Some(self.invoke_builtin(args, |this, values| this.builtin_close(values))),
             "join" => Some(self.invoke_builtin(args, |this, values| this.builtin_join(values))),
             "ptr" => {
@@ -7048,7 +7087,7 @@ impl Compiler {
         if let Some(handle) = sender.handle {
             let value_handle = self.build_runtime_handle(value)?;
             let mut call_args = [handle, value_handle];
-            let _ = self.call_runtime(
+            let _status = self.call_runtime(
                 self.runtime_abi.prime_send,
                 self.runtime_abi.prime_send_ty,
                 &mut call_args,
@@ -7093,63 +7132,87 @@ impl Compiler {
                     CString::new("recv_loaded").unwrap().as_ptr(),
                 )
             };
-            let null_handle = unsafe { LLVMConstNull(self.runtime_abi.handle_type) };
-            let is_null = unsafe {
-                LLVMBuildICmp(
-                    self.builder,
-                    llvm_sys::LLVMIntPredicate::LLVMIntEQ,
-                    loaded,
-                    null_handle,
-                    CString::new("recv_is_null").unwrap().as_ptr(),
-                )
-            };
-            let some_block = unsafe {
-                LLVMAppendBasicBlockInContext(
-                    self.context,
-                    LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)),
-                    CString::new("recv_some").unwrap().as_ptr(),
-                )
-            };
-            let none_block = unsafe {
-                LLVMAppendBasicBlockInContext(
-                    self.context,
-                    LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)),
-                    CString::new("recv_none").unwrap().as_ptr(),
-                )
-            };
-            let cont_block = unsafe {
-                LLVMAppendBasicBlockInContext(
-                    self.context,
-                    LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)),
-                    CString::new("recv_cont").unwrap().as_ptr(),
-                )
-            };
-            unsafe {
-                LLVMBuildCondBr(self.builder, is_null, none_block, some_block);
-                LLVMPositionBuilderAtEnd(self.builder, some_block);
-            }
             let reference = ReferenceValue {
                 cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,
                 handle: Some(loaded),
             };
-            let some_val =
-                self.instantiate_enum_variant("Some", vec![Value::Reference(reference)])?;
-            unsafe {
-                LLVMBuildBr(self.builder, cont_block);
-                LLVMPositionBuilderAtEnd(self.builder, none_block);
-            }
-            let none_val = self.instantiate_enum_variant("None", Vec::new())?;
-            unsafe {
-                LLVMBuildBr(self.builder, cont_block);
-                LLVMPositionBuilderAtEnd(self.builder, cont_block);
-            }
-            // Prefer the Some branch value; basic-block structure ensures a value exists for downstream IR.
-            let _ = none_val;
-            return Ok(some_val);
+            return self.instantiate_enum_variant("Some", vec![Value::Reference(reference)]);
         }
         match receiver.recv() {
+            Some(value) => self.instantiate_enum_variant("Some", vec![value]),
+            None => self.instantiate_enum_variant("None", Vec::new()),
+        }
+    }
+
+    fn builtin_recv_timeout(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("recv_timeout expects receiver and millis".into());
+        }
+        let millis_val = args.pop().unwrap();
+        let millis = self.expect_int(millis_val)?;
+        let millis_const = millis
+            .constant()
+            .ok_or_else(|| "recv_timeout expects constant millis in build mode".to_string())?;
+        let receiver = self.expect_receiver(args.pop().unwrap(), "recv_timeout")?;
+        if let Some(handle) = receiver.handle {
+            let duration =
+                unsafe { LLVMConstInt(self.runtime_abi.int_type, millis_const as u64, 1) };
+            let slot = unsafe {
+                LLVMBuildAlloca(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    CString::new("recv_timeout_out").unwrap().as_ptr(),
+                )
+            };
+            let mut call_args = [handle, duration, slot];
+            let status = self.call_runtime(
+                self.runtime_abi.prime_recv_timeout,
+                self.runtime_abi.prime_recv_timeout_ty,
+                &mut call_args,
+                "recv_timeout_handle",
+            );
+            let closed_const = unsafe {
+                LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Closed as u64, 0)
+            };
+            let ok_const =
+                unsafe { LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0) };
+            let is_closed = unsafe {
+                LLVMConstIntGetZExtValue(status) == LLVMConstIntGetZExtValue(closed_const)
+            };
+            if is_closed {
+                return self.instantiate_enum_variant("None", Vec::new());
+            }
+            let is_ok =
+                unsafe { LLVMConstIntGetZExtValue(status) == LLVMConstIntGetZExtValue(ok_const) };
+            if !is_ok {
+                return self.instantiate_enum_variant("None", Vec::new());
+            }
+            let loaded = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    slot,
+                    CString::new("recv_timeout_loaded").unwrap().as_ptr(),
+                )
+            };
+            let reference = ReferenceValue {
+                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                mutable: false,
+                origin: None,
+                handle: Some(loaded),
+            };
+            return self.instantiate_enum_variant("Some", vec![Value::Reference(reference)]);
+        }
+        let millis_i64: i64 = millis_const.try_into().unwrap_or_else(|_| {
+            if millis_const.is_negative() {
+                0
+            } else {
+                i64::MAX
+            }
+        });
+        match receiver.recv_timeout(millis_i64) {
             Some(value) => self.instantiate_enum_variant("Some", vec![value]),
             None => self.instantiate_enum_variant("None", Vec::new()),
         }

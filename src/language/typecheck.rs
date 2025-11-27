@@ -1737,6 +1737,7 @@ impl Checker {
                 env.begin_closure_capture();
                 env.push_scope();
                 let mut param_types = Vec::new();
+                let closure_span = *span;
                 for (idx, param) in params.iter().enumerate() {
                     let annotated = param.ty.as_ref().map(|ann| ann.ty.clone());
                     let inferred = expected_fn
@@ -1817,6 +1818,7 @@ impl Checker {
                             mutable: binding_mutable,
                             ty: binding_ty,
                             mode: capture_mode,
+                            span: closure_span,
                         });
                     } else {
                         captured_vars.push(CapturedVar {
@@ -1824,6 +1826,7 @@ impl Checker {
                             mutable: false,
                             ty: None,
                             mode: CaptureMode::Move,
+                            span: closure_span,
                         });
                     }
                 }

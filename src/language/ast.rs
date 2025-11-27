@@ -262,6 +262,7 @@ pub struct CapturedVar {
     pub mutable: bool,
     pub ty: Option<TypeExpr>,
     pub mode: CaptureMode,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]

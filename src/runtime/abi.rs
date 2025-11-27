@@ -321,6 +321,31 @@ impl PrimeReceiver {
         }
     }
 
+    fn recv_timeout(&self, millis: i64) -> Result<Option<PrimeHandle>, PrimeStatus> {
+        let (lock, cv) = &*self.inner;
+        let mut guard = lock.lock().unwrap();
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(millis.max(0) as u64));
+        loop {
+            if let Some(value) = guard.queue.pop_front() {
+                return Ok(Some(value));
+            }
+            if guard.closed {
+                return Ok(None);
+            }
+            if let Some(end) = deadline {
+                let now = std::time::Instant::now();
+                if now >= end {
+                    return Ok(None);
+                }
+                let remaining = end - now;
+                guard = cv.wait_timeout(guard, remaining).unwrap().0;
+            } else {
+                guard = cv.wait(guard).unwrap();
+            }
+        }
+    }
+
     fn close(&self) {
         let (lock, cv) = &*self.inner;
         let mut guard = lock.lock().unwrap();
@@ -817,6 +842,31 @@ pub unsafe extern "C" fn prime_recv(
             Ok(value) => {
                 *value_out = value;
                 PrimeStatus::Ok
+            }
+            Err(status) => status,
+        },
+        _ => PrimeStatus::Invalid,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_recv_timeout(
+    receiver: PrimeHandle,
+    millis: i64,
+    value_out: *mut PrimeHandle,
+) -> PrimeStatus {
+    if value_out.is_null() {
+        return PrimeStatus::Invalid;
+    }
+    match as_payload(receiver, PrimeTag::Receiver) {
+        Some(PrimePayload::Receiver(r)) => match r.recv_timeout(millis) {
+            Ok(Some(value)) => {
+                *value_out = value;
+                PrimeStatus::Ok
+            }
+            Ok(None) => {
+                *value_out = PrimeValue::new(PrimeTag::Unit, PrimePayload::Unit);
+                PrimeStatus::Closed
             }
             Err(status) => status,
         },
