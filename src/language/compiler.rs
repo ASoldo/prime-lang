@@ -9,13 +9,13 @@ use crate::{
         build::{
             BuildBinding, BuildEffect, BuildEnumVariant, BuildEvaluation, BuildFormatTemplate,
             BuildFunction, BuildFunctionKey, BuildInterpreter, BuildScope, BuildSnapshot,
-            BuildValue,
+            BuildValue, BuildClosure,
         },
         runtime_abi::RuntimeAbi,
         span::Span,
         types::{Mutability, TypeAnnotation, TypeExpr},
     },
-    runtime::value::{CapturedValue, FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric},
+    runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric},
 };
 use llvm_sys::{
     LLVMLinkage, LLVMTypeKind,
@@ -1227,11 +1227,77 @@ impl Compiler {
                 let results = self.run_function_with_values(func_entry, evaluated_wrapped)?;
                 Ok(self.collapse_results(results).into_value())
             }
-            BuildValue::Closure(_) => {
-                Err("closure values cannot be returned from build execution yet".into())
-            }
+            BuildValue::Closure(closure) => self.build_closure_from_build(closure, channels),
             BuildValue::Moved => Err("moved value cannot be used in build spawn result".into()),
         }
+    }
+
+    fn build_closure_from_build(
+        &mut self,
+        closure: BuildClosure,
+        channels: Option<&HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>>>,
+    ) -> Result<Value, String> {
+        let mut key = self.closure_counter + self.closures.len() + 1;
+        while self.closures.contains_key(&key) {
+            key += 1;
+        }
+
+        let mut captured_vars = Vec::with_capacity(closure.captures.len());
+        for captured in &closure.captures {
+            let ty = captured.ty.clone().ok_or_else(|| {
+                format!(
+                    "Capture `{}` is missing a type; cannot reconstruct closure from build result",
+                    captured.name
+                )
+            })?;
+            captured_vars.push(CapturedVar {
+                name: captured.name.clone(),
+                mutable: captured.mutable,
+                ty: Some(ty),
+                mode: captured.mode.clone(),
+                span: captured.origin,
+            });
+        }
+
+        self.ensure_closure_info(
+            key,
+            &closure.params,
+            &closure.body,
+            &closure.ret,
+            &captured_vars,
+            None,
+        )?;
+        let info = self
+            .closures
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| "closure metadata missing".to_string())?;
+
+        let env_alloca = self.allocate_closure_env(info.env_type, key);
+        for (idx, (captured, ty)) in closure.captures.iter().zip(info.capture_types.iter()).enumerate() {
+            let value = self.build_value_to_value(captured.value.clone(), channels)?;
+            let llvm_value = self.value_to_llvm_for_type(value, ty)?;
+            let field_ptr = unsafe {
+                LLVMBuildStructGEP2(
+                    self.builder,
+                    info.env_type,
+                    env_alloca,
+                    idx as u32,
+                    CString::new(format!("closure_env_store_{idx}"))
+                        .unwrap()
+                        .as_ptr(),
+                )
+            };
+            unsafe {
+                LLVMBuildStore(self.builder, llvm_value, field_ptr);
+            }
+        }
+
+        Ok(Value::Closure(ClosureValue {
+            id: key,
+            env_ptr: env_alloca,
+            fn_ptr: info.function,
+        }))
     }
 
     fn build_string_constant(&mut self, text: String) -> Result<Value, String> {
@@ -8054,7 +8120,7 @@ fn describe_value(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::language::span::Span;
+    use crate::language::span::{Span, Spanned};
     use crate::language::{ast::Program, parser::parse_module};
     use crate::project::load_package;
     use std::{
@@ -8443,6 +8509,73 @@ fn main() {
     }
 
     #[test]
+    fn build_spawn_join_returns_closure() {
+        with_build_parallel(|| {
+            let span = Span::new(0, 0);
+            let param_ty = TypeAnnotation {
+                ty: TypeExpr::named("int32"),
+                span,
+            };
+            let ret_ty = TypeAnnotation {
+                ty: TypeExpr::named("int32"),
+                span,
+            };
+            let param = FunctionParam {
+                name: "n".into(),
+                ty: Some(param_ty.clone()),
+                mutability: Mutability::Immutable,
+                span,
+            };
+            let body_expr = Expr::Binary {
+                op: BinaryOp::Add,
+                left: Box::new(Expr::Identifier(Identifier {
+                    name: "n".into(),
+                    span,
+                })),
+                right: Box::new(Expr::Literal(Literal::Int(1, span))),
+                span,
+            };
+            let closure_expr = Expr::Closure {
+                params: vec![param],
+                body: ClosureBody::Expr(Spanned {
+                    node: Box::new(body_expr),
+                    span,
+                }),
+                ret: Some(ret_ty),
+                captures: Arc::new(RwLock::new(Vec::new())),
+                span,
+            };
+            let spawn_expr = Expr::Spawn {
+                expr: Box::new(closure_expr),
+                span,
+            };
+
+            let mut compiler = Compiler::new();
+            let handle = match compiler
+                .emit_expression(&spawn_expr)
+                .expect("spawn evaluates")
+            {
+                EvalOutcome::Value(value) => value.into_value(),
+                EvalOutcome::Flow(_) => panic!("unexpected flow from spawn"),
+            };
+            let joined = compiler
+                .builtin_join(vec![handle])
+                .expect("join returns closure");
+            let Value::Closure(returned) = joined else {
+                panic!("expected closure from join");
+            };
+            let arg = EvaluatedValue::from_value(Value::Int(compiler.const_int_value(4)));
+            let result = compiler
+                .call_closure_value(returned, vec![arg])
+                .expect("closure callable");
+            match result.value() {
+                Value::Int(_) => {}
+                other => panic!("expected int return, found {}", compiler.describe_value(other)),
+            }
+        });
+    }
+
+    #[test]
     fn build_nested_spawn_join_roundtrips() {
         with_build_parallel(|| {
             let mut compiler = Compiler::new();
@@ -8677,6 +8810,57 @@ fn main() {
 }
 "#;
             compile_source(source).expect("handles should be emitted for channel endpoints");
+        });
+    }
+
+    #[test]
+    fn recv_timeout_handles_closed_status() {
+        with_rt_handles(|| {
+            let mut compiler = Compiler::new();
+            unsafe {
+                let entry = llvm_sys::core::LLVMAppendBasicBlockInContext(
+                    compiler.context,
+                    compiler.main_fn,
+                    CString::new("rt_entry").unwrap().as_ptr(),
+                );
+                llvm_sys::core::LLVMPositionBuilderAtEnd(compiler.builder, entry);
+            }
+            compiler.ensure_runtime_symbols();
+            compiler.enum_variants.insert(
+                "Some".into(),
+                EnumVariantInfo {
+                    enum_name: "Option".into(),
+                    fields: 1,
+                    module: "builtins".into(),
+                    visibility: Visibility::Public,
+                    variant_index: 0,
+                },
+            );
+            compiler.enum_variants.insert(
+                "None".into(),
+                EnumVariantInfo {
+                    enum_name: "Option".into(),
+                    fields: 0,
+                    module: "builtins".into(),
+                    visibility: Visibility::Public,
+                    variant_index: 1,
+                },
+            );
+            let (_, rx_handle) = compiler
+                .build_channel_handles()
+                .expect("channel handles available");
+            let receiver = Value::Receiver(ChannelReceiver::with_handle(rx_handle));
+            let millis = Value::Int(compiler.const_int_value(0));
+            let result = compiler
+                .builtin_recv_timeout(vec![receiver, millis])
+                .expect("recv_timeout should succeed");
+            match result {
+                Value::Enum(enum_value) => {
+                    assert_eq!(enum_value.enum_name, "Option");
+                    assert_eq!(enum_value.variant, "None");
+                }
+                other => panic!("expected Option::None, found {}", compiler.describe_value(&other)),
+            }
         });
     }
 

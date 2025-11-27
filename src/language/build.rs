@@ -72,6 +72,7 @@ pub struct BuildCaptured {
     pub mutable: bool,
     pub mode: CaptureMode,
     pub value: BuildValue,
+    pub ty: Option<TypeExpr>,
     pub origin: Span,
 }
 
@@ -196,6 +197,7 @@ pub struct BuildInterpreter {
     next_channel_id: u64,
     active_mut_borrows: HashSet<String>,
     borrow_frames: Vec<Vec<BorrowMark>>,
+    captured_borrows: HashSet<String>,
     defer_stack: Vec<Vec<Expr>>,
 }
 
@@ -371,6 +373,7 @@ impl BuildInterpreter {
             next_channel_id: 0,
             active_mut_borrows: HashSet::new(),
             borrow_frames: vec![Vec::new(); scope_frames],
+            captured_borrows: HashSet::new(),
             defer_stack: vec![Vec::new(); scope_frames],
         }
     }
@@ -381,6 +384,7 @@ impl BuildInterpreter {
         clone.active_mut_borrows = HashSet::new();
         clone.borrow_frames = vec![Vec::new(); clone.scopes.len()];
         clone.defer_stack = vec![Vec::new(); clone.scopes.len().max(1)];
+        clone.captured_borrows = self.captured_borrows.clone();
         clone
     }
 
@@ -461,6 +465,7 @@ impl BuildInterpreter {
         } else {
             self.begin_shared_borrow(name, name)?;
         }
+        self.captured_borrows.insert(name.to_string());
         Ok(BuildReference { cell, mutable })
     }
 
@@ -1294,6 +1299,7 @@ impl BuildInterpreter {
                 mutable: captured.mutable,
                 mode: captured.mode.clone(),
                 value,
+                ty: captured.ty.clone(),
                 origin: captured.span,
             });
         }
@@ -1611,6 +1617,9 @@ impl BuildInterpreter {
         self.scopes.pop();
         if let Some(frame) = self.borrow_frames.pop() {
             for mark in frame {
+                if self.captured_borrows.contains(&mark.name) {
+                    continue;
+                }
                 match mark.kind {
                     BorrowKind::Mutable => {
                         self.active_mut_borrows.remove(&mark.name);
@@ -2330,8 +2339,8 @@ enum Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::language::ast::{Block, LetStmt, MatchArmExpr, MatchExpr};
-    use crate::language::span::Span;
+    use crate::language::ast::{Block, DeferStmt, LetStmt, MatchArmExpr, MatchExpr};
+    use crate::language::span::{Span, Spanned};
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -3064,6 +3073,118 @@ mod tests {
             span: s,
         }));
         assert!(third.is_err(), "read during mutable borrow should fail");
+    }
+
+    #[test]
+    fn reference_capture_keeps_borrow_active() {
+        let s = span();
+        let mut scope = BuildScope {
+            bindings: HashMap::new(),
+        };
+        scope.bindings.insert(
+            "x".into(),
+            BuildBinding {
+                cell: Arc::new(Mutex::new(BuildValue::Int(1))),
+                mutable: true,
+                borrowed_mut: false,
+                borrowed_shared: 0,
+                borrowed_shared_names: HashSet::new(),
+            },
+        );
+        let snapshot = BuildSnapshot {
+            scopes: vec![scope],
+            enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        let captures = Arc::new(RwLock::new(vec![CapturedVar {
+            name: "x".into(),
+            mutable: true,
+            ty: None,
+            mode: CaptureMode::Reference { mutable: true },
+            span: s,
+        }]));
+        let closure = interpreter
+            .eval_expr(&Expr::Closure {
+                params: vec![],
+                body: ClosureBody::Expr(Spanned {
+                    node: Box::new(Expr::Identifier(Identifier {
+                        name: "x".into(),
+                        span: s,
+                    })),
+                    span: s,
+                }),
+                ret: None,
+                captures: captures.clone(),
+                span: s,
+            })
+            .expect("closure builds");
+        assert!(matches!(closure, BuildValue::Closure(_)));
+        let second_borrow = interpreter.eval_expr(&Expr::Reference {
+            mutable: true,
+            expr: Box::new(Expr::Identifier(Identifier {
+                name: "x".into(),
+                span: s,
+            })),
+            span: s,
+        });
+        assert!(
+            second_borrow.is_err(),
+            "captured mutable borrow should block new borrow"
+        );
+    }
+
+    #[test]
+    fn defers_run_inside_closure() {
+        let s = span();
+        let mut scope = BuildScope {
+            bindings: HashMap::new(),
+        };
+        let snapshot = BuildSnapshot {
+            scopes: vec![scope],
+            enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        let closure = interpreter
+            .eval_expr(&Expr::Closure {
+                params: vec![],
+                body: ClosureBody::Block(Box::new(Block {
+                    statements: vec![Statement::Defer(DeferStmt {
+                        expr: Expr::Call {
+                            callee: Box::new(Expr::Identifier(Identifier {
+                                name: "out".into(),
+                                span: s,
+                            })),
+                            type_args: vec![],
+                            args: vec![Expr::Literal(Literal::Int(5, s))],
+                            span: s,
+                        },
+                    })],
+                    tail: Some(Box::new(Expr::Literal(Literal::Int(0, s)))),
+                    span: s,
+                })),
+                ret: None,
+                captures: Arc::new(RwLock::new(Vec::new())),
+                span: s,
+            })
+            .expect("closure builds");
+        let BuildValue::Closure(closure) = closure else {
+            panic!("expected closure");
+        };
+        let result = interpreter
+            .call_closure_value(closure.clone(), Vec::new())
+            .expect("closure call succeeds");
+        assert!(matches!(result, BuildValue::Int(0)));
+        assert!(
+            interpreter.effects.iter().any(|effect| matches!(
+                effect,
+                BuildEffect::Out(values) if matches!(values.as_slice(), [BuildValue::Int(5)])
+            )),
+            "defer should have recorded out effect"
+        );
     }
 
     #[test]
