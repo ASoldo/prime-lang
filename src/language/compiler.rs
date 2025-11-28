@@ -226,6 +226,7 @@ struct RangeValue {
 struct BoxValue {
     handle: Option<LLVMValueRef>,
     cell: Arc<Mutex<Value>>,
+    #[allow(dead_code)]
     origin: Option<String>,
 }
 

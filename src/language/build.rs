@@ -121,6 +121,7 @@ pub struct BuildClosure {
     pub body: ClosureBody,
     pub ret: Option<TypeAnnotation>,
     pub captures: Vec<BuildCaptured>,
+    #[allow(dead_code)]
     pub origin: Span,
 }
 
@@ -267,7 +268,7 @@ pub struct BuildInterpreter {
     struct_fields: HashMap<String, Vec<String>>,
     next_channel_id: u64,
     drop_impls: HashMap<String, BuildFunctionKey>,
-    active_mut_borrows: HashSet<String>,
+    active_mut_borrows: HashMap<String, Vec<BorrowMark>>,
     borrow_frames: Vec<Vec<BorrowMark>>,
     captured_borrows: HashSet<String>,
     cleanup_stack: Vec<Vec<BuildCleanup>>,
@@ -280,6 +281,7 @@ struct BorrowMark {
     name: String,
     kind: BorrowKind,
     borrower: Option<String>,
+    span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -469,7 +471,7 @@ impl BuildInterpreter {
             struct_fields: snapshot.struct_fields,
             next_channel_id: snapshot.next_channel_id,
             drop_impls,
-            active_mut_borrows: HashSet::new(),
+            active_mut_borrows: HashMap::new(),
             borrow_frames: vec![Vec::new(); scope_frames],
             captured_borrows: HashSet::new(),
             cleanup_stack: if snapshot.cleanup_stack.is_empty() {
@@ -485,7 +487,7 @@ impl BuildInterpreter {
     fn clone_for_spawn(&self) -> Self {
         let mut clone = self.clone();
         clone.effects = Vec::new();
-        clone.active_mut_borrows = HashSet::new();
+        clone.active_mut_borrows = HashMap::new();
         clone.borrow_frames = vec![Vec::new(); clone.scopes.len()];
         clone.cleanup_stack = self.cleanup_stack.clone();
         clone.captured_borrows = self.captured_borrows.clone();
@@ -510,31 +512,88 @@ impl BuildInterpreter {
     }
 
     fn load_identifier(&mut self, name: &str) -> Result<BuildValue, String> {
-        let binding = self
-            .find_binding_mut(name)
-            .ok_or_else(|| format!("Unknown identifier `{}` in build spawn", name))?;
-        if binding.borrowed_mut {
-            return Err(format!("Identifier `{}` is mutably borrowed", name));
+        let (cell, borrowed_mut, origin, last_move) = {
+            let binding = self
+                .find_binding_mut(name)
+                .ok_or_else(|| format!("Unknown identifier `{}` in build spawn", name))?;
+            (
+                binding.cell.clone(),
+                binding.borrowed_mut,
+                binding.origin,
+                binding.last_move,
+            )
+        };
+        if borrowed_mut {
+            if let Some(records) = self.active_mut_borrows.get(name) {
+                if let Some(first) = records.first() {
+                    return Err(format!(
+                        "Identifier `{}` is mutably borrowed (first borrower {} at {}..{}; declared at {}..{})",
+                        name,
+                        first.borrower.clone().unwrap_or_else(|| name.to_string()),
+                        first.span.start,
+                        first.span.end,
+                        origin.start,
+                        origin.end
+                    ));
+                }
+            }
+            return Err(format!(
+                "Identifier `{}` is mutably borrowed (declared at {}..{})",
+                name, origin.start, origin.end
+            ));
         }
-        let guard = binding.cell.lock().unwrap();
+        let guard = cell.lock().unwrap();
         if let BuildValue::Moved = *guard {
-            return Err(format!("Identifier `{}` has been moved", name));
+            return Err(format!(
+                "Identifier `{}` has been moved{}",
+                name,
+                last_move
+                    .map(|span| format!(" at {}..{}", span.start, span.end))
+                    .unwrap_or_else(String::new)
+            ));
         }
         Ok(guard.clone())
     }
 
     fn take_binding_value(&mut self, name: &str) -> Result<BuildValue, String> {
-        let binding = self
-            .find_binding_mut(name)
-            .ok_or_else(|| format!("Unknown identifier `{}` for move", name))?;
-        if binding.borrowed_mut || binding.borrowed_shared > 0 {
-            return Err(format!("Identifier `{}` is borrowed", name));
+        let (cell, borrowed_mut, borrowed_shared, origin) = {
+            let binding = self
+                .find_binding_mut(name)
+                .ok_or_else(|| format!("Unknown identifier `{}` for move", name))?;
+            (
+                binding.cell.clone(),
+                binding.borrowed_mut,
+                binding.borrowed_shared,
+                binding.origin,
+            )
+        };
+        if borrowed_mut || borrowed_shared > 0 {
+            if let Some(records) = self.active_mut_borrows.get(name) {
+                if let Some(first) = records.first() {
+                    return Err(format!(
+                        "Identifier `{}` is borrowed and cannot be moved (first borrower {} at {}..{}; declared at {}..{})",
+                        name,
+                        first.borrower.clone().unwrap_or_else(|| name.to_string()),
+                        first.span.start,
+                        first.span.end,
+                        origin.start,
+                        origin.end
+                    ));
+                }
+            }
+            return Err(format!(
+                "Identifier `{}` is borrowed and cannot be moved (declared at {}..{})",
+                name, origin.start, origin.end
+            ));
         }
-        let mut cell = binding.cell.lock().unwrap();
+        let mut cell = cell.lock().unwrap();
         if let BuildValue::Moved = *cell {
-            return Err(format!("Identifier `{}` already moved", name));
+            return Err(format!("Identifier `{}` already moved" , name));
         }
         let value = std::mem::replace(&mut *cell, BuildValue::Moved);
+        if let Some(binding) = self.find_binding_mut(name) {
+            binding.last_move = Some(Span::new(0, 0)); // TODO capture real span for moves in build-mode eval
+        }
         Ok(value)
     }
 
@@ -542,8 +601,9 @@ impl BuildInterpreter {
         &mut self,
         name: &str,
         mutable: bool,
+        span: Span,
     ) -> Result<BuildReference, String> {
-        let (cell, mutable_flag, borrowed_mut, borrowed_shared) = {
+        let (cell, mutable_flag, borrowed_mut, borrowed_shared, origin_span) = {
             let binding = self
                 .find_binding_mut(name)
                 .ok_or_else(|| format!("Unknown identifier `{}` for reference", name))?;
@@ -552,24 +612,28 @@ impl BuildInterpreter {
                 binding.mutable,
                 binding.borrowed_mut,
                 binding.borrowed_shared,
+                binding.origin,
             )
         };
         if mutable && !mutable_flag {
             return Err(format!("Identifier `{}` is immutable", name));
         }
         if mutable && borrowed_mut {
-            return Err(format!("Identifier `{}` is already mutably borrowed", name));
+            return Err(format!(
+                "Identifier `{}` is already mutably borrowed (declared at {}..{})",
+                name, origin_span.start, origin_span.end
+            ));
         }
         if mutable && borrowed_shared > 0 {
             return Err(format!("Identifier `{}` has active shared borrows", name));
         }
         if mutable {
-            self.begin_mut_borrow(name)?;
+            self.begin_mut_borrow(name, span, Some(name.to_string()))?;
             if let Some(binding) = self.find_binding_mut(name) {
                 binding.borrowed_mut = true;
             }
         } else {
-            self.begin_shared_borrow(name, name)?;
+            self.begin_shared_borrow(name, name, span)?;
         }
         self.captured_borrows.insert(name.to_string());
         Ok(BuildReference { cell, mutable })
@@ -689,12 +753,12 @@ impl BuildInterpreter {
                         ));
                     }
                     if *mutable {
-                        self.begin_mut_borrow(&ident.name)?;
+                        self.begin_mut_borrow(&ident.name, ident.span, None)?;
                         if let Some(binding) = self.find_binding_mut(&ident.name) {
                             binding.borrowed_mut = true;
                         }
                     } else {
-                        self.begin_shared_borrow(&ident.name, &ident.name)?;
+                        self.begin_shared_borrow(&ident.name, &ident.name, ident.span)?;
                     }
                     Ok(BuildValue::Reference(BuildReference {
                         cell,
@@ -1449,17 +1513,44 @@ impl BuildInterpreter {
     fn eval_move(&mut self, expr: &Expr) -> Result<BuildValue, String> {
         match expr {
             Expr::Identifier(ident) => {
-                let binding = self
-                    .find_binding_mut(&ident.name)
-                    .ok_or_else(|| format!("Unknown identifier `{}` for move", ident.name))?;
-                if binding.borrowed_mut || binding.borrowed_shared > 0 {
-                    return Err(format!("Identifier `{}` is borrowed", ident.name));
+                let (cell, borrowed_mut, borrowed_shared, origin) = {
+                    let binding = self
+                        .find_binding_mut(&ident.name)
+                        .ok_or_else(|| format!("Unknown identifier `{}` for move", ident.name))?;
+                    (
+                        binding.cell.clone(),
+                        binding.borrowed_mut,
+                        binding.borrowed_shared,
+                        binding.origin,
+                    )
+                };
+                if borrowed_mut || borrowed_shared > 0 {
+                    if let Some(records) = self.active_mut_borrows.get(&ident.name) {
+                        if let Some(first) = records.first() {
+                            return Err(format!(
+                                "Identifier `{}` is borrowed and cannot be moved (first borrower {} at {}..{}; declared at {}..{})",
+                                ident.name,
+                                first.borrower.clone().unwrap_or_else(|| ident.name.clone()),
+                                first.span.start,
+                                first.span.end,
+                                origin.start,
+                                origin.end
+                            ));
+                        }
+                    }
+                    return Err(format!(
+                        "Identifier `{}` is borrowed and cannot be moved (declared at {}..{})",
+                        ident.name, origin.start, origin.end
+                    ));
                 }
-                let mut cell = binding.cell.lock().unwrap();
+                let mut cell = cell.lock().unwrap();
                 if let BuildValue::Moved = *cell {
                     return Err(format!("Identifier `{}` already moved", ident.name));
                 }
                 let value = std::mem::replace(&mut *cell, BuildValue::Moved);
+                if let Some(binding) = self.find_binding_mut(&ident.name) {
+                    binding.last_move = Some(ident.span);
+                }
                 Ok(value)
             }
             _ => self.eval_expr_mut(expr),
@@ -1478,7 +1569,9 @@ impl BuildInterpreter {
             let value = match captured.mode {
                 CaptureMode::Move => self.take_binding_value(&captured.name)?,
                 CaptureMode::Reference { mutable } => {
-                    BuildValue::Reference(self.capture_reference_by_name(&captured.name, mutable)?)
+                    BuildValue::Reference(
+                        self.capture_reference_by_name(&captured.name, mutable, captured.span)?,
+                    )
                 }
             };
             captured_values.push(BuildCaptured {
@@ -1736,9 +1829,26 @@ impl BuildInterpreter {
         None
     }
 
-    fn begin_mut_borrow(&mut self, name: &str) -> Result<(), String> {
-        if self.active_mut_borrows.contains(name) {
-            return Err(format!("`{}` is already mutably borrowed", name));
+    fn begin_mut_borrow(
+        &mut self,
+        name: &str,
+        span: Span,
+        borrower: Option<String>,
+    ) -> Result<(), String> {
+        if let Some(existing) = self.active_mut_borrows.get(name) {
+            if let Some(first) = existing.first() {
+                return Err(format!(
+                    "`{}` is already mutably borrowed{}",
+                    name,
+                    first
+                        .borrower
+                        .as_ref()
+                        .map(|b| format!(" by `{}` at {}..{}", b, first.span.start, first.span.end))
+                        .unwrap_or_else(|| "".into())
+                ));
+            } else {
+                return Err(format!("`{}` is already mutably borrowed", name));
+            }
         }
         if let Some(binding) = self.find_binding_mut(name) {
             if !binding.mutable {
@@ -1749,19 +1859,28 @@ impl BuildInterpreter {
             }
             binding.borrowed_mut = true;
         }
-        self.active_mut_borrows.insert(name.to_string());
+        self.active_mut_borrows
+            .entry(name.to_string())
+            .or_default()
+            .push(BorrowMark {
+                name: name.to_string(),
+                kind: BorrowKind::Mutable,
+                borrower: borrower.clone(),
+                span,
+            });
         if let Some(frame) = self.borrow_frames.last_mut() {
             frame.push(BorrowMark {
                 name: name.to_string(),
                 kind: BorrowKind::Mutable,
-                borrower: None,
+                borrower,
+                span,
             });
         }
         Ok(())
     }
 
-    fn begin_shared_borrow(&mut self, name: &str, borrower: &str) -> Result<(), String> {
-        if self.active_mut_borrows.contains(name) {
+    fn begin_shared_borrow(&mut self, name: &str, borrower: &str, span: Span) -> Result<(), String> {
+        if self.active_mut_borrows.get(name).is_some() {
             return Err(format!("`{}` has an active mutable borrow", name));
         }
         if let Some(binding) = self.find_binding_mut(name) {
@@ -1773,6 +1892,7 @@ impl BuildInterpreter {
                 name: name.to_string(),
                 kind: BorrowKind::Shared,
                 borrower: Some(borrower.to_string()),
+                span,
             });
         }
         Ok(())
@@ -1838,7 +1958,13 @@ impl BuildInterpreter {
                 }
                 match mark.kind {
                     BorrowKind::Mutable => {
-                        self.active_mut_borrows.remove(&mark.name);
+                        if let Some(records) = self.active_mut_borrows.get_mut(&mark.name) {
+                            if records.len() > 1 {
+                                records.pop();
+                            } else {
+                                self.active_mut_borrows.remove(&mark.name);
+                            }
+                        }
                         if let Some(binding) = self.find_binding_mut(&mark.name) {
                             binding.borrowed_mut = false;
                         }
@@ -1888,7 +2014,7 @@ impl BuildInterpreter {
             Pattern::Identifier(name, span) => {
                 let mutable = mutability == Mutability::Mutable;
                 if let Some(scope) = self.scopes.last_mut() {
-                    if mutable && self.active_mut_borrows.contains(name) {
+                    if mutable && self.active_mut_borrows.contains_key(name) {
                         return Err(format!("`{}` is already mutably borrowed", name));
                     }
                     let value_for_drop = value.clone();
