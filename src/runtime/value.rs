@@ -24,6 +24,7 @@ pub enum Value {
     FormatTemplate(FormatTemplateValue),
     Sender(ChannelSender),
     Receiver(ChannelReceiver),
+    Iterator(IteratorValue),
     JoinHandle(Box<JoinHandleValue>),
     Pointer(PointerValue),
     Closure(ClosureValue),
@@ -48,6 +49,11 @@ impl Value {
             Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => true,
             Value::Pointer(_) => true,
             Value::Closure(_) => true,
+            Value::Iterator(iter) => {
+                let idx = *iter.index.lock().unwrap();
+                let len = iter.items.lock().unwrap().len();
+                idx < len
+            }
             Value::Unit => false,
             Value::Moved => panic!("attempted to read moved value"),
         }
@@ -234,6 +240,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Iterator(_) => write!(f, "<iter>"),
             Value::FormatTemplate(_) => write!(f, "<format string>"),
             Value::Sender(_) => write!(f, "Sender"),
             Value::Receiver(_) => write!(f, "Receiver"),
@@ -407,6 +414,32 @@ impl SliceValue {
 #[derive(Clone, Debug)]
 pub struct MapValue {
     pub entries: Arc<Mutex<BTreeMap<String, Value>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IteratorValue {
+    pub items: Arc<Mutex<Vec<Value>>>,
+    pub index: Arc<Mutex<usize>>,
+}
+
+impl IteratorValue {
+    pub fn from_items(items: Vec<Value>) -> Self {
+        Self {
+            items: Arc::new(Mutex::new(items)),
+            index: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    pub fn next(&self) -> Option<Value> {
+        let mut idx_guard = self.index.lock().unwrap();
+        let items_guard = self.items.lock().unwrap();
+        if *idx_guard >= items_guard.len() {
+            return None;
+        }
+        let value = items_guard.get(*idx_guard).cloned();
+        *idx_guard += 1;
+        value
+    }
 }
 
 impl MapValue {

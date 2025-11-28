@@ -8,9 +8,10 @@ use crate::runtime::{
     error::{RuntimeError, RuntimeResult},
     value::{
         BoxValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue, EnumValue,
-        FormatRuntimeSegment, FormatTemplateValue, JoinHandleValue, MapValue, PointerValue,
-        RangeValue, ReferenceValue, SliceValue, StructInstance, Value,
+        FormatRuntimeSegment, FormatTemplateValue, IteratorValue, JoinHandleValue, MapValue,
+        PointerValue, RangeValue, ReferenceValue, SliceValue, StructInstance, Value,
     },
+    platform::platform,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
@@ -1034,10 +1035,14 @@ impl Interpreter {
             "map_new" => self.builtin_map_new(args),
             "map_insert" => self.builtin_map_insert(args),
             "map_get" => self.builtin_map_get(args),
+            "map_keys" => self.builtin_map_keys(args),
+            "map_values" => self.builtin_map_values(args),
             "len" => self.builtin_len(args),
             "get" => self.builtin_get(args),
             "push" => self.builtin_push(args),
             "insert" => self.builtin_insert(args),
+            "iter" => self.builtin_iter(args),
+            "next" => self.builtin_iter_next(args),
             "assert" => self.builtin_assert(args),
             "expect" => self.builtin_expect(args),
             "str_len" => self.builtin_str_len(args),
@@ -1054,6 +1059,11 @@ impl Interpreter {
             "close" => self.builtin_close(args),
             "join" => self.builtin_join(args),
             "sleep" => self.builtin_sleep(args),
+            "sleep_ms" => self.builtin_sleep_ms(args),
+            "now_ms" => self.builtin_now_ms(args),
+            "fs_exists" => self.builtin_fs_exists(args),
+            "fs_read" => self.builtin_fs_read(args),
+            "fs_write" => self.builtin_fs_write(args),
             "ptr" => self.builtin_ptr(args, false),
             "ptr_mut" => self.builtin_ptr(args, true),
             "cast" => self.builtin_cast(args, type_args),
@@ -1113,10 +1123,17 @@ impl Interpreter {
                 args.insert(0, Value::Float(f));
                 Some(self.builtin_max(args))
             }
+            (Value::Slice(slice), "iter") => {
+                Some(self.builtin_iter(vec![Value::Slice(slice)]))
+            }
+            (Value::Map(map), "iter") => Some(self.builtin_iter(vec![Value::Map(map)])),
+            (Value::Map(map), "map_keys") => Some(self.builtin_map_keys(vec![Value::Map(map)])),
+            (Value::Map(map), "map_values") => Some(self.builtin_map_values(vec![Value::Map(map)])),
             (Value::JoinHandle(handle), "join") => {
                 args.insert(0, Value::JoinHandle(handle));
                 Some(self.builtin_join(args))
             }
+            (Value::Iterator(iter), "next") => Some(self.builtin_iter_next(vec![Value::Iterator(iter)])),
             (Value::Pointer(pointer), _) => {
                 let cloned = pointer.cell.lock().unwrap().clone();
                 let mut all_args = vec![cloned];
@@ -1147,10 +1164,14 @@ impl Interpreter {
                 | "map_new"
                 | "map_insert"
                 | "map_get"
+                | "map_keys"
+                | "map_values"
                 | "len"
                 | "get"
                 | "push"
                 | "insert"
+                | "iter"
+                | "next"
                 | "assert"
                 | "expect"
                 | "str_len"
@@ -1163,8 +1184,15 @@ impl Interpreter {
                 | "channel"
                 | "send"
                 | "recv"
+                | "recv_timeout"
                 | "close"
                 | "join"
+                | "sleep"
+                | "sleep_ms"
+                | "now_ms"
+                | "fs_exists"
+                | "fs_read"
+                | "fs_write"
         )
     }
 
@@ -1300,8 +1328,66 @@ impl Interpreter {
                 let cloned = reference.cell.lock().unwrap().clone();
                 self.expect_map(name, cloned)
             }
+            Value::Pointer(pointer) => {
+                let cloned = pointer.cell.lock().unwrap().clone();
+                self.expect_map(name, cloned)
+            }
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects map value"),
+            }),
+        }
+    }
+
+    fn expect_iterator(&self, name: &str, value: Value) -> RuntimeResult<IteratorValue> {
+        match value {
+            Value::Iterator(iter) => Ok(iter),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.lock().unwrap().clone();
+                self.expect_iterator(name, cloned)
+            }
+            Value::Pointer(pointer) => {
+                let cloned = pointer.cell.lock().unwrap().clone();
+                self.expect_iterator(name, cloned)
+            }
+            _ => Err(RuntimeError::TypeMismatch {
+                message: format!("{name} expects iterator"),
+            }),
+        }
+    }
+
+    fn iter_items_from_value(&self, value: Value) -> RuntimeResult<Vec<Value>> {
+        match value {
+            Value::Slice(slice) => {
+                let mut items = Vec::new();
+                for idx in 0..slice.len() {
+                    if let Some(item) = slice.get(idx) {
+                        items.push(item);
+                    }
+                }
+                Ok(items)
+            }
+            Value::Map(map) => {
+                let mut items = Vec::new();
+                for (key, value) in map.entries.lock().unwrap().iter() {
+                    items.push(Value::Tuple(vec![Value::String(key.clone()), value.clone()]));
+                }
+                Ok(items)
+            }
+            Value::Iterator(iter) => {
+                let start = *iter.index.lock().unwrap();
+                let guard = iter.items.lock().unwrap();
+                Ok(guard.iter().skip(start).cloned().collect())
+            }
+            Value::Reference(reference) => {
+                let inner = reference.cell.lock().unwrap().clone();
+                self.iter_items_from_value(inner)
+            }
+            Value::Pointer(pointer) => {
+                let inner = pointer.cell.lock().unwrap().clone();
+                self.iter_items_from_value(inner)
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!("iter not supported for {}", self.describe_value(&other)),
             }),
         }
     }
@@ -1483,6 +1569,48 @@ impl Interpreter {
         } else {
             let none = self.instantiate_enum("Option", "None", Vec::new())?;
             Ok(vec![none])
+        }
+    }
+
+    fn builtin_map_keys(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("map_keys", &args, 1)?;
+        let map = self.expect_map("map_keys", args.remove(0))?;
+        let mut keys = Vec::new();
+        for key in map.entries.lock().unwrap().keys() {
+            keys.push(Value::String(key.clone()));
+        }
+        Ok(vec![Value::Slice(SliceValue::from_vec(keys))])
+    }
+
+    fn builtin_map_values(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("map_values", &args, 1)?;
+        let map = self.expect_map("map_values", args.remove(0))?;
+        let mut values = Vec::new();
+        for value in map.entries.lock().unwrap().values() {
+            values.push(value.clone());
+        }
+        Ok(vec![Value::Slice(SliceValue::from_vec(values))])
+    }
+
+    fn builtin_iter(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("iter", &args, 1)?;
+        let target = args.remove(0);
+        let items = self.iter_items_from_value(target)?;
+        Ok(vec![Value::Iterator(IteratorValue::from_items(items))])
+    }
+
+    fn builtin_iter_next(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("next", &args, 1)?;
+        let iter = self.expect_iterator("next", args.remove(0))?;
+        match iter.next() {
+            Some(value) => {
+                let some = self.instantiate_enum("Option", "Some", vec![value])?;
+                Ok(vec![some])
+            }
+            None => {
+                let none = self.instantiate_enum("Option", "None", Vec::new())?;
+                Ok(vec![none])
+            }
         }
     }
 
@@ -1735,12 +1863,66 @@ impl Interpreter {
         }
     }
 
+    fn builtin_now_ms(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("now_ms", &args, 0)?;
+        let millis = platform().now_ms();
+        Ok(vec![Value::Int(millis)])
+    }
+
+    fn builtin_sleep_ms(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("sleep_ms", &args, 1)?;
+        self.builtin_sleep(args)
+    }
+
+    fn builtin_fs_exists(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("fs_exists", &args, 1)?;
+        let path = self.expect_string_or_format("fs_exists", args.remove(0))?;
+        Ok(vec![Value::Bool(platform().fs_exists(&path))])
+    }
+
+    fn builtin_fs_read(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("fs_read", &args, 1)?;
+        let path = self.expect_string_or_format("fs_read", args.remove(0))?;
+        match platform().fs_read(&path) {
+            Ok(contents) => {
+                let ok = self.instantiate_enum("Result", "Ok", vec![Value::String(contents)])?;
+                Ok(vec![ok])
+            }
+            Err(err) => {
+                let err_val = self.instantiate_enum(
+                    "Result",
+                    "Err",
+                    vec![Value::String(err.to_string())],
+                )?;
+                Ok(vec![err_val])
+            }
+        }
+    }
+
+    fn builtin_fs_write(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("fs_write", &args, 2)?;
+        let path = self.expect_string_or_format("fs_write", args.remove(0))?;
+        let contents = self.expect_string_or_format("fs_write", args.remove(0))?;
+        match platform().fs_write(&path, &contents) {
+            Ok(()) => {
+                let ok = self.instantiate_enum("Result", "Ok", vec![Value::Unit])?;
+                Ok(vec![ok])
+            }
+            Err(err) => {
+                let err_val = self.instantiate_enum(
+                    "Result",
+                    "Err",
+                    vec![Value::String(err.to_string())],
+                )?;
+                Ok(vec![err_val])
+            }
+        }
+    }
+
     fn builtin_sleep(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("sleep", &args, 1)?;
         let millis = self.expect_int_value("sleep", args.remove(0))?;
-        if millis > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(millis as u64));
-        }
+        platform().sleep_ms(millis);
         Ok(vec![Value::Unit])
     }
 
@@ -3354,6 +3536,13 @@ impl Interpreter {
                 let inner = reference.cell.lock().unwrap().clone();
                 self.collect_iterable_values(inner)
             }
+            Value::Iterator(iter) => {
+                let mut items = Vec::new();
+                while let Some(value) = iter.next() {
+                    items.push(value);
+                }
+                Ok(items)
+            }
             Value::Pointer(pointer) => {
                 let inner = pointer.cell.lock().unwrap().clone();
                 self.collect_iterable_values(inner)
@@ -3556,6 +3745,7 @@ impl Interpreter {
             Value::FormatTemplate(_) => "format string",
             Value::Sender(_) => "channel sender",
             Value::Receiver(_) => "channel receiver",
+            Value::Iterator(_) => "iterator",
             Value::Pointer(_) => "pointer",
             Value::JoinHandle(_) => "join handle",
             Value::Closure(_) => "closure",

@@ -39,6 +39,7 @@ pub enum BuildValue {
     },
     ChannelSender(BuildChannelSender),
     ChannelReceiver(BuildChannelReceiver),
+    Iterator(BuildIterator),
     Tuple(Vec<BuildValue>),
     Range {
         start: i128,
@@ -79,6 +80,32 @@ pub struct BuildReference {
 }
 
 #[derive(Clone, Debug)]
+pub struct BuildIterator {
+    pub items: Arc<Mutex<Vec<BuildValue>>>,
+    pub index: Arc<Mutex<usize>>,
+}
+
+impl BuildIterator {
+    pub fn from_items(items: Vec<BuildValue>) -> Self {
+        Self {
+            items: Arc::new(Mutex::new(items)),
+            index: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    pub fn next(&self) -> Option<BuildValue> {
+        let mut idx_guard = self.index.lock().unwrap();
+        let items_guard = self.items.lock().unwrap();
+        if *idx_guard >= items_guard.len() {
+            return None;
+        }
+        let value = items_guard.get(*idx_guard).cloned();
+        *idx_guard += 1;
+        value
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct BuildCaptured {
     pub name: String,
     pub mutable: bool,
@@ -116,6 +143,7 @@ impl BuildValue {
             BuildValue::FormatTemplate(_) => "format string",
             BuildValue::ChannelSender(_) => "channel sender",
             BuildValue::ChannelReceiver(_) => "channel receiver",
+            BuildValue::Iterator(_) => "iterator",
             BuildValue::DeferredCall { .. } => "function call",
             BuildValue::JoinHandle(_) => "join handle",
             BuildValue::Reference(_) => "reference",
@@ -150,6 +178,7 @@ pub struct BuildSnapshot {
     pub struct_fields: HashMap<String, Vec<String>>,
     pub next_channel_id: u64,
     pub cleanup_stack: Vec<Vec<BuildCleanup>>,
+    pub clock_ms: i128,
 }
 
 #[allow(dead_code)]
@@ -241,6 +270,7 @@ pub struct BuildInterpreter {
     captured_borrows: HashSet<String>,
     cleanup_stack: Vec<Vec<BuildCleanup>>,
     suppress_drop_schedule: bool,
+    clock_ms: i128,
 }
 
 #[derive(Clone, Debug)]
@@ -270,6 +300,15 @@ pub enum BuildEffect {
     ChannelCreate { id: u64 },
     ChannelSend { id: u64, value: BuildValue },
     ChannelClose { id: u64 },
+    FsExists { path: String, exists: bool },
+    FsRead { path: String, result: Result<String, String> },
+    FsWrite {
+        path: String,
+        contents: String,
+        result: Result<(), String>,
+    },
+    NowMs { value: i128 },
+    SleepMs { millis: i128 },
 }
 
 #[derive(Clone, Debug)]
@@ -437,6 +476,7 @@ impl BuildInterpreter {
                 snapshot.cleanup_stack
             },
             suppress_drop_schedule: false,
+            clock_ms: snapshot.clock_ms,
         }
     }
 
@@ -448,6 +488,7 @@ impl BuildInterpreter {
         clone.cleanup_stack = self.cleanup_stack.clone();
         clone.captured_borrows = self.captured_borrows.clone();
         clone.suppress_drop_schedule = false;
+        clone.clock_ms = self.clock_ms;
         clone
     }
 
@@ -2017,6 +2058,40 @@ impl BuildInterpreter {
         }
     }
 
+    fn expect_string_value(&self, value: BuildValue, context: &str) -> Result<String, String> {
+        match value {
+            BuildValue::String(s) => Ok(s),
+            BuildValue::Reference(reference) => {
+                let inner = reference.cell.lock().unwrap().clone();
+                self.expect_string_value(inner, context)
+            }
+            other => Err(format!("{context} expects string, found {}", other.kind())),
+        }
+    }
+
+    fn iter_items_from_value(&self, value: BuildValue) -> Result<Vec<BuildValue>, String> {
+        match value {
+            BuildValue::Slice(items) => Ok(items),
+            BuildValue::Map(entries) => {
+                let mut collected = Vec::new();
+                for (key, value) in entries {
+                    collected.push(BuildValue::Tuple(vec![BuildValue::String(key), value]));
+                }
+                Ok(collected)
+            }
+            BuildValue::Iterator(iter) => {
+                let start = *iter.index.lock().unwrap();
+                let guard = iter.items.lock().unwrap();
+                Ok(guard.iter().skip(start).cloned().collect())
+            }
+            BuildValue::Reference(reference) => {
+                let inner = reference.cell.lock().unwrap().clone();
+                self.iter_items_from_value(inner)
+            }
+            other => Err(format!("iter not supported for {}", other.kind())),
+        }
+    }
+
     fn assign_index_into_value(
         &self,
         target: &mut BuildValue,
@@ -2080,6 +2155,21 @@ impl BuildInterpreter {
             return self.call_user_function(name, &receiver_value, evaluated, type_args);
         }
         match name {
+            "iter" => {
+                if let Some(recv) = receiver {
+                    if !args.is_empty() {
+                        return Err("iter expects no arguments after receiver".into());
+                    }
+                    let items = self.iter_items_from_value(recv)?;
+                    return Ok(BuildValue::Iterator(BuildIterator::from_items(items)));
+                }
+                if args.len() != 1 {
+                    return Err("iter expects 1 argument".into());
+                }
+                let target = self.eval_expr_mut(&args[0])?;
+                let items = self.iter_items_from_value(target)?;
+                Ok(BuildValue::Iterator(BuildIterator::from_items(items)))
+            }
             "len" => {
                 if args.len() != 1 {
                     return Err("len expects 1 argument".into());
@@ -2090,6 +2180,23 @@ impl BuildInterpreter {
                     BuildValue::String(text) => Ok(BuildValue::Int(text.len() as i128)),
                     BuildValue::FormatTemplate(_) => Ok(BuildValue::Int(0)),
                     other => Err(format!("len not supported for {}", other.kind())),
+                }
+            }
+            "next" => {
+                let iter_value = if let Some(recv) = receiver {
+                    recv
+                } else {
+                    if args.len() != 1 {
+                        return Err("next expects 1 argument".into());
+                    }
+                    self.eval_expr_mut(&args[0])?
+                };
+                match iter_value {
+                    BuildValue::Iterator(iter) => match iter.next() {
+                        Some(value) => Ok(self.wrap_enum("Some", vec![value])),
+                        None => Ok(self.wrap_enum("None", Vec::new())),
+                    },
+                    other => Err(format!("next expects iterator, found {}", other.kind())),
                 }
             }
             "min" | "max" => {
@@ -2118,6 +2225,124 @@ impl BuildInterpreter {
                     )),
                 }
             }
+            "map_keys" => {
+                let map_value = if let Some(recv) = receiver.clone() {
+                    if !args.is_empty() {
+                        return Err("map_keys expects 0 arguments after receiver".into());
+                    }
+                    recv
+                } else {
+                    if args.len() != 1 {
+                        return Err("map_keys expects 1 argument".into());
+                    }
+                    self.eval_expr_mut(&args[0])?
+                };
+                let map = match map_value {
+                    BuildValue::Map(entries) => entries,
+                    BuildValue::Reference(reference) => {
+                        let inner = reference.cell.lock().unwrap().clone();
+                        match inner {
+                            BuildValue::Map(entries) => entries,
+                            other => {
+                                return Err(format!(
+                                    "map_keys expects map, found {}",
+                                    other.kind()
+                                ));
+                            }
+                        }
+                    }
+                    other => {
+                        return Err(format!("map_keys expects map, found {}", other.kind()));
+                    }
+                };
+                let mut keys = Vec::new();
+                for key in map.keys() {
+                    keys.push(BuildValue::String(key.clone()));
+                }
+                Ok(BuildValue::Slice(keys))
+            }
+            "map_values" => {
+                let map_value = if let Some(recv) = receiver.clone() {
+                    if !args.is_empty() {
+                        return Err("map_values expects 0 arguments after receiver".into());
+                    }
+                    recv
+                } else {
+                    if args.len() != 1 {
+                        return Err("map_values expects 1 argument".into());
+                    }
+                    self.eval_expr_mut(&args[0])?
+                };
+                let map = match map_value {
+                    BuildValue::Map(entries) => entries,
+                    BuildValue::Reference(reference) => {
+                        let inner = reference.cell.lock().unwrap().clone();
+                        match inner {
+                            BuildValue::Map(entries) => entries,
+                            other => {
+                                return Err(format!(
+                                    "map_values expects map, found {}",
+                                    other.kind()
+                                ));
+                            }
+                        }
+                    }
+                    other => {
+                        return Err(format!("map_values expects map, found {}", other.kind()));
+                    }
+                };
+                let mut values = Vec::new();
+                for value in map.values() {
+                    values.push(value.clone());
+                }
+                Ok(BuildValue::Slice(values))
+            }
+            "fs_exists" => {
+                if args.len() != 1 {
+                    return Err("fs_exists expects 1 argument".into());
+                }
+                let path_value = self.eval_expr_mut(&args[0])?;
+                let path = self.expect_string_value(path_value, "fs_exists")?;
+                let exists = std::path::Path::new(&path).exists();
+                self.effects
+                    .push(BuildEffect::FsExists { path: path.clone(), exists });
+                Ok(BuildValue::Bool(exists))
+            }
+            "fs_read" => {
+                if args.len() != 1 {
+                    return Err("fs_read expects 1 argument".into());
+                }
+                let path_value = self.eval_expr_mut(&args[0])?;
+                let path = self.expect_string_value(path_value, "fs_read")?;
+                let result = std::fs::read_to_string(&path).map_err(|err| err.to_string());
+                self.effects.push(BuildEffect::FsRead {
+                    path: path.clone(),
+                    result: result.clone(),
+                });
+                match result {
+                    Ok(text) => Ok(self.wrap_enum("Ok", vec![BuildValue::String(text)])),
+                    Err(msg) => Ok(self.wrap_enum("Err", vec![BuildValue::String(msg)])),
+                }
+            }
+            "fs_write" => {
+                if args.len() != 2 {
+                    return Err("fs_write expects 2 arguments".into());
+                }
+                let path_value = self.eval_expr_mut(&args[0])?;
+                let path = self.expect_string_value(path_value, "fs_write")?;
+                let contents_value = self.eval_expr_mut(&args[1])?;
+                let contents = self.expect_string_value(contents_value, "fs_write")?;
+                let result = std::fs::write(&path, contents.clone()).map_err(|err| err.to_string());
+                self.effects.push(BuildEffect::FsWrite {
+                    path: path.clone(),
+                    contents,
+                    result: result.clone(),
+                });
+                match result {
+                    Ok(()) => Ok(self.wrap_enum("Ok", vec![BuildValue::Unit])),
+                    Err(msg) => Ok(self.wrap_enum("Err", vec![BuildValue::String(msg)])),
+                }
+            }
             "abs" => {
                 if args.len() != 1 {
                     return Err("abs expects 1 argument".into());
@@ -2127,6 +2352,15 @@ impl BuildInterpreter {
                     BuildValue::Float(v) => Ok(BuildValue::Float(v.abs())),
                     other => Err(format!("abs expects int or float, found {}", other.kind())),
                 }
+            }
+            "now_ms" => {
+                if !args.is_empty() {
+                    return Err("now_ms expects no arguments".into());
+                }
+                let value = self.clock_ms;
+                self.clock_ms = self.clock_ms.saturating_add(1);
+                self.effects.push(BuildEffect::NowMs { value });
+                Ok(BuildValue::Int(value))
             }
             "cast" => {
                 if type_args.len() != 1 {
@@ -2333,9 +2567,16 @@ impl BuildInterpreter {
                     }
                 };
                 if millis > 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(millis as u64));
+                    self.clock_ms = self.clock_ms.saturating_add(millis);
                 }
+                self.effects.push(BuildEffect::SleepMs { millis });
                 Ok(BuildValue::Unit)
+            }
+            "sleep_ms" => {
+                if args.len() != 1 {
+                    return Err("sleep_ms expects 1 argument".into());
+                }
+                self.eval_builtin_or_deferred("sleep", receiver, type_args, args)
             }
             "get" => {
                 if args.len() != 2 {
@@ -2502,6 +2743,8 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
+            clock_ms: 0,
         }
     }
 
@@ -2666,6 +2909,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let block = Block {
             statements: vec![Statement::Assign(AssignStmt {
@@ -3234,6 +3478,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter
@@ -3276,6 +3521,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter.eval_expr(&Expr::Reference {
@@ -3327,6 +3573,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let captures = Arc::new(RwLock::new(vec![CapturedVar {
@@ -3379,6 +3626,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let closure = interpreter
@@ -3437,6 +3685,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {
@@ -3489,6 +3738,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {
@@ -3536,6 +3786,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let loop_block = Block {
@@ -3579,6 +3830,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let captured = BuildCaptured {
@@ -3666,6 +3918,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {
@@ -3729,6 +3982,7 @@ mod tests {
             struct_fields: HashMap::new(),
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {

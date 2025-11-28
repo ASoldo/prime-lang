@@ -1,36 +1,36 @@
-  1. Language surface
+1. Minimal stdlib expansion via built-ins (fs/time/iter):
 
-  - Allow impl Drop for Type { fn drop(&mut self) { ... } } or fn drop(&mut self) inside impl Type.
-  - Restrict to no return values; allow &mut self and no captures.
-  - Disallow panics during drop or treat them as runtime errors.
+  - File I/O built-ins: fs_read(path) -> Result[string, string], fs_write(path, string) -> Result[(), string], fs_exists(path)
+    -> bool.
+  - Time built-ins: now_ms() -> int64, sleep_ms(int64) -> () (rename/alias from sleep).
+  - Iter helpers as built-ins: slice/map .iter() returning a lightweight iterator with next() -> Option[T]; map_keys/map_values
+    for Map. Keep pure and build-mode friendly.
+  - Docs/samples: README/docs topic plus demos (fs_demo, time_demo, iter_demo) showing usage.
 
-  2. Compiler/lowering
+  2. Borrow/move diagnostics improvements:
 
-  - For stack-bound values, enqueue a deferred drop when the binding is created; run drops on scope exit (reuse defer stack).
-  - For moves, transfer ownership and drop only once; moved-from bindings no longer schedule the drop.
-  - For references/pointers/handles, either skip drop or allow a separate DropHandle trait for handle wrappers.
-  - Run drops in reverse insertion order per scope (LIFO), mirroring typical RAII.
+  - Borrow errors: include binding origin, active borrower, and hints to clone/reorder; show spans for borrower and move site.
+  - Moved-value errors: cite the last binding and move origin (move, capture, box_take); suggest references when suitable.
+  - Alignment: identical wording/spans in run vs build.
+  - Tests: regression cases for borrow conflicts, moves during borrow, and drop-after-move with clear messages.
 
-  3. Build mode specifics
+  3. Scope/compatibility:
 
-  - Track scheduled drops in both interpreter and build modes; drops should execute in build snapshots and be replayed (effects-
-    only) in parallel builds.
-  - Ensure drops are side-effect ordered with defers; likely run defers after drops or vice versa, but document the order.
+  - No language surface changes; only built-ins and diagnostics.
+  - Build-mode determinism: fs/time built-ins record effects; snapshots replay deterministically.
 
-  4. Runtime ABI
+  4. Deliverables/checklist:
 
-  - Expose a stable “drop call” ABI for types that hold runtime handles (boxes/slices/maps) to release retained runtime handles
-    safely.
-  - For pure types, drop bodies stay in compiled code; no runtime shim needed.
+  - Built-in fs/time/iter support.
+  - README + prime-lang docs updates with code snippets.
+  - New demos under workspace/demos for fs/time/iter.
+  - Tests under workspace/tests covering fs/time and iterator helpers.
+  - Improved borrow/move diagnostics with unit tests for run/build parity.
 
-  5. Testing
+  5. No-Std friendly
+  Want to be no-std friendly later, design now so that:
 
-  - Add regression tests for scopes with multiple bindings, control-flow exits (return/break/continue), moves, captured closures,
-    and build snapshot replay with drop side effects.
-  - Add a test that drop runs exactly once and after the last use.
-
-  What it’s useful for
-
-  - Resource cleanup (files/sockets once you add FFI), releasing runtime handles early, and symmetry with Rust-like RAII so users
-    don’t hand-roll defers.
-  - Simplifies patterns like “ensure channel close” or “release borrow guard” by putting the logic in drop.
+  1. Built-ins are routed through a thin platform trait layer that can be stubbed or HAL-backed.
+  2. There’s a feature flag to disable std-only built-ins (fs/time/spawn/channel) and fail fast at compile time in no-std.
+  3. Allocator use is explicit, with a way to swap in a custom allocator or a “no heap” profile.
+  4. Diagnostics can degrade gracefully (no color, minimal formatting) without std.

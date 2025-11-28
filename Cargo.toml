@@ -3,6 +3,10 @@ name = "prime-lang"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["std-builtins"]
+std-builtins = []
+
 [dependencies]
 clap = { version = "4.5.51", features = ["derive"] }
 miette = { version = "7.6.0", features = ["fancy"] }

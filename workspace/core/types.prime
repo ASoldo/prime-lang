@@ -3,6 +3,7 @@ library core::types;
 export prelude {
   Option,
   Result,
+  Iterator,
   Iterable,
   Vec2,
   Transform,
@@ -22,6 +23,10 @@ pub enum Option[T] {
 pub enum Result[T, E] {
   Ok(T),
   Err(E),
+}
+
+pub interface Iterator[T] {
+  fn next(self: Self) -> Option[T];
 }
 
 pub interface Iterable[T] {

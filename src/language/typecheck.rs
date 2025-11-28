@@ -2816,6 +2816,37 @@ impl Checker {
                 self.check_expression(module, &args[0], None, returns, env);
                 Some(TypeExpr::named("int32"))
             }
+            "iter" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`iter` expects 1 argument",
+                    ));
+                }
+                let target_ty = self.check_expression(module, &args[0], None, returns, env);
+                match target_ty {
+                    Some(TypeExpr::Slice(inner)) => {
+                        Some(TypeExpr::Named("Iterator".into(), vec![*inner]))
+                    }
+                    Some(TypeExpr::Named(name, params)) if name == "Map" && params.len() == 2 => {
+                        let tuple = TypeExpr::Tuple(vec![
+                            TypeExpr::Named("string".into(), Vec::new()),
+                            params[1].clone(),
+                        ]);
+                        Some(TypeExpr::Named("Iterator".into(), vec![tuple]))
+                    }
+                    Some(other) => {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            span,
+                            format!("`iter` not supported for {}", other.canonical_name()),
+                        ));
+                        None
+                    }
+                    None => None,
+                }
+            }
             "channel" => {
                 if args.len() != 0 {
                     self.errors.push(TypeError::new(
@@ -2932,6 +2963,134 @@ impl Checker {
                     env,
                 );
                 Some(TypeExpr::Unit)
+            }
+            "sleep_ms" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`sleep_ms` expects 1 argument (millis)",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("int64".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                Some(TypeExpr::Unit)
+            }
+            "now_ms" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`now_ms` expects 0 arguments",
+                    ));
+                }
+                Some(TypeExpr::Named("int64".into(), Vec::new()))
+            }
+            "fs_exists" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`fs_exists` expects 1 argument (path)",
+                    ));
+                }
+                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                Some(bool_type())
+            }
+            "fs_read" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`fs_read` expects 1 argument (path)",
+                    ));
+                }
+                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                Some(TypeExpr::Named(
+                    "Result".into(),
+                    vec![string_type(), string_type()],
+                ))
+            }
+            "fs_write" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`fs_write` expects 2 arguments (path, contents)",
+                    ));
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![TypeExpr::Unit, string_type()],
+                    ));
+                }
+                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                self.check_expression(module, &args[1], Some(&string_type()), returns, env);
+                Some(TypeExpr::Named(
+                    "Result".into(),
+                    vec![TypeExpr::Unit, string_type()],
+                ))
+            }
+            "map_keys" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`map_keys` expects 1 argument",
+                    ));
+                    return Some(TypeExpr::Slice(Box::new(string_type())));
+                }
+                let map_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some((key_ty, _)) = self.expect_map_type(module, span, map_ty.as_ref()) {
+                    if !is_string_type(&key_ty) {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            span,
+                            "map_keys requires map with string keys",
+                        ));
+                    }
+                    return Some(TypeExpr::Slice(Box::new(string_type())));
+                }
+                Some(TypeExpr::Slice(Box::new(string_type())))
+            }
+            "map_values" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`map_values` expects 1 argument",
+                    ));
+                    return None;
+                }
+                let map_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some((_, value_ty)) =
+                    self.expect_map_type(module, span, map_ty.as_ref())
+                {
+                    return Some(TypeExpr::Slice(Box::new(value_ty)));
+                }
+                None
+            }
+            "next" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`next` expects 1 argument",
+                    ));
+                    return None;
+                }
+                let iter_ty = self.check_expression(module, &args[0], None, returns, env);
+                if let Some(TypeExpr::Named(name, params)) = iter_ty {
+                    if name == "Iterator" && params.len() == 1 {
+                        return Some(make_option_type(params[0].clone()));
+                    }
+                }
+                None
             }
             "assert_eq" => {
                 if args.len() != 2 {
@@ -3165,6 +3324,9 @@ impl Checker {
             TypeExpr::Named(name, _) if name == "Map" => {
                 self.check_map_method(module, target, method, args, returns, env, span)
             }
+            TypeExpr::Named(name, generics) if name == "Iterator" => {
+                self.check_iterator_method(module, generics, method, args, returns, env, span)
+            }
             TypeExpr::Named(name, _) if name == "string" => {
                 self.check_string_method(module, method, args, returns, env, span)
             }
@@ -3259,6 +3421,16 @@ impl Checker {
                 self.check_expression(module, &args[0], Some(&int_type()), returns, env);
                 Some(make_option_type(inner.clone()))
             }
+            "iter" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`iter` expects 0 argument(s) after receiver",
+                    ));
+                }
+                Some(TypeExpr::Named("Iterator".into(), vec![inner.clone()]))
+            }
             "slice_remove" | "remove" => {
                 if args.len() != 1 {
                     self.errors.push(TypeError::new(
@@ -3344,6 +3516,37 @@ impl Checker {
                 self.check_expression(module, &args[0], Some(&key_ty), returns, env);
                 Some(make_option_type(value_ty))
             }
+            "map_keys" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`map_keys` expects 0 argument(s) after receiver",
+                    ));
+                }
+                Some(TypeExpr::Slice(Box::new(string_type())))
+            }
+            "map_values" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`map_values` expects 0 argument(s) after receiver",
+                    ));
+                }
+                Some(TypeExpr::Slice(Box::new(value_ty)))
+            }
+            "iter" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`iter` expects 0 argument(s) after receiver",
+                    ));
+                }
+                let tuple = TypeExpr::Tuple(vec![string_type(), value_ty.clone()]);
+                Some(TypeExpr::Named("Iterator".into(), vec![tuple]))
+            }
             "map_len" | "len" => {
                 if !args.is_empty() {
                     self.errors.push(TypeError::new(
@@ -3353,6 +3556,40 @@ impl Checker {
                     ));
                 }
                 Some(int_type())
+            }
+            _ => None,
+        }
+    }
+
+    fn check_iterator_method(
+        &mut self,
+        module: &Module,
+        generics: &[TypeExpr],
+        method: &str,
+        args: &[Expr],
+        _returns: &[TypeExpr],
+        _env: &mut FnEnv,
+        span: Span,
+    ) -> Option<TypeExpr> {
+        if generics.len() != 1 {
+            self.errors.push(TypeError::new(
+                &module.path,
+                span,
+                "`Iterator` expects 1 type argument",
+            ));
+            return None;
+        }
+        let elem = &generics[0];
+        match method {
+            "next" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`next` expects 0 argument(s) after receiver",
+                    ));
+                }
+                Some(make_option_type(elem.clone()))
             }
             _ => None,
         }
@@ -3942,9 +4179,13 @@ impl Checker {
                 | "map_new"
                 | "map_insert"
                 | "map_get"
+                | "map_keys"
+                | "map_values"
                 | "assert"
                 | "expect"
                 | "len"
+                | "iter"
+                | "next"
                 | "str_len"
                 | "str_contains"
                 | "str_trim"
@@ -3960,6 +4201,11 @@ impl Checker {
                 | "close"
                 | "join"
                 | "sleep"
+                | "sleep_ms"
+                | "now_ms"
+                | "fs_exists"
+                | "fs_read"
+                | "fs_write"
                 | "ptr"
                 | "ptr_mut"
                 | "cast"
