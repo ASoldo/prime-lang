@@ -6,7 +6,7 @@ use crate::{
         macro_expander,
         parser::parse_module,
         span::Span,
-        typecheck::{TypeError, check_program},
+        typecheck::{TypeError, TypecheckOptions, check_program_with_options},
     },
     project::{
         diagnostics::{
@@ -16,6 +16,7 @@ use crate::{
         manifest::{ModuleVisibility, PackageManifest, manifest_key_for},
     },
 };
+use crate::target::BuildOptions;
 use serde_json::json;
 use std::{
     collections::{HashSet, VecDeque},
@@ -350,7 +351,11 @@ fn type_diagnostics(
         Ok(prog) => prog,
         Err(errors) => return macro_errors_to_lsp(errors, text, &module.path),
     };
-    match check_program(&expanded) {
+    let build_options = BuildOptions::from_sources(None, None, manifest);
+    let typecheck_options = TypecheckOptions {
+        target: build_options.target,
+    };
+    match check_program_with_options(&expanded, &typecheck_options) {
         Ok(_) => Vec::new(),
         Err(errors) => errors
             .into_iter()

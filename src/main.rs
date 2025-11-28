@@ -6,13 +6,20 @@ mod runtime;
 #[cfg(test)]
 mod tests;
 mod tools;
+mod target;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use language::{
     ast::{Item, ModuleKind},
     span::Span,
 };
-use language::{compiler::Compiler, macro_expander, parser::parse_module, typecheck};
+use language::{
+    compiler::Compiler,
+    macro_expander,
+    parser::parse_module,
+    typecheck,
+    typecheck::TypecheckOptions,
+};
 use miette::NamedSource;
 use project::diagnostics::analyze_manifest_issues;
 use project::{
@@ -20,7 +27,7 @@ use project::{
     load_package, load_package_with_manifest, manifest::PackageManifest,
     manifest::canonical_module_name, manifest::manifest_key_for, warn_manifest_drift,
 };
-use runtime::Interpreter;
+use runtime::{platform, Interpreter};
 use std::{
     env, fs, io,
     path::{Component, Path, PathBuf},
@@ -39,6 +46,7 @@ use tools::{
     formatter::format_module,
     lint::run_lint,
 };
+use target::{BuildOptions, BuildTarget};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -56,7 +64,8 @@ struct Cli {
 enum Commands {
     /// Interpret a Prime module by manifest name or file path
     Run {
-        target: String,
+        #[arg(value_name = "TARGET")]
+        entry: String,
         #[arg(short = 'p', long = "project", value_name = "PACKAGE")]
         project: Option<String>,
         #[arg(
@@ -68,7 +77,8 @@ enum Commands {
     },
     /// Build a Prime module down to LLVM IR and a native binary
     Build {
-        target: String,
+        #[arg(value_name = "TARGET")]
+        entry: String,
         #[arg(short = 'p', long = "project", value_name = "PACKAGE")]
         project: Option<String>,
         #[arg(
@@ -77,6 +87,12 @@ enum Commands {
             help = "Require prime.lock to satisfy dependencies"
         )]
         frozen: bool,
+        /// Target triple (e.g. riscv32imc-unknown-none-elf); defaults to host
+        #[arg(long = "target", value_name = "TRIPLE")]
+        target_triple: Option<String>,
+        /// Optional platform hint (esp32, host); falls back to PRIME_PLATFORM
+        #[arg(long = "platform", value_name = "PLATFORM")]
+        platform: Option<String>,
         /// Base name for generated artifacts
         #[arg(long, default_value = "output")]
         name: String,
@@ -256,16 +272,25 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         Commands::Run {
-            target,
+            entry,
             project,
             frozen,
-        } => run_entry(&target, project.as_deref(), frozen),
+        } => run_entry(&entry, project.as_deref(), frozen),
         Commands::Build {
-            target,
+            entry,
             project,
             frozen,
+            target_triple,
+            platform,
             name,
-        } => build_entry(&target, project.as_deref(), frozen, &name),
+        } => build_entry(
+            &entry,
+            project.as_deref(),
+            frozen,
+            &name,
+            target_triple,
+            platform,
+        ),
         Commands::Lint { file, watch } => {
             ensure_prime_file(&file);
             warn_manifest_drift(&file);
@@ -398,8 +423,8 @@ fn main() {
         }
     }
 }
-fn run_entry(target: &str, project: Option<&str>, frozen: bool) {
-    let (entry, entry_path, manifest) = match resolve_entry_for_cli(target, project) {
+fn run_entry(entry: &str, project: Option<&str>, frozen: bool) {
+    let (entry, entry_path, manifest) = match resolve_entry_for_cli(entry, project) {
         Ok(values) => values,
         Err(err) => exit_on_package_error(err),
     };
@@ -412,6 +437,8 @@ fn run_entry(target: &str, project: Option<&str>, frozen: bool) {
         }
     }
     warn_manifest_drift(&entry_path);
+    let run_options = BuildOptions::from_sources(None, None, manifest.as_ref());
+    platform::configure_platform(&run_options);
     match load_package_with_manifest(entry.as_entry_point(), manifest) {
         Ok(package) => {
             let expanded_program = expand_or_report(&package.program);
@@ -426,11 +453,17 @@ fn run_entry(target: &str, project: Option<&str>, frozen: bool) {
                 program: expanded_program.program.clone(),
                 modules: expanded_modules,
             };
-            if let Err(errors) = typecheck::check_program(&expanded_program) {
+            let typecheck_options = TypecheckOptions {
+                target: run_options.target.clone(),
+            };
+            if let Err(errors) =
+                typecheck::check_program_with_options(&expanded_program, &typecheck_options)
+            {
                 emit_type_errors(&errors);
                 std::process::exit(1);
             }
-            let mut interpreter = Interpreter::new(expanded_package);
+            let mut interpreter =
+                Interpreter::with_target(expanded_package, run_options.target.clone());
             if let Err(err) = interpreter.run() {
                 report_runtime_error(&err);
                 std::process::exit(1);
@@ -440,20 +473,27 @@ fn run_entry(target: &str, project: Option<&str>, frozen: bool) {
     }
 }
 
-fn compile_runtime_abi() -> Result<PathBuf, String> {
-    let runtime_dir = PathBuf::from(".build.prime/runtime");
+fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
+    let runtime_dir = match target.triple() {
+        Some(triple) => PathBuf::from(".build.prime/runtime").join(triple),
+        None => PathBuf::from(".build.prime/runtime"),
+    };
     if let Err(err) = fs::create_dir_all(&runtime_dir) {
         return Err(format!("failed to create runtime build dir: {err}"));
     }
     let output_lib = runtime_dir.join("libruntime_abi.a");
-    let status = Command::new("rustc")
-        .arg("--crate-type")
+    let mut cmd = Command::new("rustc");
+    cmd.arg("--crate-type")
         .arg("staticlib")
         .arg("--edition")
         .arg("2021")
         .arg("src/runtime/abi.rs")
         .arg("-o")
-        .arg(&output_lib)
+        .arg(&output_lib);
+    if let Some(triple) = target.triple() {
+        cmd.arg("--target").arg(triple);
+    }
+    let status = cmd
         .status()
         .map_err(|err| format!("failed to spawn rustc for runtime ABI: {err}"))?;
     if !status.success() {
@@ -462,11 +502,19 @@ fn compile_runtime_abi() -> Result<PathBuf, String> {
     Ok(output_lib)
 }
 
-fn build_entry(target: &str, project: Option<&str>, frozen: bool, name: &str) {
-    let (entry, entry_path, manifest) = match resolve_entry_for_cli(target, project) {
+fn build_entry(
+    entry: &str,
+    project: Option<&str>,
+    frozen: bool,
+    name: &str,
+    target_flag: Option<String>,
+    platform_flag: Option<String>,
+) {
+    let (entry, entry_path, manifest) = match resolve_entry_for_cli(entry, project) {
         Ok(values) => values,
         Err(err) => exit_on_package_error(err),
     };
+    let build_options = BuildOptions::from_sources(target_flag, platform_flag, manifest.as_ref());
     ensure_prime_file(&entry_path);
     reject_non_module_entry(&entry_path, manifest.as_ref(), "build");
     if frozen {
@@ -476,14 +524,20 @@ fn build_entry(target: &str, project: Option<&str>, frozen: bool, name: &str) {
         }
     }
     warn_manifest_drift(&entry_path);
+    platform::configure_platform(&build_options);
     match load_package_with_manifest(entry.as_entry_point(), manifest) {
         Ok(package) => {
             let expanded_program = expand_or_report(&package.program);
-            if let Err(errors) = typecheck::check_program(&expanded_program) {
+            let typecheck_options = TypecheckOptions {
+                target: build_options.target.clone(),
+            };
+            if let Err(errors) =
+                typecheck::check_program_with_options(&expanded_program, &typecheck_options)
+            {
                 emit_type_errors(&errors);
                 std::process::exit(1);
             }
-            let mut compiler = Compiler::new();
+            let mut compiler = Compiler::with_target(build_options.target.clone());
             if let Err(err) = compiler.compile_program(&expanded_program.program) {
                 eprintln!("Build failed: {err}");
                 std::process::exit(1);
@@ -493,7 +547,10 @@ fn build_entry(target: &str, project: Option<&str>, frozen: bool, name: &str) {
                 eprintln!("Failed to create build directory: {err}");
                 std::process::exit(1);
             }
-            let artifact_dir = build_root.join(name);
+            let artifact_dir = match build_options.target.triple() {
+                Some(triple) => build_root.join(format!("{name}-{triple}")),
+                None => build_root.join(name),
+            };
             if let Err(err) = fs::create_dir_all(&artifact_dir) {
                 eprintln!("Failed to create artifact directory: {err}");
                 std::process::exit(1);
@@ -504,11 +561,11 @@ fn build_entry(target: &str, project: Option<&str>, frozen: bool, name: &str) {
                 std::process::exit(1);
             }
             let obj_path = artifact_dir.join(format!("{name}.o"));
-            if let Err(err) = run_llc(&ir_path, &obj_path) {
+            if let Err(err) = run_llc(&ir_path, &obj_path, &build_options.target) {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
-            let runtime_lib = match compile_runtime_abi() {
+            let runtime_lib = match compile_runtime_abi(&build_options.target) {
                 Ok(path) => Some(path),
                 Err(err) => {
                     eprintln!("Failed to compile runtime ABI: {err}");
@@ -516,7 +573,9 @@ fn build_entry(target: &str, project: Option<&str>, frozen: bool, name: &str) {
                 }
             };
             let bin_path = artifact_dir.join(name);
-            if let Err(err) = run_gcc_with_runtime(&obj_path, runtime_lib.as_deref(), &bin_path) {
+            if let Err(err) =
+                run_gcc_with_runtime(&obj_path, runtime_lib.as_deref(), &bin_path, &build_options)
+            {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
@@ -727,13 +786,20 @@ fn format_file(path: &Path, write: bool) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn run_llc(ir_path: &Path, obj_path: &Path) -> Result<(), String> {
-    let output = Command::new("llc")
-        .arg("-relocation-model=pic")
+fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), String> {
+    let mut cmd = Command::new("llc");
+    cmd.arg("-relocation-model=pic")
         .arg("-filetype=obj")
         .arg(ir_path)
         .arg("-o")
-        .arg(obj_path)
+        .arg(obj_path);
+    if let Some(triple) = target.triple() {
+        cmd.arg(format!("-mtriple={triple}"));
+    }
+    if target.is_esp32c3() {
+        cmd.arg("-march=rv32imc");
+    }
+    let output = cmd
         .output()
         .map_err(|err| format!("Failed to execute llc: {err}"))?;
     if !output.status.success() {
@@ -749,7 +815,21 @@ fn run_gcc_with_runtime(
     obj_path: &Path,
     runtime_lib: Option<&Path>,
     bin_path: &Path,
+    build_options: &BuildOptions,
 ) -> Result<(), String> {
+    match &build_options.target {
+        BuildTarget::Host => link_host(obj_path, runtime_lib, bin_path),
+        BuildTarget::Triple(_) if build_options.target.is_embedded() => {
+            link_esp32(obj_path, runtime_lib, bin_path, build_options)
+        }
+        BuildTarget::Triple(triple) => Err(format!(
+            "unsupported target triple `{triple}`; supported embedded targets: {}",
+            crate::target::embedded_target_hint()
+        )),
+    }
+}
+
+fn link_host(obj_path: &Path, runtime_lib: Option<&Path>, bin_path: &Path) -> Result<(), String> {
     let mut cmd = Command::new("gcc");
     cmd.arg(obj_path);
     if let Some(lib) = runtime_lib {
@@ -769,6 +849,95 @@ fn run_gcc_with_runtime(
             String::from_utf8_lossy(&output.stderr)
         ));
     }
+    Ok(())
+}
+
+fn link_esp32(
+    obj_path: &Path,
+    runtime_lib: Option<&Path>,
+    bin_path: &Path,
+    build_options: &BuildOptions,
+) -> Result<(), String> {
+    let cc_default = if build_options.target.is_esp32_xtensa() {
+        "xtensa-esp32-elf-gcc".to_string()
+    } else {
+        "riscv32-esp-elf-gcc".to_string()
+    };
+    let cc = build_options
+        .toolchain
+        .cc
+        .clone()
+        .unwrap_or_else(|| cc_default.clone());
+    let ld_script = build_options
+        .toolchain
+        .ld_script
+        .clone()
+        .or_else(|| env::var("PRIME_RISCV_LD_SCRIPT").ok())
+        .ok_or_else(|| "No linker script set; configure build.toolchain.ld_script or PRIME_RISCV_LD_SCRIPT".to_string())?;
+    let mut cmd = Command::new(cc);
+    if build_options.target.is_esp32c3() {
+        cmd.arg("-march=rv32imc").arg("-mabi=ilp32");
+    }
+    cmd.arg("-nostdlib")
+        .arg(format!("-T{ld_script}"))
+        .arg(obj_path);
+    if let Some(startup) = build_options
+        .toolchain
+        .startup_obj
+        .clone()
+        .or_else(|| env::var("PRIME_RISCV_STARTUP_OBJ").ok())
+    {
+        cmd.arg(startup);
+    }
+    if let Some(lib) = runtime_lib {
+        cmd.arg(lib);
+    }
+    if let Some(extra) = build_options
+        .toolchain
+        .ld_flags
+        .clone()
+        .or_else(|| env::var("PRIME_RISCV_LD_FLAGS").ok())
+    {
+        cmd.args(extra.split_whitespace());
+    }
+    cmd.arg("-Wl,--gc-sections")
+        .arg("-Wl,-EL")
+        .arg("-o")
+        .arg(bin_path);
+
+    let output = cmd
+        .output()
+        .map_err(|err| format!("Failed to execute ESP32 linker: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "ESP32 link failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    if let Some(objcopy) = build_options
+        .toolchain
+        .objcopy
+        .clone()
+        .or_else(|| env::var("PRIME_RISCV_OBJCOPY").ok())
+    {
+        let bin_image = bin_path.with_extension("bin");
+        let output = Command::new(objcopy.clone())
+            .arg("-O")
+            .arg("binary")
+            .arg(bin_path)
+            .arg(&bin_image)
+            .output()
+            .map_err(|err| format!("Failed to run objcopy: {err}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "objcopy failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+
     Ok(())
 }
 

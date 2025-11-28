@@ -5,6 +5,7 @@ use crate::language::{
     span::Span,
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
+use crate::target::{embedded_target_hint, BuildTarget};
 use std::{
     collections::{HashMap, HashSet},
     mem,
@@ -54,6 +55,19 @@ impl TypeError {
             format!("[{code}] {}", self.message)
         } else {
             self.message.clone()
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TypecheckOptions {
+    pub target: BuildTarget,
+}
+
+impl Default for TypecheckOptions {
+    fn default() -> Self {
+        Self {
+            target: BuildTarget::host(),
         }
     }
 }
@@ -230,6 +244,13 @@ struct ImplCandidate {
 }
 
 pub fn check_program(expanded: &ExpandedProgram) -> Result<(), Vec<TypeError>> {
+    check_program_with_options(expanded, &TypecheckOptions::default())
+}
+
+pub fn check_program_with_options(
+    expanded: &ExpandedProgram,
+    options: &TypecheckOptions,
+) -> Result<(), Vec<TypeError>> {
     let program = &expanded.program;
     let mut registry = TypeRegistry::default();
     for module in &program.modules {
@@ -240,6 +261,7 @@ pub fn check_program(expanded: &ExpandedProgram) -> Result<(), Vec<TypeError>> {
         errors: Vec::new(),
         current_module: None,
         current_no_std: false,
+        target: options.target.clone(),
     };
     checker.errors.extend(checker.registry.errors.drain(..));
     checker.validate_drop_impls();
@@ -405,6 +427,7 @@ struct Checker {
     errors: Vec<TypeError>,
     current_module: Option<String>,
     current_no_std: bool,
+    target: BuildTarget,
 }
 
 impl Checker {
@@ -2322,6 +2345,22 @@ impl Checker {
 
         match callee {
             Expr::Identifier(ident) => {
+                if self.is_embedded_builtin(&ident.name) && !self.embedded_builtins_enabled() {
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            span,
+                            format!(
+                                "`{}` is an embedded-only built-in; compile with --target {}",
+                                ident.name,
+                                embedded_target_hint()
+                            ),
+                        )
+                        .with_code("E0EM")
+                        .with_help("select an ESP32 embedded target or remove embedded-only calls"),
+                    );
+                    return None;
+                }
                 if self.current_no_std && self.is_std_only_builtin(&ident.name) {
                     self.errors.push(
                         TypeError::new(
@@ -2525,6 +2564,22 @@ impl Checker {
                 span,
                 format!("`{}` does not accept type arguments", name),
             ));
+        }
+        if self.is_embedded_builtin(name) && !self.embedded_builtins_enabled() {
+            self.errors.push(
+                TypeError::new(
+                    &module.path,
+                    span,
+                    format!(
+                        "`{}` is an embedded-only built-in; compile with --target {}",
+                        name,
+                        embedded_target_hint()
+                    ),
+                )
+                .with_code("E0EM")
+                .with_help("select an ESP32 embedded target or remove embedded-only calls"),
+            );
+            return None;
         }
         match name {
             "out" => {
@@ -3054,6 +3109,24 @@ impl Checker {
                 );
                 Some(TypeExpr::Unit)
             }
+            "delay_ms" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`delay_ms` expects 1 argument (millis)",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("int32".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                Some(TypeExpr::Unit)
+            }
             "now_ms" => {
                 if !args.is_empty() {
                     self.errors.push(TypeError::new(
@@ -3107,6 +3180,62 @@ impl Checker {
                     "Result".into(),
                     vec![TypeExpr::Unit, string_type()],
                 ))
+            }
+            "pin_mode" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`pin_mode` expects 2 arguments (pin, mode)",
+                    ));
+                }
+                if let Some(pin) = args.get(0) {
+                    self.check_expression(
+                        module,
+                        pin,
+                        Some(&TypeExpr::Named("int32".into(), Vec::new())),
+                        returns,
+                        env,
+                    );
+                }
+                if let Some(mode) = args.get(1) {
+                    self.check_expression(
+                        module,
+                        mode,
+                        Some(&TypeExpr::Named("int32".into(), Vec::new())),
+                        returns,
+                        env,
+                    );
+                }
+                Some(TypeExpr::Unit)
+            }
+            "digital_write" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`digital_write` expects 2 arguments (pin, level)",
+                    ));
+                }
+                if let Some(pin) = args.get(0) {
+                    self.check_expression(
+                        module,
+                        pin,
+                        Some(&TypeExpr::Named("int32".into(), Vec::new())),
+                        returns,
+                        env,
+                    );
+                }
+                if let Some(level) = args.get(1) {
+                    self.check_expression(
+                        module,
+                        level,
+                        Some(&TypeExpr::Named("int32".into(), Vec::new())),
+                        returns,
+                        env,
+                    );
+                }
+                Some(TypeExpr::Unit)
             }
             "map_keys" => {
                 if args.len() != 1 {
@@ -4235,6 +4364,14 @@ impl Checker {
         Some(return_ty)
     }
 
+    fn embedded_builtins_enabled(&self) -> bool {
+        self.target.is_embedded()
+    }
+
+    fn is_embedded_builtin(&self, name: &str) -> bool {
+        matches!(name, "pin_mode" | "digital_write" | "delay_ms")
+    }
+
     fn is_builtin_name(&self, name: &str) -> bool {
         matches!(
             name,
@@ -4284,6 +4421,7 @@ impl Checker {
                 | "assert_eq"
             | "panic"
         )
+            || self.is_embedded_builtin(name)
     }
 
     fn is_std_only_builtin(&self, name: &str) -> bool {

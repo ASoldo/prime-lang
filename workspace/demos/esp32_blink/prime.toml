@@ -1,0 +1,25 @@
+manifest_version = "3"
+
+[package]
+name = "demos::esp32_blink"
+version = "0.1.0"
+
+[module]
+name = "demos::esp32_blink"
+path = "esp32_blink.prime"
+visibility = "pub"
+no_std = true
+
+[build]
+# Use the Xtensa ESP32 target; switch to riscv32imc-unknown-none-elf for ESP32-C3 boards.
+target = "xtensa-esp32-none-elf"
+platform = "esp32"
+
+[build.toolchain]
+# Set your local ESP-IDF / xtensa toolchain paths here if they differ from PATH.
+# cc = "/opt/esp/xtensa-esp32-elf/bin/xtensa-esp32-elf-gcc"
+# ar = "/opt/esp/xtensa-esp32-elf/bin/xtensa-esp32-elf-ar"
+# objcopy = "/opt/esp/xtensa-esp32-elf/bin/xtensa-esp32-elf-objcopy"
+# ld_script = "/path/to/esp32/ld/esp32_out.ld"
+# startup_obj = "/path/to/esp32/startup.o"
+# ld_flags = "-Wl,--gc-sections"

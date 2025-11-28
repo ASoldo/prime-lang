@@ -13,6 +13,7 @@ use crate::runtime::{
         PointerValue, RangeValue, ReferenceValue, SliceValue, StructInstance, Value,
     },
 };
+use crate::target::{embedded_target_hint, BuildTarget};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
@@ -44,6 +45,7 @@ pub struct Interpreter {
     deprecated_warnings: HashSet<String>,
     module_stack: Vec<String>,
     bootstrapped: bool,
+    target: BuildTarget,
 }
 
 #[derive(Clone)]
@@ -108,6 +110,10 @@ enum EvalOutcome<T> {
 
 impl Interpreter {
     pub fn new(package: Package) -> Self {
+        Self::with_target(package, BuildTarget::host())
+    }
+
+    pub fn with_target(package: Package, target: BuildTarget) -> Self {
         Self {
             package,
             env: Environment::new(),
@@ -122,6 +128,7 @@ impl Interpreter {
             deprecated_warnings: HashSet::new(),
             module_stack: Vec::new(),
             bootstrapped: false,
+            target,
         }
     }
 
@@ -767,6 +774,7 @@ impl Interpreter {
             deprecated_warnings: HashSet::new(),
             module_stack: Vec::new(),
             bootstrapped: true,
+            target: self.target.clone(),
         }
     }
 
@@ -1030,6 +1038,20 @@ impl Interpreter {
         }
     }
 
+    fn require_embedded(&self, op: &str) -> RuntimeResult<()> {
+        if self.target.is_embedded() {
+            Ok(())
+        } else {
+            Err(RuntimeError::Unsupported {
+                message: format!(
+                    "`{}` is embedded-only; compile with --target {}",
+                    op,
+                    embedded_target_hint()
+                ),
+            })
+        }
+    }
+
     fn call_builtin(
         &mut self,
         name: &str,
@@ -1077,6 +1099,9 @@ impl Interpreter {
             "fs_exists" => self.builtin_fs_exists(args),
             "fs_read" => self.builtin_fs_read(args),
             "fs_write" => self.builtin_fs_write(args),
+            "pin_mode" => self.builtin_pin_mode(args),
+            "digital_write" => self.builtin_digital_write(args),
+            "delay_ms" => self.builtin_delay_ms(args),
             "ptr" => self.builtin_ptr(args, false),
             "ptr_mut" => self.builtin_ptr(args, true),
             "cast" => self.builtin_cast(args, type_args),
@@ -1213,10 +1238,13 @@ impl Interpreter {
                 | "join"
                 | "sleep"
                 | "sleep_ms"
+                | "delay_ms"
                 | "now_ms"
                 | "fs_exists"
                 | "fs_read"
                 | "fs_write"
+                | "pin_mode"
+                | "digital_write"
         )
     }
 
@@ -1427,6 +1455,16 @@ impl Interpreter {
                 message: format!("{name} expects integer value"),
             }),
         }
+    }
+
+    fn expect_i32_value(&self, name: &str, value: Value) -> RuntimeResult<i32> {
+        let raw = self.expect_int_value(name, value)?;
+        if raw < i32::MIN as i128 || raw > i32::MAX as i128 {
+            return Err(RuntimeError::TypeMismatch {
+                message: format!("{name} expects 32-bit integer value"),
+            });
+        }
+        Ok(raw as i32)
     }
 
     fn numeric_kind_from_type<'a>(&self, ty: &'a TypeExpr) -> Option<&'a str> {
@@ -1904,6 +1942,14 @@ impl Interpreter {
         self.builtin_sleep(args)
     }
 
+    fn builtin_delay_ms(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.require_embedded("delay_ms")?;
+        self.expect_arity("delay_ms", &args, 1)?;
+        let millis = self.expect_i32_value("delay_ms", args.remove(0))?;
+        platform().delay_ms(millis);
+        Ok(vec![Value::Unit])
+    }
+
     fn builtin_fs_exists(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         require_std_builtins("fs_exists")?;
         self.expect_arity("fs_exists", &args, 1)?;
@@ -1949,6 +1995,28 @@ impl Interpreter {
                 )?;
                 Ok(vec![err_val])
             }
+        }
+    }
+
+    fn builtin_pin_mode(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.require_embedded("pin_mode")?;
+        self.expect_arity("pin_mode", &args, 2)?;
+        let pin = self.expect_i32_value("pin_mode", args.remove(0))?;
+        let mode = self.expect_i32_value("pin_mode", args.remove(0))?;
+        match platform().pin_mode(pin, mode) {
+            Ok(()) => Ok(vec![Value::Unit]),
+            Err(msg) => Err(RuntimeError::Unsupported { message: msg }),
+        }
+    }
+
+    fn builtin_digital_write(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.require_embedded("digital_write")?;
+        self.expect_arity("digital_write", &args, 2)?;
+        let pin = self.expect_i32_value("digital_write", args.remove(0))?;
+        let level = self.expect_i32_value("digital_write", args.remove(0))?;
+        match platform().digital_write(pin, level) {
+            Ok(()) => Ok(vec![Value::Unit]),
+            Err(msg) => Err(RuntimeError::Unsupported { message: msg }),
         }
     }
 

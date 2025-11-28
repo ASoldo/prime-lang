@@ -2877,6 +2877,10 @@ impl BuildInterpreter {
                 }
                 self.eval_builtin_or_deferred("sleep", receiver, type_args, args)
             }
+            "delay_ms" | "pin_mode" | "digital_write" => Err(
+                "embedded-only built-ins are unavailable in build snapshots; build for the ESP32 target to run them"
+                    .into(),
+            ),
             "get" => {
                 if args.len() != 2 {
                     return Err("get expects 2 arguments".into());

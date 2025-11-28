@@ -19,6 +19,7 @@ pub struct PackageManifest {
     dependencies: Vec<Dependency>,
     dependency_manifests: Vec<PackageManifest>,
     pub path: PathBuf,
+    build: Option<BuildSettings>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,23 @@ pub struct ModuleInfo {
     pub doc: Option<String>,
     pub kind: ModuleKind,
     pub no_std: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildSettings {
+    pub target: Option<String>,
+    pub platform: Option<String>,
+    pub toolchain: ToolchainSettings,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ToolchainSettings {
+    pub cc: Option<String>,
+    pub ar: Option<String>,
+    pub objcopy: Option<String>,
+    pub ld_script: Option<String>,
+    pub startup_obj: Option<String>,
+    pub ld_flags: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +112,23 @@ struct RawDependencyEntry {
     features: Option<Vec<String>>,
 }
 
+#[derive(Deserialize, Default)]
+struct RawBuildTable {
+    target: Option<String>,
+    platform: Option<String>,
+    toolchain: Option<RawToolchainTable>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawToolchainTable {
+    cc: Option<String>,
+    ar: Option<String>,
+    objcopy: Option<String>,
+    ld_script: Option<String>,
+    startup_obj: Option<String>,
+    ld_flags: Option<String>,
+}
+
 impl PackageManifest {
     pub fn load(path: &Path) -> Result<Self, ManifestError> {
         let content = fs::read_to_string(path).map_err(|error| ManifestError::Io {
@@ -111,6 +146,7 @@ impl PackageManifest {
 
         let (modules, reverse, tests) = parse_modules(&value, &root)?;
         let dependencies = parse_dependencies(&value, &root)?;
+        let build = parse_build_settings(&value);
         let mut dependency_manifests = Vec::new();
         let _cache_root = root.join(".prime/deps");
         for dep in &dependencies {
@@ -142,7 +178,12 @@ impl PackageManifest {
             dependencies,
             dependency_manifests,
             path: path.to_path_buf(),
+            build,
         })
+    }
+
+    pub fn build_settings(&self) -> Option<&BuildSettings> {
+        self.build.as_ref()
     }
 
     pub fn module_path(&self, name: &str) -> Option<PathBuf> {
@@ -379,6 +420,33 @@ fn parse_dependencies(value: &Value, root: &Path) -> Result<Vec<Dependency>, Man
         });
     }
     Ok(deps)
+}
+
+fn parse_build_settings(value: &Value) -> Option<BuildSettings> {
+    let raw: RawBuildTable = value
+        .get("build")
+        .and_then(|build| build.clone().try_into().ok())
+        .unwrap_or_default();
+    if raw.target.is_none()
+        && raw.platform.is_none()
+        && raw.toolchain.is_none()
+    {
+        return None;
+    }
+    let toolchain_raw = raw.toolchain.unwrap_or_default();
+    let toolchain = ToolchainSettings {
+        cc: toolchain_raw.cc,
+        ar: toolchain_raw.ar,
+        objcopy: toolchain_raw.objcopy,
+        ld_script: toolchain_raw.ld_script,
+        startup_obj: toolchain_raw.startup_obj,
+        ld_flags: toolchain_raw.ld_flags,
+    };
+    Some(BuildSettings {
+        target: raw.target,
+        platform: raw.platform,
+        toolchain,
+    })
 }
 
 fn parse_raw_entry(

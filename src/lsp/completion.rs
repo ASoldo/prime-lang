@@ -8,6 +8,7 @@ use crate::{
         types::TypeExpr,
     },
     project::manifest::{ModuleInfo, ModuleVisibility, PackageManifest},
+    target::BuildTarget,
 };
 use std::collections::{HashMap, HashSet};
 use tower_lsp_server::lsp_types::{
@@ -100,6 +101,34 @@ fn format_macro_detail(def: &MacroDef) -> String {
         Visibility::Private => "private",
     };
     format!("{} macro ~{}({}){}", vis, def.name, params, ret)
+}
+
+fn builtin_completion_items(prefix: Option<&str>, target: &BuildTarget) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    if target.is_embedded() {
+        let candidates = [
+            ("pin_mode", "fn pin_mode(pin: int32, mode: int32) -> ()"),
+            (
+                "digital_write",
+                "fn digital_write(pin: int32, level: int32) -> ()",
+            ),
+            ("delay_ms", "fn delay_ms(ms: int32) -> ()"),
+        ];
+        for (name, detail) in candidates {
+            if let Some(pref) = prefix {
+                if !name.starts_with(pref) {
+                    continue;
+                }
+            }
+            items.push(CompletionItem {
+                label: name.to_string(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some(detail.to_string()),
+                ..Default::default()
+            });
+        }
+    }
+    items
 }
 
 pub fn module_path_completion_context(
@@ -1101,6 +1130,7 @@ pub fn general_completion_items(
     all_modules: &[Module],
     offset: Option<usize>,
     prefix: Option<&str>,
+    target: &BuildTarget,
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -1199,6 +1229,8 @@ pub fn general_completion_items(
             Item::MacroInvocation(_) => {}
         }
     }
+
+    items.extend(builtin_completion_items(prefix, target));
 
     for import in &module.imports {
         if let Some(imported) = import_module_from_snapshot(all_modules, import) {
@@ -2117,7 +2149,8 @@ fn main() -> int32 { 0 }
         .expect("other package module");
         let modules = vec![provider.clone(), same_pkg.clone(), other_pkg.clone()];
 
-        let same_pkg_items = general_completion_items(&same_pkg, &modules, None, None);
+        let same_pkg_items =
+            general_completion_items(&same_pkg, &modules, None, None, &BuildTarget::host());
         assert!(
             same_pkg_items.iter().any(|item| item.label == "~pkg_only"),
             "expected package macro visible inside the package"
@@ -2130,7 +2163,8 @@ fn main() -> int32 { 0 }
             "private macro should stay local to the defining module"
         );
 
-        let other_pkg_items = general_completion_items(&other_pkg, &modules, None, None);
+        let other_pkg_items =
+            general_completion_items(&other_pkg, &modules, None, None, &BuildTarget::host());
         assert!(other_pkg_items.iter().any(|item| item.label == "~exported"));
         assert!(
             !other_pkg_items.iter().any(|item| item.label == "~pkg_only"),

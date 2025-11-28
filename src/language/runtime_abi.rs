@@ -99,6 +99,14 @@ pub struct RuntimeAbi {
     pub prime_struct_insert_ty: LLVMTypeRef,
     pub prime_env_free: LLVMValueRef,
     pub prime_env_free_ty: LLVMTypeRef,
+    pub prime_delay_ms: LLVMValueRef,
+    pub prime_delay_ms_ty: LLVMTypeRef,
+    pub prime_pin_mode: LLVMValueRef,
+    pub prime_pin_mode_ty: LLVMTypeRef,
+    pub prime_digital_write: LLVMValueRef,
+    pub prime_digital_write_ty: LLVMTypeRef,
+    pub prime_now_ms: LLVMValueRef,
+    pub prime_now_ms_ty: LLVMTypeRef,
 }
 
 impl RuntimeAbi {
@@ -333,6 +341,26 @@ impl RuntimeAbi {
         );
         let (prime_env_free, prime_env_free_ty) =
             declare_fn(module, "prime_env_free", void_type, &mut [handle_type]);
+        let (prime_delay_ms, prime_delay_ms_ty) = declare_fn(
+            module,
+            "prime_delay_ms",
+            status_type,
+            &mut [LLVMInt32TypeInContext(context)],
+        );
+        let (prime_pin_mode, prime_pin_mode_ty) = declare_fn(
+            module,
+            "prime_pin_mode",
+            status_type,
+            &mut [LLVMInt32TypeInContext(context), LLVMInt32TypeInContext(context)],
+        );
+        let (prime_digital_write, prime_digital_write_ty) = declare_fn(
+            module,
+            "prime_digital_write",
+            status_type,
+            &mut [LLVMInt32TypeInContext(context), LLVMInt32TypeInContext(context)],
+        );
+        let (prime_now_ms, prime_now_ms_ty) =
+            declare_fn(module, "prime_now_ms", int_type, &mut []);
 
         Self {
             handle_type,
@@ -420,6 +448,14 @@ impl RuntimeAbi {
             prime_struct_insert_ty,
             prime_env_free,
             prime_env_free_ty,
+            prime_delay_ms,
+            prime_delay_ms_ty,
+            prime_pin_mode,
+            prime_pin_mode_ty,
+            prime_digital_write,
+            prime_digital_write_ty,
+            prime_now_ms,
+            prime_now_ms_ty,
         }
     }
 
@@ -510,6 +546,14 @@ impl RuntimeAbi {
             prime_struct_insert_ty: std::ptr::null_mut(),
             prime_env_free: std::ptr::null_mut(),
             prime_env_free_ty: std::ptr::null_mut(),
+            prime_delay_ms: std::ptr::null_mut(),
+            prime_delay_ms_ty: std::ptr::null_mut(),
+            prime_pin_mode: std::ptr::null_mut(),
+            prime_pin_mode_ty: std::ptr::null_mut(),
+            prime_digital_write: std::ptr::null_mut(),
+            prime_digital_write_ty: std::ptr::null_mut(),
+            prime_now_ms: std::ptr::null_mut(),
+            prime_now_ms_ty: std::ptr::null_mut(),
         }
     }
 }

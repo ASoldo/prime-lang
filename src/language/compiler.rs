@@ -5,6 +5,7 @@ use crate::runtime::abi::{
 };
 use crate::runtime::environment::{CleanupAction, DropRecord};
 use crate::runtime::platform::platform;
+use crate::target::{embedded_target_hint, BuildTarget};
 use crate::{
     language::{
         ast::*,
@@ -40,8 +41,8 @@ use llvm_sys::{
         LLVMIntTypeInContext, LLVMIsAConstantInt, LLVMIsAFunction,
         LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilder,
         LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMPrintModuleToFile, LLVMSetLinkage,
-        LLVMStructCreateNamed, LLVMStructSetBody, LLVMStructTypeInContext, LLVMTypeOf,
-        LLVMVoidTypeInContext,
+        LLVMSetTarget, LLVMStructCreateNamed, LLVMStructSetBody, LLVMStructTypeInContext,
+        LLVMTypeOf, LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -95,6 +96,8 @@ pub struct Compiler {
     printf_type: LLVMTypeRef,
     printf: LLVMValueRef,
     main_fn: LLVMValueRef,
+    #[allow(dead_code)]
+    target: BuildTarget,
     #[allow(dead_code)]
     runtime_abi: RuntimeAbi,
     scopes: Vec<HashMap<String, Binding>>,
@@ -1200,7 +1203,12 @@ impl Compiler {
             })
     }
 
+    #[allow(dead_code)]
     pub fn new() -> Self {
+        Self::with_target(BuildTarget::host())
+    }
+
+    pub fn with_target(target: BuildTarget) -> Self {
         unsafe {
             let context = LLVMContextCreate();
             let builder = LLVMCreateBuilderInContext(context);
@@ -1216,6 +1224,7 @@ impl Compiler {
                 printf_type: ptr::null_mut(),
                 printf: ptr::null_mut(),
                 main_fn: ptr::null_mut(),
+                target,
                 runtime_abi: RuntimeAbi::empty(),
                 scopes: Vec::new(),
                 structs: HashMap::new(),
@@ -5062,6 +5071,7 @@ impl Compiler {
             "sleep_ms" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_sleep_ms(values)))
             }
+            "delay_ms" => Some(self.invoke_builtin(args, |this, values| this.builtin_delay_ms(values))),
             "now_ms" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_now_ms(values)))
             }
@@ -5073,6 +5083,10 @@ impl Compiler {
             }
             "fs_write" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_fs_write(values)))
+            }
+            "pin_mode" => Some(self.invoke_builtin(args, |this, values| this.builtin_pin_mode(values))),
+            "digital_write" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_digital_write(values)))
             }
             "ptr" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_ptr(values, false)))
@@ -7995,12 +8009,25 @@ impl Compiler {
         if !args.is_empty() {
             return Err("now_ms expects 0 arguments".into());
         }
+        if self.target.is_esp32c3() {
+            let mut call_args: [LLVMValueRef; 0] = [];
+            let now = self.call_runtime(
+                self.runtime_abi.prime_now_ms,
+                self.runtime_abi.prime_now_ms_ty,
+                &mut call_args,
+                "now_ms",
+            );
+            return Ok(Value::Int(IntValue::new(now, None)));
+        }
         let millis = self.build_clock_ms;
         self.build_clock_ms = self.build_clock_ms.saturating_add(1);
         Ok(Value::Int(self.const_int_value(millis)))
     }
 
     fn builtin_sleep_ms(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if self.target.is_esp32c3() {
+            return self.builtin_delay_ms(args);
+        }
         if args.len() != 1 {
             return Err("sleep_ms expects 1 argument".into());
         }
@@ -8009,6 +8036,108 @@ impl Compiler {
             .constant()
             .ok_or_else(|| "sleep_ms expects constant integer in build mode".to_string())?;
         platform().sleep_ms(constant);
+        Ok(Value::Unit)
+    }
+
+    fn ensure_embedded_target(&self, name: &str) -> Result<(), String> {
+        if self.target.is_embedded() {
+            Ok(())
+        } else {
+            Err(format!(
+                "`{}` is embedded-only; compile with --target {}",
+                name,
+                embedded_target_hint()
+            ))
+        }
+    }
+
+    fn builtin_delay_ms(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("delay_ms expects 1 argument".into());
+        }
+        self.ensure_embedded_target("delay_ms")?;
+        let millis = self.expect_int(args.pop().unwrap())?;
+        let millis_cast = unsafe {
+            LLVMBuildIntCast(
+                self.builder,
+                millis.llvm(),
+                self.i32_type,
+                CString::new("delay_ms_arg").unwrap().as_ptr(),
+            )
+        };
+        let mut call_args = [millis_cast];
+        self.call_runtime(
+            self.runtime_abi.prime_delay_ms,
+            self.runtime_abi.prime_delay_ms_ty,
+            &mut call_args,
+            "delay_ms",
+        );
+        Ok(Value::Unit)
+    }
+
+    fn builtin_pin_mode(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("pin_mode expects 2 arguments".into());
+        }
+        self.ensure_embedded_target("pin_mode")?;
+        let mode = self.expect_int(args.pop().unwrap())?;
+        let pin = self.expect_int(args.pop().unwrap())?;
+        let pin_cast = unsafe {
+            LLVMBuildIntCast(
+                self.builder,
+                pin.llvm(),
+                self.i32_type,
+                CString::new("pin_mode_pin").unwrap().as_ptr(),
+            )
+        };
+        let mode_cast = unsafe {
+            LLVMBuildIntCast(
+                self.builder,
+                mode.llvm(),
+                self.i32_type,
+                CString::new("pin_mode_mode").unwrap().as_ptr(),
+            )
+        };
+        let mut call_args = [pin_cast, mode_cast];
+        self.call_runtime(
+            self.runtime_abi.prime_pin_mode,
+            self.runtime_abi.prime_pin_mode_ty,
+            &mut call_args,
+            "pin_mode",
+        );
+        Ok(Value::Unit)
+    }
+
+    fn builtin_digital_write(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("digital_write expects 2 arguments".into());
+        }
+        self.ensure_embedded_target("digital_write")?;
+        let level = self.expect_int(args.pop().unwrap())?;
+        let pin = self.expect_int(args.pop().unwrap())?;
+        let pin_cast = unsafe {
+            LLVMBuildIntCast(
+                self.builder,
+                pin.llvm(),
+                self.i32_type,
+                CString::new("digital_write_pin").unwrap().as_ptr(),
+            )
+        };
+        let level_cast = unsafe {
+            LLVMBuildIntCast(
+                self.builder,
+                level.llvm(),
+                self.i32_type,
+                CString::new("digital_write_level").unwrap().as_ptr(),
+            )
+        };
+        let mut call_args = [pin_cast, level_cast];
+        self.call_runtime(
+            self.runtime_abi.prime_digital_write,
+            self.runtime_abi.prime_digital_write_ty,
+            &mut call_args,
+            "digital_write",
+        );
         Ok(Value::Unit)
     }
 
@@ -8750,6 +8879,10 @@ impl Compiler {
             }
             let module_name = CString::new("prime").unwrap();
             self.module = LLVMModuleCreateWithNameInContext(module_name.as_ptr(), self.context);
+            if let Some(triple) = self.target.triple() {
+                let triple_c = CString::new(triple).unwrap();
+                LLVMSetTarget(self.module, triple_c.as_ptr());
+            }
 
             let main_type = LLVMFunctionType(self.i32_type, ptr::null_mut(), 0, 0);
             let main_name = CString::new("main").unwrap();

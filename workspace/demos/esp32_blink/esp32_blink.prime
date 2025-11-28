@@ -1,0 +1,12 @@
+module demos::esp32_blink;
+
+fn main() {
+  let int32 led = 2;
+  pin_mode(led, 1);
+  loop {
+    digital_write(led, 1);
+    delay_ms(500);
+    digital_write(led, 0);
+    delay_ms(500);
+  }
+}

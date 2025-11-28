@@ -1279,6 +1279,32 @@ pub unsafe extern "C" fn prime_env_free(env_ptr: *mut c_void) {
     free(env_ptr);
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_delay_ms(ms: i32) -> PrimeStatus {
+    if ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+    }
+    PrimeStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_pin_mode(_pin: i32, _mode: i32) -> PrimeStatus {
+    PrimeStatus::Invalid
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_digital_write(_pin: i32, _level: i32) -> PrimeStatus {
+    PrimeStatus::Invalid
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_now_ms() -> i128 {
+    let now = std::time::SystemTime::now();
+    now.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i128)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

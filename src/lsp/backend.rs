@@ -25,6 +25,7 @@ use crate::project::{
     find_manifest, load_package,
     manifest::PackageManifest,
 };
+use crate::target::BuildOptions;
 use crate::{
     language::{
         ast::{Item, Module, ModuleKind, Visibility},
@@ -1152,6 +1153,11 @@ impl LanguageServer for Backend {
         let Some(text) = self.docs.get(&uri).await else {
             return Ok(None);
         };
+        let build_options = if let Some((manifest, _)) = manifest_context_for_uri(&uri) {
+            BuildOptions::from_sources(None, None, Some(&manifest))
+        } else {
+            BuildOptions::default()
+        };
         if let Some((manifest, _)) = manifest_context_for_uri(&uri) {
             self.ensure_manifest_modules(&manifest).await;
         } else if let Some(path) = url_to_path(&uri) {
@@ -1218,8 +1224,13 @@ impl LanguageServer for Backend {
                 }
             }
 
-            let general_items =
-                general_completion_items(&module, &struct_modules, Some(offset), prefix_ref);
+            let general_items = general_completion_items(
+                &module,
+                &struct_modules,
+                Some(offset),
+                prefix_ref,
+                &build_options.target,
+            );
             Ok(Some(CompletionResponse::Array(general_items)))
         } else {
             let keywords = keyword_completion_items(prefix_ref, false, false);
