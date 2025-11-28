@@ -16,10 +16,10 @@ target = "xtensa-esp32-espidf"
 platform = "esp32"
 
 [build.toolchain]
-# Use the tool names that ESP-IDF actually installed
-cc = "xtensa-esp-elf-gcc"
-ar = "xtensa-esp-elf-ar"
-objcopy = "xtensa-esp-elf-objcopy"
+# Use the ESP32-specific Xtensa toolchain (little-endian)
+cc = "xtensa-esp32-elf-gcc"
+ar = "xtensa-esp32-elf-ar"
+objcopy = "xtensa-esp32-elf-objcopy"
 # Optional: point directly at esptool.py
 # esptool = "/home/rootster/esp/esp-idf/components/esptool_py/esptool/esptool.py"
 
