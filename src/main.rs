@@ -592,6 +592,69 @@ crate-type = ["staticlib"]
     }
 }
 
+fn configure_embedded_env(options: &BuildOptions) {
+    if !options.target.is_embedded() {
+        return;
+    }
+    let home = match env::var("HOME") {
+        Ok(val) => PathBuf::from(val),
+        Err(_) => return,
+    };
+    // Default to esp toolchain for embedded if caller hasn't set one.
+    if env::var("RUSTUP_TOOLCHAIN").is_err() {
+        unsafe { env::set_var("RUSTUP_TOOLCHAIN", "esp") };
+    }
+    // Keep embedded builds in a cache dir by default.
+    if env::var_os("CARGO_TARGET_DIR").is_none() {
+        unsafe { env::set_var("CARGO_TARGET_DIR", home.join(".cache/prime-xtensa")) };
+    }
+    // Xtensa-specific defaults (ESP32 classic).
+    if options.target.is_esp32_xtensa() || options.target.is_esp32_xtensa_espidf() {
+        let clang_root = home.join(".espressif/tools/esp-clang/esp-clang");
+        let xtensa_root = home.join(".espressif/tools/xtensa-esp-elf");
+        if env::var("LLVM_SYS_201_PREFIX").is_err() && clang_root.exists() {
+            unsafe { env::set_var("LLVM_SYS_201_PREFIX", &clang_root) };
+        }
+        if env::var("LD_LIBRARY_PATH").is_err() && clang_root.join("lib").exists() {
+            unsafe {
+                env::set_var(
+                    "LD_LIBRARY_PATH",
+                    format!(
+                        "/usr/lib64:/usr/lib:/lib:{}",
+                        clang_root.join("lib").display()
+                    ),
+                )
+            };
+        }
+        // Add esp-clang and xtensa-esp-elf bins if present.
+        let mut extra_bins: Vec<PathBuf> = Vec::new();
+        if clang_root.join("bin").exists() {
+            extra_bins.push(clang_root.join("bin"));
+        }
+        if let Ok(entries) = fs::read_dir(&xtensa_root) {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join("xtensa-esp-elf/bin");
+                if candidate.exists() {
+                    extra_bins.push(candidate);
+                    break;
+                }
+            }
+        }
+        if !extra_bins.is_empty() {
+            let current_path = env::var("PATH").unwrap_or_default();
+            let mut parts: Vec<String> = extra_bins
+                .into_iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            parts.push(current_path);
+            unsafe { env::set_var("PATH", parts.join(":")) };
+        }
+        if env::var("CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER").is_err() {
+            unsafe { env::set_var("CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER", "xtensa-esp32-elf-gcc") };
+        }
+    }
+}
+
 fn build_entry(
     entry: &str,
     project: Option<&str>,
@@ -622,6 +685,7 @@ fn build_entry(
     platform::configure_platform(&build_options);
     match load_package_with_manifest(entry.as_entry_point(), manifest) {
         Ok(package) => {
+            configure_embedded_env(&build_options);
             let expanded_program = expand_or_report(&package.program);
             println!(
                 "[prime-debug] starting build for {} target={:?}",
