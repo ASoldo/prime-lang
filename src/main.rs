@@ -481,7 +481,7 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool) {
 fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
     let runtime_dir = match target.triple() {
         Some(triple) => PathBuf::from(".build.prime/runtime").join(triple),
-        None => PathBuf::from(".build.prime/runtime"),
+        None => PathBuf::from(".build.prime/runtime").join("host"),
     };
     if let Err(err) = fs::create_dir_all(&runtime_dir) {
         return Err(format!("failed to create runtime build dir: {err}"));

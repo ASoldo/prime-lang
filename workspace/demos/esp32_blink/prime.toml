@@ -11,7 +11,7 @@ visibility = "pub"
 no_std = true
 
 [build]
-# Classic ESP32 (Xtensa). If you ever move to ESP32-C3, switch this.
+# Classic ESP32 (Xtensa)
 target = "xtensa-esp32-espidf"
 platform = "esp32"
 
@@ -46,3 +46,15 @@ address = "0x10000"
 #         CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER=xtensa-esp32-elf-gcc \
 #         PRIME_DEBUG_MEM=1 \
 #         ./target/debug/prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink
+
+
+# source ~/esp/esp-idf/export.sh
+#      env LLVM_SYS_201_PREFIX="$HOME/.espressif/tools/esp-clang/esp-clang" \
+#          LD_LIBRARY_PATH="/usr/lib64:/usr/lib:/lib:$HOME/.espressif/tools/esp-clang/esp-clang/lib" \
+#          PATH="$HOME/.espressif/tools/esp-clang/esp-clang/bin:$HOME/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-
+#   elf/bin:$PATH" \
+#          RUSTUP_TOOLCHAIN=esp \
+#          CARGO_TARGET_DIR="$HOME/.cache/prime-xtensa" \
+#          CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER=xtensa-esp32-elf-gcc \
+#          PRIME_DEBUG_MEM=1 \
+#          prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink
