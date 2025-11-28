@@ -943,25 +943,46 @@ fn maybe_objcopy_and_flash(bin_path: &Path, build_options: &BuildOptions) -> Res
     if !build_options.target.is_embedded() {
         return Ok(());
     }
-    let objcopy = build_options
-        .toolchain
-        .objcopy
-        .clone()
-        .or_else(|| env::var("PRIME_RISCV_OBJCOPY").ok());
+    let esptool = resolve_esptool(build_options);
     let bin_image = bin_path.with_extension("bin");
-    if let Some(objcopy) = objcopy {
-        let output = Command::new(&objcopy)
-            .arg("-O")
-            .arg("binary")
-            .arg(bin_path)
-            .arg(&bin_image)
-            .output()
-            .map_err(|err| format!("Failed to run objcopy: {err}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "objcopy failed:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
+    // Prefer generating a proper ESP image header with elf2image; fall back to objcopy if unavailable.
+    let elf2image_output = Command::new(&esptool)
+        .arg("--chip")
+        .arg(if build_options.target.is_esp32c3() { "esp32c3" } else { "esp32" })
+        .arg("elf2image")
+        .arg("--flash_mode")
+        .arg("dio")
+        .arg("--flash_freq")
+        .arg("40m")
+        .arg("--flash_size")
+        .arg("4MB")
+        .arg("-o")
+        .arg(&bin_image)
+        .arg(bin_path)
+        .output();
+    match elf2image_output {
+        Ok(output) if output.status.success() => {}
+        _ => {
+            let objcopy = build_options
+                .toolchain
+                .objcopy
+                .clone()
+                .or_else(|| env::var("PRIME_RISCV_OBJCOPY").ok());
+            if let Some(objcopy) = objcopy {
+                let output = Command::new(&objcopy)
+                    .arg("-O")
+                    .arg("binary")
+                    .arg(bin_path)
+                    .arg(&bin_image)
+                    .output()
+                    .map_err(|err| format!("Failed to run objcopy: {err}"))?;
+                if !output.status.success() {
+                    return Err(format!(
+                        "objcopy failed:\n{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ));
+                }
+            }
         }
     }
     if build_options.flash.enabled {
@@ -970,13 +991,17 @@ fn maybe_objcopy_and_flash(bin_path: &Path, build_options: &BuildOptions) -> Res
     Ok(())
 }
 
-fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), String> {
-    let esptool = build_options
+fn resolve_esptool(build_options: &BuildOptions) -> String {
+    build_options
         .toolchain
         .esptool
         .clone()
         .or_else(|| env::var("PRIME_ESPTOOL").ok())
-        .unwrap_or_else(|| "esptool".to_string());
+        .unwrap_or_else(|| "esptool".to_string())
+}
+
+fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), String> {
+    let esptool = resolve_esptool(build_options);
     let chip = if build_options.target.is_esp32_xtensa() || build_options.target.is_esp32_xtensa_espidf() {
         "esp32"
     } else {
@@ -998,17 +1023,38 @@ fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), Str
         .address
         .clone()
         .unwrap_or_else(|| "0x10000".to_string());
-    let output = Command::new(esptool)
-        .arg("--chip")
+    let mut cmd = Command::new(esptool);
+    cmd.arg("--chip")
         .arg(chip)
         .arg("--port")
         .arg(&port)
         .arg("--baud")
         .arg(format!("{baud}"))
         .arg("write-flash")
-        .arg("-z")
-        .arg(&address)
-        .arg(bin_image)
+        .arg("-z");
+
+    // Include bootloader and partition table if present to avoid invalid header resets.
+    let default_bootloader =
+        PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
+            .join("esp/esp-idf/examples/get-started/blink/build/bootloader/bootloader.bin");
+    let default_partitions =
+        PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
+            .join("esp/esp-idf/examples/get-started/blink/build/partition_table/partition-table.bin");
+    let bootloader = env::var("PRIME_ESP_BOOTLOADER")
+        .map(PathBuf::from)
+        .unwrap_or(default_bootloader);
+    let partitions = env::var("PRIME_ESP_PARTITIONS")
+        .map(PathBuf::from)
+        .unwrap_or(default_partitions);
+    if bootloader.exists() {
+        cmd.arg("0x1000").arg(&bootloader);
+    }
+    if partitions.exists() {
+        cmd.arg("0x8000").arg(&partitions);
+    }
+    cmd.arg(&address).arg(bin_image);
+
+    let output = cmd
         .output()
         .map_err(|err| format!("Failed to execute esptool.py: {err}"))?;
     if !output.status.success() {
@@ -1083,6 +1129,8 @@ fn link_esp32(
         // Ensure endianness matches xtensa config.
         cmd.arg("-mlongcalls").arg("-Wl,-EL");
     }
+    // Keep the Xtensa entry symbol so the image has a valid entry point.
+    cmd.arg("-Wl,-u,call_user_start_cpu0").arg("-Wl,-e,call_user_start_cpu0");
     cmd.arg("-nostdlib");
     // Allow passing a sections.ld from ESP-IDF; include memory.ld before it.
     // If memory.ld is already in ld_flags, pull it out and order it before sections.ld.

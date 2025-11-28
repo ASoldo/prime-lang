@@ -24,7 +24,10 @@ platform = "esp32"
   ld_script = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
 
   ld_flags = """-Wl,--gc-sections \
-  -T/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/memory.ld"""
+  -T/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/memory.ld \
+  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.ld \
+  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.api.ld \
+  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld"""
 # Startup/crt0 from IDF (port object)
 
 [build.flash]

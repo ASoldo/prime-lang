@@ -13,6 +13,7 @@
 mod embedded {
     use core::ffi::c_void;
     use core::ptr;
+    use core::sync::atomic::{AtomicBool, Ordering};
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,31 +319,141 @@ mod embedded {
         0
     }
 
-    // Built-ins for embedded: implement delay/pin/digital write as busy loops/stubs.
+    unsafe extern "C" {
+        static mut _bss_start: u32;
+        static mut _bss_end: u32;
+        static mut _data_start: u32;
+        static mut _data_end: u32;
+        static _data_seg_org: u32;
+        fn main();
+    }
+
+    // Minimal ROM bindings for timing.
+    #[cfg(target_arch = "xtensa")]
+    unsafe extern "C" {
+        fn ets_delay_us(us: u32);
+        fn ets_printf(fmt: *const u8, ...) -> i32;
+    }
+
     #[inline]
-    fn busy_delay_ms(ms: i32) {
-        // Crude spin to avoid pulling in std/usleep.
-        let cycles = (ms as u32).saturating_mul(50_000);
-        for _ in 0..cycles {
-            core::hint::spin_loop();
+    fn delay_us(us: u32) {
+        #[cfg(target_arch = "xtensa")]
+        unsafe {
+            ets_delay_us(us);
+        }
+        #[cfg(not(target_arch = "xtensa"))]
+        {
+            // Crude fallback for host builds; not used on-device.
+            let spins = us.saturating_mul(200);
+            for _ in 0..spins {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    static LOG_ONCE: AtomicBool = AtomicBool::new(false);
+
+    #[inline]
+    fn log_hello_once() {
+        if LOG_ONCE.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        #[cfg(target_arch = "xtensa")]
+        unsafe {
+            ets_printf(b"hello esp32 world\n\0".as_ptr());
+        }
+    }
+
+    // Register offsets for classic ESP32 (Xtensa). Kept tiny so we don't pull in IDF.
+    const DR_REG_GPIO_BASE: u32 = 0x3ff44000;
+    const GPIO_OUT_W1TS_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x0008) as *mut u32;
+    const GPIO_OUT_W1TC_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x000c) as *mut u32;
+    const GPIO_ENABLE_W1TS_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x0024) as *mut u32;
+
+    const DR_REG_IO_MUX_BASE: u32 = 0x3ff49000;
+    // Only used for the demo pin (GPIO2). Extend as needed for more pins.
+    const IO_MUX_GPIO2_REG: *mut u32 = (DR_REG_IO_MUX_BASE + 0x40) as *mut u32;
+    const MCU_SEL_MASK: u32 = 0b111 << 12;
+    const FUNC_GPIO: u32 = 0b010;
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_delay_ms(ms: i32) -> PrimeStatus {
+        log_hello_once();
+        // Use ROM delay for a reasonably accurate millisecond delay.
+        let us = (ms as i64).max(0).min((u32::MAX / 1000) as i64) as u32 * 1000;
+        delay_us(us);
+        PrimeStatus::Ok
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_pin_mode(pin: i32, mode: i32) -> PrimeStatus {
+        log_hello_once();
+        // Mode 1 -> output (matches demo usage).
+        if mode != 1 {
+            return PrimeStatus::Invalid;
+        }
+        if pin != 2 {
+            return PrimeStatus::Invalid;
+        }
+        // Route GPIO2 to the GPIO peripheral.
+        let reg = IO_MUX_GPIO2_REG;
+        let mut val = core::ptr::read_volatile(reg);
+        val &= !MCU_SEL_MASK;
+        val |= FUNC_GPIO << 12;
+        core::ptr::write_volatile(reg, val);
+
+        // Enable output driver for the pin.
+        let mask = 1u32 << (pin as u32);
+        core::ptr::write_volatile(GPIO_ENABLE_W1TS_REG, mask);
+        PrimeStatus::Ok
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_digital_write(pin: i32, level: i32) -> PrimeStatus {
+        if pin != 2 {
+            return PrimeStatus::Invalid;
+        }
+        let mask = 1u32 << (pin as u32);
+        if level != 0 {
+            core::ptr::write_volatile(GPIO_OUT_W1TS_REG, mask);
+        } else {
+            core::ptr::write_volatile(GPIO_OUT_W1TC_REG, mask);
+        }
+        PrimeStatus::Ok
+    }
+
+    #[inline]
+    unsafe fn zero_bss() {
+        let mut p = core::ptr::addr_of!(_bss_start) as *mut u32;
+        let end = core::ptr::addr_of!(_bss_end) as *mut u32;
+        while p < end {
+            core::ptr::write_volatile(p, 0);
+            p = p.add(1);
+        }
+    }
+
+    #[inline]
+    unsafe fn init_data() {
+        let mut rom = core::ptr::addr_of!(_data_seg_org) as *const u32;
+        let mut ram = core::ptr::addr_of!(_data_start) as *mut u32;
+        let end = core::ptr::addr_of!(_data_end) as *mut u32;
+        while ram < end {
+            core::ptr::write_volatile(ram, core::ptr::read_volatile(rom));
+            ram = ram.add(1);
+            rom = rom.add(1);
         }
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn prime_delay_ms(ms: i32) -> PrimeStatus {
-        busy_delay_ms(ms);
-        PrimeStatus::Ok
+    pub unsafe extern "C" fn call_user_start_cpu0() -> ! {
+        zero_bss();
+        init_data();
+        main();
+        loop {
+            core::hint::spin_loop();
+        }
     }
 
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn prime_pin_mode(_pin: i32, _mode: i32) -> PrimeStatus {
-        PrimeStatus::Ok
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn prime_digital_write(_pin: i32, _level: i32) -> PrimeStatus {
-        PrimeStatus::Ok
-    }
 }
 
 #[cfg(any(
