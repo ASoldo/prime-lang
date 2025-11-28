@@ -542,9 +542,13 @@ crate-type = ["staticlib"]
         .arg("--target")
         .arg(triple)
         .arg("--manifest-path")
-        .arg(cargo_dir.join("Cargo.toml"))
-        .arg("-Zbuild-std=std,panic_abort")
-        .arg("-Zbuild-std-features=panic_immediate_abort");
+        .arg(cargo_dir.join("Cargo.toml"));
+    if target.is_embedded() {
+        cmd.arg("-Zbuild-std=core,alloc");
+    } else {
+        cmd.arg("-Zbuild-std=std,panic_abort")
+            .arg("-Zbuild-std-features=panic_immediate_abort");
+    }
     let linker_var = format!(
         "CARGO_TARGET_{}_LINKER",
         triple
@@ -553,7 +557,7 @@ crate-type = ["staticlib"]
             .collect::<String>()
     );
     let default_linker = if triple.contains("xtensa") {
-        "xtensa-esp-elf-gcc"
+        "xtensa-esp32-elf-gcc"
     } else if triple.contains("riscv32") {
         "riscv32-esp-elf-gcc"
     } else {
@@ -973,7 +977,7 @@ fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), Str
         .clone()
         .or_else(|| env::var("PRIME_ESPTOOL").ok())
         .unwrap_or_else(|| "esptool".to_string());
-    let chip = if build_options.target.is_esp32_xtensa() {
+    let chip = if build_options.target.is_esp32_xtensa() || build_options.target.is_esp32_xtensa_espidf() {
         "esp32"
     } else {
         "esp32c3"
@@ -1001,7 +1005,7 @@ fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), Str
         .arg(&port)
         .arg("--baud")
         .arg(format!("{baud}"))
-        .arg("write_flash")
+        .arg("write-flash")
         .arg("-z")
         .arg(&address)
         .arg(bin_image)
@@ -1053,7 +1057,9 @@ fn link_esp32(
     bin_path: &Path,
     build_options: &BuildOptions,
 ) -> Result<(), String> {
-    let cc_default = if build_options.target.is_esp32_xtensa() {
+    let cc_default = if build_options.target.is_esp32_xtensa()
+        || build_options.target.is_esp32_xtensa_espidf()
+    {
         "xtensa-esp32-elf-gcc".to_string()
     } else {
         "riscv32-esp-elf-gcc".to_string()
@@ -1127,7 +1133,7 @@ fn link_esp32(
     if let Some(lib) = runtime_lib {
         cmd.arg(lib);
     }
-    // Pull in libc/libgcc from the toolchain so basic runtime symbols resolve.
+    // Pull in libc/libgcc; assume linker knows where to find them (IDF toolchain/bin set in PATH).
     cmd.arg("-lc").arg("-lgcc");
     if !extra_args.is_empty() {
         cmd.args(&extra_args);

@@ -1,71 +1,67 @@
-• Here’s a focused plan to add “embedded-only” GPIO/delay built-ins for ESP32-C3 (RISC-V) without clogging the normal host
-  pipeline:
+• Context
 
-  1. Add embedded built-ins gated by a feature/target switch
+  - Goal: Build ESP32 (classic, Xtensa) blink demo with no_std runtime.
+  - Current state: Runtime refactored to minimal no_std stubs; builds succeed. Build reaches link step but fails due to linker/
+    script/toolchain mismatch.
+  - Toolchains/scripts tried:
+      - ESP32-specific toolchain (xtensa-esp32-elf, app.elf.ld/memory.elf.ld) → DRAM overflow/undefined entry, warnings about
+        regions.
+      - IDF toolchain (xtensa-esp-elf) with ESP32-specific llvm → earlier BE/LE mismatches, but runtime now tiny; BE crt0 also
+        failed.
+  - Current prime.toml uses xtensa-esp32-elf toolchain and toolchain scripts; ld_flags still contained IDF ROM scripts at one
+    point, then switched back, still failing.
 
-  - Define new built-ins: pin_mode(pin: int32, mode: int32), digital_write(pin: int32, level: int32), delay_ms(ms: int32).
-  - Only enable them when building for an embedded target; in host/std builds they either stay hidden or error with “embedded-
-    only”.
-  - Mark them as std-only forbidden in no_std unless the embedded target is selected.
+  What failed last
 
-  2. Add a target flag to prime-lang build
+  - With xtensa-esp32-elf toolchain and app.elf.ld + memory.elf.ld: iram_seg warnings, DRAM overflow, missing _start.
+  - A manual link with these scripts also warned about regions.
+  - When using IDF toolchain + IDF scripts, big-endian crt0 caused mismatch; BE/LE conflict.
 
-  - New CLI flag --target <triple>; default stays host.
-  - If target is riscv32imc-unknown-none-elf (ESP32-C3), we:
-      - Emit LLVM IR for that triple.
-      - Invoke the RISC-V cross toolchain (riscv32-esp-elf or riscv64-unknown-elf with correct multilib) instead of host gcc.
-      - Link against a small runtime staticlib compiled for that target.
+  Plan to switch back to IDF toolchain/scripts (next agent)
 
-  3. Provide an embedded Platform + FFI shim
+  1. Toolchain selection
+      - Use IDF’s xtensa-esp-elf toolchain (the one under ~/.espressif/tools/xtensa-esp-elf/esp-15.2.0_...).
+      - PATH: include only the IDF toolchain bin for linking: ~/.espressif/tools/xtensa-esp-elf/.../xtensa-esp-elf/bin.
+      - CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER = xtensa-esp-elf-gcc.
+      - LLVM_SYS_201_PREFIX = IDF esp-clang with Xtensa backend (the one installed via idf_tools under ~/.espressif/tools/esp-
+        clang/esp-clang). Ensure llc --version shows Xtensa.
+  2. prime.toml
+      - [build.toolchain]
+          - cc = "xtensa-esp-elf-gcc"
+          - ar = "xtensa-esp-elf-ar"
+          - objcopy = "xtensa-esp-elf-objcopy"
+          - ld_script = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
+          - ld_flags = "-Wl,--gc-sections -T/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/
+            memory.ld"
+            (keep it minimal; drop ROM/newlib/periph scripts unless needed)
+          - startup_obj → remove/omit; let IDF scripts/toolchain supply startup.
+      - Ensure no residual toolchain script paths from xtensa-esp32-elf remain.
+  3. Linker adjustments
+      - In link_esp32, avoid adding -L paths for the ESP32 toolchain; rely on IDF toolchain default search paths.
+      - Keep -lc -lgcc.
+      - Ensure -Wl,-EL/-mlongcalls are appropriate for Xtensa.
+  4. Runtime
+      - Already no_std with type constants and a panic handler; builds with -Zbuild-std=core,alloc for embedded.
+      - prime_now_ms stub returns 0 (satisfies compiler).
+      - Keep this minimal runtime for now.
+  5. Build command (example)
 
-  - Add Esp32Platform implementing Platform with FFI stubs to the ESP-IDF HAL for: GPIO set mode/output, delay_ms (using esp_timer
-    or a busy wait), and a monotonic now_ms.
-  - Wire a --platform esp32 or environment flag to install this platform at startup when the target is the ESP32 triple.
-  - Keep std platform as default so host builds remain unchanged.
+     . ~/esp/esp-idf/export.sh
+     env LLVM_SYS_201_PREFIX="$HOME/.espressif/tools/esp-clang/esp-clang" \
+         LD_LIBRARY_PATH="/usr/lib64:/usr/lib:/lib:$HOME/.espressif/tools/esp-clang/esp-clang/lib" \
+         PATH="$HOME/.espressif/tools/esp-clang/esp-clang/bin:$HOME/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-
+  elf/bin:$PATH" \
+         RUSTUP_TOOLCHAIN=esp \
+         CARGO_TARGET_DIR="$HOME/.cache/prime-xtensa" \
+         CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER=xtensa-esp-elf-gcc \
+         PRIME_DEBUG_MEM=1 \
+         ./target/debug/prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink --no-flash
+  6. If link still fails
+      - Check for big-endian hints: ensure xtensa-esp-elf-gcc -v target is LE; if BE, locate an LE IDF toolchain or use ESP32-
+        specific toolchain with its own scripts and custom memory.ld.
+      - If _heap_low_start or region errors persist, simplify ld_flags to only memory.ld and sections.ld, no ROM scripts.
+      - If scripts still mismatch, consider using IDF build outputs’ esp32_out.ld or preprocess sections.ld with ldgen from IDF to
+        ensure region definitions exist.
 
-  4. Runtime FFI surface for embedded built-ins
-
-  - In runtime/abi.rs, add FFI functions for pin_mode, digital_write, delay_ms, and expose them to the interpreter’s built-in
-    dispatch under the embedded-target gate.
-  - In build-mode (language/build.rs) add effect types for these ops so build snapshots remain deterministic (or simply error in
-    build-mode for embedded, if we only care about emitted binaries).
-
-  5. Typechecker/LSP visibility
-
-  - Extend the typechecker’s built-in set to include the new GPIO/delay ops only when compiling with --target set to the embedded
-    triple (or a new feature flag).
-  - In no_std modules on an embedded target, the GPIO/delay built-ins are allowed; on host/no-std they error with “embedded-only
-    built-in”.
-  - Import checking is already in place for no_std, so LSP will surface unsupported built-ins and non-no-std dependencies.
-
-  6. Demo sketch
-
-  - Add workspace/demos/esp32_blink with no_std = true and a simple main:
-
-    module demos::esp32_blink;
-
-    fn main() {
-      let int32 led = 2;      // adjust to board pin
-      pin_mode(led, 1);       // 1 = output
-      loop {
-        digital_write(led, 1);
-        delay_ms(500);
-        digital_write(led, 0);
-        delay_ms(500);
-      }
-    }
-  - Document expected pin numbers for your devboard.
-
-  7. Tooling prerequisites (outside this repo, but needed to test)
-
-  - Install Espressif RISC-V toolchain (ESP-IDF or riscv32-esp-elf-*) and point the CLI to it via env (e.g., PRIME_RISCV_CC,
-    PRIME_RISCV_AR, PRIME_RISCV_OBJCOPY).
-  - Provide a linker script/startup object (from ESP-IDF) for the chosen chip.
-  - For AVR/Arduino later: analogous --target avr-unknown-unknown, AVR GCC toolchain, and an ArduinoPlatform.
-
-
-
-## Resume Session
-```sh
-codex resume 019acad0-f9eb-7c82-aab8-c0590145f59f --full-auto
-```
+  With these changes, the linker should use a consistent LE toolchain and matching scripts, eliminating region/endianness
+  conflicts.

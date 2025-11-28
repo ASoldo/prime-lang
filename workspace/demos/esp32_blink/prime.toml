@@ -16,23 +16,30 @@ target = "xtensa-esp32-espidf"
 platform = "esp32"
 
 [build.toolchain]
-cc = "xtensa-esp32-elf-gcc"
-ar = "xtensa-esp32-elf-ar"
-objcopy = "xtensa-esp32-elf-objcopy"
-esptool = "esptool"
+  cc = "xtensa-esp32-elf-gcc"
+  ar = "xtensa-esp32-elf-ar"
+  objcopy = "xtensa-esp32-elf-objcopy"
+  esptool = "esptool"
 
-# Use linker scripts from the ESP32 toolchain bundle
-ld_script = "/home/rootster/.espressif/tools/xtensa-esp32-elf/xtensa-esp32-elf/xtensa-esp32-elf/lib/app.elf.ld"
+  ld_script = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
 
-# Linker flags and additional scripts (pair memory.elf.ld with app.elf.ld)
-ld_flags = """-Wl,--gc-sections \
--T/home/rootster/.espressif/tools/xtensa-esp32-elf/xtensa-esp32-elf/xtensa-esp32-elf/lib/memory.elf.ld"""
-
-# Startup/crt0 from the toolchain (Espressif bundle)
-startup_obj = "/home/rootster/.espressif/tools/xtensa-esp32-elf/xtensa-esp32-elf/xtensa-esp32-elf/lib/crt0.o"
+  ld_flags = """-Wl,--gc-sections \
+  -T/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/memory.ld"""
+# Startup/crt0 from IDF (port object)
 
 [build.flash]
 enabled = true
 port = "/dev/ttyUSB0"
 baud = 460800
 address = "0x10000"
+
+# source ~/esp/esp-idf/export.sh
+#     env LLVM_SYS_201_PREFIX="$HOME/.espressif/tools/esp-clang/esp-clang" \
+#         LD_LIBRARY_PATH="/usr/lib64:/usr/lib:/lib:$HOME/.espressif/tools/esp-clang/esp-clang/lib" \
+#         PATH="$HOME/.espressif/tools/esp-clang/esp-clang/bin:$HOME/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-
+#   elf/bin:$PATH" \
+#         RUSTUP_TOOLCHAIN=esp \
+#         CARGO_TARGET_DIR="$HOME/.cache/prime-xtensa" \
+#         CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER=xtensa-esp32-elf-gcc \
+#         PRIME_DEBUG_MEM=1 \
+#         ./target/debug/prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink
