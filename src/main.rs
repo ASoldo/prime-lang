@@ -537,6 +537,11 @@ crate-type = ["staticlib"]
     fs::write(cargo_dir.join("Cargo.toml"), manifest)
         .map_err(|err| format!("failed to write runtime Cargo.toml: {err}"))?;
     let mut cmd = Command::new("cargo");
+    // The xtensa target requires a nightly-like toolchain (esp) for build-std; default to it
+    // when the user hasn't set a toolchain.
+    if target.is_embedded() && env::var("RUSTUP_TOOLCHAIN").is_err() {
+        cmd.env("RUSTUP_TOOLCHAIN", "esp");
+    }
     cmd.arg("build")
         .arg("--release")
         .arg("--target")
@@ -893,7 +898,21 @@ fn format_file(path: &Path, write: bool) -> Result<(), Box<dyn std::error::Error
 }
 
 fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), String> {
-    let mut cmd = Command::new("llc");
+    let mut cmd = if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
+        let llc_path = env::var("PRIME_LLC").ok().or_else(|| {
+            env::var("LLVM_SYS_201_PREFIX")
+                .ok()
+                .map(|p| format!("{p}/bin/llc"))
+                .or_else(|| {
+                    env::var("HOME").ok().map(|home| {
+                        format!("{home}/.espressif/tools/esp-clang/esp-clang/bin/llc")
+                    })
+                })
+        });
+        Command::new(llc_path.unwrap_or_else(|| "llc".to_string()))
+    } else {
+        Command::new("llc")
+    };
     cmd.arg("-relocation-model=pic")
         .arg("-filetype=obj")
         .arg(ir_path)

@@ -4,10 +4,9 @@ fn main() {
   let int32 led = 2;
   pin_mode(led, 1);
   loop {
-    // On most ESP32 devkits the on-board blue LED is on GPIO2 and is active-low.
     digital_write(led, 0);
-    delay_ms(500);
+    delay_ms(3000);
     digital_write(led, 1);
-    delay_ms(500);
+    delay_ms(1000);
   }
 }

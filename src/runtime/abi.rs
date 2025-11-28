@@ -319,6 +319,7 @@ mod embedded {
         0
     }
 
+    #[cfg(target_arch = "xtensa")]
     unsafe extern "C" {
         static mut _bss_start: u32;
         static mut _bss_end: u32;
@@ -422,6 +423,7 @@ mod embedded {
         PrimeStatus::Ok
     }
 
+    #[cfg(target_arch = "xtensa")]
     #[inline]
     unsafe fn zero_bss() {
         let mut p = core::ptr::addr_of!(_bss_start) as *mut u32;
@@ -432,6 +434,7 @@ mod embedded {
         }
     }
 
+    #[cfg(target_arch = "xtensa")]
     #[inline]
     unsafe fn init_data() {
         let mut rom = core::ptr::addr_of!(_data_seg_org) as *const u32;
@@ -444,6 +447,7 @@ mod embedded {
         }
     }
 
+    #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn call_user_start_cpu0() -> ! {
         zero_bss();
