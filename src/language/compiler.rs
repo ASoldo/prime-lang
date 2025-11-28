@@ -1344,13 +1344,6 @@ impl Compiler {
         }
     }
 
-    fn const_wide_int_value(&self, value: i128) -> IntValue {
-        unsafe {
-            let llvm = LLVMConstInt(self.runtime_abi.int_type, value as u64, 0);
-            IntValue::new(llvm, Some(value))
-        }
-    }
-
     fn const_float_value(&self, value: f64) -> FloatValue {
         unsafe {
             let llvm = LLVMConstReal(self.f64_type, value);
@@ -8524,6 +8517,8 @@ impl Compiler {
                         borrowed_mut: false,
                         borrowed_shared: 0,
                         borrowed_shared_names: HashSet::new(),
+                        origin: Span::new(0, 0),
+                        last_move: None,
                     },
                 );
             }

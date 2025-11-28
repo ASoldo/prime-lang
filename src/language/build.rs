@@ -161,6 +161,8 @@ pub struct BuildBinding {
     pub borrowed_mut: bool,
     pub borrowed_shared: usize,
     pub borrowed_shared_names: HashSet<String>,
+    pub origin: Span,
+    pub last_move: Option<Span>,
 }
 
 #[allow(dead_code)]
@@ -1883,7 +1885,7 @@ impl BuildInterpreter {
         mutability: Mutability,
     ) -> Result<bool, String> {
         match pattern {
-            Pattern::Identifier(name, _) => {
+            Pattern::Identifier(name, span) => {
                 let mutable = mutability == Mutability::Mutable;
                 if let Some(scope) = self.scopes.last_mut() {
                     if mutable && self.active_mut_borrows.contains(name) {
@@ -1898,6 +1900,8 @@ impl BuildInterpreter {
                             borrowed_mut: false,
                             borrowed_shared: 0,
                             borrowed_shared_names: HashSet::new(),
+                            origin: *span,
+                            last_move: None,
                         },
                     );
                     if !self.suppress_drop_schedule {
@@ -2957,6 +2961,8 @@ mod tests {
                 borrowed_mut: false,
                 borrowed_shared: 0,
                 borrowed_shared_names: HashSet::new(),
+                origin: span(),
+                last_move: None,
             },
         );
         let snapshot = BuildSnapshot {
@@ -3526,6 +3532,8 @@ mod tests {
                 borrowed_mut: false,
                 borrowed_shared: 0,
                 borrowed_shared_names: HashSet::new(),
+                origin: span(),
+                last_move: None,
             },
         );
         let snapshot = BuildSnapshot {
@@ -3569,6 +3577,8 @@ mod tests {
                 borrowed_mut: false,
                 borrowed_shared: 0,
                 borrowed_shared_names: HashSet::new(),
+                origin: s,
+                last_move: None,
             },
         );
         let snapshot = BuildSnapshot {
@@ -3621,6 +3631,8 @@ mod tests {
                 borrowed_mut: false,
                 borrowed_shared: 0,
                 borrowed_shared_names: HashSet::new(),
+                origin: span(),
+                last_move: None,
             },
         );
         let snapshot = BuildSnapshot {
@@ -3933,6 +3945,8 @@ mod tests {
                 borrowed_mut: false,
                 borrowed_shared: 0,
                 borrowed_shared_names: HashSet::new(),
+                origin: span(),
+                last_move: None,
             },
         );
         let (key, func) = drop_function("Snap", 11);
@@ -3967,6 +3981,8 @@ mod tests {
                 borrowed_mut: false,
                 borrowed_shared: 0,
                 borrowed_shared_names: HashSet::new(),
+                origin: span(),
+                last_move: None,
             },
         );
         let snapshot = BuildSnapshot {
@@ -4031,6 +4047,8 @@ mod tests {
                 borrowed_mut: false,
                 borrowed_shared: 0,
                 borrowed_shared_names: HashSet::new(),
+                origin: s,
+                last_move: None,
             },
         );
         let snapshot = BuildSnapshot {

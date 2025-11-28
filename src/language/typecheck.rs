@@ -39,6 +39,16 @@ impl TypeError {
         self
     }
 
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    pub fn with_help(mut self, help: impl Into<String>) -> Self {
+        self.help = Some(help.into());
+        self
+    }
+
     pub fn display_message(&self) -> String {
         if let Some(code) = &self.code {
             format!("[{code}] {}", self.message)
@@ -1289,7 +1299,7 @@ impl Checker {
                             );
                         }
                         for target in pending_borrows {
-                            env.register_binding_borrow(name, target);
+                            env.register_binding_borrow(name, target, stmt.span);
                         }
                     }
                     pattern => {
@@ -1327,12 +1337,12 @@ impl Checker {
                         );
                         self.ensure_type(module, ident.span, &expected, ty.as_ref());
                         for target in expression_borrow_targets(&assign.value, env) {
-                            env.register_binding_borrow(&ident.name, target);
+                            env.register_binding_borrow(&ident.name, target, ident.span);
                         }
                     } else {
                         self.check_expression(module, &assign.value, None, returns, env);
                         for target in expression_borrow_targets(&assign.value, env) {
-                            env.register_binding_borrow(&ident.name, target);
+                            env.register_binding_borrow(&ident.name, target, ident.span);
                         }
                     }
                 }
@@ -1804,7 +1814,8 @@ impl Checker {
                 let ty = self.check_expression(module, expr, None, returns, env);
                 if let Expr::Identifier(ident) = expr.as_ref() {
                     env.ensure_not_moved(module, *span, &ident.name, &mut self.errors);
-                    env.mark_moved(&ident.name);
+                    env.ensure_not_borrowed_for_move(module, *span, &ident.name, &mut self.errors);
+                    env.mark_moved(&ident.name, *span);
                 }
                 if let Some(actual) = ty.as_ref() {
                     if !is_heap_type(actual) {
@@ -1913,14 +1924,14 @@ impl Checker {
                                         &name,
                                         &mut self.errors,
                                     );
-                                    env.register_binding_borrow(&name, name.clone());
+                                    env.register_binding_borrow(&name, name.clone(), *span);
                                 }
                                 CaptureMode::Reference {
                                     mutable: binding_mutable && *mutable,
                                 }
                             }
                             _ => {
-                                env.mark_moved(&name);
+                                env.mark_moved(&name, *span);
                                 CaptureMode::Move
                             }
                         };
@@ -4910,15 +4921,19 @@ struct BindingInfo {
     mut_borrows: Vec<String>,
     moved: bool,
     mutable: bool,
+    origin: Span,
+    last_move: Option<Span>,
 }
 
 impl BindingInfo {
-    fn new(ty: Option<TypeExpr>, mutable: Mutability) -> Self {
+    fn new(ty: Option<TypeExpr>, mutable: Mutability, origin: Span) -> Self {
         Self {
             ty,
             mut_borrows: Vec::new(),
             moved: false,
             mutable: mutable.is_mutable(),
+            origin,
+            last_move: None,
         }
     }
 }
@@ -4940,7 +4955,7 @@ struct FnEnv {
     path: PathBuf,
     _type_params: HashSet<String>,
     scopes: Vec<HashMap<String, BindingInfo>>,
-    active_mut_borrows: HashMap<String, usize>,
+    active_mut_borrows: HashMap<String, Vec<BorrowRecord>>,
     imports: ImportScope,
     capture_stack: Vec<ClosureCaptureContext>,
 }
@@ -4950,6 +4965,12 @@ struct BorrowState {
     active_mut_borrows: HashMap<String, usize>,
     scope_borrows: Vec<HashMap<String, HashMap<String, usize>>>,
     moved_scopes: Vec<HashSet<String>>,
+}
+
+#[derive(Clone, Debug)]
+struct BorrowRecord {
+    borrower: String,
+    span: Span,
 }
 
 struct ClosureCaptureContext {
@@ -5000,17 +5021,22 @@ impl FnEnv {
             scope_borrows.push(binding_map);
             moved_scopes.push(moved);
         }
+        let mut active_counts = HashMap::new();
+        for (name, spans) in &self.active_mut_borrows {
+            active_counts.insert(name.clone(), spans.len());
+        }
         BorrowState {
-            active_mut_borrows: self.active_mut_borrows.clone(),
+            active_mut_borrows: active_counts,
             scope_borrows,
             moved_scopes,
         }
     }
 
     fn restore_borrow_state(&mut self, state: &BorrowState) {
-        self.active_mut_borrows = state.active_mut_borrows.clone();
+        self.set_active_borrow_counts(&state.active_mut_borrows);
         self.apply_scope_borrows(&state.scope_borrows);
         self.apply_scope_moves(&state.moved_scopes);
+        Self::intersect_counts_with_spans(&mut self.active_mut_borrows, &state.active_mut_borrows);
     }
 
     fn run_branch<T, F>(&mut self, branch: F) -> (T, BorrowState)
@@ -5050,9 +5076,10 @@ impl FnEnv {
                 }
             }
         }
-        self.active_mut_borrows = merged.active_mut_borrows;
+        self.set_active_borrow_counts(&merged.active_mut_borrows);
         self.apply_scope_borrows(&merged.scope_borrows);
         self.apply_scope_moves(&merged.moved_scopes);
+        Self::intersect_counts_with_spans(&mut self.active_mut_borrows, &merged.active_mut_borrows);
     }
 
     fn intersect_counts(counts: &mut HashMap<String, usize>, other: &HashMap<String, usize>) {
@@ -5060,6 +5087,20 @@ impl FnEnv {
             if let Some(other_count) = other.get(target) {
                 *count = (*count).min(*other_count);
                 *count > 0
+            } else {
+                false
+            }
+        });
+    }
+
+    fn intersect_counts_with_spans(
+        spans: &mut HashMap<String, Vec<BorrowRecord>>,
+        counts: &HashMap<String, usize>,
+    ) {
+        spans.retain(|target, records| {
+            if let Some(limit) = counts.get(target) {
+                records.truncate(*limit);
+                !records.is_empty()
             } else {
                 false
             }
@@ -5112,6 +5153,20 @@ impl FnEnv {
         }
     }
 
+    fn set_active_borrow_counts(&mut self, counts: &HashMap<String, usize>) {
+        self.active_mut_borrows.clear();
+        for (name, count) in counts {
+            let spans = vec![
+                BorrowRecord {
+                    borrower: name.clone(),
+                    span: Span::new(0, 0),
+                };
+                *count
+            ];
+            self.active_mut_borrows.insert(name.clone(), spans);
+        }
+    }
+
     fn borrow_counts(borrows: &[String]) -> HashMap<String, usize> {
         let mut counts = HashMap::new();
         for target in borrows {
@@ -5139,6 +5194,15 @@ impl FnEnv {
         None
     }
 
+    fn binding_origin(&self, name: &str) -> Option<Span> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(info) = scope.get(name) {
+                return Some(info.origin);
+            }
+        }
+        None
+    }
+
     fn ensure_not_moved(
         &self,
         module: &Module,
@@ -5149,21 +5213,63 @@ impl FnEnv {
         for scope in self.scopes.iter().rev() {
             if let Some(info) = scope.get(name) {
                 if info.moved {
-                    errors.push(TypeError::new(
+                    let mut err = TypeError::new(
                         &module.path,
                         span,
                         format!("`{}` was moved and can no longer be used here", name),
-                    ));
+                    );
+                    if let Some(origin) = info.last_move {
+                        err = err
+                            .with_label(format!("`{}` was moved here", name))
+                            .with_help(format!(
+                                "value was moved at bytes {}..{}; borrow a reference instead of moving if reuse is needed",
+                                origin.start, origin.end
+                            ));
+                    }
+                    errors.push(err);
                 }
                 return;
             }
         }
     }
 
-    fn mark_moved(&mut self, name: &str) {
+    fn ensure_not_borrowed_for_move(
+        &self,
+        module: &Module,
+        span: Span,
+        name: &str,
+        errors: &mut Vec<TypeError>,
+    ) {
+        if let Some(records) = self.active_mut_borrows.get(name) {
+            if let Some(first) = records.first() {
+                let mut err = TypeError::new(
+                    &module.path,
+                    span,
+                    format!("`{}` cannot be moved because it is mutably borrowed", name),
+                )
+                .with_label(format!(
+                    "`{}` first mutably borrowed by `{}` here",
+                    name, first.borrower
+                ));
+                let origin_text = if let Some(origin) = self.binding_origin(name) {
+                    format!(" (binding declared at bytes {}..{})", origin.start, origin.end)
+                } else {
+                    String::new()
+                };
+                err = err.with_help(format!(
+                    "borrow started at bytes {}..{}{}; borrow a reference or clone before moving",
+                    first.span.start, first.span.end, origin_text
+                ));
+                errors.push(err);
+            }
+        }
+    }
+
+    fn mark_moved(&mut self, name: &str, span: Span) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(info) = scope.get_mut(name) {
                 info.moved = true;
+                info.last_move = Some(span);
                 return;
             }
         }
@@ -5204,7 +5310,7 @@ impl FnEnv {
         errors: &mut Vec<TypeError>,
     ) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), BindingInfo::new(ty, mutable));
+            scope.insert(name.to_string(), BindingInfo::new(ty, mutable, span));
         } else {
             errors.push(TypeError::new(
                 &self.path,
@@ -5218,7 +5324,7 @@ impl FnEnv {
         if let Some(scope) = self.scopes.last_mut() {
             scope
                 .entry(name.to_string())
-                .or_insert_with(|| BindingInfo::new(None, Mutability::Immutable))
+                .or_insert_with(|| BindingInfo::new(None, Mutability::Immutable, Span::new(0, 0)))
                 .ty = ty;
         }
     }
@@ -5272,11 +5378,17 @@ impl FnEnv {
         }
     }
 
-    fn register_binding_borrow(&mut self, name: &str, target: String) {
+    fn register_binding_borrow(&mut self, name: &str, target: String, span: Span) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(info) = scope.get_mut(name) {
                 info.mut_borrows.push(target.clone());
-                *self.active_mut_borrows.entry(target).or_default() += 1;
+                self.active_mut_borrows
+                    .entry(target)
+                    .or_default()
+                    .push(BorrowRecord {
+                        borrower: name.to_string(),
+                        span,
+                    });
                 return;
             }
         }
@@ -5289,19 +5401,41 @@ impl FnEnv {
         target: &str,
         errors: &mut Vec<TypeError>,
     ) {
-        if self.active_mut_borrows.get(target).copied().unwrap_or(0) > 0 {
-            errors.push(TypeError::new(
+        if let Some(spans) = self.active_mut_borrows.get(target) {
+            let mut label = format!("`{}` is already mutably borrowed", target);
+            let mut help = None;
+            if let Some(first) = spans.first() {
+                label = format!(
+                    "`{}` first mutably borrowed by `{}` here",
+                    target, first.borrower
+                );
+                let origin_text = if let Some(origin) = self.binding_origin(target) {
+                    format!(" (binding declared at bytes {}..{})", origin.start, origin.end)
+                } else {
+                    String::new()
+                };
+                help = Some(format!(
+                    "first borrower `{}` started at bytes {}..{}{}; consider cloning or reordering borrows",
+                    first.borrower, first.span.start, first.span.end, origin_text
+                ));
+            }
+            let mut err = TypeError::new(
                 &module.path,
                 span,
                 format!("`{}` is already mutably borrowed", target),
-            ));
+            )
+            .with_label(label);
+            if let Some(help) = help {
+                err = err.with_help(help);
+            }
+            errors.push(err);
         }
     }
 
     fn end_mut_borrow(&mut self, target: &str) {
         if let Some(entry) = self.active_mut_borrows.get_mut(target) {
-            if *entry > 1 {
-                *entry -= 1;
+            if entry.len() > 1 {
+                entry.pop();
             } else {
                 self.active_mut_borrows.remove(target);
             }

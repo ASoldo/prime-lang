@@ -254,6 +254,86 @@ fn main() {
 }
 
 #[test]
+fn diagnostics_mut_borrow_reports_borrower_and_help() {
+    let tmp = tempdir().expect("temp dir");
+    let file = tmp.path().join("borrow_diag.prime");
+    std::fs::write(
+        &file,
+        r#"
+module tests::borrow_diag;
+
+fn main() {
+  let mut int32 x = 1;
+  let &mut int32 a = &mut x;
+  let &mut int32 b = &mut x;
+  out(a);
+  out(b);
+}
+"#,
+    )
+    .expect("write borrow diag");
+
+    let output = Command::new(bin_path())
+        .current_dir(root())
+        .args(["run", file.to_str().unwrap()])
+        .output()
+        .expect("run borrow diag");
+    assert!(
+        !output.status.success(),
+        "borrow diag unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("first mutably borrowed by `a`"),
+        "missing borrower detail:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("consider cloning or reordering borrows"),
+        "missing borrow hint:\n{stderr}"
+    );
+}
+
+#[test]
+fn diagnostics_move_while_borrowed_mentions_origin() {
+    let tmp = tempdir().expect("temp dir");
+    let file = tmp.path().join("move_diag.prime");
+    std::fs::write(
+        &file,
+        r#"
+module tests::move_diag;
+
+fn main() {
+  let mut []int32 values = [1, 2];
+  let &mut []int32 handle = &mut values;
+  let []int32 moved = move values;
+  out(handle.len());
+  out(moved.len());
+}
+"#,
+    )
+    .expect("write move diag");
+
+    let output = Command::new(bin_path())
+        .current_dir(root())
+        .args(["run", file.to_str().unwrap()])
+        .output()
+        .expect("run move diag");
+    assert!(
+        !output.status.success(),
+        "move diag unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot be moved because it is mutably borrowed"),
+        "missing move/borrow message:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("borrow started at bytes"),
+        "missing borrow span hint:\n{stderr}"
+    );
+}
+
+#[test]
 fn tool_install_and_uninstall_manages_registry() {
     let temp = tempdir().expect("tempdir for tools");
     let root = temp.path();
