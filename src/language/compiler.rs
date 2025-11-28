@@ -1344,6 +1344,13 @@ impl Compiler {
         }
     }
 
+    fn const_wide_int_value(&self, value: i128) -> IntValue {
+        unsafe {
+            let llvm = LLVMConstInt(self.runtime_abi.int_type, value as u64, 0);
+            IntValue::new(llvm, Some(value))
+        }
+    }
+
     fn const_float_value(&self, value: f64) -> FloatValue {
         unsafe {
             let llvm = LLVMConstReal(self.f64_type, value);
@@ -1908,7 +1915,9 @@ impl Compiler {
         }
         match owned {
             Value::Int(int_value) => {
-                self.emit_printf_call("%d", &mut [int_value.llvm()]);
+                let handle = self.build_runtime_handle(Value::Int(int_value.clone()))?;
+                self.emit_runtime_print(handle);
+                self.runtime_release(handle);
                 Ok(())
             }
             Value::Float(float_value) => {
@@ -7992,7 +8001,8 @@ impl Compiler {
         if !args.is_empty() {
             return Err("now_ms expects 0 arguments".into());
         }
-        let millis = platform().now_ms();
+        let millis = self.build_clock_ms;
+        self.build_clock_ms = self.build_clock_ms.saturating_add(1);
         Ok(Value::Int(self.const_int_value(millis)))
     }
 

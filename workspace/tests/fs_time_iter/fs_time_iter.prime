@@ -1,0 +1,84 @@
+test tests::fs_time_iter;
+
+import core::types;
+
+fn fs_roundtrip() -> bool {
+  let string path = "workspace/tests/fs_time_iter/tmp_fs.txt";
+  match fs_write(path, "fs builtins") {
+    Result::Ok(()) => {},
+    Result::Err(_) => return false,
+  }
+  if !fs_exists(path) {
+    return false;
+  }
+  match fs_read(path) {
+    Result::Ok(text) => text == "fs builtins",
+    Result::Err(_) => false,
+  }
+}
+
+fn time_advances() -> bool {
+  let int64 start = now_ms();
+  sleep_ms(1);
+  let int64 end = now_ms();
+  end >= start
+}
+
+fn slice_iter_next() -> bool {
+  let []int32 items = [1, 2, 3];
+  let Iterator[int32] iter = items.iter();
+  match iter.next() {
+    Option::Some(first) => first == 1,
+    Option::None => false,
+  }
+}
+
+fn map_iter_and_helpers() -> bool {
+  let Map[string, int32] scores = #{
+    "one": 1,
+    "two": 2,
+  };
+  let Iterator[(string, int32)] pairs = scores.iter();
+  let mut bool saw_one = false;
+  let mut bool saw_two = false;
+  loop {
+    match pairs.next() {
+      Option::Some((key, value)) => {
+        if key == "one" && value == 1 {
+          saw_one = true;
+        }
+        if key == "two" && value == 2 {
+          saw_two = true;
+        }
+      }
+      Option::None => break,
+    }
+  }
+
+  let []string keys = scores.map_keys();
+  let []int32 values = scores.map_values();
+
+  let mut bool saw_key_one = false;
+  let mut bool saw_key_two = false;
+  for key in keys {
+    if key == "one" {
+      saw_key_one = true;
+    }
+    if key == "two" {
+      saw_key_two = true;
+    }
+  }
+
+  let mut bool saw_val_one = false;
+  let mut bool saw_val_two = false;
+  for value in values {
+    if value == 1 {
+      saw_val_one = true;
+    }
+    if value == 2 {
+      saw_val_two = true;
+    }
+  }
+
+  saw_one && saw_two && saw_key_one && saw_key_two && saw_val_one && saw_val_two
+}

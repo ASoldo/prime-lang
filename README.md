@@ -79,6 +79,7 @@ Validated outputs (fresh run, current syntax):
 - `pkg_app.prime` — banner/promotion output.
 - `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
 - `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
+- `fs_demo.prime` / `time_demo.prime` / `iter_demo.prime` — minimal built-in samples for file I/O, timers, and iterator helpers.
 
 ### Macros & Traceability
 
@@ -101,6 +102,13 @@ Validated outputs (fresh run, current syntax):
 - Maps: `let Map[string, int32] scores = #{ "alpha": 10 };` and `scores["alpha"]` yields `Option[int32]`. Methods: `.len()`, `.get(key)`, `.insert(key, value)`.
 - Arrays: fixed-size `[T;N]` types index to `Option[T]` too.
 - Indexing works in both run/build modes; assignment through indexes is supported for slices and maps.
+
+### File I/O, Time, and Iterator Helpers
+
+- File built-ins: `fs_exists(path) -> bool`, `fs_read(path) -> Result[string, string]`, `fs_write(path, contents) -> Result[(), string]`.
+- Time built-ins: `now_ms() -> int64` and `sleep_ms(int64)` (alias for `sleep`); build mode records clock effects for deterministic snapshots.
+- Iterator helpers: `slice.iter()` / `map.iter()` return lightweight `Iterator[T]` with `next() -> Option[T]`; `map_keys` / `map_values` return slices. Works in run/build and in the emitted binary.
+- See `workspace/demos/fs_demo`, `time_demo`, and `iter_demo` for runnable examples.
 
 ### Drop (RAII-style cleanup)
 

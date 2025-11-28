@@ -1,0 +1,38 @@
+module demos::iter_demo;
+
+import core::types;
+
+fn main() {
+  let []string names = ["Ada", "Turing", "Hopper"];
+  let Iterator[string] iter = names.iter();
+
+  out("iterating slice with .iter().next()");
+  loop {
+    match iter.next() {
+      Option::Some(name) => out(`- {name}`),
+      Option::None => { break; },
+    }
+  }
+
+  let Map[string, int32] scores = #{
+    "alpha": 10,
+    "beta": 20,
+  };
+  out("map keys");
+  for key in scores.map_keys() {
+    out(`- {key}`);
+  }
+  out("map values");
+  for value in scores.map_values() {
+    out(`- {value}`);
+  }
+
+  out("map .iter() yields (key, value) tuples");
+  let Iterator[(string, int32)] pairs = scores.iter();
+  loop {
+    match pairs.next() {
+      Option::Some((key, value)) => out(`- {key}: {value}`),
+      Option::None => { break; },
+    }
+  }
+}

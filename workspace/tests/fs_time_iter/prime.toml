@@ -1,0 +1,11 @@
+manifest_version = "3"
+
+[package]
+name = "tests::fs_time_iter"
+version = "0.1.0"
+
+[libraries]
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }
+
+[tests]
+fs_time_iter = { name = "tests::fs_time_iter", path = "fs_time_iter.prime", visibility = "pub" }

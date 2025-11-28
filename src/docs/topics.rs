@@ -254,6 +254,51 @@ PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh"#,
         ],
     },
     Topic {
+        key: "builtins-fs-time-iter",
+        title: "Built-ins: fs, time, iterators",
+        category: "Built-ins",
+        summary: "Minimal stdlib-style helpers for file I/O, timing, and iterator ergonomics. All work in run/build and are recorded for deterministic build-mode snapshots.",
+        aliases: &["fs", "time", "iter", "iterator", "sleep_ms", "now_ms", "fs_read", "fs_write"],
+        sections: &[
+            TopicSection {
+                title: "File I/O",
+                snippet: r#"let string path = "notes.txt";
+match fs_write(path, "contents") {
+  Result::Ok(()) => out("write ok"),
+  Result::Err(msg) => out(`write failed: {msg}`),
+}
+out(`exists? {fs_exists(path)}`);
+match fs_read(path) {
+  Result::Ok(text) => out(`read: {text}`),
+  Result::Err(msg) => out(`read failed: {msg}`),
+}"#,
+                explanation: "`fs_exists` returns a bool, `fs_read`/`fs_write` return `Result[...]`. Build mode records effects so snapshots replay deterministically.",
+            },
+            TopicSection {
+                title: "Time helpers",
+                snippet: r#"let int64 start = now_ms();
+sleep_ms(5);
+let int64 end = now_ms();
+out(`delta: {end - start}`);"#,
+                explanation: "`now_ms` returns the current unix time in milliseconds; `sleep_ms` is an alias for `sleep` with millisecond inputs. Build mode advances a logical clock instead of wall clock sleeping unless running with parallel build snapshots.",
+            },
+            TopicSection {
+                title: "Iterator helpers",
+                snippet: r#"let []int32 nums = [1, 2, 3];
+let Iterator[int32] iter = nums.iter();
+match iter.next() {
+  Option::Some(first) => out(`first: {first}`),
+  Option::None => out("empty"),
+}
+
+let Map[string, int32] scores = #{"a": 1, "b": 2};
+for key in scores.map_keys() { out(key); }
+for value in scores.map_values() { out(value); }"#,
+                explanation: "Slices and maps expose `.iter()` returning an `Iterator[T]` with `next()` yielding `Option`. `map_keys`/`map_values` return slices for quick traversal. For loops also accept `Iterator` values directly.",
+            },
+        ],
+    },
+    Topic {
         key: "examples",
         title: "Bundled Examples & Outputs",
         category: "Basics",

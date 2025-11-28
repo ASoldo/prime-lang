@@ -940,8 +940,66 @@ impl BuildInterpreter {
                 }
                 Ok(Flow::Value(BuildValue::Unit))
             }
+            BuildValue::Map(entries) => {
+                for (key, value) in entries {
+                    self.push_scope();
+                    self.bind_pattern(
+                        &Pattern::Identifier(stmt.binding.clone(), Span::new(0, 0)),
+                        BuildValue::Tuple(vec![BuildValue::String(key), value]),
+                        Mutability::Mutable,
+                    )?;
+                    let flow = self.eval_block(&stmt.body)?;
+                    match flow {
+                        Flow::Value(_) => {
+                            self.pop_scope()?;
+                        }
+                        Flow::Break => {
+                            self.pop_scope()?;
+                            break;
+                        }
+                        Flow::Continue => {
+                            self.pop_scope()?;
+                            continue;
+                        }
+                        Flow::Return(v) => {
+                            self.pop_scope()?;
+                            return Ok(Flow::Return(v));
+                        }
+                    }
+                }
+                Ok(Flow::Value(BuildValue::Unit))
+            }
+            BuildValue::Iterator(iter) => {
+                while let Some(item) = iter.next() {
+                    self.push_scope();
+                    self.bind_pattern(
+                        &Pattern::Identifier(stmt.binding.clone(), Span::new(0, 0)),
+                        item,
+                        Mutability::Mutable,
+                    )?;
+                    let flow = self.eval_block(&stmt.body)?;
+                    match flow {
+                        Flow::Value(_) => {
+                            self.pop_scope()?;
+                        }
+                        Flow::Break => {
+                            self.pop_scope()?;
+                            break;
+                        }
+                        Flow::Continue => {
+                            self.pop_scope()?;
+                            continue;
+                        }
+                        Flow::Return(v) => {
+                            self.pop_scope()?;
+                            return Ok(Flow::Return(v));
+                        }
+                    }
+                }
+                Ok(Flow::Value(BuildValue::Unit))
+            }
             other => Err(format!(
-                "for loops in build spawn require range or slice, found {}",
+                "for loops in build spawn require range, slice, map, or iterator, found {}",
                 other.kind()
             )),
         }
@@ -2744,7 +2802,6 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
-            clock_ms: 0,
         }
     }
 
@@ -3889,6 +3946,7 @@ mod tests {
                 binding: "snap".into(),
                 type_name: "Snap".into(),
             })]],
+            clock_ms: 0,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         interpreter.pop_scope().expect("pop scope runs drops");

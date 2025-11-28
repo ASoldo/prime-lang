@@ -1,0 +1,22 @@
+module demos::fs_demo;
+
+import core::types;
+
+fn main() {
+  let string path = "workspace/demos/fs_demo/tmp_demo.txt";
+  out(`writing to {path}`);
+  match fs_write(path, "demo file contents") {
+    Result::Ok(_) => out("write ok"),
+    Result::Err(msg) => {
+      out(`write failed: {msg}`);
+      return;
+    }
+  }
+
+  out(`exists? {fs_exists(path)}`);
+
+  match fs_read(path) {
+    Result::Ok(text) => out(`read: {text}`),
+    Result::Err(msg) => out(`read failed: {msg}`),
+  }
+}

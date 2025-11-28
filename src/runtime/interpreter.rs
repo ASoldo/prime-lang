@@ -442,8 +442,11 @@ impl Interpreter {
                 message: format!("`{}` does not accept type arguments", name),
             });
         }
-        if let Some(result) = self.call_builtin(name, args.clone(), type_args) {
-            return result;
+        // Prefer user functions when a receiver is provided before consulting built-ins.
+        if receiver.is_none() {
+            if let Some(result) = self.call_builtin(name, args.clone(), type_args) {
+                return result;
+            }
         }
         let info = self.resolve_function(name, receiver, type_args, &args)?;
         if info.def.params.len() != args.len() {
@@ -1104,6 +1107,17 @@ impl Interpreter {
             (Value::FormatTemplate(template), "str_split") => {
                 args.insert(0, Value::FormatTemplate(template));
                 Some(self.builtin_str_split(args))
+            }
+            (Value::Boxed(boxed), "box_get") => {
+                Some(self.builtin_box_get(vec![Value::Boxed(boxed)]))
+            }
+            (Value::Boxed(boxed), "box_set") => {
+                let mut forwarded = vec![Value::Boxed(boxed)];
+                forwarded.extend(args);
+                Some(self.builtin_box_set(forwarded))
+            }
+            (Value::Boxed(boxed), "box_take") => {
+                Some(self.builtin_box_take(vec![Value::Boxed(boxed)]))
             }
             (Value::Int(v), "abs") => Some(self.builtin_abs(vec![Value::Int(v)])),
             (Value::Int(v), "min") => {
