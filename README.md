@@ -71,10 +71,11 @@ Validated outputs (fresh run, current syntax):
 - `generic_demo.prime` — identity/promote helpers with typed outputs.
 - `heap_demo.prime` / `heap_features.prime` — box counters, roster prints, redeploy outputs.
 - `interface_demo.prime` / `interface_generics_demo.prime` — method calls and announcements.
-- `lab_demo.prime` — three plan runs with totals/synergy summaries and pairing.
+- `lab_demo.prime` – three plan runs with totals/synergy summaries and pairing.
 - `main.prime` — full gameplay log (players, enemies, quests, patrols, defers).
 - `ns_demo.prime` — namespace overloading demo with foo/bar labels.
 - `pattern_demo.prime` – pattern matches over tuples/maps/slices plus mutation demos.
+- `drop_demo.prime` — Drop/RAII cleanup with scoped trackers and defer ordering.
 - `pkg_app.prime` — banner/promotion output.
 - `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
 - `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
@@ -100,6 +101,28 @@ Validated outputs (fresh run, current syntax):
 - Maps: `let Map[string, int32] scores = #{ "alpha": 10 };` and `scores["alpha"]` yields `Option[int32]`. Methods: `.len()`, `.get(key)`, `.insert(key, value)`.
 - Arrays: fixed-size `[T;N]` types index to `Option[T]` too.
 - Indexing works in both run/build modes; assignment through indexes is supported for slices and maps.
+
+### Drop (RAII-style cleanup)
+
+- Implement `Drop` on a struct/enum to run `fn drop(self: &mut Self)` at scope exit. No returns, panics become runtime errors.
+- Drops are scheduled when a binding is created, run once, and honor moves (moved-out bindings stop scheduling drops).
+- Cleanup order is LIFO per scope alongside `defer` (later bindings drop first; defers interleave in insertion order). Build mode replays the same drop effects in snapshots.
+- Example (`workspace/demos/drop_demo/drop_demo.prime`):
+
+```prime
+struct Tracker { label: string; log: &mut []string; }
+
+impl Drop for Tracker {
+  fn drop(self: &mut Tracker) { self.log.push(self.label); }
+}
+
+fn demo(log: &mut []string) {
+  let Tracker first = Tracker { label: "first", log };
+  defer log.push("defer");
+  let Tracker second = Tracker { label: "second", log };
+}
+# log becomes ["second", "defer", "first"]
+```
 
 ## CLI Overview & Built-in Docs
 

@@ -85,6 +85,35 @@ struct Player {
         ],
     },
     Topic {
+        key: "drop",
+        title: "Drop & Cleanup",
+        category: "Memory & Ownership",
+        summary: "RAII-style cleanup for structs/enums: implement `Drop` with `fn drop(&mut self)` to release resources at scope exit. Drops run once, respect moves, and interleave with defers in LIFO order in both run and build modes.",
+        aliases: &["drop", "cleanup", "raii", "destructor", "defer-drop"],
+        sections: &[
+            TopicSection {
+                title: "Implementing Drop",
+                snippet: r#"struct Tracker { label: string; log: &mut []string; }
+
+impl Drop for Tracker {
+  fn drop(self: &mut Tracker) {
+    self.log.push(self.label);
+  }
+}"#,
+                explanation: "Add an inherent `impl Drop for Type` block with a single `fn drop(self: &mut Type)` method (no returns). The language forbids panics in drop bodies at runtime. Only structs/enums can implement Drop; references/pointers are skipped.",
+            },
+            TopicSection {
+                title: "When drops run",
+                snippet: r#"fn demo(log: &mut []string) {
+  let Tracker first = Tracker { label: "first", log };
+  defer log.push("defer");
+  let Tracker second = Tracker { label: "second", log };
+} // log => ["second", "defer", "first"]"#,
+                explanation: "Drops are scheduled when a binding is created, run once on scope exit, and are skipped after a move from that binding. Cleanup is LIFO per scope: later bindings drop first, interleaving with `defer` in insertion order. Build mode records drops in snapshots and replays their side effects in parallel builds.",
+            },
+        ],
+    },
+    Topic {
         key: "quick-start",
         title: "Quick Start",
         category: "Basics",
