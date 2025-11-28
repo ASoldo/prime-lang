@@ -40,19 +40,56 @@ impl Platform for StdPlatform {
     }
 }
 
+pub struct NoStdPlatform;
+
+impl Platform for NoStdPlatform {
+    fn now_ms(&self) -> i128 {
+        0
+    }
+
+    fn sleep_ms(&self, _millis: i128) {}
+
+    fn fs_exists(&self, _path: &str) -> bool {
+        false
+    }
+
+    fn fs_read(&self, _path: &str) -> Result<String, String> {
+        Err(std_disabled_message("fs_read"))
+    }
+
+    fn fs_write(&self, _path: &str, _contents: &str) -> Result<(), String> {
+        Err(std_disabled_message("fs_write"))
+    }
+}
+
+fn default_platform() -> Box<dyn Platform> {
+    if cfg!(feature = "std-builtins") {
+        Box::new(StdPlatform)
+    } else {
+        Box::new(NoStdPlatform)
+    }
+}
+
 static PLATFORM: OnceLock<Box<dyn Platform>> = OnceLock::new();
 
 pub fn platform() -> &'static dyn Platform {
     PLATFORM
-        .get_or_init(|| Box::new(StdPlatform) as Box<dyn Platform>)
+        .get_or_init(default_platform)
         .as_ref()
 }
 
-#[cfg(not(feature = "std-builtins"))]
-const _: () = {
-    // Fast failure for no-std profiles until a HAL-backed platform is wired up.
-    #[allow(dead_code)]
-    fn missing_feature() {
-        compile_error!("std-builtins feature disabled: fs/time/channel/spawn built-ins unavailable");
-    }
-};
+#[allow(dead_code)]
+pub fn install_platform<P: Platform + 'static>(platform: P) -> Result<(), Box<dyn Platform>> {
+    PLATFORM.set(Box::new(platform)).map_err(|boxed| boxed)
+}
+
+pub fn std_builtins_enabled() -> bool {
+    cfg!(feature = "std-builtins")
+}
+
+pub fn std_disabled_message(op: &str) -> String {
+    format!(
+        "`{}` unavailable: std-builtins feature disabled (enable the feature to use fs/time/spawn/channel)",
+        op
+    )
+}

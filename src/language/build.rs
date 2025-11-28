@@ -5,6 +5,7 @@ use crate::language::ast::{
 };
 use crate::language::span::Span;
 use crate::language::types::{Mutability, TypeAnnotation, TypeExpr};
+use crate::runtime::platform::std_disabled_message;
 use crate::runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric};
 use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -333,6 +334,14 @@ pub(crate) struct BuildChannelState {
     pub closed: bool,
 }
 
+fn require_std_builtins(name: &str) -> Result<(), String> {
+    if cfg!(feature = "std-builtins") {
+        Ok(())
+    } else {
+        Err(std_disabled_message(name))
+    }
+}
+
 fn build_values_equal(left: &BuildValue, right: &BuildValue) -> bool {
     match (left, right) {
         (BuildValue::Int(a), BuildValue::Int(b)) => a == b,
@@ -496,6 +505,76 @@ impl BuildInterpreter {
         clone
     }
 
+    fn first_mut_borrow(&self, name: &str) -> Option<BorrowMark> {
+        self.active_mut_borrows
+            .get(name)
+            .and_then(|records| records.first())
+            .cloned()
+    }
+
+    fn first_shared_borrow(&self, name: &str) -> Option<BorrowMark> {
+        for frame in self.borrow_frames.iter().rev() {
+            if let Some(mark) = frame
+                .iter()
+                .find(|mark| mark.name == name && mark.kind == BorrowKind::Shared)
+            {
+                return Some(mark.clone());
+            }
+        }
+        None
+    }
+
+    fn format_borrow_conflict(&self, name: &str, origin: Span, action: &str) -> String {
+        let mut message = format!("`{}` {}", name, action);
+        if let Some(first) = self.first_mut_borrow(name) {
+            let borrower = first
+                .borrower
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| name.to_string());
+            message.push_str(&format!(
+                "\n  first mutable borrow by `{}` at {}..{}",
+                borrower, first.span.start, first.span.end
+            ));
+        }
+        message.push_str(&format!(
+            "\n  binding declared at {}..{}",
+            origin.start, origin.end
+        ));
+        message.push_str("\n  help: end the borrow or clone before retrying");
+        message
+    }
+
+    fn format_shared_borrow_conflict(&self, name: &str, origin: Span, action: &str) -> String {
+        let mut message = format!("`{}` {}", name, action);
+        if let Some(first) = self.first_shared_borrow(name) {
+            let borrower = first
+                .borrower
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| name.to_string());
+            message.push_str(&format!(
+                "\n  first shared borrow by `{}` at {}..{}",
+                borrower, first.span.start, first.span.end
+            ));
+        }
+        message.push_str(&format!(
+            "\n  binding declared at {}..{}",
+            origin.start, origin.end
+        ));
+        message.push_str("\n  help: wait for borrows to end or create a copy before moving");
+        message
+    }
+
+    fn format_moved_use(&self, name: &str, last_move: Option<Span>, action: &str) -> String {
+        let mut message = format!("`{}` {}", name, action);
+        if let Some(span) = last_move {
+            message.push_str(&format!("\n  move occurred at {}..{}", span.start, span.end));
+        }
+        message.push_str("\n  help: borrow a reference instead of moving if reuse is needed");
+        message
+    }
+
     // Used heavily in tests; keep available but silence dead-code warning in normal builds.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<BuildValue, String> {
@@ -524,39 +603,25 @@ impl BuildInterpreter {
             )
         };
         if borrowed_mut {
-            if let Some(records) = self.active_mut_borrows.get(name) {
-                if let Some(first) = records.first() {
-                    return Err(format!(
-                        "Identifier `{}` is mutably borrowed (first borrower {} at {}..{}; declared at {}..{})",
-                        name,
-                        first.borrower.clone().unwrap_or_else(|| name.to_string()),
-                        first.span.start,
-                        first.span.end,
-                        origin.start,
-                        origin.end
-                    ));
-                }
-            }
-            return Err(format!(
-                "Identifier `{}` is mutably borrowed (declared at {}..{})",
-                name, origin.start, origin.end
+            return Err(self.format_borrow_conflict(
+                name,
+                origin,
+                "is mutably borrowed and cannot be used here",
             ));
         }
         let guard = cell.lock().unwrap();
         if let BuildValue::Moved = *guard {
-            return Err(format!(
-                "Identifier `{}` has been moved{}",
+            return Err(self.format_moved_use(
                 name,
-                last_move
-                    .map(|span| format!(" at {}..{}", span.start, span.end))
-                    .unwrap_or_else(String::new)
+                last_move,
+                "was moved and can no longer be used here",
             ));
         }
         Ok(guard.clone())
     }
 
-    fn take_binding_value(&mut self, name: &str) -> Result<BuildValue, String> {
-        let (cell, borrowed_mut, borrowed_shared, origin) = {
+    fn take_binding_value(&mut self, name: &str, move_span: Span) -> Result<BuildValue, String> {
+        let (cell, borrowed_mut, borrowed_shared, origin, last_move) = {
             let binding = self
                 .find_binding_mut(name)
                 .ok_or_else(|| format!("Unknown identifier `{}` for move", name))?;
@@ -565,34 +630,34 @@ impl BuildInterpreter {
                 binding.borrowed_mut,
                 binding.borrowed_shared,
                 binding.origin,
+                binding.last_move,
             )
         };
         if borrowed_mut || borrowed_shared > 0 {
-            if let Some(records) = self.active_mut_borrows.get(name) {
-                if let Some(first) = records.first() {
-                    return Err(format!(
-                        "Identifier `{}` is borrowed and cannot be moved (first borrower {} at {}..{}; declared at {}..{})",
-                        name,
-                        first.borrower.clone().unwrap_or_else(|| name.to_string()),
-                        first.span.start,
-                        first.span.end,
-                        origin.start,
-                        origin.end
-                    ));
-                }
+            if borrowed_mut {
+                return Err(self.format_borrow_conflict(
+                    name,
+                    origin,
+                    "cannot be moved because it is mutably borrowed",
+                ));
             }
-            return Err(format!(
-                "Identifier `{}` is borrowed and cannot be moved (declared at {}..{})",
-                name, origin.start, origin.end
+            return Err(self.format_shared_borrow_conflict(
+                name,
+                origin,
+                "cannot be moved because it has active shared borrows",
             ));
         }
         let mut cell = cell.lock().unwrap();
         if let BuildValue::Moved = *cell {
-            return Err(format!("Identifier `{}` already moved" , name));
+            return Err(self.format_moved_use(
+                name,
+                last_move,
+                "was moved and cannot be moved again",
+            ));
         }
         let value = std::mem::replace(&mut *cell, BuildValue::Moved);
         if let Some(binding) = self.find_binding_mut(name) {
-            binding.last_move = Some(Span::new(0, 0)); // TODO capture real span for moves in build-mode eval
+            binding.last_move = Some(move_span);
         }
         Ok(value)
     }
@@ -619,13 +684,18 @@ impl BuildInterpreter {
             return Err(format!("Identifier `{}` is immutable", name));
         }
         if mutable && borrowed_mut {
-            return Err(format!(
-                "Identifier `{}` is already mutably borrowed (declared at {}..{})",
-                name, origin_span.start, origin_span.end
+            return Err(self.format_borrow_conflict(
+                name,
+                origin_span,
+                "is already mutably borrowed",
             ));
         }
         if mutable && borrowed_shared > 0 {
-            return Err(format!("Identifier `{}` has active shared borrows", name));
+            return Err(self.format_shared_borrow_conflict(
+                name,
+                origin_span,
+                "cannot be mutably borrowed while shared borrows are active",
+            ));
         }
         if mutable {
             self.begin_mut_borrow(name, span, Some(name.to_string()))?;
@@ -726,7 +796,7 @@ impl BuildInterpreter {
             } => self.eval_closure_literal(params, body, ret, captures),
             Expr::Reference { expr, mutable, .. } => match expr.as_ref() {
                 Expr::Identifier(ident) => {
-                    let (cell, mutable_flag, borrowed_mut, borrowed_shared) = {
+                    let (cell, mutable_flag, borrowed_mut, borrowed_shared, origin_span) = {
                         let binding = self.find_binding_mut(&ident.name).ok_or_else(|| {
                             format!("Unknown identifier `{}` for reference", ident.name)
                         })?;
@@ -735,21 +805,24 @@ impl BuildInterpreter {
                             binding.mutable,
                             binding.borrowed_mut,
                             binding.borrowed_shared,
+                            binding.origin,
                         )
                     };
                     if *mutable && !mutable_flag {
                         return Err(format!("Identifier `{}` is immutable", ident.name));
                     }
                     if *mutable && borrowed_mut {
-                        return Err(format!(
-                            "Identifier `{}` is already mutably borrowed",
-                            ident.name
+                        return Err(self.format_borrow_conflict(
+                            &ident.name,
+                            origin_span,
+                            "is already mutably borrowed",
                         ));
                     }
                     if *mutable && borrowed_shared > 0 {
-                        return Err(format!(
-                            "Identifier `{}` has active shared borrows",
-                            ident.name
+                        return Err(self.format_shared_borrow_conflict(
+                            &ident.name,
+                            origin_span,
+                            "cannot be mutably borrowed while shared borrows are active",
                         ));
                     }
                     if *mutable {
@@ -781,6 +854,7 @@ impl BuildInterpreter {
             Expr::TryPropagate { expr, .. } => self.eval_try_propagate(expr),
             Expr::Move { expr, .. } => self.eval_move(expr),
             Expr::Spawn { expr, .. } => {
+                require_std_builtins("spawn")?;
                 let child = self.clone_for_spawn();
                 let expr_clone = expr.clone();
                 let handle = thread::spawn(move || {
@@ -1075,16 +1149,36 @@ impl BuildInterpreter {
         match &assign.target {
             Expr::Identifier(Identifier { name, .. }) => {
                 let value = self.eval_expr_mut(&assign.value)?;
-                let binding = self
-                    .find_binding_mut(name)
-                    .ok_or_else(|| format!("Unknown identifier `{}` in assignment", name))?;
-                if binding.borrowed_mut || binding.borrowed_shared > 0 {
-                    return Err(format!("Identifier `{}` is borrowed", name));
+                let (cell, mutable_flag, borrowed_mut, borrowed_shared, origin_span) = {
+                    let binding = self
+                        .find_binding_mut(name)
+                        .ok_or_else(|| format!("Unknown identifier `{}` in assignment", name))?;
+                    (
+                        binding.cell.clone(),
+                        binding.mutable,
+                        binding.borrowed_mut,
+                        binding.borrowed_shared,
+                        binding.origin,
+                    )
+                };
+                if borrowed_mut {
+                    return Err(self.format_borrow_conflict(
+                        name,
+                        origin_span,
+                        "is mutably borrowed and cannot be assigned",
+                    ));
                 }
-                if !binding.mutable {
+                if borrowed_shared > 0 {
+                    return Err(self.format_shared_borrow_conflict(
+                        name,
+                        origin_span,
+                        "cannot be assigned while shared borrows are active",
+                    ));
+                }
+                if !mutable_flag {
                     return Err(format!("Identifier `{}` is immutable", name));
                 }
-                *binding.cell.lock().unwrap() = value;
+                *cell.lock().unwrap() = value;
                 Ok(())
             }
             Expr::Deref { expr, .. } => {
@@ -1108,18 +1202,35 @@ impl BuildInterpreter {
                 let index_value = self.eval_expr_mut(index)?;
                 match base.as_ref() {
                     Expr::Identifier(Identifier { name, .. }) => {
-                        let cell = {
+                        let (cell, mutable_flag, borrowed_mut, borrowed_shared, origin_span) = {
                             let binding = self.find_binding_mut(name).ok_or_else(|| {
                                 format!("Unknown identifier `{}` in assignment", name)
                             })?;
-                            if !binding.mutable {
-                                return Err(format!("Identifier `{}` is immutable", name));
-                            }
-                            if binding.borrowed_mut || binding.borrowed_shared > 0 {
-                                return Err(format!("Identifier `{}` is borrowed", name));
-                            }
-                            binding.cell.clone()
+                            (
+                                binding.cell.clone(),
+                                binding.mutable,
+                                binding.borrowed_mut,
+                                binding.borrowed_shared,
+                                binding.origin,
+                            )
                         };
+                        if !mutable_flag {
+                            return Err(format!("Identifier `{}` is immutable", name));
+                        }
+                        if borrowed_mut {
+                            return Err(self.format_borrow_conflict(
+                                name,
+                                origin_span,
+                                "is mutably borrowed and cannot be assigned",
+                            ));
+                        }
+                        if borrowed_shared > 0 {
+                            return Err(self.format_shared_borrow_conflict(
+                                name,
+                                origin_span,
+                                "cannot be assigned while shared borrows are active",
+                            ));
+                        }
                         let mut guard = cell.lock().unwrap();
                         self.assign_index_into_value(&mut *guard, index_value, value)
                     }
@@ -1143,16 +1254,36 @@ impl BuildInterpreter {
                 let value = self.eval_expr_mut(&assign.value)?;
                 match base.as_ref() {
                     Expr::Identifier(Identifier { name, .. }) => {
-                        let binding = self.find_binding_mut(name).ok_or_else(|| {
-                            format!("Unknown identifier `{}` in assignment", name)
-                        })?;
-                        if !binding.mutable {
+                        let (cell, mutable_flag, borrowed_mut, borrowed_shared, origin_span) = {
+                            let binding = self.find_binding_mut(name).ok_or_else(|| {
+                                format!("Unknown identifier `{}` in assignment", name)
+                            })?;
+                            (
+                                binding.cell.clone(),
+                                binding.mutable,
+                                binding.borrowed_mut,
+                                binding.borrowed_shared,
+                                binding.origin,
+                            )
+                        };
+                        if !mutable_flag {
                             return Err(format!("Identifier `{}` is immutable", name));
                         }
-                        if binding.borrowed_mut || binding.borrowed_shared > 0 {
-                            return Err(format!("Identifier `{}` is borrowed", name));
+                        if borrowed_mut {
+                            return Err(self.format_borrow_conflict(
+                                name,
+                                origin_span,
+                                "is mutably borrowed and cannot be assigned",
+                            ));
                         }
-                        let mut guard = binding.cell.lock().unwrap();
+                        if borrowed_shared > 0 {
+                            return Err(self.format_shared_borrow_conflict(
+                                name,
+                                origin_span,
+                                "cannot be assigned while shared borrows are active",
+                            ));
+                        }
+                        let mut guard = cell.lock().unwrap();
                         match &mut *guard {
                             BuildValue::Struct { fields, .. } => {
                                 if !fields.contains_key(field) {
@@ -1512,47 +1643,7 @@ impl BuildInterpreter {
 
     fn eval_move(&mut self, expr: &Expr) -> Result<BuildValue, String> {
         match expr {
-            Expr::Identifier(ident) => {
-                let (cell, borrowed_mut, borrowed_shared, origin) = {
-                    let binding = self
-                        .find_binding_mut(&ident.name)
-                        .ok_or_else(|| format!("Unknown identifier `{}` for move", ident.name))?;
-                    (
-                        binding.cell.clone(),
-                        binding.borrowed_mut,
-                        binding.borrowed_shared,
-                        binding.origin,
-                    )
-                };
-                if borrowed_mut || borrowed_shared > 0 {
-                    if let Some(records) = self.active_mut_borrows.get(&ident.name) {
-                        if let Some(first) = records.first() {
-                            return Err(format!(
-                                "Identifier `{}` is borrowed and cannot be moved (first borrower {} at {}..{}; declared at {}..{})",
-                                ident.name,
-                                first.borrower.clone().unwrap_or_else(|| ident.name.clone()),
-                                first.span.start,
-                                first.span.end,
-                                origin.start,
-                                origin.end
-                            ));
-                        }
-                    }
-                    return Err(format!(
-                        "Identifier `{}` is borrowed and cannot be moved (declared at {}..{})",
-                        ident.name, origin.start, origin.end
-                    ));
-                }
-                let mut cell = cell.lock().unwrap();
-                if let BuildValue::Moved = *cell {
-                    return Err(format!("Identifier `{}` already moved", ident.name));
-                }
-                let value = std::mem::replace(&mut *cell, BuildValue::Moved);
-                if let Some(binding) = self.find_binding_mut(&ident.name) {
-                    binding.last_move = Some(ident.span);
-                }
-                Ok(value)
-            }
+            Expr::Identifier(ident) => self.take_binding_value(&ident.name, ident.span),
             _ => self.eval_expr_mut(expr),
         }
     }
@@ -1567,7 +1658,7 @@ impl BuildInterpreter {
         let mut captured_values = Vec::new();
         for captured in captures.read().unwrap().iter() {
             let value = match captured.mode {
-                CaptureMode::Move => self.take_binding_value(&captured.name)?,
+                CaptureMode::Move => self.take_binding_value(&captured.name, captured.span)?,
                 CaptureMode::Reference { mutable } => {
                     BuildValue::Reference(
                         self.capture_reference_by_name(&captured.name, mutable, captured.span)?,
@@ -1835,27 +1926,27 @@ impl BuildInterpreter {
         span: Span,
         borrower: Option<String>,
     ) -> Result<(), String> {
-        if let Some(existing) = self.active_mut_borrows.get(name) {
-            if let Some(first) = existing.first() {
-                return Err(format!(
-                    "`{}` is already mutably borrowed{}",
-                    name,
-                    first
-                        .borrower
-                        .as_ref()
-                        .map(|b| format!(" by `{}` at {}..{}", b, first.span.start, first.span.end))
-                        .unwrap_or_else(|| "".into())
-                ));
-            } else {
-                return Err(format!("`{}` is already mutably borrowed", name));
-            }
+        let origin_span = self
+            .find_binding_mut(name)
+            .map(|binding| binding.origin)
+            .unwrap_or_else(|| Span::new(0, 0));
+        if self.active_mut_borrows.get(name).is_some() {
+            return Err(self.format_borrow_conflict(
+                name,
+                origin_span,
+                "is already mutably borrowed",
+            ));
         }
         if let Some(binding) = self.find_binding_mut(name) {
             if !binding.mutable {
                 return Err(format!("Identifier `{}` is immutable", name));
             }
             if binding.borrowed_shared > 0 {
-                return Err(format!("Identifier `{}` has active shared borrows", name));
+                return Err(self.format_shared_borrow_conflict(
+                    name,
+                    origin_span,
+                    "cannot be mutably borrowed while shared borrows are active",
+                ));
             }
             binding.borrowed_mut = true;
         }
@@ -1881,7 +1972,15 @@ impl BuildInterpreter {
 
     fn begin_shared_borrow(&mut self, name: &str, borrower: &str, span: Span) -> Result<(), String> {
         if self.active_mut_borrows.get(name).is_some() {
-            return Err(format!("`{}` has an active mutable borrow", name));
+            let origin_span = self
+                .find_binding_mut(name)
+                .map(|binding| binding.origin)
+                .unwrap_or_else(|| Span::new(0, 0));
+            return Err(self.format_borrow_conflict(
+                name,
+                origin_span,
+                "cannot be shared because it is mutably borrowed",
+            ));
         }
         if let Some(binding) = self.find_binding_mut(name) {
             binding.borrowed_shared = binding.borrowed_shared.saturating_add(1);
@@ -2486,6 +2585,7 @@ impl BuildInterpreter {
                 Ok(BuildValue::Slice(values))
             }
             "fs_exists" => {
+                require_std_builtins("fs_exists")?;
                 if args.len() != 1 {
                     return Err("fs_exists expects 1 argument".into());
                 }
@@ -2497,6 +2597,7 @@ impl BuildInterpreter {
                 Ok(BuildValue::Bool(exists))
             }
             "fs_read" => {
+                require_std_builtins("fs_read")?;
                 if args.len() != 1 {
                     return Err("fs_read expects 1 argument".into());
                 }
@@ -2513,6 +2614,7 @@ impl BuildInterpreter {
                 }
             }
             "fs_write" => {
+                require_std_builtins("fs_write")?;
                 if args.len() != 2 {
                     return Err("fs_write expects 2 arguments".into());
                 }
@@ -2542,6 +2644,7 @@ impl BuildInterpreter {
                 }
             }
             "now_ms" => {
+                require_std_builtins("now_ms")?;
                 if !args.is_empty() {
                     return Err("now_ms expects no arguments".into());
                 }
@@ -2586,6 +2689,7 @@ impl BuildInterpreter {
                 Ok(casted)
             }
             "channel" => {
+                require_std_builtins("channel")?;
                 if !args.is_empty() {
                     return Err("channel expects no arguments".into());
                 }
@@ -2605,6 +2709,7 @@ impl BuildInterpreter {
                 ]))
             }
             "send" => {
+                require_std_builtins("send")?;
                 if args.len() != 2 {
                     return Err("send expects 2 arguments".into());
                 }
@@ -2630,6 +2735,7 @@ impl BuildInterpreter {
                 }
             }
             "recv" => {
+                require_std_builtins("recv")?;
                 if args.len() != 1 {
                     return Err("recv expects 1 argument".into());
                 }
@@ -2648,6 +2754,7 @@ impl BuildInterpreter {
                 }
             }
             "recv_timeout" => {
+                require_std_builtins("recv_timeout")?;
                 if args.len() != 2 {
                     return Err("recv_timeout expects 2 arguments".into());
                 }
@@ -2678,6 +2785,7 @@ impl BuildInterpreter {
                 }
             }
             "close" => {
+                require_std_builtins("close")?;
                 if args.len() != 1 {
                     return Err("close expects 1 argument".into());
                 }
@@ -2700,6 +2808,7 @@ impl BuildInterpreter {
                 Ok(BuildValue::Unit)
             }
             "join" => {
+                require_std_builtins("join")?;
                 if args.len() != 1 {
                     return Err("join expects 1 argument".into());
                 }
@@ -2742,6 +2851,7 @@ impl BuildInterpreter {
                 Err(msg)
             }
             "sleep" => {
+                require_std_builtins("sleep")?;
                 if args.len() != 1 {
                     return Err("sleep expects 1 argument".into());
                 }
@@ -2761,6 +2871,7 @@ impl BuildInterpreter {
                 Ok(BuildValue::Unit)
             }
             "sleep_ms" => {
+                require_std_builtins("sleep_ms")?;
                 if args.len() != 1 {
                     return Err("sleep_ms expects 1 argument".into());
                 }
@@ -3741,6 +3852,125 @@ mod tests {
             span: s,
         }));
         assert!(third.is_err(), "read during mutable borrow should fail");
+    }
+
+    #[test]
+    fn mut_borrow_conflict_reports_borrower_and_spans() {
+        let origin = Span::new(2, 6);
+        let borrow_span = Span::new(10, 14);
+        let mut scope = BuildScope {
+            bindings: HashMap::new(),
+        };
+        scope.bindings.insert(
+            "item".into(),
+            BuildBinding {
+                cell: Arc::new(Mutex::new(BuildValue::Int(1))),
+                mutable: true,
+                borrowed_mut: false,
+                borrowed_shared: 0,
+                borrowed_shared_names: HashSet::new(),
+                origin,
+                last_move: None,
+            },
+        );
+        let snapshot = BuildSnapshot {
+            scopes: vec![scope],
+            enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
+            next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        interpreter
+            .eval_expr(&Expr::Reference {
+                mutable: true,
+                expr: Box::new(Expr::Identifier(Identifier {
+                    name: "item".into(),
+                    span: borrow_span,
+                })),
+                span: borrow_span,
+            })
+            .expect("first borrow");
+        let err = interpreter
+            .eval_expr(&Expr::Identifier(Identifier {
+                name: "item".into(),
+                span: Span::new(20, 24),
+            }))
+            .expect_err("borrow conflict should error");
+        assert!(
+            err.contains("first mutable borrow"),
+            "expected borrower information, got {err}"
+        );
+        assert!(
+            err.contains("10..14"),
+            "expected borrower span, got {err}"
+        );
+        assert!(
+            err.contains("binding declared at 2..6"),
+            "expected origin span, got {err}"
+        );
+    }
+
+    #[test]
+    fn moved_value_error_reports_move_span() {
+        let origin = Span::new(30, 35);
+        let move_span = Span::new(40, 45);
+        let mut scope = BuildScope {
+            bindings: HashMap::new(),
+        };
+        scope.bindings.insert(
+            "slot".into(),
+            BuildBinding {
+                cell: Arc::new(Mutex::new(BuildValue::Int(7))),
+                mutable: true,
+                borrowed_mut: false,
+                borrowed_shared: 0,
+                borrowed_shared_names: HashSet::new(),
+                origin,
+                last_move: None,
+            },
+        );
+        let snapshot = BuildSnapshot {
+            scopes: vec![scope],
+            enum_variants: HashMap::new(),
+            functions: HashMap::new(),
+            struct_fields: HashMap::new(),
+            next_channel_id: 0,
+            cleanup_stack: vec![Vec::new()],
+            clock_ms: 0,
+        };
+        let mut interpreter = BuildInterpreter::new(snapshot);
+        interpreter
+            .eval_expr(&Expr::Move {
+                expr: Box::new(Expr::Identifier(Identifier {
+                    name: "slot".into(),
+                    span: move_span,
+                })),
+                span: move_span,
+            })
+            .expect("move succeeds");
+        let err = interpreter
+            .eval_expr(&Expr::Identifier(Identifier {
+                name: "slot".into(),
+                span: Span::new(50, 52),
+            }))
+            .expect_err("moved use should error");
+        assert!(
+            err.contains("move occurred at 40..45"),
+            "expected move span, got {err}"
+        );
+    }
+
+    #[cfg(not(feature = "std-builtins"))]
+    #[test]
+    fn std_disabled_build_builtins_are_blocked() {
+        let err = require_std_builtins("spawn").unwrap_err();
+        assert!(
+            err.contains("std-builtins feature disabled"),
+            "expected std-disabled message, got {err}"
+        );
     }
 
     #[test]

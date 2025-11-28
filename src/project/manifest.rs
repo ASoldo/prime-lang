@@ -29,6 +29,7 @@ pub struct ModuleInfo {
     pub visibility: ModuleVisibility,
     pub doc: Option<String>,
     pub kind: ModuleKind,
+    pub no_std: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +82,7 @@ struct RawModuleEntry {
     visibility: Option<String>,
     doc: Option<String>,
     kind: Option<String>,
+    no_std: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -191,6 +193,23 @@ impl PackageManifest {
             }
         }
         None
+    }
+
+    pub fn module_no_std(&self, name: &str) -> bool {
+        let name = canonical_module_name(name);
+        if let Some(entry) = self
+            .modules
+            .get(&name)
+            .or_else(|| self.tests.get(&name))
+        {
+            return entry.no_std;
+        }
+        for dep in &self.dependency_manifests {
+            if dep.module_no_std(&name) {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn module_name_for_path(&self, path: &Path) -> Option<String> {
@@ -428,6 +447,7 @@ fn insert_entry(
         raw.visibility.as_deref(),
         raw.doc.as_deref(),
         raw.kind.as_deref().or(default_kind),
+        raw.no_std,
     )?;
     reverse.insert(info.path.clone(), canonical_name.clone());
     target.insert(canonical_name, info);
@@ -442,6 +462,7 @@ fn build_module_info(
     visibility: Option<&str>,
     doc: Option<&str>,
     kind: Option<&str>,
+    no_std: Option<bool>,
 ) -> Result<ModuleInfo, ManifestError> {
     let canonical_name = canonical_module_name(name);
     let resolved = root.join(rel_path);
@@ -474,6 +495,7 @@ fn build_module_info(
         visibility,
         doc: doc.map(|s| s.to_string()),
         kind,
+        no_std: no_std.unwrap_or(false),
     })
 }
 

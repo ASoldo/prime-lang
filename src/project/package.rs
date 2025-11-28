@@ -113,7 +113,10 @@ impl ModuleLoader {
             .unwrap_or_else(|| module_name_from_path(&canonical));
 
         match parse_module(&module_name, canonical.clone(), &source) {
-            Ok(module) => {
+            Ok(mut module) => {
+                if let Some(manifest) = &self.manifest {
+                    module.no_std = manifest.module_no_std(&module.name);
+                }
                 let imports = module.imports.clone();
                 if let Some(err) = library_main_error(&module) {
                     self.file_errors.push(FileErrors {

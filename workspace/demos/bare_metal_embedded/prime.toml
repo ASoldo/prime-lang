@@ -1,0 +1,11 @@
+manifest_version = "3"
+
+[package]
+name = "demos::bare_metal_embedded"
+version = "0.1.0"
+
+[module]
+name = "demos::bare_metal_embedded"
+path = "main.prime"
+visibility = "pub"
+no_std = true

@@ -23,6 +23,7 @@ pub struct Module {
     pub name: String,
     pub kind: ModuleKind,
     pub path: PathBuf,
+    pub no_std: bool,
     pub declared_name: Option<String>,
     pub declared_span: Option<Span>,
     pub redundant_module_spans: Vec<Span>,

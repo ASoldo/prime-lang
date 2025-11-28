@@ -828,6 +828,17 @@ fn bad() {
 }"#,
                 explanation: "Taking a reference to a temporary (call result, inline literal, or block expression) is rejected to prevent dangling pointers. Persist the value into a binding before borrowing so its lifetime is clear.",
             },
+            TopicSection {
+                title: "Diagnostics show borrowers, moves, and spans",
+                snippet: r#"let mut int32 hp = 10;
+let &mut int32 a = &mut hp;
+let &mut int32 b = &mut hp; // error highlights first borrow span and binding origin
+
+let []int32 roster = [1, 2];
+let []int32 moved = move roster;
+out(roster); // error points at the move site"#,
+                explanation: "Borrow and move errors include the borrower name, the borrow span, and the binding origin. Build-mode mirrors the interpreter wording and spans, so diagnostics stay consistent between `prime run` and `prime build`.",
+            },
         ],
     },
     Topic {
@@ -858,6 +869,13 @@ fn bad() {
 - Interpreter spawn/channel now run on OS threads; `recv` blocks until close
 - Build mode mirrors blocking semantics; set `PRIME_BUILD_PARALLEL=1` for threaded build spawn"#,
                 explanation: "Ranges now carry their element type, `for` loops consult an `iter()` method when present, and run-mode concurrency uses real threads with blocking channel semantics. Build mode defaults to deterministic evaluation but uses the same blocking rules; exporting `PRIME_BUILD_PARALLEL=1` runs build-mode `spawn` on threads while preserving `send/recv/join` parity with runtime.",
+            },
+            TopicSection {
+                title: "Deterministic build effects & std gating (current)",
+                snippet: r#"- Build-mode records fs/time/channel/spawn effects for deterministic snapshots
+- `prime build` emits the same borrow/move diagnostics (with spans) as `prime run`
+- Disabling `std-builtins` blocks fs/time/spawn/channel with a clear message"#,
+                explanation: "Build-mode mirrors runtime diagnostics and captures side effects instead of touching the host. If you compile with `--no-default-features`, platform-backed built-ins are disabled and report that the `std-builtins` feature is off, keeping no-std profiles predictable.",
             },
             TopicSection {
                 title: "November 2025 release notes placeholder",

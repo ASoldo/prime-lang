@@ -522,6 +522,7 @@ impl Parser {
                 name: self.module_name,
                 kind: self.kind,
                 path: self.path,
+                no_std: false,
                 declared_name,
                 declared_span,
                 redundant_module_spans,

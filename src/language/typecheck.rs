@@ -67,6 +67,7 @@ struct TypeRegistry {
     pending_impls: Vec<ImplCandidate>,
     drop_impls: Vec<ImplCandidate>,
     errors: Vec<TypeError>,
+    module_no_std: HashMap<String, bool>,
 }
 
 impl Default for TypeRegistry {
@@ -80,6 +81,7 @@ impl Default for TypeRegistry {
             pending_impls: Vec::new(),
             drop_impls: Vec::new(),
             errors: Vec::new(),
+            module_no_std: HashMap::new(),
         }
     }
 }
@@ -93,6 +95,14 @@ impl TypeRegistry {
 
     fn module_symbols(&self, module: &str) -> Option<&ModuleSymbols> {
         self.modules.get(module)
+    }
+
+    fn set_module_no_std(&mut self, module: &str, no_std: bool) {
+        self.module_no_std.insert(module.to_string(), no_std);
+    }
+
+    fn module_no_std(&self, module: &str) -> bool {
+        self.module_no_std.get(module).copied().unwrap_or(false)
     }
 
     fn find_interface(&self, name: &str) -> Option<InterfaceInfo> {
@@ -229,6 +239,7 @@ pub fn check_program(expanded: &ExpandedProgram) -> Result<(), Vec<TypeError>> {
         registry,
         errors: Vec::new(),
         current_module: None,
+        current_no_std: false,
     };
     checker.errors.extend(checker.registry.errors.drain(..));
     checker.validate_drop_impls();
@@ -252,6 +263,7 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
         let symbols = registry.module_symbols_mut(&module.name);
         symbols.prelude = module.prelude.clone();
     }
+    registry.set_module_no_std(&module.name, module.no_std);
     for item in &module.items {
         match item {
             Item::Struct(def) => {
@@ -392,6 +404,7 @@ struct Checker {
     registry: TypeRegistry,
     errors: Vec<TypeError>,
     current_module: Option<String>,
+    current_no_std: bool,
 }
 
 impl Checker {
@@ -478,6 +491,23 @@ impl Checker {
                     import.span,
                     format!("unknown module `{}`", module_name),
                 ));
+                continue;
+            }
+            if self.current_no_std && !self.registry.module_no_std(&module_name) {
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        import.span,
+                        format!(
+                            "module `{}` is not marked `no_std` but `{}` requires no-std",
+                            module_name, module.name
+                        ),
+                    )
+                    .with_code("E0NS")
+                    .with_help(
+                        "mark the imported module as `no_std = true` in its prime.toml or avoid importing it from a no-std module",
+                    ),
+                );
                 continue;
             }
             if let Some(selectors) = selectors_override.as_ref() {
@@ -1138,9 +1168,11 @@ impl Checker {
     fn check_program(&mut self, program: &Program) {
         for module in &program.modules {
             self.current_module = Some(module.name.clone());
+            self.current_no_std = module.no_std;
             self.check_module(module);
         }
         self.current_module = None;
+        self.current_no_std = false;
     }
 
     fn validate_format_string(
@@ -1158,6 +1190,7 @@ impl Checker {
 
     fn check_module(&mut self, module: &Module) {
         self.current_module = Some(module.name.clone());
+        self.current_no_std = module.no_std;
         let import_scope = self.build_import_scope(module);
         for item in &module.items {
             match item {
@@ -1829,6 +1862,20 @@ impl Checker {
                 ty
             }
             Expr::Spawn { expr, span } => {
+                if self.current_no_std {
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            *span,
+                            "`spawn` is unavailable in no-std modules",
+                        )
+                        .with_code("E0NS")
+                        .with_help(
+                            "remove spawn/channel usage or enable `std-builtins` when compiling prime-lang",
+                        ),
+                    );
+                    return None;
+                }
                 let inner = self.check_expression(module, expr, None, returns, env);
                 let handle_ty = TypeExpr::Named(
                     "JoinHandle".into(),
@@ -2275,6 +2322,20 @@ impl Checker {
 
         match callee {
             Expr::Identifier(ident) => {
+                if self.current_no_std && self.is_std_only_builtin(&ident.name) {
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            span,
+                            format!("`{}` is unavailable in no-std modules", ident.name),
+                        )
+                        .with_code("E0NS")
+                        .with_help(
+                            "remove std-builtins usage or enable `std-builtins` when compiling prime-lang",
+                        ),
+                    );
+                    return None;
+                }
                 if self.is_builtin_name(&ident.name) {
                     return self.check_builtin_call(
                         module,
@@ -4221,7 +4282,25 @@ impl Checker {
                 | "ptr_mut"
                 | "cast"
                 | "assert_eq"
-                | "panic"
+            | "panic"
+        )
+    }
+
+    fn is_std_only_builtin(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "channel"
+                | "send"
+                | "recv"
+                | "recv_timeout"
+                | "close"
+                | "join"
+                | "sleep"
+                | "sleep_ms"
+                | "now_ms"
+                | "fs_exists"
+                | "fs_read"
+                | "fs_write"
         )
     }
 

@@ -6,12 +6,12 @@ use crate::project::Package;
 use crate::runtime::{
     environment::{CleanupAction, DropRecord, Environment},
     error::{RuntimeError, RuntimeResult},
+    platform::{platform, std_builtins_enabled, std_disabled_message},
     value::{
         BoxValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue, EnumValue,
         FormatRuntimeSegment, FormatTemplateValue, IteratorValue, JoinHandleValue, MapValue,
         PointerValue, RangeValue, ReferenceValue, SliceValue, StructInstance, Value,
     },
-    platform::platform,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
@@ -19,6 +19,16 @@ use std::fs;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+
+fn require_std_builtins(op: &str) -> RuntimeResult<()> {
+    if std_builtins_enabled() {
+        Ok(())
+    } else {
+        Err(RuntimeError::Unsupported {
+            message: std_disabled_message(op),
+        })
+    }
+}
 
 pub struct Interpreter {
     package: Package,
@@ -1756,6 +1766,7 @@ impl Interpreter {
     }
 
     fn builtin_channel(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("channel")?;
         self.expect_arity("channel", &args, 0)?;
         let (tx, rx) = mpsc::channel();
         let shared_tx = Arc::new(Mutex::new(Some(tx)));
@@ -1798,6 +1809,7 @@ impl Interpreter {
     }
 
     fn builtin_send(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("send")?;
         self.expect_arity("send", &args, 2)?;
         let value = args.remove(1);
         let sender = self.expect_sender("send", args.remove(0))?;
@@ -1814,6 +1826,7 @@ impl Interpreter {
     }
 
     fn builtin_recv(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("recv")?;
         self.expect_arity("recv", &args, 1)?;
         let receiver = self.expect_receiver("recv", args.remove(0))?;
         match receiver.recv() {
@@ -1833,6 +1846,7 @@ impl Interpreter {
         mut args: Vec<Value>,
         type_args: &[TypeExpr],
     ) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("recv_timeout")?;
         if !type_args.is_empty() {
             return Err(RuntimeError::Unsupported {
                 message: "`recv_timeout` does not accept type arguments".into(),
@@ -1854,6 +1868,7 @@ impl Interpreter {
     }
 
     fn builtin_close(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("close")?;
         self.expect_arity("close", &args, 1)?;
         match args.remove(0) {
             Value::Sender(tx) => {
@@ -1878,6 +1893,7 @@ impl Interpreter {
     }
 
     fn builtin_now_ms(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("now_ms")?;
         self.expect_arity("now_ms", &args, 0)?;
         let millis = platform().now_ms();
         Ok(vec![Value::Int(millis)])
@@ -1889,12 +1905,14 @@ impl Interpreter {
     }
 
     fn builtin_fs_exists(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("fs_exists")?;
         self.expect_arity("fs_exists", &args, 1)?;
         let path = self.expect_string_or_format("fs_exists", args.remove(0))?;
         Ok(vec![Value::Bool(platform().fs_exists(&path))])
     }
 
     fn builtin_fs_read(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("fs_read")?;
         self.expect_arity("fs_read", &args, 1)?;
         let path = self.expect_string_or_format("fs_read", args.remove(0))?;
         match platform().fs_read(&path) {
@@ -1914,6 +1932,7 @@ impl Interpreter {
     }
 
     fn builtin_fs_write(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("fs_write")?;
         self.expect_arity("fs_write", &args, 2)?;
         let path = self.expect_string_or_format("fs_write", args.remove(0))?;
         let contents = self.expect_string_or_format("fs_write", args.remove(0))?;
@@ -1934,6 +1953,7 @@ impl Interpreter {
     }
 
     fn builtin_sleep(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("sleep")?;
         self.expect_arity("sleep", &args, 1)?;
         let millis = self.expect_int_value("sleep", args.remove(0))?;
         platform().sleep_ms(millis);
@@ -1941,6 +1961,7 @@ impl Interpreter {
     }
 
     fn builtin_join(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("join")?;
         self.expect_arity("join", &args, 1)?;
         match args.remove(0) {
             Value::JoinHandle(handle) => {
@@ -2779,6 +2800,7 @@ impl Interpreter {
             Expr::ArrayLiteral(values, _) => self.eval_array_literal(values),
             Expr::Move { expr, .. } => self.eval_move_expression(expr).map(EvalOutcome::Value),
             Expr::Spawn { expr, .. } => {
+                require_std_builtins("spawn")?;
                 self.bootstrap()?;
                 let expr_clone = expr.clone();
                 let child = self.clone_for_spawn();
@@ -4202,6 +4224,21 @@ fn make_adder() -> int32 {
             .expect("run closure");
         assert_eq!(values.len(), 1);
         assert!(matches!(values[0], Value::Int(5)));
+    }
+
+    #[cfg(not(feature = "std-builtins"))]
+    #[test]
+    fn std_disabled_run_builtins_are_blocked() {
+        let err = require_std_builtins("spawn").unwrap_err();
+        match err {
+            RuntimeError::Unsupported { message } => {
+                assert!(
+                    message.contains("std-builtins feature disabled"),
+                    "expected std-disabled message, got {message}"
+                );
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
     }
 }
 fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {

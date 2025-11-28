@@ -1,0 +1,34 @@
+module demos::bare_metal_embedded;
+
+// Minimal example that stays portable when std-builtins are disabled.
+// Avoid fs/time/spawn/channel so the same code runs in `prime run` and `prime build`
+// even when the CLI is compiled with `--no-default-features`.
+fn main() {
+  out("bare metal demo starting");
+
+  let []int32 readings = [1, 2, 3, 4];
+  let int32 total = sum(readings);
+  out(`total = {total}`);
+
+  let int32 threshold = 3;
+  let []int32 filtered = filter_above(readings, threshold);
+  out(`filtered count = {filtered.len()}`);
+}
+
+fn sum(values: []int32) -> int32 {
+  let mut int32 acc = 0;
+  for value in values {
+    acc = acc + value;
+  }
+  acc
+}
+
+fn filter_above(values: []int32, threshold: int32) -> []int32 {
+  let mut []int32 result = [];
+  for value in values {
+    if value > threshold {
+      result.push(value);
+    }
+  }
+  result
+}
