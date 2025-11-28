@@ -50,6 +50,7 @@ pub struct ToolchainSettings {
     pub startup_obj: Option<String>,
     pub ld_flags: Option<String>,
     pub esptool: Option<String>,
+    pub env: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -139,6 +140,7 @@ struct RawToolchainTable {
     startup_obj: Option<String>,
     ld_flags: Option<String>,
     esptool: Option<String>,
+    env: Option<HashMap<String, String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -462,6 +464,7 @@ fn parse_build_settings(value: &Value) -> Option<BuildSettings> {
         startup_obj: toolchain_raw.startup_obj,
         ld_flags: toolchain_raw.ld_flags,
         esptool: toolchain_raw.esptool,
+        env: toolchain_raw.env,
     };
     let flash_raw = raw.flash.unwrap_or_default();
     let flash = FlashSettings {

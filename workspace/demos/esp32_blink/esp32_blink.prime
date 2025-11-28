@@ -5,7 +5,7 @@ fn main() {
   pin_mode(led, 1);
   loop {
     digital_write(led, 0);
-    delay_ms(3000);
+    delay_ms(1000);
     digital_write(led, 1);
     delay_ms(1000);
   }

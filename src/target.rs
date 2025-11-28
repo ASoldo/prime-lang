@@ -68,6 +68,7 @@ pub struct ToolchainSettings {
     pub startup_obj: Option<String>,
     pub ld_flags: Option<String>,
     pub esptool: Option<String>,
+    pub env: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +119,7 @@ impl BuildOptions {
             esptool: env::var("PRIME_ESPTOOL")
                 .ok()
                 .or_else(|| manifest_build.and_then(|b| b.toolchain.esptool.clone())),
+            env: manifest_build.and_then(|b| b.toolchain.env.clone()),
         };
         let flash = manifest_build
             .map(|b| FlashSettings {

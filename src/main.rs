@@ -653,6 +653,18 @@ fn configure_embedded_env(options: &BuildOptions) {
             unsafe { env::set_var("CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER", "xtensa-esp32-elf-gcc") };
         }
     }
+
+    // Apply user-provided env overrides from the manifest toolchain block.
+    if let Some(env_map) = &options.toolchain.env {
+        for (key, val) in env_map {
+            let expanded = if key == "PATH" && val.contains("$PATH") {
+                val.replace("$PATH", &env::var("PATH").unwrap_or_default())
+            } else {
+                val.clone()
+            };
+            unsafe { env::set_var(key, expanded) };
+        }
+    }
 }
 
 fn build_entry(
