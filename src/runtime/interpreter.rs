@@ -29,6 +29,7 @@ pub struct Interpreter {
     impls: HashSet<ImplKey>,
     consts: Vec<(String, ConstDef)>,
     drop_impls: HashMap<String, FunctionKey>,
+    suppress_drop_schedule: bool,
     deprecated_warnings: HashSet<String>,
     module_stack: Vec<String>,
     bootstrapped: bool,
@@ -106,6 +107,7 @@ impl Interpreter {
             impls: HashSet::new(),
             consts: Vec::new(),
             drop_impls: HashMap::new(),
+            suppress_drop_schedule: false,
             deprecated_warnings: HashSet::new(),
             module_stack: Vec::new(),
             bootstrapped: false,
@@ -747,6 +749,7 @@ impl Interpreter {
             impls: self.impls.clone(),
             consts: self.consts.clone(),
             drop_impls: self.drop_impls.clone(),
+            suppress_drop_schedule: false,
             deprecated_warnings: HashSet::new(),
             module_stack: Vec::new(),
             bootstrapped: true,
@@ -2222,13 +2225,17 @@ impl Interpreter {
             if matches!(*guard, Value::Moved) {
                 return Ok(());
             }
+            if let Value::Struct(_instance) = &*guard {}
         }
         let reference = Value::Reference(ReferenceValue {
             cell: cell.clone(),
             mutable: true,
             origin: Some(record.binding.clone()),
         });
+        let prev = self.suppress_drop_schedule;
+        self.suppress_drop_schedule = true;
         let _ = self.call_function(&key.name, key.receiver.clone(), &[], vec![reference])?;
+        self.suppress_drop_schedule = prev;
         Ok(())
     }
 
@@ -2250,7 +2257,9 @@ impl Interpreter {
         mutable: bool,
     ) -> RuntimeResult<()> {
         self.env.declare(name, value.clone(), mutable)?;
-        self.schedule_drop_for_value(name, &value);
+        if !self.suppress_drop_schedule {
+            self.schedule_drop_for_value(name, &value);
+        }
         Ok(())
     }
 
@@ -2286,12 +2295,12 @@ impl Interpreter {
     fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<EvalOutcome<Value>> {
         match expr {
             Expr::Identifier(ident) => {
-                let value =
-                    self.env
-                        .get(&ident.name)
-                        .ok_or_else(|| RuntimeError::UnknownSymbol {
-                            name: ident.name.clone(),
-                        })?;
+                let value = self
+                    .env
+                    .get(&ident.name)
+                    .ok_or_else(|| RuntimeError::UnknownSymbol {
+                        name: ident.name.clone(),
+                    })?;
                 if matches!(value, Value::Moved) {
                     return Err(RuntimeError::MovedValue {
                         name: ident.name.clone(),
@@ -2452,19 +2461,58 @@ impl Interpreter {
                     EvalOutcome::Value(value) => value,
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
-                match value {
-                    Value::Struct(instance) => {
-                        let field_value = instance.get_field(field).ok_or_else(|| {
-                            RuntimeError::UnknownSymbol {
-                                name: field.clone(),
-                            }
-                        })?;
-                        Ok(EvalOutcome::Value(field_value))
+                let struct_value = match value {
+                    Value::Struct(instance) => Ok(instance),
+                    Value::Reference(reference) => {
+                        let inner = reference.cell.lock().unwrap().clone();
+                        match inner {
+                            Value::Struct(instance) => Ok(instance),
+                            other => Err(RuntimeError::TypeMismatch {
+                                message: format!(
+                                    "Field access requires struct value (found {})",
+                                    other
+                                ),
+                            }),
+                        }
                     }
-                    _ => Err(RuntimeError::TypeMismatch {
-                        message: "Field access requires struct value".into(),
+                    Value::Pointer(pointer) => {
+                        let inner = pointer.cell.lock().unwrap().clone();
+                        match inner {
+                            Value::Struct(instance) => Ok(instance),
+                            other => Err(RuntimeError::TypeMismatch {
+                                message: format!(
+                                    "Field access requires struct value (found {})",
+                                    other
+                                ),
+                            }),
+                        }
+                    }
+                    Value::Boxed(inner) => {
+                        let inner = inner.cell.lock().unwrap().clone();
+                        match inner {
+                            Value::Struct(instance) => Ok(instance),
+                            other => Err(RuntimeError::TypeMismatch {
+                                message: format!(
+                                    "Field access requires struct value (found {})",
+                                    other
+                                ),
+                            }),
+                        }
+                    }
+                    other => Err(RuntimeError::TypeMismatch {
+                        message: format!(
+                            "Field access requires struct value (found {})",
+                            self.describe_value(&other)
+                        ),
                     }),
-                }
+                }?;
+                let struct_name = struct_value.name.clone();
+                let field_value = struct_value.get_field(field).ok_or_else(|| {
+                    RuntimeError::UnknownSymbol {
+                        name: format!("{}::{}", struct_name, field),
+                    }
+                })?;
+                Ok(EvalOutcome::Value(field_value))
             }
             Expr::StructLiteral { name, fields, .. } => self.instantiate_struct(name, fields),
             Expr::EnumLiteral {

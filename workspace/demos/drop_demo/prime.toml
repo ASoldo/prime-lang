@@ -1,0 +1,13 @@
+manifest_version = "3"
+
+[package]
+name = "demos::drop_demo"
+version = "0.1.0"
+
+[libraries]
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }
+
+[module]
+name = "demos::drop_demo"
+path = "drop_demo.prime"
+visibility = "pub"

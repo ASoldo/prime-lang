@@ -1,0 +1,54 @@
+test tests::drop;
+
+import core::types;
+
+struct Tracker {
+  label: string;
+  log: &mut []string;
+}
+
+impl Drop for Tracker {
+  fn drop(self: &mut Tracker) {
+    self.log.push(self.label);
+  }
+}
+
+fn drop_runs_on_scope_exit() -> bool {
+  let mut []string log = [];
+  {
+    let Tracker tracker = Tracker { label: "alpha", log: &mut log };
+    out(tracker.label);
+  }
+  match log[0] {
+    Some(value) => log.len() == 1 && value == "alpha",
+    None => false,
+  }
+}
+
+fn drop_orders_with_defer() -> bool {
+  let mut []string log = [];
+  {
+    let Tracker first = Tracker { label: "first", log: &mut log };
+    defer log.push("defer");
+    let Tracker second = Tracker { label: "second", log: &mut log };
+    out(first.label);
+    out(second.label);
+  }
+  match (log[0], log[1], log[2]) {
+    (Some(a), Some(b), Some(c)) => a == "second" && b == "defer" && c == "first",
+    _ => false,
+  }
+}
+
+fn drop_occurs_once_after_last_use() -> bool {
+  let mut []string log = [];
+  {
+    let Box[Tracker] owner = box_new(Tracker { label: "single", log: &mut log });
+    let Tracker shadow = owner.box_take();
+    out(shadow.label);
+  }
+  match log[0] {
+    Some(value) => log.len() == 1 && value == "single",
+    None => false,
+  }
+}

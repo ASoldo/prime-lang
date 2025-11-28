@@ -1,0 +1,11 @@
+manifest_version = "3"
+
+[package]
+name = "tests::drop"
+version = "0.1.0"
+
+[libraries]
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }
+
+[tests]
+drop_tests = { name = "tests::drop", path = "drop.prime", visibility = "pub" }

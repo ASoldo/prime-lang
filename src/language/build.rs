@@ -240,6 +240,7 @@ pub struct BuildInterpreter {
     borrow_frames: Vec<Vec<BorrowMark>>,
     captured_borrows: HashSet<String>,
     cleanup_stack: Vec<Vec<BuildCleanup>>,
+    suppress_drop_schedule: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -435,6 +436,7 @@ impl BuildInterpreter {
             } else {
                 snapshot.cleanup_stack
             },
+            suppress_drop_schedule: false,
         }
     }
 
@@ -445,6 +447,7 @@ impl BuildInterpreter {
         clone.borrow_frames = vec![Vec::new(); clone.scopes.len()];
         clone.cleanup_stack = self.cleanup_stack.clone();
         clone.captured_borrows = self.captured_borrows.clone();
+        clone.suppress_drop_schedule = false;
         clone
     }
 
@@ -1152,6 +1155,29 @@ impl BuildInterpreter {
             BuildValue::Struct { mut fields, .. } => fields
                 .remove(field)
                 .ok_or_else(|| format!("field `{}` not found in struct", field)),
+            BuildValue::Reference(reference) => {
+                let inner = reference.cell.lock().unwrap().clone();
+                match inner {
+                    BuildValue::Struct { mut fields, .. } => fields
+                        .remove(field)
+                        .ok_or_else(|| format!("field `{}` not found in struct", field)),
+                    _ => Err(format!(
+                        "field access not supported for {} in build spawn",
+                        inner.kind()
+                    )),
+                }
+            }
+            BuildValue::Boxed(inner) => {
+                match *inner {
+                    BuildValue::Struct { mut fields, .. } => fields
+                        .remove(field)
+                        .ok_or_else(|| format!("field `{}` not found in struct", field)),
+                    _ => Err(format!(
+                        "field access not supported for {} in build spawn",
+                        inner.kind()
+                    )),
+                }
+            }
             BuildValue::Map(mut entries) => entries
                 .remove(field)
                 .ok_or_else(|| format!("key `{}` not found in map", field)),
@@ -1694,7 +1720,10 @@ impl BuildInterpreter {
             mutable: true,
         });
         drop(guard);
+        let prev = self.suppress_drop_schedule;
+        self.suppress_drop_schedule = true;
         let _ = self.call_user_function("drop", &Some(receiver_value), vec![reference], &[])?;
+        self.suppress_drop_schedule = prev;
         Ok(())
     }
 
@@ -1772,7 +1801,9 @@ impl BuildInterpreter {
                             borrowed_shared_names: HashSet::new(),
                         },
                     );
-                    self.schedule_drop_for_value(name, &value_for_drop);
+                    if !self.suppress_drop_schedule {
+                        self.schedule_drop_for_value(name, &value_for_drop);
+                    }
                     Ok(true)
                 } else {
                     Ok(false)

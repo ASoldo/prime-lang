@@ -23,10 +23,12 @@ members = [
   "workspace/demos/input",
   "workspace/demos/pointer_demo",
   "workspace/demos/closures",
+  "workspace/demos/drop_demo",
   "workspace/tests/build_input_demo",
   "workspace/tests/basic",
   "workspace/tests/types_numeric",
   "workspace/tests/input_read",
   "workspace/tests/macros",
+  "workspace/tests/drop",
   "workspace/libpkg_a",
 ]

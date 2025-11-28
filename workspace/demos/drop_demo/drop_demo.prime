@@ -1,0 +1,63 @@
+module demos::drop_demo;
+
+import core::types;
+
+struct Tracker {
+  label: string;
+  log: &mut []string;
+}
+
+impl Drop for Tracker {
+  fn drop(self: &mut Tracker) {
+    out(`dropping {self.label}`);
+    self.log.push(self.label);
+  }
+}
+
+fn scoped_drop(log: &mut []string) {
+  let Tracker first = Tracker { label: "first", log: log };
+  out(`{first.label} is live`);
+}
+
+fn drop_order_demo(log: &mut []string) {
+  let Tracker first = Tracker { label: "first", log: log };
+  defer log.push("defer");
+  let Tracker second = Tracker { label: "second", log: log };
+  out("both trackers created");
+}
+
+fn move_and_drop(log: &mut []string) {
+  let Box[Tracker] boxed = box_new(Tracker { label: "holder", log: log });
+  let Tracker unboxed = boxed.box_take();
+  out(`unboxing {unboxed.label}`);
+}
+
+fn print_log(log: &[]string) {
+  out("print_log start");
+  out("drop log:");
+  let mut int32 idx = 0;
+  while idx < log.len() {
+    match log[idx] {
+      Some(entry) => out(`  {idx}: {entry}`),
+      None => {}
+    }
+    idx = idx + 1;
+  }
+}
+
+fn main() {
+  let mut []string log = [];
+  scoped_drop(&mut log);
+  out("after scoped_drop");
+  print_log(&log);
+
+  log = [];
+  drop_order_demo(&mut log);
+  out("after drop_order_demo");
+  print_log(&log);
+
+  log = [];
+  move_and_drop(&mut log);
+  out("after move_and_drop");
+  print_log(&log);
+}
