@@ -85,6 +85,66 @@ struct Player {
         ],
     },
     Topic {
+        key: "embedded",
+        title: "Embedded / ESP32 (Xtensa)",
+        category: "Platforms",
+        summary: "Build and flash the bundled ESP32 blink demo using the ESP-IDF toolchains, ROM linker scripts, and manifest-provided environment overrides.",
+        aliases: &["esp32", "xtensa", "embedded", "bare-metal", "no_std"],
+        sections: &[
+            TopicSection {
+                title: "Manifest setup",
+                snippet: r#"manifest_version = "3"
+
+[build]
+target = "xtensa-esp32-espidf"
+platform = "esp32"
+
+[build.toolchain]
+cc = "xtensa-esp32-elf-gcc"
+ar = "xtensa-esp32-elf-ar"
+objcopy = "xtensa-esp32-elf-objcopy"
+esptool = "esptool"
+ld_script = "/home/user/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
+ld_flags = """
+  -Wl,--gc-sections
+  -T/home/user/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/memory.ld
+  -T/home/user/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.ld
+  -T/home/user/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.api.ld
+  -T/home/user/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld"""
+
+[build.toolchain.env]
+RUSTUP_TOOLCHAIN = "esp"
+CARGO_TARGET_DIR = "/home/user/.cache/prime-xtensa"
+LLVM_SYS_201_PREFIX = "/home/user/.espressif/tools/esp-clang/esp-clang"
+LD_LIBRARY_PATH = "/usr/lib64:/usr/lib:/lib:/home/user/.espressif/tools/esp-clang/esp-clang/lib"
+PATH = "/home/user/.espressif/tools/esp-clang/esp-clang/bin:/home/user/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-elf/bin:$PATH"
+CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER = "xtensa-esp32-elf-gcc"
+
+[build.flash]
+enabled = true
+port = "/dev/ttyUSB0"
+baud = 460800
+address = "0x10000""#,
+                explanation: "The workspace demo `workspace/demos/esp32_blink/prime.toml` ships with these settings. The toolchain uses IDF-generated `sections.ld`/`memory.ld` plus ROM scripts so Xtensa ROM symbols resolve. `[build.toolchain.env]` injects the esp-clang/Xtensa toolchains and cache dir; `$PATH` expands inline, preserving your existing PATH. Flashing defaults to /dev/ttyUSB0 at 0x10000.",
+            },
+            TopicSection {
+                title: "Build & flash",
+                snippet: r#"prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink"#,
+                explanation: "With the manifest env present (or standard tools under `~/.espressif`), no extra shell setup is required. The runtime links a minimal Xtensa entry, pulls in ROM delay/printf, and toggles GPIO2 (active-low) for the on-board LED. Flash is enabled for the demo; pass `--no-flash` to skip. UART output includes a single `hello esp32 world` line; connect at 115200 and press reset to see it.",
+            },
+            TopicSection {
+                title: "Toolchain detection",
+                snippet: r#"Defaults if env is unset:
+- RUSTUP_TOOLCHAIN=esp
+- CARGO_TARGET_DIR=~/.cache/prime-xtensa
+- LLVM_SYS_201_PREFIX=~/.espressif/tools/esp-clang/esp-clang
+- PATH prepends esp-clang/bin and the first xtensa-esp-elf/*/xtensa-esp-elf/bin it finds
+- CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER=xtensa-esp32-elf-gcc"#,
+                explanation: "The CLI applies manifest env first; if absent it auto-detects standard ESP-IDF installs under `~/.espressif`. Override any key in `[build.toolchain.env]` to point at non-standard locations.",
+            },
+        ],
+    },
+    Topic {
         key: "drop",
         title: "Drop & Cleanup",
         category: "Memory & Ownership",

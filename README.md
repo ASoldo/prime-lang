@@ -268,6 +268,60 @@ Section order is normalized by the CLI as `manifest_version`, `package`, `depend
 in sync with each file’s `module ...;` declaration lets the CLI, interpreter,
 compiler, and LSP share the same package graph.
 
+### Embedded / ESP32 (Xtensa) Quickstart
+
+The workspace ships an ESP32 classic (Xtensa) demo at `workspace/demos/esp32_blink/esp32_blink.prime`. The manifest carries everything needed to build and flash when you have the ESP-IDF toolchains installed under `~/.espressif`:
+
+```toml
+[build]
+target = "xtensa-esp32-espidf"
+platform = "esp32"
+
+[build.toolchain]
+cc = "xtensa-esp32-elf-gcc"
+ar = "xtensa-esp32-elf-ar"
+objcopy = "xtensa-esp32-elf-objcopy"
+esptool = "esptool"
+ld_script = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
+ld_flags = """
+  -Wl,--gc-sections
+  -T/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/memory.ld
+  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.ld
+  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.api.ld
+  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld"""
+
+[build.toolchain.env]
+RUSTUP_TOOLCHAIN = "esp"
+CARGO_TARGET_DIR = "/home/rootster/.cache/prime-xtensa"
+LLVM_SYS_201_PREFIX = "/home/rootster/.espressif/tools/esp-clang/esp-clang"
+LD_LIBRARY_PATH = "/usr/lib64:/usr/lib:/lib:/home/rootster/.espressif/tools/esp-clang/esp-clang/lib"
+PATH = "/home/rootster/.espressif/tools/esp-clang/esp-clang/bin:/home/rootster/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-elf/bin:$PATH"
+CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER = "xtensa-esp32-elf-gcc"
+
+[build.flash]
+enabled = true
+port = "/dev/ttyUSB0"
+baud = 460800
+address = "0x10000"
+```
+
+What it does:
+- Toolchain/ROM scripts point at the IDF-generated `sections.ld`/`memory.ld` plus ROM ld files so Xtensa ROM symbols (e.g., `ets_delay_us`, `ets_printf`) resolve correctly.
+- `[build.toolchain.env]` injects the esp-clang/Xtensa toolchains, LLVM prefix, linker choice, and a dedicated cache dir. `$PATH` is expanded in-place so existing PATH is preserved.
+- The CLI also autodetects the same defaults under `~/.espressif` if you omit them; keep these entries if your layout differs or you want a self-contained manifest.
+
+How to build/flash (after installing ESP-IDF tools):
+1. Optional but recommended: `source ~/esp/esp-idf/export.sh` to set IDF_PATH and python deps.
+2. Run the demo: `prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink`
+   - The runtime prints `hello esp32 world` once on UART (115200), and the on-board blue LED (GPIO2, active-low) blinks.
+   - Flashing is on by default for the demo; disable with `--no-flash` or set `[build.flash].enabled = false`.
+3. If your board’s user LED sits on another pin (some use GPIO4/5), edit the `led` constant in `esp32_blink.prime`.
+
+Environment handling:
+- Manifest-provided `build.toolchain.env` is applied automatically before build; `$PATH` interpolation keeps your existing PATH intact.
+- If no env overrides are present, the CLI falls back to sensible defaults under `~/.espressif` (esp-clang + xtensa-esp-elf) and uses `RUSTUP_TOOLCHAIN=esp` plus `CARGO_TARGET_DIR=~/.cache/prime-xtensa`.
+- The Xtensa entry point and runtime now include ROM-backed delay/printf stubs and minimal GPIO2 setup, so no extra IDF libs are required beyond the linker scripts and toolchain.
+
 ## Language Basics
 
 Prime keeps the syntax close to systems languages you already know. Key features
