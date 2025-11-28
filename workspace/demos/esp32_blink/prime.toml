@@ -11,15 +11,29 @@ visibility = "pub"
 no_std = true
 
 [build]
-# Use the Xtensa ESP32 target; switch to riscv32imc-unknown-none-elf for ESP32-C3 boards.
-target = "xtensa-esp32-none-elf"
+# Classic ESP32 (Xtensa). If you ever move to ESP32-C3, switch this.
+target = "xtensa-esp32-espidf"
 platform = "esp32"
 
 [build.toolchain]
-# Set your local ESP-IDF / xtensa toolchain paths here if they differ from PATH.
-# cc = "/opt/esp/xtensa-esp32-elf/bin/xtensa-esp32-elf-gcc"
-# ar = "/opt/esp/xtensa-esp32-elf/bin/xtensa-esp32-elf-ar"
-# objcopy = "/opt/esp/xtensa-esp32-elf/bin/xtensa-esp32-elf-objcopy"
-# ld_script = "/path/to/esp32/ld/esp32_out.ld"
-# startup_obj = "/path/to/esp32/startup.o"
-# ld_flags = "-Wl,--gc-sections"
+# Use the tool names that ESP-IDF actually installed
+cc = "xtensa-esp-elf-gcc"
+ar = "xtensa-esp-elf-ar"
+objcopy = "xtensa-esp-elf-objcopy"
+# Optional: point directly at esptool.py
+# esptool = "/home/rootster/esp/esp-idf/components/esptool_py/esptool/esptool.py"
+
+# Borrow linker script from ESP-IDF
+ld_script = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
+
+# Let your build system inject this into the link step
+ld_flags = "-Wl,--gc-sections -T/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/memory.ld -T/home/rootster/esp/esp-idf/components/soc/esp32/ld/esp32.peripherals.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.api.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.newlib-data.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.syscalls.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.libc-funcs.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.newlib-reent-funcs.ld"
+
+# Leave this out unless you *explicitly* know which .o to use as crt0/startup
+# startup_obj = "/home/rootster/esp/esp-idf/components/esp_system/port/arch/xtensa/port.o"
+
+[build.flash]
+enabled = true
+port = "/dev/ttyUSB0"
+baud = 460800
+address = "0x10000"

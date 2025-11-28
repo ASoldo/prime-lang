@@ -9,6 +9,7 @@ pub enum BuildTarget {
 
 pub const ESP32C3_TRIPLE: &str = "riscv32imc-unknown-none-elf";
 pub const ESP32_XTENSA_TRIPLE: &str = "xtensa-esp32-none-elf";
+pub const ESP32_XTENSA_ESPIDF_TRIPLE: &str = "xtensa-esp32-espidf";
 
 impl BuildTarget {
     pub fn host() -> Self {
@@ -45,13 +46,17 @@ impl BuildTarget {
         matches!(self, BuildTarget::Triple(triple) if triple == ESP32_XTENSA_TRIPLE)
     }
 
+    pub fn is_esp32_xtensa_espidf(&self) -> bool {
+        matches!(self, BuildTarget::Triple(triple) if triple == ESP32_XTENSA_ESPIDF_TRIPLE)
+    }
+
     pub fn is_embedded(&self) -> bool {
-        self.is_esp32c3() || self.is_esp32_xtensa()
+        self.is_esp32c3() || self.is_esp32_xtensa() || self.is_esp32_xtensa_espidf()
     }
 }
 
 pub fn embedded_target_hint() -> String {
-    format!("{}, {}", ESP32C3_TRIPLE, ESP32_XTENSA_TRIPLE)
+    format!("{}, {}, {}", ESP32C3_TRIPLE, ESP32_XTENSA_TRIPLE, ESP32_XTENSA_ESPIDF_TRIPLE)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -62,6 +67,7 @@ pub struct ToolchainSettings {
     pub ld_script: Option<String>,
     pub startup_obj: Option<String>,
     pub ld_flags: Option<String>,
+    pub esptool: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +75,7 @@ pub struct BuildOptions {
     pub target: BuildTarget,
     pub platform: Option<String>,
     pub toolchain: ToolchainSettings,
+    pub flash: FlashSettings,
 }
 
 impl BuildOptions {
@@ -108,11 +115,23 @@ impl BuildOptions {
             ld_flags: env::var("PRIME_RISCV_LD_FLAGS")
                 .ok()
                 .or_else(|| manifest_build.and_then(|b| b.toolchain.ld_flags.clone())),
+            esptool: env::var("PRIME_ESPTOOL")
+                .ok()
+                .or_else(|| manifest_build.and_then(|b| b.toolchain.esptool.clone())),
         };
+        let flash = manifest_build
+            .map(|b| FlashSettings {
+                enabled: b.flash.enabled,
+                port: b.flash.port.clone(),
+                baud: b.flash.baud,
+                address: b.flash.address.clone(),
+            })
+            .unwrap_or_default();
         Self {
             target,
             platform,
             toolchain,
+            flash,
         }
     }
 }
@@ -123,6 +142,15 @@ impl Default for BuildOptions {
             target: BuildTarget::host(),
             platform: None,
             toolchain: ToolchainSettings::default(),
+            flash: FlashSettings::default(),
         }
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FlashSettings {
+    pub enabled: bool,
+    pub port: Option<String>,
+    pub baud: Option<u32>,
+    pub address: Option<String>,
 }

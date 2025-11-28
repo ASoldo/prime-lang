@@ -93,6 +93,9 @@ enum Commands {
         /// Optional platform hint (esp32, host); falls back to PRIME_PLATFORM
         #[arg(long = "platform", value_name = "PLATFORM")]
         platform: Option<String>,
+        /// Skip flashing even if enabled in manifest build.flash
+        #[arg(long, default_value_t = false)]
+        no_flash: bool,
         /// Base name for generated artifacts
         #[arg(long, default_value = "output")]
         name: String,
@@ -282,6 +285,7 @@ fn main() {
             frozen,
             target_triple,
             platform,
+            no_flash,
             name,
         } => build_entry(
             &entry,
@@ -290,6 +294,7 @@ fn main() {
             &name,
             target_triple,
             platform,
+            no_flash,
         ),
         Commands::Lint { file, watch } => {
             ensure_prime_file(&file);
@@ -481,6 +486,9 @@ fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
     if let Err(err) = fs::create_dir_all(&runtime_dir) {
         return Err(format!("failed to create runtime build dir: {err}"));
     }
+    if target.is_embedded() {
+        return compile_runtime_abi_with_cargo(target, &runtime_dir);
+    }
     let output_lib = runtime_dir.join("libruntime_abi.a");
     let mut cmd = Command::new("rustc");
     cmd.arg("--crate-type")
@@ -502,6 +510,79 @@ fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
     Ok(output_lib)
 }
 
+fn compile_runtime_abi_with_cargo(target: &BuildTarget, runtime_dir: &Path) -> Result<PathBuf, String> {
+    let triple = target
+        .triple()
+        .ok_or_else(|| "embedded runtime build requires a target triple".to_string())?;
+    let cargo_dir = runtime_dir.join("cargo");
+    fs::create_dir_all(&cargo_dir)
+        .map_err(|err| format!("failed to create runtime cargo dir: {err}"))?;
+    let abi_path = fs::canonicalize("src/runtime/abi.rs")
+        .map_err(|err| format!("failed to canonicalize src/runtime/abi.rs: {err}"))?;
+    let manifest = format!(
+        r#"[package]
+name = "runtime-abi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "runtime_abi"
+path = "{}"
+crate-type = ["staticlib"]
+"#,
+        abi_path
+            .to_str()
+            .ok_or_else(|| "non-utf8 path to abi.rs".to_string())?
+    );
+    fs::write(cargo_dir.join("Cargo.toml"), manifest)
+        .map_err(|err| format!("failed to write runtime Cargo.toml: {err}"))?;
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("--release")
+        .arg("--target")
+        .arg(triple)
+        .arg("--manifest-path")
+        .arg(cargo_dir.join("Cargo.toml"))
+        .arg("-Zbuild-std=std,panic_abort")
+        .arg("-Zbuild-std-features=panic_immediate_abort");
+    let linker_var = format!(
+        "CARGO_TARGET_{}_LINKER",
+        triple
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+            .collect::<String>()
+    );
+    let default_linker = if triple.contains("xtensa") {
+        "xtensa-esp-elf-gcc"
+    } else if triple.contains("riscv32") {
+        "riscv32-esp-elf-gcc"
+    } else {
+        "gcc"
+    };
+    cmd.env(linker_var, env::var("PRIME_RUNTIME_LINKER").unwrap_or_else(|_| default_linker.into()));
+    let status = cmd
+        .status()
+        .map_err(|err| format!("failed to spawn cargo for runtime ABI: {err}"))?;
+    if !status.success() {
+        return Err("cargo failed compiling runtime ABI (build-std)".into());
+    }
+    let target_root = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cargo_dir.join("target"));
+    let output_lib = target_root
+        .join(triple)
+        .join("release")
+        .join("libruntime_abi.a");
+    if output_lib.exists() {
+        Ok(output_lib)
+    } else {
+        Err(format!(
+            "expected runtime staticlib at {}, but it was not produced",
+            output_lib.display()
+        ))
+    }
+}
+
 fn build_entry(
     entry: &str,
     project: Option<&str>,
@@ -509,12 +590,17 @@ fn build_entry(
     name: &str,
     target_flag: Option<String>,
     platform_flag: Option<String>,
+    no_flash: bool,
 ) {
     let (entry, entry_path, manifest) = match resolve_entry_for_cli(entry, project) {
         Ok(values) => values,
         Err(err) => exit_on_package_error(err),
     };
-    let build_options = BuildOptions::from_sources(target_flag, platform_flag, manifest.as_ref());
+    let mut build_options =
+        BuildOptions::from_sources(target_flag, platform_flag, manifest.as_ref());
+    if no_flash {
+        build_options.flash.enabled = false;
+    }
     ensure_prime_file(&entry_path);
     reject_non_module_entry(&entry_path, manifest.as_ref(), "build");
     if frozen {
@@ -528,6 +614,11 @@ fn build_entry(
     match load_package_with_manifest(entry.as_entry_point(), manifest) {
         Ok(package) => {
             let expanded_program = expand_or_report(&package.program);
+            println!(
+                "[prime-debug] starting build for {} target={:?}",
+                entry_path.display(),
+                build_options.target
+            );
             let typecheck_options = TypecheckOptions {
                 target: build_options.target.clone(),
             };
@@ -537,11 +628,14 @@ fn build_entry(
                 emit_type_errors(&errors);
                 std::process::exit(1);
             }
+            println!("[prime-debug] typecheck ok, compiling program...");
             let mut compiler = Compiler::with_target(build_options.target.clone());
+            println!("[prime-debug] invoking compiler.compile_program()");
             if let Err(err) = compiler.compile_program(&expanded_program.program) {
                 eprintln!("Build failed: {err}");
                 std::process::exit(1);
             }
+            println!("[prime-debug] compiler finished");
             let build_root = Path::new(".build.prime");
             if let Err(err) = fs::create_dir_all(build_root) {
                 eprintln!("Failed to create build directory: {err}");
@@ -560,22 +654,30 @@ fn build_entry(
                 eprintln!("Failed to write IR: {err}");
                 std::process::exit(1);
             }
+            println!("[prime-debug] wrote IR {}", ir_path.display());
             let obj_path = artifact_dir.join(format!("{name}.o"));
             if let Err(err) = run_llc(&ir_path, &obj_path, &build_options.target) {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
-            let runtime_lib = match compile_runtime_abi(&build_options.target) {
-                Ok(path) => Some(path),
-                Err(err) => {
-                    eprintln!("Failed to compile runtime ABI: {err}");
-                    std::process::exit(1);
-                }
-            };
+            println!("[prime-debug] llc done -> {}", obj_path.display());
+    let runtime_lib = match compile_runtime_abi(&build_options.target) {
+        Ok(path) => Some(path),
+        Err(err) => {
+            eprintln!("Failed to compile runtime ABI: {err}");
+            std::process::exit(1);
+        }
+    };
+            println!("[prime-debug] runtime lib {:?}", runtime_lib);
             let bin_path = artifact_dir.join(name);
             if let Err(err) =
                 run_gcc_with_runtime(&obj_path, runtime_lib.as_deref(), &bin_path, &build_options)
             {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+            println!("[prime-debug] link done -> {}", bin_path.display());
+            if let Err(err) = maybe_objcopy_and_flash(&bin_path, &build_options) {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
@@ -793,7 +895,11 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
         .arg(ir_path)
         .arg("-o")
         .arg(obj_path);
-    if let Some(triple) = target.triple() {
+    // Normalize triples for toolchain expectations.
+    if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
+        // Prefer esp32 triple to force little-endian layout.
+        cmd.arg("-mtriple=xtensa-esp32-elf").arg("-mcpu=esp32");
+    } else if let Some(triple) = target.triple() {
         cmd.arg(format!("-mtriple={triple}"));
     }
     if target.is_esp32c3() {
@@ -827,6 +933,95 @@ fn run_gcc_with_runtime(
             crate::target::embedded_target_hint()
         )),
     }
+}
+
+fn maybe_objcopy_and_flash(bin_path: &Path, build_options: &BuildOptions) -> Result<(), String> {
+    if !build_options.target.is_embedded() {
+        return Ok(());
+    }
+    let objcopy = build_options
+        .toolchain
+        .objcopy
+        .clone()
+        .or_else(|| env::var("PRIME_RISCV_OBJCOPY").ok());
+    let bin_image = bin_path.with_extension("bin");
+    if let Some(objcopy) = objcopy {
+        let output = Command::new(&objcopy)
+            .arg("-O")
+            .arg("binary")
+            .arg(bin_path)
+            .arg(&bin_image)
+            .output()
+            .map_err(|err| format!("Failed to run objcopy: {err}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "objcopy failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+    if build_options.flash.enabled {
+        flash_esp32(&bin_image, build_options)?;
+    }
+    Ok(())
+}
+
+fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), String> {
+    let esptool = build_options
+        .toolchain
+        .esptool
+        .clone()
+        .or_else(|| env::var("PRIME_ESPTOOL").ok())
+        .unwrap_or_else(|| "esptool".to_string());
+    let chip = if build_options.target.is_esp32_xtensa() {
+        "esp32"
+    } else {
+        "esp32c3"
+    };
+    let port = build_options
+        .flash
+        .port
+        .clone()
+        .or_else(|| env::var("PRIME_ESP_PORT").ok())
+        .unwrap_or_else(|| "/dev/ttyUSB0".to_string());
+    let baud = build_options
+        .flash
+        .baud
+        .or_else(|| env::var("PRIME_ESP_BAUD").ok().and_then(|s| s.parse().ok()))
+        .unwrap_or(460800);
+    let address = build_options
+        .flash
+        .address
+        .clone()
+        .unwrap_or_else(|| "0x10000".to_string());
+    let output = Command::new(esptool)
+        .arg("--chip")
+        .arg(chip)
+        .arg("--port")
+        .arg(&port)
+        .arg("--baud")
+        .arg(format!("{baud}"))
+        .arg("write_flash")
+        .arg("-z")
+        .arg(&address)
+        .arg(bin_image)
+        .output()
+        .map_err(|err| format!("Failed to execute esptool.py: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "esptool.py failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    println!(
+        "Flashed {} to {} at {} (baud {})",
+        bin_image.display(),
+        port,
+        address,
+        baud
+    );
+    Ok(())
 }
 
 fn link_host(obj_path: &Path, runtime_lib: Option<&Path>, bin_path: &Path) -> Result<(), String> {
@@ -878,9 +1073,49 @@ fn link_esp32(
     if build_options.target.is_esp32c3() {
         cmd.arg("-march=rv32imc").arg("-mabi=ilp32");
     }
-    cmd.arg("-nostdlib")
-        .arg(format!("-T{ld_script}"))
-        .arg(obj_path);
+    if build_options.target.is_esp32_xtensa() || build_options.target.is_esp32_xtensa_espidf() {
+        // Ensure endianness matches xtensa config.
+        cmd.arg("-mlongcalls").arg("-Wl,-EL");
+    }
+    cmd.arg("-nostdlib");
+    // Allow passing a sections.ld from ESP-IDF; include memory.ld before it.
+    // If memory.ld is already in ld_flags, pull it out and order it before sections.ld.
+    let mut ld_scripts: Vec<PathBuf> = Vec::new();
+    let mut ld_flags_val = build_options
+        .toolchain
+        .ld_flags
+        .clone()
+        .or_else(|| env::var("PRIME_RISCV_LD_FLAGS").ok());
+    let mut extra_args: Vec<String> = Vec::new();
+    if let Some(flags) = ld_flags_val.take() {
+        for tok in flags.split_whitespace() {
+            if tok.starts_with("-T") && tok.contains("memory.ld") {
+                let path_str = tok.trim_start_matches("-T");
+                ld_scripts.push(PathBuf::from(path_str));
+            } else {
+                extra_args.push(tok.to_string());
+            }
+        }
+    }
+    if ld_script.ends_with("sections.ld") {
+        let sibling_memory = PathBuf::from(&ld_script)
+            .parent()
+            .map(|p| p.join("memory.ld"));
+        let already_have_mem = ld_scripts
+            .iter()
+            .any(|p| p.file_name().map(|n| n == "memory.ld").unwrap_or(false));
+        if let Some(mem) = sibling_memory {
+            if mem.exists() && !already_have_mem {
+                ld_scripts.push(mem);
+            }
+        }
+    }
+    // Finally add the primary script (sections or otherwise).
+    ld_scripts.push(PathBuf::from(&ld_script));
+    for script in ld_scripts {
+        cmd.arg(format!("-T{}", script.display()));
+    }
+    cmd.arg(obj_path);
     if let Some(startup) = build_options
         .toolchain
         .startup_obj
@@ -892,16 +1127,10 @@ fn link_esp32(
     if let Some(lib) = runtime_lib {
         cmd.arg(lib);
     }
-    if let Some(extra) = build_options
-        .toolchain
-        .ld_flags
-        .clone()
-        .or_else(|| env::var("PRIME_RISCV_LD_FLAGS").ok())
-    {
-        cmd.args(extra.split_whitespace());
+    if !extra_args.is_empty() {
+        cmd.args(&extra_args);
     }
     cmd.arg("-Wl,--gc-sections")
-        .arg("-Wl,-EL")
         .arg("-o")
         .arg(bin_path);
 
@@ -914,28 +1143,6 @@ fn link_esp32(
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         ));
-    }
-
-    if let Some(objcopy) = build_options
-        .toolchain
-        .objcopy
-        .clone()
-        .or_else(|| env::var("PRIME_RISCV_OBJCOPY").ok())
-    {
-        let bin_image = bin_path.with_extension("bin");
-        let output = Command::new(objcopy.clone())
-            .arg("-O")
-            .arg("binary")
-            .arg(bin_path)
-            .arg(&bin_image)
-            .output()
-            .map_err(|err| format!("Failed to run objcopy: {err}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "objcopy failed:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
     }
 
     Ok(())

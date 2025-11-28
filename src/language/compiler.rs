@@ -53,6 +53,8 @@ use std::{
     mem,
     path::Path,
     ptr,
+    fs,
+    io::Read,
     sync::{Arc, Condvar, Mutex, RwLock},
     thread,
 };
@@ -1070,6 +1072,24 @@ impl FloatValue {
 }
 
 impl Compiler {
+    fn log_rss(tag: &str, enabled: bool) {
+        if !enabled {
+            return;
+        }
+        if let Ok(mut status) = fs::File::open("/proc/self/status") {
+            let mut buf = String::new();
+            if status.read_to_string(&mut buf).is_ok() {
+                if let Some(line) = buf.lines().find(|l| l.starts_with("VmRSS:")) {
+                    let mut parts = line.split_whitespace();
+                    // VmRSS: <kb> kB
+                    let _label = parts.next();
+                    let kb = parts.next().unwrap_or("?");
+                    eprintln!("{tag} rss_kb={kb}");
+                }
+            }
+        }
+    }
+
     fn evaluated(&mut self, value: Value) -> EvaluatedValue {
         EvaluatedValue::from_value(value)
     }
@@ -1698,6 +1718,16 @@ impl Compiler {
     }
 
     pub fn compile_program(&mut self, program: &Program) -> Result<(), String> {
+        let debug_mem = env::var_os("PRIME_DEBUG_MEM").is_some();
+        if debug_mem {
+            let module_count = program.modules.len();
+            let item_count: usize = program.modules.iter().map(|m| m.items.len()).sum();
+            eprintln!(
+                "[prime-debug] compile_program: modules={}, total_items={}",
+                module_count, item_count
+            );
+            Self::log_rss("[prime-debug] compile_program/start", true);
+        }
         self.reset_module();
         self.scopes.clear();
         self.active_mut_borrows.clear();
@@ -4273,6 +4303,29 @@ impl Compiler {
                 },
             },
             Statement::Loop(loop_stmt) => {
+                // For embedded targets, avoid unrolling an infinite loop at compile time;
+                // instead emit a basic block that branches to itself. This keeps IR finite.
+                if self.target.is_embedded() && !block_has_break_or_continue(&loop_stmt.body) {
+                    unsafe {
+                        let current_bb = LLVMGetInsertBlock(self.builder);
+                        let func = LLVMGetBasicBlockParent(current_bb);
+                        let loop_bb_name = CString::new("loop").unwrap();
+                        let after_bb_name = CString::new("after_loop").unwrap();
+                        let loop_bb =
+                            LLVMAppendBasicBlockInContext(self.context, func, loop_bb_name.as_ptr());
+                        let after_bb =
+                            LLVMAppendBasicBlockInContext(self.context, func, after_bb_name.as_ptr());
+                        LLVMBuildBr(self.builder, loop_bb);
+                        LLVMPositionBuilderAtEnd(self.builder, loop_bb);
+                        self.push_scope();
+                        let _ = self.execute_block_contents(&loop_stmt.body)?;
+                        self.exit_scope()?;
+                        LLVMBuildBr(self.builder, loop_bb);
+                        // Position builder after loop to keep subsequent code reachable (though unreachable at runtime).
+                        LLVMPositionBuilderAtEnd(self.builder, after_bb);
+                    }
+                    return Ok(None);
+                }
                 loop {
                     self.push_scope();
                     let result = self.execute_block_contents(&loop_stmt.body)?;
@@ -9173,6 +9226,43 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
         FlowSignal::Return(_) => "return",
         FlowSignal::Propagate(_) => "error propagation",
     }
+}
+
+fn block_has_break_or_continue(block: &Block) -> bool {
+    for stmt in &block.statements {
+        match stmt {
+            Statement::Break | Statement::Continue => return true,
+            Statement::Block(inner) => {
+                if block_has_break_or_continue(inner) {
+                    return true;
+                }
+            }
+            Statement::While(while_stmt) => {
+                if block_has_break_or_continue(&while_stmt.body) {
+                    return true;
+                }
+            }
+            Statement::Loop(loop_stmt) => {
+                if block_has_break_or_continue(&loop_stmt.body) {
+                    return true;
+                }
+            }
+            Statement::For(for_stmt) => {
+                if block_has_break_or_continue(&for_stmt.body) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        if let Expr::Block(tail_block) = &**tail {
+            if block_has_break_or_continue(tail_block) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {

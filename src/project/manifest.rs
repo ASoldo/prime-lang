@@ -38,6 +38,7 @@ pub struct BuildSettings {
     pub target: Option<String>,
     pub platform: Option<String>,
     pub toolchain: ToolchainSettings,
+    pub flash: FlashSettings,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -48,6 +49,15 @@ pub struct ToolchainSettings {
     pub ld_script: Option<String>,
     pub startup_obj: Option<String>,
     pub ld_flags: Option<String>,
+    pub esptool: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FlashSettings {
+    pub enabled: bool,
+    pub port: Option<String>,
+    pub baud: Option<u32>,
+    pub address: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +127,7 @@ struct RawBuildTable {
     target: Option<String>,
     platform: Option<String>,
     toolchain: Option<RawToolchainTable>,
+    flash: Option<RawFlashTable>,
 }
 
 #[derive(Deserialize, Default)]
@@ -127,6 +138,15 @@ struct RawToolchainTable {
     ld_script: Option<String>,
     startup_obj: Option<String>,
     ld_flags: Option<String>,
+    esptool: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawFlashTable {
+    enabled: Option<bool>,
+    port: Option<String>,
+    baud: Option<u32>,
+    address: Option<String>,
 }
 
 impl PackageManifest {
@@ -441,11 +461,20 @@ fn parse_build_settings(value: &Value) -> Option<BuildSettings> {
         ld_script: toolchain_raw.ld_script,
         startup_obj: toolchain_raw.startup_obj,
         ld_flags: toolchain_raw.ld_flags,
+        esptool: toolchain_raw.esptool,
+    };
+    let flash_raw = raw.flash.unwrap_or_default();
+    let flash = FlashSettings {
+        enabled: flash_raw.enabled.unwrap_or(false),
+        port: flash_raw.port,
+        baud: flash_raw.baud,
+        address: flash_raw.address,
     };
     Some(BuildSettings {
         target: raw.target,
         platform: raw.platform,
         toolchain,
+        flash,
     })
 }
 
