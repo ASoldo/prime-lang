@@ -16,21 +16,20 @@ target = "xtensa-esp32-espidf"
 platform = "esp32"
 
 [build.toolchain]
-# Use the ESP32-specific Xtensa toolchain (little-endian)
 cc = "xtensa-esp32-elf-gcc"
 ar = "xtensa-esp32-elf-ar"
 objcopy = "xtensa-esp32-elf-objcopy"
-# Optional: point directly at esptool.py
-# esptool = "/home/rootster/esp/esp-idf/components/esptool_py/esptool/esptool.py"
+esptool = "esptool"
 
-# Borrow linker script from ESP-IDF
-ld_script = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
+# Use linker scripts from the ESP32 toolchain bundle
+ld_script = "/home/rootster/.espressif/tools/xtensa-esp32-elf/xtensa-esp32-elf/xtensa-esp32-elf/lib/app.elf.ld"
 
-# Let your build system inject this into the link step
-ld_flags = "-Wl,--gc-sections -T/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/memory.ld -T/home/rootster/esp/esp-idf/components/soc/esp32/ld/esp32.peripherals.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.api.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.newlib-data.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.syscalls.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.libc-funcs.ld -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.newlib-reent-funcs.ld"
+# Linker flags and additional scripts (pair memory.elf.ld with app.elf.ld)
+ld_flags = """-Wl,--gc-sections \
+-T/home/rootster/.espressif/tools/xtensa-esp32-elf/xtensa-esp32-elf/xtensa-esp32-elf/lib/memory.elf.ld"""
 
-# Leave this out unless you *explicitly* know which .o to use as crt0/startup
-# startup_obj = "/home/rootster/esp/esp-idf/components/esp_system/port/arch/xtensa/port.o"
+# Startup/crt0 from the toolchain (Espressif bundle)
+startup_obj = "/home/rootster/.espressif/tools/xtensa-esp32-elf/xtensa-esp32-elf/xtensa-esp32-elf/lib/crt0.o"
 
 [build.flash]
 enabled = true

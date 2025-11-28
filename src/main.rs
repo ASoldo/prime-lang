@@ -1127,6 +1127,8 @@ fn link_esp32(
     if let Some(lib) = runtime_lib {
         cmd.arg(lib);
     }
+    // Pull in libc/libgcc from the toolchain so basic runtime symbols resolve.
+    cmd.arg("-lc").arg("-lgcc");
     if !extra_args.is_empty() {
         cmd.args(&extra_args);
     }
