@@ -309,11 +309,12 @@ What it does:
 - Toolchain/ROM scripts point at the IDF-generated `sections.ld`/`memory.ld` plus ROM ld files so Xtensa ROM symbols (e.g., `ets_delay_us`, `ets_printf`) resolve correctly.
 - `[build.toolchain.env]` injects the esp-clang/Xtensa toolchains, LLVM prefix, linker choice, and a dedicated cache dir. `$PATH` is expanded in-place so existing PATH is preserved.
 - The CLI also autodetects the same defaults under `~/.espressif` if you omit them; keep these entries if your layout differs or you want a self-contained manifest.
+- UART logging: `out("message")` prints over UART via ROM `ets_printf` (string-only). The blink demo emits `hello from esp32 blink demo` once at startup; add more `out(...)` calls as needed.
 
 How to build/flash (after installing ESP-IDF tools):
 1. Optional but recommended: `source ~/esp/esp-idf/export.sh` to set IDF_PATH and python deps.
 2. Run the demo: `prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink`
-   - The runtime prints `hello esp32 world` once on UART (115200), and the on-board blue LED (GPIO2, active-low) blinks.
+   - The runtime prints `hello from esp32 blink demo` once on UART (115200), and the on-board blue LED (GPIO2, active-low) blinks.
    - Flashing is on by default for the demo; disable with `--no-flash` or set `[build.flash].enabled = false`.
 3. If your board’s user LED sits on another pin (some use GPIO4/5), edit the `led` constant in `esp32_blink.prime`.
 

@@ -9,7 +9,7 @@ use llvm_sys::{
     },
     prelude::*,
 };
-use std::{ffi::CString, mem};
+use std::ffi::CString;
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -110,7 +110,11 @@ pub struct RuntimeAbi {
 }
 
 impl RuntimeAbi {
-    pub unsafe fn declare(context: LLVMContextRef, module: LLVMModuleRef) -> Self {
+    pub unsafe fn declare(
+        context: LLVMContextRef,
+        module: LLVMModuleRef,
+        pointer_width_bits: u32,
+    ) -> Self {
         let handle_type = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
         let status_type = LLVMInt32TypeInContext(context);
         let mut thread_params = [handle_type];
@@ -124,7 +128,7 @@ impl RuntimeAbi {
         let bool_type = LLVMInt1TypeInContext(context);
         let int_type = LLVMIntTypeInContext(context, 128);
         let float_type = LLVMDoubleTypeInContext(context);
-        let usize_type = LLVMIntTypeInContext(context, (mem::size_of::<usize>() * 8) as u32);
+        let usize_type = LLVMIntTypeInContext(context, pointer_width_bits);
 
         let (prime_value_retain, prime_value_retain_ty) = declare_fn(
             module,

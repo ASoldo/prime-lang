@@ -8,7 +8,6 @@ use crate::language::{
 use crate::target::{embedded_target_hint, BuildTarget};
 use std::{
     collections::{HashMap, HashSet},
-    mem,
     path::PathBuf,
 };
 
@@ -468,6 +467,10 @@ impl Checker {
 
     fn can_access(&self, module: &str, visibility: Visibility) -> bool {
         matches!(visibility, Visibility::Public) || self.current_module.as_deref() == Some(module)
+    }
+
+    fn pointer_bits(&self) -> u32 {
+        self.target.pointer_width_bits()
     }
 
     fn build_import_scope(&mut self, module: &Module) -> ImportScope {
@@ -1652,7 +1655,7 @@ impl Checker {
                 ));
                 None
             }
-            Expr::Literal(lit) => Some(literal_type(lit, expected)),
+            Expr::Literal(lit) => Some(literal_type(lit, expected, self.pointer_bits())),
             Expr::FormatString(literal) => {
                 self.validate_format_string(module, literal, env);
                 Some(string_type())
@@ -3397,7 +3400,7 @@ impl Checker {
                     return Some(type_args[0].clone());
                 }
                 let target = &type_args[0];
-                let target_kind = numeric_kind(target);
+                let target_kind = numeric_kind(target, self.pointer_bits());
                 if target_kind.is_none() {
                     self.errors.push(
                         TypeError::new(
@@ -3410,7 +3413,8 @@ impl Checker {
                     return None;
                 }
                 let value_ty = self.check_expression(module, &args[0], None, returns, env);
-                let value_kind = value_ty.as_ref().and_then(numeric_kind);
+                let value_kind =
+                    value_ty.as_ref().and_then(|ty| numeric_kind(ty, self.pointer_bits()));
                 if value_kind.is_none() {
                     self.errors.push(
                         TypeError::new(
@@ -3993,7 +3997,7 @@ impl Checker {
             }
             Pattern::Literal(lit) => {
                 if let Some(actual) = ty {
-                    let literal_ty = literal_type(lit, ty);
+                    let literal_ty = literal_type(lit, ty, self.pointer_bits());
                     if &literal_ty != actual {
                         self.errors.push(TypeError::new(
                             &module.path,
@@ -4299,7 +4303,7 @@ impl Checker {
         }
 
         if let Some(ref ty) = candidate {
-            match numeric_kind(ty) {
+            match numeric_kind(ty, self.pointer_bits()) {
                 Some(NumericKind::Signed(_, _)) | Some(NumericKind::Unsigned(_, _)) => {}
                 Some(NumericKind::Float(_, _)) => {
                     self.errors.push(
@@ -4752,9 +4756,10 @@ impl Checker {
         left: Option<&TypeExpr>,
         right: Option<&TypeExpr>,
     ) -> Option<TypeExpr> {
-        let expected_kind = expected.and_then(numeric_kind);
-        let left_kind = left.and_then(numeric_kind);
-        let right_kind = right.and_then(numeric_kind);
+        let pointer_bits = self.pointer_bits();
+        let expected_kind = expected.and_then(|ty| numeric_kind(ty, pointer_bits));
+        let left_kind = left.and_then(|ty| numeric_kind(ty, pointer_bits));
+        let right_kind = right.and_then(|ty| numeric_kind(ty, pointer_bits));
 
         if let Some(target) = expected_kind {
             let left_ok = self.numeric_operand_matches(module, span, left, left_kind, target);
@@ -4780,8 +4785,9 @@ impl Checker {
         left: Option<&TypeExpr>,
         right: Option<&TypeExpr>,
     ) -> Option<TypeExpr> {
+        let pointer_bits = self.pointer_bits();
         if matches!(
-            expected.and_then(numeric_kind),
+            expected.and_then(|ty| numeric_kind(ty, pointer_bits)),
             Some(NumericKind::Float(_, _))
         ) {
             self.errors.push(
@@ -4795,8 +4801,8 @@ impl Checker {
             return None;
         }
 
-        let left_kind = left.and_then(numeric_kind);
-        let right_kind = right.and_then(numeric_kind);
+        let left_kind = left.and_then(|ty| numeric_kind(ty, pointer_bits));
+        let right_kind = right.and_then(|ty| numeric_kind(ty, pointer_bits));
 
         if matches!(left_kind, Some(NumericKind::Float(_, _)))
             || matches!(right_kind, Some(NumericKind::Float(_, _)))
@@ -4812,7 +4818,7 @@ impl Checker {
             return None;
         }
 
-        let kind = if let Some(target) = expected.and_then(numeric_kind) {
+        let kind = if let Some(target) = expected.and_then(|ty| numeric_kind(ty, pointer_bits)) {
             let left_ok = self.numeric_operand_matches(module, span, left, left_kind, target);
             let right_ok = self.numeric_operand_matches(module, span, right, right_kind, target);
             if left_ok && right_ok {
@@ -4904,6 +4910,7 @@ impl Checker {
         left_kind: Option<NumericKind>,
         right_kind: Option<NumericKind>,
     ) -> Option<NumericKind> {
+        let pointer_bits = self.pointer_bits();
         let mut had_error = false;
         if let (Some(ty), None) = (left_ty, left_kind) {
             self.errors.push(
@@ -4956,12 +4963,12 @@ impl Checker {
             (Some(NumericKind::Float(_, bits)), Some(_))
             | (Some(_), Some(NumericKind::Float(_, bits))) => Some(float_kind(bits)),
             (Some(NumericKind::Signed(_, left_bits)), Some(NumericKind::Signed(_, right_bits))) => {
-                Some(signed_kind_for_bits(left_bits.max(right_bits)))
+                Some(signed_kind_for_bits(left_bits.max(right_bits), pointer_bits))
             }
             (
                 Some(NumericKind::Unsigned(_, left_bits)),
                 Some(NumericKind::Unsigned(_, right_bits)),
-            ) => Some(unsigned_kind_for_bits(left_bits.max(right_bits))),
+            ) => Some(unsigned_kind_for_bits(left_bits.max(right_bits), pointer_bits)),
             _ => {
                 self.emit_signedness_mismatch(module, span, left_ty, right_ty);
                 None
@@ -5023,9 +5030,11 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
+        let pointer_bits = self.pointer_bits();
         match op {
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
-                let numeric_expected = expected.and_then(|ty| numeric_kind(ty).map(|_| ty));
+                let numeric_expected =
+                    expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
                 let left_ty = self.check_expression(module, left, numeric_expected, returns, env);
                 let right_ty = self.check_expression(
                     module,
@@ -5043,7 +5052,8 @@ impl Checker {
                 )
             }
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
-                let numeric_expected = expected.and_then(|ty| numeric_kind(ty).map(|_| ty));
+                let numeric_expected =
+                    expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
                 let left_ty = self.check_expression(module, left, numeric_expected, returns, env);
                 let right_ty = self.check_expression(
                     module,
@@ -5074,7 +5084,8 @@ impl Checker {
                 Some(bool_type())
             }
             BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
-                let numeric_expected = expected.and_then(|ty| numeric_kind(ty).map(|_| ty));
+                let numeric_expected =
+                    expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
                 let left_ty = self.check_expression(module, left, numeric_expected, returns, env);
                 let right_ty = self.check_expression(
                     module,
@@ -5105,11 +5116,13 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
+        let pointer_bits = self.pointer_bits();
         match op {
             UnaryOp::Neg => {
-                let numeric_expected = expected.and_then(|ty| numeric_kind(ty).map(|_| ty));
+                let numeric_expected =
+                    expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
                 let ty = self.check_expression(module, expr, numeric_expected, returns, env);
-                match ty.as_ref().and_then(numeric_kind) {
+                match ty.as_ref().and_then(|ty| numeric_kind(ty, pointer_bits)) {
                     Some(NumericKind::Unsigned(_, _)) | None => {
                         self.errors.push(
                             TypeError::new(
@@ -5741,11 +5754,11 @@ fn lookup_struct_field(registry: &TypeRegistry, def: &StructDef, field: &str) ->
     None
 }
 
-fn literal_type(lit: &Literal, expected: Option<&TypeExpr>) -> TypeExpr {
+fn literal_type(lit: &Literal, expected: Option<&TypeExpr>, pointer_bits: u32) -> TypeExpr {
     match lit {
         Literal::Int(_, _) => {
             if let Some(exp) = expected {
-                if numeric_kind(exp).is_some() {
+                if numeric_kind(exp, pointer_bits).is_some() {
                     return exp.clone();
                 }
             }
@@ -5753,7 +5766,7 @@ fn literal_type(lit: &Literal, expected: Option<&TypeExpr>) -> TypeExpr {
         }
         Literal::Float(_, _) => {
             if let Some(exp) = expected {
-                if let Some(NumericKind::Float(_, _)) = numeric_kind(exp) {
+                if let Some(NumericKind::Float(_, _)) = numeric_kind(exp, pointer_bits) {
                     return exp.clone();
                 }
             }
@@ -5877,55 +5890,51 @@ enum NumericKind {
     Float(&'static str, u32),
 }
 
-fn pointer_width_bits() -> u32 {
-    (mem::size_of::<usize>() * 8) as u32
-}
-
-fn signed_kind_for_bits(bits: u32) -> NumericKind {
+fn signed_kind_for_bits(bits: u32, pointer_bits: u32) -> NumericKind {
     let name = match bits {
         8 => "int8",
         16 => "int16",
         32 => "int32",
         64 => "int64",
-        b if b == pointer_width_bits() => "isize",
+        b if b == pointer_bits => "isize",
         _ => "int64",
     };
     NumericKind::Signed(name, bits)
 }
 
-fn unsigned_kind_for_bits(bits: u32) -> NumericKind {
+fn unsigned_kind_for_bits(bits: u32, pointer_bits: u32) -> NumericKind {
     let name = match bits {
         8 => "uint8",
         16 => "uint16",
         32 => "uint32",
         64 => "uint64",
-        b if b == pointer_width_bits() => "usize",
+        b if b == pointer_bits => "usize",
         _ => "uint64",
     };
     NumericKind::Unsigned(name, bits)
 }
 
-fn numeric_kind_from_name(name: &str) -> Option<NumericKind> {
+fn numeric_kind_from_name(name: &str, pointer_bits: u32) -> Option<NumericKind> {
     match name {
         "int8" => Some(NumericKind::Signed("int8", 8)),
         "int16" => Some(NumericKind::Signed("int16", 16)),
         "int32" => Some(NumericKind::Signed("int32", 32)),
         "int64" => Some(NumericKind::Signed("int64", 64)),
-        "isize" => Some(NumericKind::Signed("isize", pointer_width_bits())),
+        "isize" => Some(NumericKind::Signed("isize", pointer_bits)),
         "uint8" => Some(NumericKind::Unsigned("uint8", 8)),
         "uint16" => Some(NumericKind::Unsigned("uint16", 16)),
         "uint32" => Some(NumericKind::Unsigned("uint32", 32)),
         "uint64" => Some(NumericKind::Unsigned("uint64", 64)),
-        "usize" => Some(NumericKind::Unsigned("usize", pointer_width_bits())),
+        "usize" => Some(NumericKind::Unsigned("usize", pointer_bits)),
         "float32" => Some(NumericKind::Float("float32", 32)),
         "float64" => Some(NumericKind::Float("float64", 64)),
         _ => None,
     }
 }
 
-fn numeric_kind(ty: &TypeExpr) -> Option<NumericKind> {
+fn numeric_kind(ty: &TypeExpr, pointer_bits: u32) -> Option<NumericKind> {
     match ty {
-        TypeExpr::Named(name, _) => numeric_kind_from_name(name),
+        TypeExpr::Named(name, _) => numeric_kind_from_name(name, pointer_bits),
         _ => None,
     }
 }

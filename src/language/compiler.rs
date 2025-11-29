@@ -1191,7 +1191,8 @@ impl Compiler {
                 || LLVMIsAFunction(self.runtime_abi.prime_unit_new).is_null()
                 || unit_parent != module;
             if needs_refresh {
-                self.runtime_abi = RuntimeAbi::declare(self.context, module);
+                self.runtime_abi =
+                    RuntimeAbi::declare(self.context, module, self.target.pointer_width_bits());
             }
         }
     }
@@ -1904,7 +1905,9 @@ impl Compiler {
 
     fn emit_out_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         self.print_value(value)?;
-        self.emit_printf_call("\n", &mut []);
+        if !self.target.is_embedded() {
+            self.emit_printf_call("\n", &mut []);
+        }
         Ok(())
     }
 
@@ -1939,6 +1942,27 @@ impl Compiler {
     fn print_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         let mut value = value;
         let owned = value.clone().into_value();
+        if self.target.is_embedded() {
+            // For embedded, only string prints are supported; other types no-op.
+            if let Value::Str(string) = &owned {
+                let (ptr, len) = self.build_runtime_bytes(&string.text, "rt_print")?;
+                let mut call_args = [ptr, len];
+                let handle = self.call_runtime(
+                    self.runtime_abi.prime_string_new,
+                    self.runtime_abi.prime_string_new_ty,
+                    &mut call_args,
+                    "string_new",
+                );
+                let mut print_args = [handle];
+                self.call_runtime(
+                    self.runtime_abi.prime_print,
+                    self.runtime_abi.prime_print_ty,
+                    &mut print_args,
+                    "prime_print",
+                );
+                return Ok(());
+            }
+        }
         if let Some(handle) = value
             .runtime_handle()
             .or_else(|| self.maybe_attach_runtime_handle(&mut value))
@@ -5785,6 +5809,28 @@ impl Compiler {
     }
 
     fn emit_printf_call(&mut self, fmt: &str, args: &mut [LLVMValueRef]) {
+        // Embedded targets skip libc printf; use runtime print for string-only cases.
+        if self.target.is_embedded() {
+            if args.is_empty() {
+                if let Ok((ptr, len)) = self.build_runtime_bytes(&fmt.to_string(), "rt_print") {
+                    let mut call_args = [ptr, len];
+                    let handle = self.call_runtime(
+                        self.runtime_abi.prime_string_new,
+                        self.runtime_abi.prime_string_new_ty,
+                        &mut call_args,
+                        "string_new",
+                    );
+                    let mut print_args = [handle];
+                    self.call_runtime(
+                        self.runtime_abi.prime_print,
+                        self.runtime_abi.prime_print_ty,
+                        &mut print_args,
+                        "prime_print",
+                    );
+                }
+            }
+            return;
+        }
         unsafe {
             let fmt_literal = CString::new(fmt).unwrap();
             let fmt_name = CString::new("fmt").unwrap();
@@ -8949,7 +8995,8 @@ impl Compiler {
             self.printf = LLVMAddFunction(self.module, printf_name.as_ptr(), self.printf_type);
             LLVMSetLinkage(self.printf, LLVMLinkage::LLVMExternalLinkage);
 
-            self.runtime_abi = RuntimeAbi::declare(self.context, self.module);
+            self.runtime_abi =
+                RuntimeAbi::declare(self.context, self.module, self.target.pointer_width_bits());
             self.closure_counter = 0;
             self.closures.clear();
             self.closure_envs.clear();

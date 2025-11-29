@@ -13,7 +13,7 @@
 mod embedded {
     use core::ffi::c_void;
     use core::ptr;
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +101,7 @@ mod embedded {
         PrimeHandle::null()
     }
 
+    #[cfg(not(target_arch = "xtensa"))]
     #[unsafe(export_name = "prime_string_new")]
     pub unsafe extern "C" fn prime_string_new(_data: *const u8, _len: usize) -> PrimeHandle {
         PrimeHandle::null()
@@ -311,8 +312,61 @@ mod embedded {
         PrimeHandle::null()
     }
 
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct PrimeString {
+        ptr: *const u8,
+        len: usize,
+    }
+
+    // Tiny bump allocator for strings; enough for demo prints.
+    const STR_STORAGE_SIZE: usize = 1024;
+    const STR_HANDLES_MAX: usize = 16;
+    static mut STR_STORAGE: [u8; STR_STORAGE_SIZE] = [0; STR_STORAGE_SIZE];
+    static STR_STORAGE_OFF: AtomicUsize = AtomicUsize::new(0);
+    static mut STR_HANDLES: [PrimeString; STR_HANDLES_MAX] = [PrimeString {
+        ptr: core::ptr::null(),
+        len: 0,
+    }; STR_HANDLES_MAX];
+    static STR_HANDLE_OFF: AtomicUsize = AtomicUsize::new(0);
+
+    #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn prime_print(_value: PrimeHandle) {}
+    pub unsafe extern "C" fn prime_string_new(data: *const u8, len: usize) -> PrimeHandle {
+        let slot = STR_HANDLE_OFF.fetch_add(1, Ordering::Relaxed);
+        if slot >= STR_HANDLES_MAX {
+            return PrimeHandle::null();
+        }
+        let start = STR_STORAGE_OFF.fetch_add(len, Ordering::Relaxed);
+        if start >= STR_STORAGE_SIZE {
+            return PrimeHandle::null();
+        }
+        let avail = STR_STORAGE_SIZE - start;
+        let copy_len = core::cmp::min(len, avail.saturating_sub(1));
+        let dst = STR_STORAGE.as_mut_ptr().add(start);
+        core::ptr::copy_nonoverlapping(data, dst, copy_len);
+        // Null-terminate for %s printing.
+        core::ptr::write(dst.add(copy_len), 0);
+        STR_HANDLES[slot] = PrimeString {
+            ptr: dst as *const u8,
+            len: copy_len,
+        };
+        PrimeHandle(STR_HANDLES.as_mut_ptr().add(slot) as *mut c_void)
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_print(value: PrimeHandle) {
+        if value.0.is_null() {
+            return;
+        }
+        let s = &*(value.0 as *const PrimeString);
+        #[cfg(target_arch = "xtensa")]
+        {
+            ets_printf(b"%s\n\0".as_ptr(), s.ptr);
+        }
+        #[cfg(not(target_arch = "xtensa"))]
+        let _ = s;
+    }
 
     #[unsafe(export_name = "prime_now_ms")]
     pub unsafe extern "C" fn prime_now_ms() -> i128 {
@@ -334,6 +388,72 @@ mod embedded {
     unsafe extern "C" {
         fn ets_delay_us(us: u32);
         fn ets_printf(fmt: *const u8, ...) -> i32;
+    }
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, len: usize) -> *mut u8 {
+        let mut i = 0;
+        while i < len {
+            let b = core::ptr::read(src.add(i));
+            core::ptr::write(dst.add(i), b);
+            i += 1;
+        }
+        dst
+    }
+
+    // Minimal newlib stubs to satisfy toolchain defaults; these are not used functionally.
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub static mut _GLOBAL_REENT: [u8; 256] = [0; 256];
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn __getreent() -> *mut u8 {
+        _GLOBAL_REENT.as_mut_ptr()
+    }
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _sbrk(_incr: isize) -> *mut u8 {
+        core::ptr::null_mut()
+    }
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _write_r(_r: *mut u8, _fd: i32, _buf: *const u8, _len: i32) -> isize {
+        -1
+    }
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _read_r(_r: *mut u8, _fd: i32, _buf: *mut u8, _len: i32) -> isize {
+        -1
+    }
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _close_r(_r: *mut u8, _fd: i32) -> isize {
+        -1
+    }
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _lseek_r(_r: *mut u8, _fd: i32, _off: isize, _whence: i32) -> isize {
+        -1
+    }
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _fstat_r(_r: *mut u8, _fd: i32, _st: *mut u8) -> isize {
+        -1
+    }
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _kill_r(_r: *mut u8, _pid: i32, _sig: i32) -> isize {
+        -1
+    }
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _getpid_r(_r: *mut u8) -> isize {
+        1
+    }
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _exit(_code: i32) -> ! {
+        loop {}
     }
 
     #[inline]

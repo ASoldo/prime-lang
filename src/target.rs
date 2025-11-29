@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, mem};
 
 /// Default target for host builds.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,6 +52,14 @@ impl BuildTarget {
 
     pub fn is_embedded(&self) -> bool {
         self.is_esp32c3() || self.is_esp32_xtensa() || self.is_esp32_xtensa_espidf()
+    }
+
+    pub fn pointer_width_bits(&self) -> u32 {
+        if self.is_embedded() {
+            32
+        } else {
+            (mem::size_of::<usize>() * 8) as u32
+        }
     }
 }
 

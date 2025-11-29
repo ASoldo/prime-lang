@@ -542,6 +542,15 @@ crate-type = ["staticlib"]
     if target.is_embedded() && env::var("RUSTUP_TOOLCHAIN").is_err() {
         cmd.env("RUSTUP_TOOLCHAIN", "esp");
     }
+    if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
+        let flags = env::var("RUSTFLAGS").unwrap_or_default();
+        let mut new_flags = flags;
+        if !new_flags.is_empty() {
+            new_flags.push(' ');
+        }
+        new_flags.push_str("-C target-feature=+windowed");
+        cmd.env("RUSTFLAGS", new_flags);
+    }
     cmd.arg("build")
         .arg("--release")
         .arg("--target")
@@ -996,8 +1005,10 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
         .arg(obj_path);
     // Normalize triples for toolchain expectations.
     if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
-        // Prefer esp32 triple to force little-endian layout.
-        cmd.arg("-mtriple=xtensa-esp32-elf").arg("-mcpu=esp32");
+        // Prefer esp32 little-endian triple for Xtensa; keep windowed ABI to match esp toolchain.
+        cmd.arg("-mtriple=xtensa-esp32-elf")
+            .arg("-mcpu=esp32")
+            .arg("-mattr=+windowed");
     } else if let Some(triple) = target.triple() {
         cmd.arg(format!("-mtriple={triple}"));
     }
@@ -1276,8 +1287,8 @@ fn link_esp32(
     if let Some(lib) = runtime_lib {
         cmd.arg(lib);
     }
-    // Pull in libc/libgcc; assume linker knows where to find them (IDF toolchain/bin set in PATH).
-    cmd.arg("-lc").arg("-lgcc");
+    // Minimal runtime: just pull in libgcc; avoid newlib/libc to sidestep syscall stubs.
+    cmd.arg("-lgcc");
     if !extra_args.is_empty() {
         cmd.args(&extra_args);
     }
