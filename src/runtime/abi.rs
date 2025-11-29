@@ -479,9 +479,12 @@ mod embedded {
         if LOG_ONCE.swap(true, Ordering::Relaxed) {
             return;
         }
+        // Keep placeholder for optional boot banner; intentionally disabled.
         #[cfg(target_arch = "xtensa")]
-        unsafe {
-            ets_printf(b"hello esp32 world\n\0".as_ptr());
+        if false {
+            unsafe {
+                ets_printf(b"hello esp32 world\n\0".as_ptr());
+            }
         }
     }
 
