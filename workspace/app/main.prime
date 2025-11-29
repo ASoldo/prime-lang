@@ -75,6 +75,7 @@ impl Renderable[QuestPanel] for QuestPanel {
     out("--- quest ---");
     out(`label: {}`, panel.label);
     out(`reward: {}`, panel.reward);
+
     let string state = if panel.completed {
       "completed"
     } else {
@@ -121,6 +122,7 @@ fn quest_panel(q: Quest) -> QuestPanel {
 fn calibrate_station(name: string) {
   out(`Calibrating station: {name}`);
   defer out("Station teardown complete");
+
   let mut int32 probes = 0;
   while probes < 2 {
     out(`probe step {probes}`);
@@ -130,6 +132,7 @@ fn calibrate_station(name: string) {
 
 fn main() {
   out("=== prime-lang gameplay demo ===");
+
   let mut Player hero = spawn_player("Prime Hero", Vec2{ 10.0, 20.0 }, 120);
   let Player scout = spawn_player("Sparrow", Vec2{ 5.0, 12.5 }, 90);
   player_panel(hero).render();
@@ -137,23 +140,30 @@ fn main() {
   out("Roster labels:");
   out(`- {}`, player_panel(hero).label());
   out(`- {}`, player_panel(scout).label());
+
   let Player relocated = move_player(hero, Vec2{ 2.0, 3.0 });
   out("After repositioning:");
   player_panel(relocated).render();
+
   let Player wounded = apply_damage(relocated, Flat(30));
   out("Hero after heavy hit:");
   player_panel(wounded).render();
+
   let Player healed = drink_potion(wounded, 24);
   out("Hero after potion:");
   player_panel(healed).render();
+
   let Player leveled = level_up(healed, 2);
   out("Hero after leveling:");
   player_panel(leveled).render();
+
   let Player mission_ready = heal(leveled, 8);
   out("Hero after single-step heal:");
   player_panel(mission_ready).render();
+
   let Enemy brute = spawn_enemy("Emerald brute", Vec2{ 18.0, 24.0 }, Percent(15));
   enemy_panel(brute).render();
+
   let Quest quest = Quest{
     "Defend the valley",
     450,
@@ -166,18 +176,23 @@ fn main() {
   out("Training countdown:");
   countdown(TRAINING_LIMIT);
   simulate_patrol("River path", 4);
+
   let int32 borrowed_hp = peek_hp(&hero);
   out(`Borrowed hero hp: {borrowed_hp}`);
+
   let bool hero_ready = hero.hp > 100 && hero.stamina >= 50;
   let bool scout_ready = scout.hp > 70 && scout.stamina >= 40;
   out(`Hero battle ready? {hero_ready}`);
   out(`Scout battle ready? {scout_ready}`);
+
   let MissionEvent ridge = plan_mission("Prime ascent", true, true);
   let MissionEvent harbor = plan_mission("Harbor sweep", false, true);
   describe_event(ridge);
   describe_event(harbor);
+
   let string pending = summarize_event(Waiting());
   out(`Mission summary hint: {pending}`);
+
   let Option[int32] slot = find_training_slot(TRAINING_LIMIT);
   match slot {
     Some(value) => {
@@ -187,6 +202,7 @@ fn main() {
       out("Training slots unavailable");
     },
   }
+
   let Option[int32] backup_slot = find_training_slot(TRAINING_LIMIT + 1);
   match backup_slot {
     Some(value) => {
@@ -220,6 +236,7 @@ fn main() {
   calibrate_station("Signal tower");
   out("Defer order check:");
   test_defer_order();
+
   let divmod_result = divmod(22, TRAINING_LIMIT);
   out(`divmod(22, TRAINING_LIMIT): {}`, divmod_result);
   announce_session("Session complete");
@@ -486,6 +503,7 @@ fn test_defer_order() {
 fn uses_asserts() -> bool {
   assert(true);
   expect(true, "expect should not panic");
+
   let string sentence = `one two three`;
   let int32 chars = sentence.str_len();
   let bool has_two = sentence.str_contains("two");
