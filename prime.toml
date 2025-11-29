@@ -7,6 +7,7 @@ members = [
   "workspace/pkg/app",
   "workspace/pkg/lib",
   "workspace/demos/generic",
+  "workspace/demos/esp32_blink",
   "workspace/demos/heap",
   "workspace/demos/heap_features",
   "workspace/demos/interface_demo",
