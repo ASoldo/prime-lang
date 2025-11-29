@@ -13,10 +13,13 @@
 mod embedded {
     use core::ffi::c_void;
     use core::ptr;
-    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicBool, Ordering};
+    #[cfg(target_arch = "xtensa")]
+    use core::sync::atomic::AtomicUsize;
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
     pub enum PrimeStatus {
         Ok = 0,
         Invalid = 1,
@@ -26,6 +29,7 @@ mod embedded {
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(dead_code)]
     pub enum PrimeTag {
         Unit = 0,
         Int = 1,
@@ -319,15 +323,21 @@ mod embedded {
         len: usize,
     }
 
-    // Tiny bump allocator for strings; enough for demo prints.
+    // Tiny bump allocator for strings; enough for demo prints (Xtensa only).
+    #[cfg(target_arch = "xtensa")]
     const STR_STORAGE_SIZE: usize = 1024;
+    #[cfg(target_arch = "xtensa")]
     const STR_HANDLES_MAX: usize = 16;
+    #[cfg(target_arch = "xtensa")]
     static mut STR_STORAGE: [u8; STR_STORAGE_SIZE] = [0; STR_STORAGE_SIZE];
+    #[cfg(target_arch = "xtensa")]
     static STR_STORAGE_OFF: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(target_arch = "xtensa")]
     static mut STR_HANDLES: [PrimeString; STR_HANDLES_MAX] = [PrimeString {
         ptr: core::ptr::null(),
         len: 0,
     }; STR_HANDLES_MAX];
+    #[cfg(target_arch = "xtensa")]
     static STR_HANDLE_OFF: AtomicUsize = AtomicUsize::new(0);
 
     #[cfg(target_arch = "xtensa")]

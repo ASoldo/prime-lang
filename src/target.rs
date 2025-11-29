@@ -70,6 +70,7 @@ pub fn embedded_target_hint() -> String {
 #[derive(Clone, Debug, Default)]
 pub struct ToolchainSettings {
     pub cc: Option<String>,
+    #[allow(dead_code)]
     pub ar: Option<String>,
     pub objcopy: Option<String>,
     pub ld_script: Option<String>,
