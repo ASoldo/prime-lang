@@ -11,7 +11,7 @@ graph TD
   A -->|Run| D["Interpreter<br/>(src/runtime/interpreter.rs)"]
   A -->|Build| E["Compiler & LLVM<br/>(src/language)"]
   E -->|ABI Decls| F["Runtime ABI<br/>(src/language/runtime_abi.rs)"]
-  E -->|IR-&gt;obj| G[LLC]
+  E -->|IR-&gt;obj| G["LLC"]
   G -->|Link| H["Binary/ELF + runtime lib"]
   H -->|Flash (optional)| I["ESP32 Device"]
   B -->|Manifests| J["workspace/*/prime.toml"]
