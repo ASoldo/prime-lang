@@ -147,6 +147,7 @@ return {
     ["fn" "let" "mut" "import" "export" "prelude" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "loop" "spawn" "return" "break" "continue" "defer" "module" "test" "library" "macro" "pub" "interface" "impl" "try" "move"] @keyword
     ("async") @keyword
     ("await") @keyword
+    ("|") @keyword
     ("{") @keyword
     ("}") @keyword
     ("(") @keyword
