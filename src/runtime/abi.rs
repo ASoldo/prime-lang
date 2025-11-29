@@ -49,7 +49,7 @@ mod embedded {
     }
 
     #[repr(transparent)]
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     pub struct PrimeHandle(pub *mut c_void);
 
     impl PrimeHandle {
@@ -120,16 +120,10 @@ mod embedded {
         PrimeHandle::null()
     }
 
-    #[unsafe(export_name = "prime_slice_new")]
-    pub unsafe extern "C" fn prime_slice_new() -> PrimeHandle {
-        PrimeHandle::null()
-    }
-
-    #[unsafe(export_name = "prime_map_new")]
-    pub unsafe extern "C" fn prime_map_new() -> PrimeHandle {
-        PrimeHandle::null()
-    }
-
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_struct_new")]
     pub unsafe extern "C" fn prime_struct_new(_name_ptr: *const u8, _name_len: usize) -> PrimeHandle {
         PrimeHandle::null()
@@ -145,11 +139,19 @@ mod embedded {
         PrimeHandle::null()
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_reference_new")]
     pub unsafe extern "C" fn prime_reference_new(_target: PrimeHandle, _mutable: bool) -> PrimeHandle {
         PrimeHandle::null()
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_format")]
     pub unsafe extern "C" fn prime_format(
         _fmt_parts_ptr: *const PrimeHandle,
@@ -160,114 +162,54 @@ mod embedded {
         PrimeHandle::null()
     }
 
-    #[unsafe(export_name = "prime_spawn")]
-    pub unsafe extern "C" fn prime_spawn(
-        entry: Option<unsafe extern "C" fn(arg: PrimeHandle) -> PrimeHandle>,
-        arg: PrimeHandle,
-        handle_out: *mut PrimeHandle,
-    ) -> PrimeHandle {
-        let _ = (entry, arg, handle_out);
-        PrimeHandle::null()
-    }
-
-    #[unsafe(export_name = "prime_slice_push")]
-    pub unsafe extern "C" fn prime_slice_push(_slice: PrimeHandle, _value: PrimeHandle) -> PrimeStatus {
-        PrimeStatus::Invalid
-    }
-
-    #[unsafe(export_name = "prime_slice_get")]
-    pub unsafe extern "C" fn prime_slice_get(
-        _slice: PrimeHandle,
-        _idx: usize,
-        value_out: *mut PrimeHandle,
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_channel_new")]
+    pub unsafe extern "C" fn prime_channel_new(
+        sender_out: *mut PrimeHandle,
+        receiver_out: *mut PrimeHandle,
     ) -> PrimeStatus {
-        if !value_out.is_null() {
-            value_out.write(PrimeHandle::null());
+        if sender_out.is_null() || receiver_out.is_null() {
+            return PrimeStatus::Invalid;
         }
+        sender_out.write(PrimeHandle::null());
+        receiver_out.write(PrimeHandle::null());
         PrimeStatus::Invalid
     }
 
-    #[unsafe(export_name = "prime_slice_remove")]
-    pub unsafe extern "C" fn prime_slice_remove(
-        _slice: PrimeHandle,
-        _idx: usize,
-        value_out: *mut PrimeHandle,
-    ) -> PrimeStatus {
-        if !value_out.is_null() {
-            value_out.write(PrimeHandle::null());
-        }
-        PrimeStatus::Invalid
-    }
-
-    #[unsafe(export_name = "prime_slice_set")]
-    pub unsafe extern "C" fn prime_slice_set(_slice: PrimeHandle, _value: PrimeHandle) -> PrimeStatus {
-        PrimeStatus::Invalid
-    }
-
-    #[unsafe(export_name = "prime_map_insert")]
-    pub unsafe extern "C" fn prime_map_insert(
-        _map: PrimeHandle,
-        _key_ptr: *const u8,
-        _key_len: usize,
-        _value: PrimeHandle,
-    ) -> PrimeStatus {
-        PrimeStatus::Invalid
-    }
-
-    #[unsafe(export_name = "prime_map_get")]
-    pub unsafe extern "C" fn prime_map_get(
-        _map: PrimeHandle,
-        _key_ptr: *const u8,
-        _key_len: usize,
-        value_out: *mut PrimeHandle,
-    ) -> PrimeStatus {
-        if !value_out.is_null() {
-            value_out.write(PrimeHandle::null());
-        }
-        PrimeStatus::Invalid
-    }
-
-    #[unsafe(export_name = "prime_map_remove")]
-    pub unsafe extern "C" fn prime_map_remove(
-        _map: PrimeHandle,
-        _key_ptr: *const u8,
-        _key_len: usize,
-        value_out: *mut PrimeHandle,
-    ) -> PrimeStatus {
-        if !value_out.is_null() {
-            value_out.write(PrimeHandle::null());
-        }
-        PrimeStatus::Invalid
-    }
-
-    #[unsafe(export_name = "prime_struct_set")]
-    pub unsafe extern "C" fn prime_struct_set(
-        _handle: PrimeHandle,
-        _field_ptr: *const u8,
-        _field_len: usize,
-        _value: PrimeHandle,
-    ) -> PrimeStatus {
-        PrimeStatus::Invalid
-    }
-
-    #[unsafe(export_name = "prime_reference_write")]
-    pub unsafe extern "C" fn prime_reference_write(_target: PrimeHandle, _value: PrimeHandle) -> PrimeStatus {
-        PrimeStatus::Invalid
-    }
-
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_send")]
-    pub unsafe extern "C" fn prime_send(_sender: PrimeHandle, _value: PrimeHandle) -> PrimeStatus {
+    pub unsafe extern "C" fn prime_send(
+        _sender: PrimeHandle,
+        _value: PrimeHandle,
+    ) -> PrimeStatus {
         PrimeStatus::Invalid
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_recv")]
-    pub unsafe extern "C" fn prime_recv(_receiver: PrimeHandle, value_out: *mut PrimeHandle) -> PrimeStatus {
+    pub unsafe extern "C" fn prime_recv(
+        _receiver: PrimeHandle,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
         if !value_out.is_null() {
             value_out.write(PrimeHandle::null());
         }
         PrimeStatus::Invalid
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_recv_timeout")]
     pub unsafe extern "C" fn prime_recv_timeout(
         _receiver: PrimeHandle,
@@ -280,37 +222,290 @@ mod embedded {
         PrimeStatus::Invalid
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_close")]
     pub unsafe extern "C" fn prime_close(_handle: PrimeHandle) -> PrimeStatus {
         PrimeStatus::Invalid
     }
 
-    #[unsafe(export_name = "prime_join")]
-    pub unsafe extern "C" fn prime_join(_handle: PrimeHandle, result_out: *mut PrimeHandle) -> PrimeStatus {
-        if !result_out.is_null() {
-            result_out.write(PrimeHandle::null());
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_slice_new")]
+    pub unsafe extern "C" fn prime_slice_new() -> PrimeHandle {
+        PrimeHandle::null()
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_slice_push_handle")]
+    pub unsafe extern "C" fn prime_slice_push_handle(
+        _slice: PrimeHandle,
+        _value: PrimeHandle,
+    ) -> PrimeStatus {
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_slice_push")]
+    pub unsafe extern "C" fn prime_slice_push(
+        _slice: PrimeHandle,
+        _value: PrimeHandle,
+    ) -> PrimeStatus {
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_slice_len_handle")]
+    pub unsafe extern "C" fn prime_slice_len_handle(_slice: PrimeHandle) -> usize {
+        0
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_slice_get_handle")]
+    pub unsafe extern "C" fn prime_slice_get_handle(
+        _slice: PrimeHandle,
+        _idx: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if !value_out.is_null() {
+            value_out.write(PrimeHandle::null());
         }
         PrimeStatus::Invalid
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
-    #[unsafe(export_name = "prime_read_value")]
-    pub unsafe extern "C" fn prime_read_value(
-        _status: PrimeStatus,
-        _tag: PrimeStatus,
-        _flags: PrimeStatus,
-        _name_ptr: *const u8,
-        _name_len: usize,
-        _values_ptr: *mut PrimeHandle,
-        _values_len: usize,
-    ) -> PrimeHandle {
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_slice_remove_handle")]
+    pub unsafe extern "C" fn prime_slice_remove_handle(
+        _slice: PrimeHandle,
+        _idx: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if !value_out.is_null() {
+            value_out.write(PrimeHandle::null());
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_map_new")]
+    pub unsafe extern "C" fn prime_map_new() -> PrimeHandle {
         PrimeHandle::null()
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
-    #[unsafe(export_name = "prime_env_free")]
-    pub unsafe extern "C" fn prime_env_free(_handle: PrimeHandle) {}
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_map_len_handle")]
+    pub unsafe extern "C" fn prime_map_len_handle(_map: PrimeHandle) -> usize {
+        0
+    }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_map_insert_handle")]
+    pub unsafe extern "C" fn prime_map_insert_handle(
+        _map: PrimeHandle,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        _value: PrimeHandle,
+    ) -> PrimeStatus {
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_map_insert")]
+    pub unsafe extern "C" fn prime_map_insert(
+        _map: PrimeHandle,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        _value: PrimeHandle,
+    ) -> PrimeStatus {
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_map_get_handle")]
+    pub unsafe extern "C" fn prime_map_get_handle(
+        _map: PrimeHandle,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if !value_out.is_null() {
+            value_out.write(PrimeHandle::null());
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_map_get")]
+    pub unsafe extern "C" fn prime_map_get(
+        map: PrimeHandle,
+        key_ptr: *const u8,
+        key_len: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        prime_map_get_handle(map, key_ptr, key_len, value_out)
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_map_remove_handle")]
+    pub unsafe extern "C" fn prime_map_remove_handle(
+        _map: PrimeHandle,
+        _key_ptr: *const u8,
+        _key_len: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if !value_out.is_null() {
+            value_out.write(PrimeHandle::null());
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_map_remove")]
+    pub unsafe extern "C" fn prime_map_remove_handle_alias(
+        map: PrimeHandle,
+        key_ptr: *const u8,
+        key_len: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        prime_map_remove_handle(map, key_ptr, key_len, value_out)
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_map_entry_handle")]
+    pub unsafe extern "C" fn prime_map_entry_handle(
+        _map: PrimeHandle,
+        _idx: usize,
+        key_out: *mut PrimeHandle,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if !key_out.is_null() {
+            key_out.write(PrimeHandle::null());
+        }
+        if !value_out.is_null() {
+            value_out.write(PrimeHandle::null());
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_value_tag")]
+    pub unsafe extern "C" fn prime_value_tag(_handle: PrimeHandle) -> PrimeTag {
+        PrimeTag::Unit
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_value_as_int")]
+    pub unsafe extern "C" fn prime_value_as_int(_handle: PrimeHandle) -> i128 {
+        0
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_value_as_bool")]
+    pub unsafe extern "C" fn prime_value_as_bool(_handle: PrimeHandle) -> bool {
+        false
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_value_as_float")]
+    pub unsafe extern "C" fn prime_value_as_float(_handle: PrimeHandle) -> f64 {
+        0.0
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_value_as_string")]
+    pub unsafe extern "C" fn prime_value_as_string(
+        _handle: PrimeHandle,
+        ptr_out: *mut *const u8,
+        len_out: *mut usize,
+    ) -> PrimeStatus {
+        if !ptr_out.is_null() {
+            ptr_out.write(core::ptr::null());
+        }
+        if !len_out.is_null() {
+            len_out.write(0);
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_spawn")]
+    pub unsafe extern "C" fn prime_spawn(
+        entry: Option<unsafe extern "C" fn(arg: PrimeHandle) -> PrimeHandle>,
+        arg: PrimeHandle,
+        handle_out: *mut PrimeHandle,
+    ) -> PrimeHandle {
+        let _ = (entry, arg, handle_out);
+        PrimeHandle::null()
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_task_new")]
     pub unsafe extern "C" fn prime_task_new(
         _entry: Option<unsafe extern "C" fn(arg: PrimeHandle) -> PrimeHandle>,
@@ -319,6 +514,10 @@ mod embedded {
         PrimeHandle::null()
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_task_poll")]
     pub unsafe extern "C" fn prime_task_poll(
         _task: PrimeHandle,
@@ -330,58 +529,39 @@ mod embedded {
         PrimeStatus::Invalid
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_task_wake")]
-    pub unsafe extern "C" fn prime_task_wake(_task: PrimeHandle, _value: PrimeHandle) -> PrimeStatus {
+    pub unsafe extern "C" fn prime_task_wake(
+        _task: PrimeHandle,
+        _value: PrimeHandle,
+    ) -> PrimeStatus {
         PrimeStatus::Invalid
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_sleep_task")]
     pub unsafe extern "C" fn prime_sleep_task(_millis: i64) -> PrimeHandle {
         PrimeHandle::null()
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_recv_task")]
     pub unsafe extern "C" fn prime_recv_task(_receiver: PrimeHandle) -> PrimeHandle {
         PrimeHandle::null()
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
-    #[panic_handler]
-    fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn prime_slice_len_handle(_handle: PrimeHandle) -> usize {
-        0
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn prime_map_len_handle(_handle: PrimeHandle) -> usize {
-        0
-    }
-
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn prime_enum_tag(_handle: PrimeHandle) -> u32 {
-        0
-    }
-
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn prime_enum_get(_handle: PrimeHandle, _idx: usize) -> PrimeHandle {
-        PrimeHandle::null()
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn prime_reference_read(_target: PrimeHandle) -> PrimeHandle {
-        PrimeHandle::null()
-    }
-
     #[repr(C)]
     #[derive(Copy, Clone)]
+    #[allow(dead_code)]
     struct PrimeString {
         ptr: *const u8,
         len: usize,
@@ -453,6 +633,10 @@ mod embedded {
         let _ = s;
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_now_ms")]
     pub unsafe extern "C" fn prime_now_ms() -> i128 {
         0
@@ -542,6 +726,7 @@ mod embedded {
     }
 
     #[inline]
+    #[allow(dead_code)]
     fn delay_us(us: u32) {
         #[cfg(target_arch = "xtensa")]
         unsafe {
@@ -557,10 +742,13 @@ mod embedded {
         }
     }
 
+    #[allow(dead_code)]
     static LOG_ONCE: AtomicBool = AtomicBool::new(false);
+    #[allow(dead_code)]
     static WATCHDOGS_DISABLED: AtomicBool = AtomicBool::new(false);
 
     #[inline]
+    #[allow(dead_code)]
     fn disable_watchdogs_once() {
         if WATCHDOGS_DISABLED.swap(true, Ordering::Relaxed) {
             return;
@@ -584,6 +772,7 @@ mod embedded {
     }
 
     #[inline]
+    #[allow(dead_code)]
     fn log_hello_once() {
         if LOG_ONCE.swap(true, Ordering::Relaxed) {
             return;
@@ -599,15 +788,23 @@ mod embedded {
     }
 
     // Register offsets for classic ESP32 (Xtensa). Kept tiny so we don't pull in IDF.
+    #[cfg(target_arch = "xtensa")]
     const DR_REG_GPIO_BASE: u32 = 0x3ff44000;
+    #[cfg(target_arch = "xtensa")]
     const GPIO_OUT_W1TS_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x0008) as *mut u32;
+    #[cfg(target_arch = "xtensa")]
     const GPIO_OUT_W1TC_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x000c) as *mut u32;
+    #[cfg(target_arch = "xtensa")]
     const GPIO_ENABLE_W1TS_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x0024) as *mut u32;
 
+    #[cfg(target_arch = "xtensa")]
     const DR_REG_IO_MUX_BASE: u32 = 0x3ff49000;
+    #[cfg(target_arch = "xtensa")]
     // Only used for the demo pin (GPIO2). Extend as needed for more pins.
     const IO_MUX_GPIO2_REG: *mut u32 = (DR_REG_IO_MUX_BASE + 0x40) as *mut u32;
+    #[cfg(target_arch = "xtensa")]
     const MCU_SEL_MASK: u32 = 0b111 << 12;
+    #[cfg(target_arch = "xtensa")]
     const FUNC_GPIO: u32 = 0b010;
 
     // Watchdog control registers.
@@ -632,6 +829,7 @@ mod embedded {
     #[cfg(target_arch = "xtensa")]
     const TIMG1_WDTWPROTECT_REG: *mut u32 = (DR_REG_TIMERGROUP1_BASE + 0x0064) as *mut u32;
 
+    #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_delay_ms(ms: i32) -> PrimeStatus {
         log_hello_once();
@@ -641,6 +839,7 @@ mod embedded {
         PrimeStatus::Ok
     }
 
+    #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_pin_mode(pin: i32, mode: i32) -> PrimeStatus {
         log_hello_once();
@@ -664,6 +863,7 @@ mod embedded {
         PrimeStatus::Ok
     }
 
+    #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_digital_write(pin: i32, level: i32) -> PrimeStatus {
         if pin != 2 {
@@ -713,6 +913,17 @@ mod embedded {
         }
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[panic_handler]
+    fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
 }
 
 #[cfg(any(
@@ -730,6 +941,10 @@ mod host {
     use std::io::{self, Write};
     use std::slice;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::collections::BTreeMap;
+    use std::sync::mpsc;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::thread;
 
     pub use super::embedded::{
         PrimeHandle, PrimeStatus, PrimeTag, TYPE_BOOL, TYPE_FLOAT32, TYPE_FLOAT64, TYPE_INT16,
@@ -745,6 +960,11 @@ mod host {
         Bool(bool),
         Str(String),
         Enum { tag: u32, values: Vec<HostValue> },
+        Slice(Vec<PrimeHandle>),
+        Map(BTreeMap<String, PrimeHandle>),
+        Sender(mpsc::Sender<PrimeHandle>),
+        Receiver(Arc<Mutex<mpsc::Receiver<PrimeHandle>>>),
+        Task(Arc<HostTaskState>),
     }
 
     #[derive(Clone)]
@@ -775,7 +995,515 @@ mod host {
             return HostValue::Unit;
         }
         let data = &*(handle.0 as *const HostHandle);
-        data.value.clone()
+        match &data.value {
+            HostValue::Receiver(rx) => HostValue::Receiver(rx.clone()),
+            HostValue::Slice(items) => HostValue::Slice(items.clone()),
+            HostValue::Map(map) => HostValue::Map(map.clone()),
+            HostValue::Sender(tx) => HostValue::Sender(tx.clone()),
+            other => other.clone(),
+        }
+    }
+
+    #[unsafe(export_name = "prime_channel_new")]
+    pub unsafe extern "C" fn prime_channel_new(
+        sender_out: *mut PrimeHandle,
+        receiver_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if sender_out.is_null() || receiver_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let (tx, rx) = mpsc::channel::<PrimeHandle>();
+        let sender = to_handle(HostHandle::new(HostValue::Sender(tx)));
+        let receiver = to_handle(HostHandle::new(HostValue::Receiver(Arc::new(Mutex::new(rx)))));
+        sender_out.write(sender);
+        receiver_out.write(receiver);
+        PrimeStatus::Ok
+    }
+
+    #[unsafe(export_name = "prime_send")]
+    pub unsafe extern "C" fn prime_send(
+        sender: PrimeHandle,
+        value: PrimeHandle,
+    ) -> PrimeStatus {
+        if sender.0.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(sender.0 as *const HostHandle);
+        let HostValue::Sender(tx) = &data.value else {
+            return PrimeStatus::Invalid;
+        };
+        tx.send(prime_value_retain(value))
+            .map(|_| PrimeStatus::Ok)
+            .unwrap_or(PrimeStatus::Closed)
+    }
+
+    #[unsafe(export_name = "prime_recv")]
+    pub unsafe extern "C" fn prime_recv(
+        receiver: PrimeHandle,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if receiver.0.is_null() || value_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(receiver.0 as *const HostHandle);
+        let HostValue::Receiver(rx) = &data.value else {
+            return PrimeStatus::Invalid;
+        };
+        let outcome = rx.lock().map_err(|_| PrimeStatus::Invalid);
+        if let Ok(guard) = outcome {
+            match guard.recv() {
+                Ok(handle) => {
+                    value_out.write(handle);
+                    return PrimeStatus::Ok;
+                }
+                Err(_) => return PrimeStatus::Closed,
+            }
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_recv_timeout")]
+    pub unsafe extern "C" fn prime_recv_timeout(
+        receiver: PrimeHandle,
+        millis: i64,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if receiver.0.is_null() || value_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(receiver.0 as *const HostHandle);
+        let HostValue::Receiver(rx) = &data.value else {
+            return PrimeStatus::Invalid;
+        };
+        let timeout = if millis < 0 {
+            std::time::Duration::from_millis(0)
+        } else {
+            std::time::Duration::from_millis(millis as u64)
+        };
+        let outcome = rx.lock().map_err(|_| PrimeStatus::Invalid);
+        if let Ok(guard) = outcome {
+            match guard.recv_timeout(timeout) {
+                Ok(handle) => {
+                    value_out.write(handle);
+                    return PrimeStatus::Ok;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => return PrimeStatus::Invalid,
+                Err(_) => return PrimeStatus::Closed,
+            }
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_close")]
+    pub unsafe extern "C" fn prime_close(handle: PrimeHandle) -> PrimeStatus {
+        if handle.0.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        if let HostValue::Sender(tx) = &data.value {
+            drop(tx.clone());
+            return PrimeStatus::Ok;
+        }
+        if let HostValue::Receiver(_) = &data.value {
+            return PrimeStatus::Ok;
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_slice_new")]
+    pub unsafe extern "C" fn prime_slice_new() -> PrimeHandle {
+        to_handle(HostHandle::new(HostValue::Slice(Vec::new())))
+    }
+
+    #[unsafe(export_name = "prime_slice_push_handle")]
+    pub unsafe extern "C" fn prime_slice_push_handle(
+        slice: PrimeHandle,
+        value: PrimeHandle,
+    ) -> PrimeStatus {
+        if slice.0.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &mut *(slice.0 as *mut HostHandle);
+        if let HostValue::Slice(items) = &mut data.value {
+            items.push(prime_value_retain(value));
+            return PrimeStatus::Ok;
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_slice_push")]
+    pub unsafe extern "C" fn prime_slice_push(
+        slice: PrimeHandle,
+        value: PrimeHandle,
+    ) -> PrimeStatus {
+        prime_slice_push_handle(slice, value)
+    }
+
+    #[unsafe(export_name = "prime_slice_len_handle")]
+    pub unsafe extern "C" fn prime_slice_len_handle(slice: PrimeHandle) -> usize {
+        if slice.0.is_null() {
+            return 0;
+        }
+        let data = &*(slice.0 as *const HostHandle);
+        if let HostValue::Slice(items) = &data.value {
+            return items.len();
+        }
+        0
+    }
+
+    #[unsafe(export_name = "prime_slice_get_handle")]
+    pub unsafe extern "C" fn prime_slice_get_handle(
+        slice: PrimeHandle,
+        idx: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if slice.0.is_null() || value_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(slice.0 as *const HostHandle);
+        if let HostValue::Slice(items) = &data.value {
+            if let Some(handle) = items.get(idx) {
+                value_out.write(prime_value_retain(*handle));
+                return PrimeStatus::Ok;
+            }
+            return PrimeStatus::Closed;
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_slice_remove_handle")]
+    pub unsafe extern "C" fn prime_slice_remove_handle(
+        slice: PrimeHandle,
+        idx: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if slice.0.is_null() || value_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &mut *(slice.0 as *mut HostHandle);
+        if let HostValue::Slice(items) = &mut data.value {
+            if idx < items.len() {
+                let removed = items.remove(idx);
+                value_out.write(removed);
+                return PrimeStatus::Ok;
+            }
+            return PrimeStatus::Closed;
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_map_new")]
+    pub unsafe extern "C" fn prime_map_new() -> PrimeHandle {
+        to_handle(HostHandle::new(HostValue::Map(BTreeMap::new())))
+    }
+
+    #[unsafe(export_name = "prime_map_len_handle")]
+    pub unsafe extern "C" fn prime_map_len_handle(map: PrimeHandle) -> usize {
+        if map.0.is_null() {
+            return 0;
+        }
+        let data = &*(map.0 as *const HostHandle);
+        if let HostValue::Map(entries) = &data.value {
+            return entries.len();
+        }
+        0
+    }
+
+    #[unsafe(export_name = "prime_map_insert_handle")]
+    pub unsafe extern "C" fn prime_map_insert_handle(
+        map: PrimeHandle,
+        key_ptr: *const u8,
+        key_len: usize,
+        value: PrimeHandle,
+    ) -> PrimeStatus {
+        if map.0.is_null() || key_ptr.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &mut *(map.0 as *mut HostHandle);
+        if let HostValue::Map(entries) = &mut data.value {
+            let key = std::str::from_utf8(slice::from_raw_parts(key_ptr, key_len))
+                .unwrap_or_default()
+                .to_string();
+            entries.insert(key, prime_value_retain(value));
+            return PrimeStatus::Ok;
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_map_insert")]
+    pub unsafe extern "C" fn prime_map_insert(
+        map: PrimeHandle,
+        key_ptr: *const u8,
+        key_len: usize,
+        value: PrimeHandle,
+    ) -> PrimeStatus {
+        prime_map_insert_handle(map, key_ptr, key_len, value)
+    }
+
+    #[unsafe(export_name = "prime_map_get_handle")]
+    pub unsafe extern "C" fn prime_map_get_handle(
+        map: PrimeHandle,
+        key_ptr: *const u8,
+        key_len: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if map.0.is_null() || key_ptr.is_null() || value_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(map.0 as *const HostHandle);
+        if let HostValue::Map(entries) = &data.value {
+            let key = std::str::from_utf8(slice::from_raw_parts(key_ptr, key_len))
+                .unwrap_or_default();
+            if let Some(val) = entries.get(key) {
+                value_out.write(prime_value_retain(*val));
+                return PrimeStatus::Ok;
+            }
+            return PrimeStatus::Closed;
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_map_get")]
+    pub unsafe extern "C" fn prime_map_get(
+        map: PrimeHandle,
+        key_ptr: *const u8,
+        key_len: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        prime_map_get_handle(map, key_ptr, key_len, value_out)
+    }
+
+    #[unsafe(export_name = "prime_map_remove_handle")]
+    pub unsafe extern "C" fn prime_map_remove_handle(
+        map: PrimeHandle,
+        key_ptr: *const u8,
+        key_len: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if map.0.is_null() || key_ptr.is_null() || value_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &mut *(map.0 as *mut HostHandle);
+        if let HostValue::Map(entries) = &mut data.value {
+            let key = std::str::from_utf8(slice::from_raw_parts(key_ptr, key_len))
+                .unwrap_or_default()
+                .to_string();
+            if let Some(val) = entries.remove(&key) {
+                value_out.write(val);
+                return PrimeStatus::Ok;
+            }
+            return PrimeStatus::Closed;
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_map_remove")]
+    pub unsafe extern "C" fn prime_map_remove_handle_alias(
+        map: PrimeHandle,
+        key_ptr: *const u8,
+        key_len: usize,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        prime_map_remove_handle(map, key_ptr, key_len, value_out)
+    }
+
+    #[unsafe(export_name = "prime_map_entry_handle")]
+    pub unsafe extern "C" fn prime_map_entry_handle(
+        map: PrimeHandle,
+        idx: usize,
+        key_out: *mut PrimeHandle,
+        value_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if map.0.is_null() || key_out.is_null() || value_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(map.0 as *const HostHandle);
+        let HostValue::Map(entries) = &data.value else {
+            return PrimeStatus::Invalid;
+        };
+        if let Some((k, v)) = entries.iter().nth(idx) {
+            let key_handle = to_handle(HostHandle::new(HostValue::Str(k.clone())));
+            key_out.write(key_handle);
+            value_out.write(prime_value_retain(*v));
+            return PrimeStatus::Ok;
+        }
+        PrimeStatus::Closed
+    }
+
+    #[unsafe(export_name = "prime_reference_new")]
+    pub unsafe extern "C" fn prime_reference_new(
+        target: PrimeHandle,
+        _mutable: bool,
+    ) -> PrimeHandle {
+        prime_value_retain(target)
+    }
+
+    #[unsafe(export_name = "prime_struct_new")]
+    pub unsafe extern "C" fn prime_struct_new(
+        _name_ptr: *const u8,
+        _name_len: usize,
+    ) -> PrimeHandle {
+        PrimeHandle::null()
+    }
+
+    #[unsafe(export_name = "prime_struct_insert")]
+    pub unsafe extern "C" fn prime_struct_insert(
+        _handle: PrimeHandle,
+        _field_ptr: *const u8,
+        _field_len: usize,
+        _value: PrimeHandle,
+    ) -> PrimeStatus {
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_format")]
+    pub unsafe extern "C" fn prime_format(
+        _fmt_parts_ptr: *const PrimeHandle,
+        _fmt_parts_len: usize,
+        _fmt_values_ptr: *const PrimeHandle,
+        _fmt_values_len: usize,
+    ) -> PrimeHandle {
+        PrimeHandle::null()
+    }
+
+    #[unsafe(export_name = "prime_spawn")]
+    pub unsafe extern "C" fn prime_spawn(
+        _entry: Option<unsafe extern "C" fn(arg: PrimeHandle) -> PrimeHandle>,
+        _arg: PrimeHandle,
+        handle_out: *mut PrimeHandle,
+    ) -> PrimeHandle {
+        if !handle_out.is_null() {
+            handle_out.write(PrimeHandle::null());
+        }
+        PrimeHandle::null()
+    }
+
+    #[unsafe(export_name = "prime_join")]
+    pub unsafe extern "C" fn prime_join(
+        _handle: PrimeHandle,
+        result_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if !result_out.is_null() {
+            result_out.write(PrimeHandle::null());
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_delay_ms")]
+    pub unsafe extern "C" fn prime_delay_ms(_millis: i32) {}
+
+    #[unsafe(export_name = "prime_pin_mode")]
+    pub unsafe extern "C" fn prime_pin_mode(_pin: i32, _mode: i32) {}
+
+    #[unsafe(export_name = "prime_digital_write")]
+    pub unsafe extern "C" fn prime_digital_write(_pin: i32, _value: i32) {}
+
+    #[unsafe(export_name = "prime_now_ms")]
+    pub unsafe extern "C" fn prime_now_ms() -> i128 {
+        0
+    }
+
+    #[unsafe(export_name = "prime_value_tag")]
+    pub unsafe extern "C" fn prime_value_tag(handle: PrimeHandle) -> PrimeTag {
+        if handle.0.is_null() {
+            return PrimeTag::Unit;
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        match data.value {
+            HostValue::Unit => PrimeTag::Unit,
+            HostValue::Int(_) => PrimeTag::Int,
+            HostValue::Float(_) => PrimeTag::Float,
+            HostValue::Bool(_) => PrimeTag::Bool,
+            HostValue::Str(_) => PrimeTag::String,
+            HostValue::Slice(_) => PrimeTag::Slice,
+            HostValue::Map(_) => PrimeTag::Map,
+            HostValue::Enum { .. } => PrimeTag::Enum,
+            HostValue::Receiver(_) => PrimeTag::Receiver,
+            HostValue::Sender(_) => PrimeTag::Sender,
+            HostValue::Task(_) => PrimeTag::JoinHandle,
+        }
+    }
+
+    #[unsafe(export_name = "prime_value_as_int")]
+    pub unsafe extern "C" fn prime_value_as_int(handle: PrimeHandle) -> i128 {
+        if handle.0.is_null() {
+            return 0;
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        match data.value {
+            HostValue::Int(i) => i,
+            HostValue::Bool(b) => {
+                if b {
+                    1
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    #[unsafe(export_name = "prime_value_as_bool")]
+    pub unsafe extern "C" fn prime_value_as_bool(handle: PrimeHandle) -> bool {
+        if handle.0.is_null() {
+            return false;
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        match data.value {
+            HostValue::Bool(b) => b,
+            HostValue::Int(i) => i != 0,
+            _ => false,
+        }
+    }
+
+    #[unsafe(export_name = "prime_value_as_float")]
+    pub unsafe extern "C" fn prime_value_as_float(handle: PrimeHandle) -> f64 {
+        if handle.0.is_null() {
+            return 0.0;
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        match data.value {
+            HostValue::Float(f) => f,
+            HostValue::Int(i) => i as f64,
+            _ => 0.0,
+        }
+    }
+
+    #[unsafe(export_name = "prime_value_as_string")]
+    pub unsafe extern "C" fn prime_value_as_string(
+        handle: PrimeHandle,
+        ptr_out: *mut *const u8,
+        len_out: *mut usize,
+    ) -> PrimeStatus {
+        if handle.0.is_null() || ptr_out.is_null() || len_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        let HostValue::Str(ref s) = data.value else {
+            return PrimeStatus::Invalid;
+        };
+        ptr_out.write(s.as_bytes().as_ptr());
+        len_out.write(s.len());
+        PrimeStatus::Ok
+    }
+
+    #[unsafe(export_name = "prime_reference_read")]
+    pub unsafe extern "C" fn prime_reference_read(_target: PrimeHandle) -> PrimeHandle {
+        PrimeHandle::null()
+    }
+
+    #[unsafe(export_name = "prime_reference_write")]
+    pub unsafe extern "C" fn prime_reference_write(
+        _target: PrimeHandle,
+        _value: PrimeHandle,
+    ) -> PrimeStatus {
+        PrimeStatus::Invalid
+    }
+
+    #[derive(Default, Debug)]
+    struct HostTaskState {
+        result: Mutex<Option<PrimeHandle>>,
+        done: Condvar,
     }
 
     #[unsafe(export_name = "prime_value_retain")]
@@ -867,6 +1595,10 @@ mod host {
         }
     }
 
+    fn task_to_handle(state: Arc<HostTaskState>) -> PrimeHandle {
+        to_handle(HostHandle::new(HostValue::Task(state)))
+    }
+
     #[unsafe(export_name = "prime_print")]
     pub unsafe extern "C" fn prime_print(value: PrimeHandle) {
         if value.0.is_null() {
@@ -875,12 +1607,17 @@ mod host {
         let data = &*(value.0 as *const HostHandle);
         let mut stdout = io::stdout();
         let _ = match &data.value {
-            HostValue::Int(i) => write!(stdout, "{i}"),
-            HostValue::Float(f) => write!(stdout, "{f}"),
-            HostValue::Bool(b) => write!(stdout, "{b}"),
-            HostValue::Str(s) => write!(stdout, "{s}"),
-            HostValue::Enum { tag, .. } => write!(stdout, "<enum {tag}>"),
-            HostValue::Unit => write!(stdout, "()"),
+            HostValue::Int(i) => writeln!(stdout, "{i}"),
+            HostValue::Float(f) => writeln!(stdout, "{f}"),
+            HostValue::Bool(b) => writeln!(stdout, "{b}"),
+            HostValue::Str(s) => writeln!(stdout, "{s}"),
+            HostValue::Enum { tag, .. } => writeln!(stdout, "<enum {tag}>"),
+            HostValue::Unit => writeln!(stdout, "()"),
+            HostValue::Task(_) => writeln!(stdout, "<task>"),
+            HostValue::Receiver(_) => writeln!(stdout, "<receiver>"),
+            HostValue::Sender(_) => writeln!(stdout, "<sender>"),
+            HostValue::Slice(_) => writeln!(stdout, "<slice>"),
+            HostValue::Map(_) => writeln!(stdout, "<map>"),
         };
         let _ = stdout.flush();
     }
@@ -934,6 +1671,133 @@ mod host {
             };
             to_handle(HostHandle::with_tag(enum_value, err_tag as u32))
         }
+    }
+
+    #[unsafe(export_name = "prime_task_new")]
+    pub unsafe extern "C" fn prime_task_new(
+        entry: Option<unsafe extern "C" fn(arg: PrimeHandle) -> PrimeHandle>,
+        arg: PrimeHandle,
+    ) -> PrimeHandle {
+        let Some(func) = entry else {
+            return PrimeHandle::null();
+        };
+        let state = Arc::new(HostTaskState::default());
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            let result = func(arg);
+            let (lock, cv) = (&state_clone.result, &state_clone.done);
+            if let Ok(mut guard) = lock.lock() {
+                *guard = Some(result);
+                cv.notify_all();
+            }
+        });
+        task_to_handle(state)
+    }
+
+    #[unsafe(export_name = "prime_task_poll")]
+    pub unsafe extern "C" fn prime_task_poll(
+        task: PrimeHandle,
+        result_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if task.0.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        if result_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(task.0 as *const HostHandle);
+        let HostValue::Task(state) = &data.value else {
+            return PrimeStatus::Invalid;
+        };
+        if let Ok(mut guard) = state.result.lock() {
+            if let Some(res) = guard.take() {
+                result_out.write(res);
+                return PrimeStatus::Ok;
+            }
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_task_wake")]
+    pub unsafe extern "C" fn prime_task_wake(task: PrimeHandle, value: PrimeHandle) -> PrimeStatus {
+        if task.0.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(task.0 as *const HostHandle);
+        let HostValue::Task(state) = &data.value else {
+            return PrimeStatus::Invalid;
+        };
+        let (lock, cv) = (&state.result, &state.done);
+        if let Ok(mut guard) = lock.lock() {
+            *guard = Some(prime_value_retain(value));
+            cv.notify_all();
+            return PrimeStatus::Ok;
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_sleep_task")]
+    pub unsafe extern "C" fn prime_sleep_task(millis: i64) -> PrimeHandle {
+        let state = Arc::new(HostTaskState::default());
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            let duration = if millis <= 0 {
+                std::time::Duration::from_millis(0)
+            } else {
+                std::time::Duration::from_millis(millis as u64)
+            };
+            thread::sleep(duration);
+            let unit = prime_unit_new();
+            let (lock, cv) = (&state_clone.result, &state_clone.done);
+            if let Ok(mut guard) = lock.lock() {
+                *guard = Some(unit);
+                cv.notify_all();
+            }
+        });
+        task_to_handle(state)
+    }
+
+    #[unsafe(export_name = "prime_recv_task")]
+    pub unsafe extern "C" fn prime_recv_task(receiver: PrimeHandle) -> PrimeHandle {
+        let data = if receiver.0.is_null() {
+            return prime_sleep_task(0);
+        } else {
+            &*(receiver.0 as *const HostHandle)
+        };
+        let HostValue::Receiver(rx) = &data.value else {
+            return prime_sleep_task(0);
+        };
+        let state = Arc::new(HostTaskState::default());
+        let state_clone = state.clone();
+        let rx_clone = rx.clone();
+        thread::spawn(move || {
+            let value = match rx_clone.lock() {
+                Ok(guard) => match guard.try_recv() {
+                    Ok(handle) => handle,
+                    Err(mpsc::TryRecvError::Empty)
+                    | Err(mpsc::TryRecvError::Disconnected) => {
+                        let none = HostValue::Enum {
+                            tag: 0,
+                            values: Vec::new(),
+                        };
+                        to_handle(HostHandle::new(none))
+                    }
+                },
+                Err(_) => {
+                    let none = HostValue::Enum {
+                        tag: 0,
+                        values: Vec::new(),
+                    };
+                    to_handle(HostHandle::new(none))
+                }
+            };
+            let (lock, cv) = (&state_clone.result, &state_clone.done);
+            if let Ok(mut guard) = lock.lock() {
+                *guard = Some(value);
+                cv.notify_all();
+            }
+        });
+        task_to_handle(state)
     }
 
     #[unsafe(export_name = "prime_env_free")]

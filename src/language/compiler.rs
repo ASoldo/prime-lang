@@ -299,10 +299,18 @@ struct JoinHandleValue {
     handle: Option<LLVMValueRef>,
 }
 
+#[derive(Clone, Copy)]
+enum TaskResultKind {
+    Ready,
+    RuntimeUnit,
+    RuntimeOption,
+}
+
 #[derive(Clone)]
 struct TaskValue {
     state: Arc<(Mutex<Option<EvaluatedValue>>, Condvar)>,
     handle: Option<LLVMValueRef>,
+    kind: TaskResultKind,
 }
 
 struct ChannelState {
@@ -496,13 +504,15 @@ impl TaskValue {
         Self {
             state: Arc::new((Mutex::new(Some(value)), Condvar::new())),
             handle: None,
+            kind: TaskResultKind::Ready,
         }
     }
 
-    fn with_handle(handle: LLVMValueRef) -> Self {
+    fn with_handle(handle: LLVMValueRef, kind: TaskResultKind) -> Self {
         Self {
             state: Arc::new((Mutex::new(None), Condvar::new())),
             handle: Some(handle),
+            kind,
         }
     }
 
@@ -514,23 +524,33 @@ impl TaskValue {
         }
     }
 
-    fn take(&self) -> Result<EvaluatedValue, String> {
-        if let Some(handle) = self.handle {
-            return Err(format!(
-                "async task handle {:?} cannot be awaited during build evaluation yet",
-                handle
-            ));
+    fn take(&self, compiler: &mut Compiler) -> Result<EvaluatedValue, String> {
+        match self.kind {
+            TaskResultKind::Ready => {
+                let (lock, cv) = &*self.state;
+                let mut guard = lock
+                    .lock()
+                    .map_err(|_| "task state poisoned".to_string())?;
+                while guard.is_none() {
+                    guard = cv
+                        .wait(guard)
+                        .map_err(|_| "task wait poisoned".to_string())?;
+                }
+                Ok(guard.take().unwrap())
+            }
+            TaskResultKind::RuntimeUnit => {
+                let handle = self
+                    .handle
+                    .ok_or_else(|| "runtime task missing handle".to_string())?;
+                compiler.await_runtime_task(handle, TaskResultKind::RuntimeUnit)
+            }
+            TaskResultKind::RuntimeOption => {
+                let handle = self
+                    .handle
+                    .ok_or_else(|| "runtime task missing handle".to_string())?;
+                compiler.await_runtime_task(handle, TaskResultKind::RuntimeOption)
+            }
         }
-        let (lock, cv) = &*self.state;
-        let mut guard = lock
-            .lock()
-            .map_err(|_| "task state poisoned".to_string())?;
-        while guard.is_none() {
-            guard = cv
-                .wait(guard)
-                .map_err(|_| "task wait poisoned".to_string())?;
-        }
-        Ok(guard.take().unwrap())
     }
 }
 
@@ -1259,11 +1279,97 @@ impl Compiler {
         }
     }
 
+    fn runtime_handles_enabled(&self) -> bool {
+        env::var("PRIME_ENABLE_RT_HANDLES").is_ok()
+    }
+
+    fn await_runtime_task(
+        &mut self,
+        task_handle: LLVMValueRef,
+        kind: TaskResultKind,
+    ) -> Result<EvaluatedValue, String> {
+        if task_handle.is_null() {
+            return Err("runtime task missing handle".into());
+        }
+        self.ensure_runtime_symbols();
+        unsafe {
+            if self.builder.is_null() || LLVMGetInsertBlock(self.builder).is_null() {
+                return Err("await requires active IR builder".into());
+            }
+        }
+        let slot = unsafe {
+            LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("task_result").unwrap().as_ptr(),
+            )
+        };
+        let function = unsafe { LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)) };
+        let poll_block = unsafe {
+            LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("task_poll").unwrap().as_ptr(),
+            )
+        };
+        let ready_block = unsafe {
+            LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("task_ready").unwrap().as_ptr(),
+            )
+        };
+        unsafe { LLVMBuildBr(self.builder, poll_block) };
+        unsafe { LLVMPositionBuilderAtEnd(self.builder, poll_block) };
+        let mut call_args = [task_handle, slot];
+        let status = self.call_runtime(
+            self.runtime_abi.prime_task_poll,
+            self.runtime_abi.prime_task_poll_ty,
+            &mut call_args,
+            "task_poll",
+        );
+        let ok_const =
+            unsafe { LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0) };
+        let cond = unsafe {
+            LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                status,
+                ok_const,
+                CString::new("task_ready_flag").unwrap().as_ptr(),
+            )
+        };
+        unsafe { LLVMBuildCondBr(self.builder, cond, ready_block, poll_block) };
+        unsafe { LLVMPositionBuilderAtEnd(self.builder, ready_block) };
+        let loaded = unsafe {
+            LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                slot,
+                CString::new("task_result_loaded").unwrap().as_ptr(),
+            )
+        };
+        let mut value = match kind {
+            TaskResultKind::RuntimeUnit => self.evaluated(Value::Unit),
+            TaskResultKind::RuntimeOption => self.evaluated(Value::Enum(EnumValue {
+                enum_name: "Option".into(),
+                variant: "<runtime>".into(),
+                values: Vec::new(),
+                variant_index: 0,
+            })),
+            TaskResultKind::Ready => {
+                return Err("ready task routed through runtime await".into());
+            }
+        };
+        value.set_runtime(loaded);
+        Ok(value)
+    }
+
     fn maybe_attach_runtime_handle(&mut self, value: &mut EvaluatedValue) -> Option<LLVMValueRef> {
         if value.runtime_handle().is_some() {
             return value.runtime_handle();
         }
-        if env::var("PRIME_ENABLE_RT_HANDLES").is_err() {
+        if !self.runtime_handles_enabled() {
             return None;
         }
         self.ensure_runtime_symbols();
@@ -4709,7 +4815,7 @@ impl Compiler {
             }
             Expr::Await { expr, .. } => match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => match value.into_value() {
-                    Value::Task(task) => match task.take() {
+                    Value::Task(task) => match task.take(self) {
                         Ok(result) => Ok(EvalOutcome::Value(result)),
                         Err(err) => Err(err),
                     },
@@ -5584,19 +5690,38 @@ impl Compiler {
         enum_value: &EnumValue,
         match_expr: &MatchExpr,
     ) -> Result<Option<EvalOutcome<EvaluatedValue>>, String> {
-        if enum_value.enum_name != "Result" {
-            return Ok(None);
+        let mut variant_tags = HashMap::new();
+        match enum_value.enum_name.as_str() {
+            "Result" => {
+                let ok_tag = self
+                    .enum_variants
+                    .get("Ok")
+                    .map(|v| v.variant_index)
+                    .ok_or_else(|| "Result::Ok variant not found in build mode".to_string())?;
+                let err_tag = self
+                    .enum_variants
+                    .get("Err")
+                    .map(|v| v.variant_index)
+                    .ok_or_else(|| "Result::Err variant not found in build mode".to_string())?;
+                variant_tags.insert("Ok", ok_tag);
+                variant_tags.insert("Err", err_tag);
+            }
+            "Option" => {
+                let some_tag = self
+                    .enum_variants
+                    .get("Some")
+                    .map(|v| v.variant_index)
+                    .ok_or_else(|| "Option::Some variant not found in build mode".to_string())?;
+                let none_tag = self
+                    .enum_variants
+                    .get("None")
+                    .map(|v| v.variant_index)
+                    .ok_or_else(|| "Option::None variant not found in build mode".to_string())?;
+                variant_tags.insert("Some", some_tag);
+                variant_tags.insert("None", none_tag);
+            }
+            _ => return Ok(None),
         }
-        let ok_tag = self
-            .enum_variants
-            .get("Ok")
-            .map(|v| v.variant_index)
-            .ok_or_else(|| "Result::Ok variant not found in build mode".to_string())?;
-        let err_tag = self
-            .enum_variants
-            .get("Err")
-            .map(|v| v.variant_index)
-            .ok_or_else(|| "Result::Err variant not found in build mode".to_string())?;
 
         let supported_patterns = match_expr.arms.iter().all(|arm| match &arm.pattern {
             Pattern::EnumVariant { bindings, .. } => bindings
@@ -5633,11 +5758,10 @@ impl Compiler {
                 Pattern::EnumVariant {
                     variant, bindings, ..
                 } => {
-                    let tag = match variant.as_str() {
-                        "Ok" => Some(ok_tag),
-                        "Err" => Some(err_tag),
-                        _ => None,
-                    };
+                    let tag = variant_tags.get(variant.as_str()).copied();
+                    if tag.is_none() {
+                        return Ok(None);
+                    }
                     (tag, Some(bindings))
                 }
                 Pattern::Wildcard => (None, None),
@@ -8302,6 +8426,23 @@ impl Compiler {
             return Err("sleep_task expects 1 argument".into());
         }
         let millis = self.expect_int(args.pop().unwrap())?;
+        if self.runtime_handles_enabled() {
+            self.ensure_runtime_symbols();
+            let arg = if let Some(constant) = millis.constant() {
+                unsafe { LLVMConstInt(self.runtime_abi.int_type, constant as u64, 1) }
+            } else {
+                self.int_to_runtime_int(&millis, "sleep_task_millis")?
+            };
+            let mut call_args = [arg];
+            let handle = self.call_runtime(
+                self.runtime_abi.prime_sleep_task,
+                self.runtime_abi.prime_sleep_task_ty,
+                &mut call_args,
+                "sleep_task",
+            );
+            let task = TaskValue::with_handle(handle, TaskResultKind::RuntimeUnit);
+            return Ok(Value::Task(Box::new(task)));
+        }
         if let Some(duration) = millis.constant() {
             if !self.target.is_esp32c3() {
                 platform().sleep_ms(duration);
@@ -8751,10 +8892,19 @@ impl Compiler {
             return Err("recv_task expects 1 argument".into());
         }
         let receiver = self.expect_receiver(args.pop().unwrap(), "recv_task")?;
-        if receiver.handle.is_some() {
-            return Err(
-                "recv_task with runtime handles is not supported in build mode yet".into(),
-            );
+        if let Some(handle) = receiver.handle {
+            if self.runtime_handles_enabled() {
+                let mut call_args = [handle];
+                let task_handle = self.call_runtime(
+                    self.runtime_abi.prime_recv_task,
+                    self.runtime_abi.prime_recv_task_ty,
+                    &mut call_args,
+                    "recv_task",
+                );
+                let task = TaskValue::with_handle(task_handle, TaskResultKind::RuntimeOption);
+                return Ok(Value::Task(Box::new(task)));
+            }
+            return Err("recv_task with runtime handles is not supported in build mode yet".into());
         }
         let option = match receiver.recv() {
             Some(value) => self.instantiate_enum_variant("Some", vec![value])?,

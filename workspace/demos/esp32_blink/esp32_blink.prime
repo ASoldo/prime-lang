@@ -13,7 +13,7 @@ fn main() {
     digital_write(led, 0);
     state = false;
     out(`State is: {state}`);
-    delay_ms(1000);
+    delay_ms(2000);
     digital_write(led, 1);
     state = true;
     out(`State is: {state}`);

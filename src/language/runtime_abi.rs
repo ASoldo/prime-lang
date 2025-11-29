@@ -63,6 +63,16 @@ pub struct RuntimeAbi {
     pub prime_map_remove_handle_ty: LLVMTypeRef,
     pub prime_map_entry_handle: LLVMValueRef,
     pub prime_map_entry_handle_ty: LLVMTypeRef,
+    pub prime_value_tag: LLVMValueRef,
+    pub prime_value_tag_ty: LLVMTypeRef,
+    pub prime_value_as_int: LLVMValueRef,
+    pub prime_value_as_int_ty: LLVMTypeRef,
+    pub prime_value_as_bool: LLVMValueRef,
+    pub prime_value_as_bool_ty: LLVMTypeRef,
+    pub prime_value_as_float: LLVMValueRef,
+    pub prime_value_as_float_ty: LLVMTypeRef,
+    pub prime_value_as_string: LLVMValueRef,
+    pub prime_value_as_string_ty: LLVMTypeRef,
     pub prime_enum_new: LLVMValueRef,
     pub prime_enum_new_ty: LLVMTypeRef,
     pub prime_enum_tag: LLVMValueRef,
@@ -245,6 +255,36 @@ impl RuntimeAbi {
                 usize_type,
                 LLVMPointerType(handle_type, 0),
                 LLVMPointerType(handle_type, 0),
+            ],
+        );
+        let (prime_value_tag, prime_value_tag_ty) =
+            declare_fn(module, "prime_value_tag", status_type, &mut [handle_type]);
+        let (prime_value_as_int, prime_value_as_int_ty) = declare_fn(
+            module,
+            "prime_value_as_int",
+            int_type,
+            &mut [handle_type],
+        );
+        let (prime_value_as_bool, prime_value_as_bool_ty) = declare_fn(
+            module,
+            "prime_value_as_bool",
+            bool_type,
+            &mut [handle_type],
+        );
+        let (prime_value_as_float, prime_value_as_float_ty) = declare_fn(
+            module,
+            "prime_value_as_float",
+            float_type,
+            &mut [handle_type],
+        );
+        let (prime_value_as_string, prime_value_as_string_ty) = declare_fn(
+            module,
+            "prime_value_as_string",
+            status_type,
+            &mut [
+                handle_type,
+                LLVMPointerType(string_data_type, 0),
+                LLVMPointerType(usize_type, 0),
             ],
         );
         let (prime_enum_new, prime_enum_new_ty) = declare_fn(
@@ -456,6 +496,16 @@ impl RuntimeAbi {
             prime_map_remove_handle_ty,
             prime_map_entry_handle,
             prime_map_entry_handle_ty,
+            prime_value_tag,
+            prime_value_tag_ty,
+            prime_value_as_int,
+            prime_value_as_int_ty,
+            prime_value_as_bool,
+            prime_value_as_bool_ty,
+            prime_value_as_float,
+            prime_value_as_float_ty,
+            prime_value_as_string,
+            prime_value_as_string_ty,
             prime_enum_new,
             prime_enum_new_ty,
             prime_enum_tag,
@@ -564,6 +614,16 @@ impl RuntimeAbi {
             prime_map_remove_handle_ty: std::ptr::null_mut(),
             prime_map_entry_handle: std::ptr::null_mut(),
             prime_map_entry_handle_ty: std::ptr::null_mut(),
+            prime_value_tag: std::ptr::null_mut(),
+            prime_value_tag_ty: std::ptr::null_mut(),
+            prime_value_as_int: std::ptr::null_mut(),
+            prime_value_as_int_ty: std::ptr::null_mut(),
+            prime_value_as_bool: std::ptr::null_mut(),
+            prime_value_as_bool_ty: std::ptr::null_mut(),
+            prime_value_as_float: std::ptr::null_mut(),
+            prime_value_as_float_ty: std::ptr::null_mut(),
+            prime_value_as_string: std::ptr::null_mut(),
+            prime_value_as_string_ty: std::ptr::null_mut(),
             prime_enum_new: std::ptr::null_mut(),
             prime_enum_new_ty: std::ptr::null_mut(),
             prime_enum_tag: std::ptr::null_mut(),
