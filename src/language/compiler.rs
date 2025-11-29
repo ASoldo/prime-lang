@@ -14,7 +14,7 @@ use crate::{
             BuildCaptured, BuildClosure, BuildEffect, BuildEnumVariant, BuildEvaluation,
             BuildFormatTemplate, BuildFunction, BuildFunctionKey, BuildInterpreter, BuildIterator,
             BuildJoinHandle, BuildJoinOutcome, BuildReference, BuildScope, BuildSnapshot,
-            BuildValue, BuildCleanup, BuildDropRecord,
+            BuildValue, BuildCleanup, BuildDropRecord, BuildTask,
         },
         runtime_abi::RuntimeAbi,
         span::Span,
@@ -143,6 +143,7 @@ enum Value {
     Receiver(ChannelReceiver),
     Iterator(IteratorValue),
     JoinHandle(Box<JoinHandleValue>),
+    Task(Box<TaskValue>),
     Pointer(PointerValue),
     Range(RangeValue),
     Closure(ClosureValue),
@@ -295,6 +296,12 @@ enum JoinResult {
 #[derive(Clone)]
 struct JoinHandleValue {
     result: Arc<Mutex<JoinResult>>,
+    handle: Option<LLVMValueRef>,
+}
+
+#[derive(Clone)]
+struct TaskValue {
+    state: Arc<(Mutex<Option<EvaluatedValue>>, Condvar)>,
     handle: Option<LLVMValueRef>,
 }
 
@@ -481,6 +488,49 @@ impl JoinHandleValue {
                 }
             }
         }
+    }
+}
+
+impl TaskValue {
+    fn ready(value: EvaluatedValue) -> Self {
+        Self {
+            state: Arc::new((Mutex::new(Some(value)), Condvar::new())),
+            handle: None,
+        }
+    }
+
+    fn with_handle(handle: LLVMValueRef) -> Self {
+        Self {
+            state: Arc::new((Mutex::new(None), Condvar::new())),
+            handle: Some(handle),
+        }
+    }
+
+    fn complete(&self, value: EvaluatedValue) {
+        let (lock, cv) = &*self.state;
+        if let Ok(mut guard) = lock.lock() {
+            *guard = Some(value);
+            cv.notify_all();
+        }
+    }
+
+    fn take(&self) -> Result<EvaluatedValue, String> {
+        if let Some(handle) = self.handle {
+            return Err(format!(
+                "async task handle {:?} cannot be awaited during build evaluation yet",
+                handle
+            ));
+        }
+        let (lock, cv) = &*self.state;
+        let mut guard = lock
+            .lock()
+            .map_err(|_| "task state poisoned".to_string())?;
+        while guard.is_none() {
+            guard = cv
+                .wait(guard)
+                .map_err(|_| "task wait poisoned".to_string())?;
+        }
+        Ok(guard.take().unwrap())
     }
 }
 
@@ -883,6 +933,18 @@ fn value_to_build_value_with_ctx(
                 );
             }
             Ok(BuildValue::Map(converted))
+        }
+        Value::Task(task) => {
+            let (lock, _) = &*task.state;
+            let guard = lock
+                .lock()
+                .map_err(|_| "task value poisoned while capturing build snapshot")?;
+            if let Some(inner) = guard.as_ref() {
+                let converted = value_to_build_value_with_ctx(inner.value(), ctx)?;
+                Ok(BuildValue::Task(Box::new(BuildTask { result: converted })))
+            } else {
+                Err("task value not ready during build snapshot".into())
+            }
         }
         Value::Iterator(iter) => {
             let mut converted = Vec::new();
@@ -1433,8 +1495,10 @@ impl Compiler {
                 end: self.const_int_value(end),
                 inclusive,
             })),
-            BuildValue::Task(_) => {
-                Err("async/await is not supported in build output yet".into())
+            BuildValue::Task(task) => {
+                let inner = self.build_value_to_value(task.result.clone(), channels)?;
+                let task_value = TaskValue::ready(self.evaluated(inner));
+                Ok(Value::Task(Box::new(task_value)))
             }
             BuildValue::Boxed(inner) => Ok(Value::Boxed(BoxValue::new(
                 self.build_value_to_value(*inner, channels)?,
@@ -2167,6 +2231,7 @@ impl Compiler {
                 self.emit_printf_call("%.*s", &mut args);
                 Ok(())
             }
+            Value::Task(_) => Err("Cannot print task value in build mode".into()),
             Value::Moved => Err("Cannot print moved value in build mode".into()),
         }
     }
@@ -4610,8 +4675,51 @@ impl Compiler {
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
-            Expr::Async { .. } => Err("async execution is not implemented in build mode yet".into()),
-            Expr::Await { .. } => Err("await is not implemented in build mode yet".into()),
+            Expr::Async { block, .. } => {
+                self.push_scope();
+                let result = self.execute_block_contents(block)?;
+                self.exit_scope()?;
+                let value = match result {
+                    BlockEval::Value(val) => val,
+                    BlockEval::Flow(FlowSignal::Return(values)) => {
+                        if values.len() == 1 {
+                            values.into_iter().next().unwrap()
+                        } else {
+                            let mut items = Vec::new();
+                            for v in values {
+                                items.push(v.into_value());
+                            }
+                            self.evaluated(Value::Tuple(items))
+                        }
+                    }
+                    BlockEval::Flow(FlowSignal::Propagate(value)) => {
+                        return Err(format!(
+                            "async block propagated error: {}",
+                            flow_name(&FlowSignal::Propagate(value.clone()))
+                        ))
+                    }
+                    BlockEval::Flow(_) => {
+                        return Err("control flow cannot exit async block in build mode".into())
+                    }
+                };
+                let task = TaskValue::ready(value);
+                Ok(EvalOutcome::Value(
+                    Value::Task(Box::new(task)).into(),
+                ))
+            }
+            Expr::Await { expr, .. } => match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => match value.into_value() {
+                    Value::Task(task) => match task.take() {
+                        Ok(result) => Ok(EvalOutcome::Value(result)),
+                        Err(err) => Err(err),
+                    },
+                    other => Err(format!(
+                        "`await` expects a Task, found {}",
+                        self.describe_value(&other)
+                    )),
+                },
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
             Expr::Spawn { expr, .. } => {
                 let experimental = env::var("PRIME_BUILD_PARALLEL")
                     .map(|v| v == "1")
@@ -4692,6 +4800,9 @@ impl Compiler {
                         }
                         Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => {
                             return Err("Cannot access field on concurrency value".into());
+                        }
+                        Value::Task(_) => {
+                            return Err("Cannot access field on task value".into());
                         }
                         Value::Closure(_) => {
                             return Err("Cannot access field on closure value".into());
@@ -5182,10 +5293,11 @@ impl Compiler {
             "recv_timeout" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_recv_timeout(values)))
             }
-            "recv_task" | "sleep_task" => {
-                return Some(Err(
-                    "async builtins are not supported in build/LLVM output yet".into(),
-                ));
+            "recv_task" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_recv_task(values)))
+            }
+            "sleep_task" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_sleep_task(values)))
             }
             "close" => Some(self.invoke_builtin(args, |this, values| this.builtin_close(values))),
             "join" => Some(self.invoke_builtin(args, |this, values| this.builtin_join(values))),
@@ -8185,6 +8297,20 @@ impl Compiler {
         Ok(Value::Unit)
     }
 
+    fn builtin_sleep_task(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("sleep_task expects 1 argument".into());
+        }
+        let millis = self.expect_int(args.pop().unwrap())?;
+        if let Some(duration) = millis.constant() {
+            if !self.target.is_esp32c3() {
+                platform().sleep_ms(duration);
+            }
+        }
+        let task = TaskValue::ready(self.evaluated(Value::Unit));
+        Ok(Value::Task(Box::new(task)))
+    }
+
     fn ensure_embedded_target(&self, name: &str) -> Result<(), String> {
         if self.target.is_embedded() {
             Ok(())
@@ -8618,6 +8744,24 @@ impl Compiler {
             Some(value) => self.instantiate_enum_variant("Some", vec![value]),
             None => self.instantiate_enum_variant("None", Vec::new()),
         }
+    }
+
+    fn builtin_recv_task(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("recv_task expects 1 argument".into());
+        }
+        let receiver = self.expect_receiver(args.pop().unwrap(), "recv_task")?;
+        if receiver.handle.is_some() {
+            return Err(
+                "recv_task with runtime handles is not supported in build mode yet".into(),
+            );
+        }
+        let option = match receiver.recv() {
+            Some(value) => self.instantiate_enum_variant("Some", vec![value])?,
+            None => self.instantiate_enum_variant("None", Vec::new())?,
+        };
+        let task = TaskValue::ready(self.evaluated(option));
+        Ok(Value::Task(Box::new(task)))
     }
 
     fn builtin_close(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
@@ -9287,6 +9431,7 @@ impl Compiler {
             Value::Sender(_) => "channel sender",
             Value::Receiver(_) => "channel receiver",
             Value::Iterator(_) => "iterator",
+            Value::Task(_) => "task",
             Value::Pointer(_) => "pointer",
             Value::Range(_) => "range",
             Value::JoinHandle(_) => "join handle",
@@ -9411,6 +9556,7 @@ fn describe_value(value: &Value) -> &'static str {
         Value::Pointer(_) => "pointer",
         Value::JoinHandle(_) => "join handle",
         Value::Closure(_) => "closure",
+        Value::Task(_) => "task",
         Value::Moved => "moved",
     }
 }
@@ -10089,6 +10235,12 @@ fn main() {
     fn pattern_demo_compiles() {
         compile_entry("workspace/demos/patterns/pattern_demo.prime")
             .expect("compile pattern demo in build mode");
+    }
+
+    #[test]
+    fn async_demo_compiles() {
+        compile_entry("workspace/demos/async_demo/async_demo.prime")
+            .expect("compile async demo in build mode");
     }
 
     #[test]

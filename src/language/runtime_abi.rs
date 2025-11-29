@@ -89,6 +89,16 @@ pub struct RuntimeAbi {
     pub prime_spawn_ty: LLVMTypeRef,
     pub prime_join: LLVMValueRef,
     pub prime_join_ty: LLVMTypeRef,
+    pub prime_task_new: LLVMValueRef,
+    pub prime_task_new_ty: LLVMTypeRef,
+    pub prime_task_poll: LLVMValueRef,
+    pub prime_task_poll_ty: LLVMTypeRef,
+    pub prime_task_wake: LLVMValueRef,
+    pub prime_task_wake_ty: LLVMTypeRef,
+    pub prime_sleep_task: LLVMValueRef,
+    pub prime_sleep_task_ty: LLVMTypeRef,
+    pub prime_recv_task: LLVMValueRef,
+    pub prime_recv_task_ty: LLVMTypeRef,
     pub prime_print: LLVMValueRef,
     pub prime_print_ty: LLVMTypeRef,
     pub prime_read_value: LLVMValueRef,
@@ -315,6 +325,36 @@ impl RuntimeAbi {
             status_type,
             &mut [handle_type, channel_out_type],
         );
+        let (prime_task_new, prime_task_new_ty) = declare_fn(
+            module,
+            "prime_task_new",
+            handle_type,
+            &mut [thread_fn_type, handle_type],
+        );
+        let (prime_task_poll, prime_task_poll_ty) = declare_fn(
+            module,
+            "prime_task_poll",
+            status_type,
+            &mut [handle_type, channel_out_type],
+        );
+        let (prime_task_wake, prime_task_wake_ty) = declare_fn(
+            module,
+            "prime_task_wake",
+            status_type,
+            &mut [handle_type, handle_type],
+        );
+        let (prime_sleep_task, prime_sleep_task_ty) = declare_fn(
+            module,
+            "prime_sleep_task",
+            handle_type,
+            &mut [int_type],
+        );
+        let (prime_recv_task, prime_recv_task_ty) = declare_fn(
+            module,
+            "prime_recv_task",
+            handle_type,
+            &mut [handle_type],
+        );
         let (prime_print, prime_print_ty) =
             declare_fn(module, "prime_print", void_type, &mut [handle_type]);
         let (prime_read_value, prime_read_value_ty) = declare_fn(
@@ -442,6 +482,16 @@ impl RuntimeAbi {
             prime_spawn_ty,
             prime_join,
             prime_join_ty,
+            prime_task_new,
+            prime_task_new_ty,
+            prime_task_poll,
+            prime_task_poll_ty,
+            prime_task_wake,
+            prime_task_wake_ty,
+            prime_sleep_task,
+            prime_sleep_task_ty,
+            prime_recv_task,
+            prime_recv_task_ty,
             prime_print,
             prime_print_ty,
             prime_read_value,
@@ -540,6 +590,16 @@ impl RuntimeAbi {
             prime_spawn_ty: std::ptr::null_mut(),
             prime_join: std::ptr::null_mut(),
             prime_join_ty: std::ptr::null_mut(),
+            prime_task_new: std::ptr::null_mut(),
+            prime_task_new_ty: std::ptr::null_mut(),
+            prime_task_poll: std::ptr::null_mut(),
+            prime_task_poll_ty: std::ptr::null_mut(),
+            prime_task_wake: std::ptr::null_mut(),
+            prime_task_wake_ty: std::ptr::null_mut(),
+            prime_sleep_task: std::ptr::null_mut(),
+            prime_sleep_task_ty: std::ptr::null_mut(),
+            prime_recv_task: std::ptr::null_mut(),
+            prime_recv_task_ty: std::ptr::null_mut(),
             prime_print: std::ptr::null_mut(),
             prime_print_ty: std::ptr::null_mut(),
             prime_read_value: std::ptr::null_mut(),

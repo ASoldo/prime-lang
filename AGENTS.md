@@ -29,7 +29,7 @@
         across targets (or documented deltas).
   4. Concurrency & async:
       - Clarify memory model and ordering guarantees for channels/threads; document determinism expectations.
-      - Decide whether async/await is in/out of scope for 1.0; if out, make channels/spawn fully stable.
+      - Async/await is being prototyped: interpreter runs async cooperatively with `sleep_task` and `recv_task` (blocking fallback for recv), typechecker rejects awaits that hold mutable borrows or reference/pointer types. Build mode still errors on async builtins; compiler emits a clear diagnostic. LLVM lowering/runtime ABI for async remains TODO.
   5. FFI & embedding:
       - Formalize the runtime ABI surface (host and embedded) with versioning; consider a small FFI for host builds.
       - Document stability guarantees for ABI symbols and target triples.

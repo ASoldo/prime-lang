@@ -72,6 +72,13 @@ pub struct ChannelReceiver {
     receiver: Arc<Mutex<mpsc::Receiver<Value>>>,
 }
 
+#[derive(Clone, Debug)]
+pub enum TryRecvOutcome {
+    Pending,
+    Closed,
+    Item(Value),
+}
+
 impl ChannelSender {
     pub fn new(sender: Arc<Mutex<Option<mpsc::Sender<Value>>>>) -> Self {
         Self { inner: sender }
@@ -105,6 +112,18 @@ impl ChannelReceiver {
     pub fn recv(&self) -> Option<Value> {
         let guard = self.receiver.lock().ok()?;
         guard.recv().ok()
+    }
+
+    pub fn try_recv(&self) -> TryRecvOutcome {
+        let guard = match self.receiver.lock() {
+            Ok(g) => g,
+            Err(_) => return TryRecvOutcome::Closed,
+        };
+        match guard.try_recv() {
+            Ok(v) => TryRecvOutcome::Item(v),
+            Err(mpsc::TryRecvError::Empty) => TryRecvOutcome::Pending,
+            Err(mpsc::TryRecvError::Disconnected) => TryRecvOutcome::Closed,
+        }
     }
 
     pub fn recv_timeout(&self, millis: i64) -> Option<Value> {
@@ -529,5 +548,20 @@ impl MapValue {
 
     pub fn len(&self) -> usize {
         self.entries.lock().unwrap().len()
+    }
+}
+
+pub fn make_option_value(value: Option<Value>) -> Value {
+    match value {
+        Some(v) => Value::Enum(EnumValue {
+            enum_name: "Option".into(),
+            variant: "Some".into(),
+            values: vec![v],
+        }),
+        None => Value::Enum(EnumValue {
+            enum_name: "Option".into(),
+            variant: "None".into(),
+            values: Vec::new(),
+        }),
     }
 }

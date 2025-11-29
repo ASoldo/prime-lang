@@ -45,6 +45,6 @@ This note captures the intended shape of async/await for Prime. It is a checkpoi
 
 ## Current Status (2026-04 prototype)
 - Syntax + formatter/LSP/typechecker paths are in place; `async {}` returns `Task[T]`, `await` unwraps.
-- Runtime uses `AsyncRuntime` with a task state + condvar handle; currently tasks run on host threads while we build the cooperative scheduler.
-- Build mode executes `async` eagerly and treats `await` as immediate; compiler/LLVM still emit a not-implemented error for async/await.
+- Runtime uses `AsyncRuntime` with a task state + condvar handle; the cooperative scheduler now polls timers and channel inboxes instead of relying on blocking helper threads.
+- Build mode lowers `async`/`await` into the same runtime calls; `sleep_task`/`recv_task` now compile for LLVM output while keeping deterministic snapshots.
 - Borrow/send checks across suspension points are not enforced yet; add these once the scheduler is wired.

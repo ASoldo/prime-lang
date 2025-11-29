@@ -1916,10 +1916,7 @@ impl Interpreter {
         require_std_builtins("recv_task")?;
         self.expect_arity("recv_task", &args, 1)?;
         let receiver = self.expect_receiver("recv_task", args.remove(0))?;
-        let task = self.async_runtime.spawn_blocking(move || {
-            let value = receiver.recv();
-            Ok(make_option_value(value))
-        });
+        let task = self.async_runtime.recv_task(receiver);
         Ok(vec![Value::Task(Box::new(task))])
     }
 
@@ -3929,21 +3926,6 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
         FlowSignal::Continue => "continue",
         FlowSignal::Return(_) => "return",
         FlowSignal::Propagate(_) => "error propagation",
-    }
-}
-
-fn make_option_value(value: Option<Value>) -> Value {
-    match value {
-        Some(v) => Value::Enum(EnumValue {
-            enum_name: "Option".into(),
-            variant: "Some".into(),
-            values: vec![v],
-        }),
-        None => Value::Enum(EnumValue {
-            enum_name: "Option".into(),
-            variant: "None".into(),
-            values: Vec::new(),
-        }),
     }
 }
 

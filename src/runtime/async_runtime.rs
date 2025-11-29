@@ -1,10 +1,9 @@
 //! Async runtime scaffolding for async/await support.
-//! This file seeds a cooperative scheduler; until all primitives are non-blocking,
-//! tasks still execute on helper threads to preserve correctness.
+//! Cooperative async scheduler used by the interpreter and host runtime ABI.
 
 use crate::runtime::{
     error::RuntimeResult,
-    value::{TaskState, TaskValue, Value},
+    value::{make_option_value, TaskState, TaskValue, TryRecvOutcome, Value},
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -19,12 +18,23 @@ pub struct AsyncRuntime {
 #[derive(Default)]
 struct AsyncShared {
     ready: Mutex<VecDeque<TaskHandle>>,
+    sleepers: Mutex<Vec<TimerHandle>>,
+    channel_waiters: Mutex<Vec<ChannelWaiter>>,
 }
 
 struct TaskHandle {
     state: Arc<(Mutex<TaskState>, std::sync::Condvar)>,
-    deadline: Option<Instant>,
     runnable: Option<Box<dyn FnOnce() -> RuntimeResult<Value> + Send>>,
+}
+
+struct TimerHandle {
+    state: Arc<(Mutex<TaskState>, std::sync::Condvar)>,
+    deadline: Instant,
+}
+
+struct ChannelWaiter {
+    state: Arc<(Mutex<TaskState>, std::sync::Condvar)>,
+    receiver: crate::runtime::value::ChannelReceiver,
 }
 
 impl AsyncRuntime {
@@ -32,12 +42,14 @@ impl AsyncRuntime {
         Self {
             shared: Arc::new(AsyncShared {
                 ready: Mutex::new(VecDeque::new()),
+                sleepers: Mutex::new(Vec::new()),
+                channel_waiters: Mutex::new(Vec::new()),
             }),
         }
     }
 
-    /// Spawn a task and return a TaskValue handle. Currently drives runnables cooperatively;
-    /// once timers/channels are non-blocking this will be pumped by the scheduler loop.
+    /// Spawn a task and return a TaskValue handle. Runnables execute cooperatively on the
+    /// driving thread; async waits are advanced via timers and channel polls.
     pub fn spawn<F>(&self, f: F) -> TaskValue
     where
         F: FnOnce() -> RuntimeResult<Value> + Send + 'static,
@@ -45,7 +57,6 @@ impl AsyncRuntime {
         let (task, state) = TaskValue::new_pair();
         self.enqueue(TaskHandle {
             state: state.clone(),
-            deadline: None,
             runnable: Some(Box::new(f)),
         });
         self.drive_ready();
@@ -68,22 +79,25 @@ impl AsyncRuntime {
     /// Return a task that completes after the given duration.
     pub fn sleep_task(&self, millis: i64) -> TaskValue {
         let (task, state) = TaskValue::new_pair();
-        let duration = if millis <= 0 {
-            Duration::from_millis(0)
-        } else {
-            Duration::from_millis(millis as u64)
-        };
+        let duration = Duration::from_millis(millis.max(0) as u64);
         let deadline = Instant::now() + duration;
-        self.enqueue(TaskHandle {
-            state: state.clone(),
-            deadline: Some(deadline),
-            runnable: None,
-        });
-        // Spawn a timer thread to wake the task when due. This will be replaced by timer wheel.
-        std::thread::spawn(move || {
-            std::thread::sleep(duration);
-            TaskValue::store_result(&state, Ok(Value::Unit));
-        });
+        let mut sleepers = self.shared.sleepers.lock().unwrap();
+        sleepers.push(TimerHandle { state, deadline });
+        drop(sleepers);
+        self.drive_ready();
+        task
+    }
+
+    /// Create a task that resolves when the channel yields a value or closes.
+    pub fn recv_task(
+        &self,
+        receiver: crate::runtime::value::ChannelReceiver,
+    ) -> TaskValue {
+        let (task, state) = TaskValue::new_pair();
+        let mut waiters = self.shared.channel_waiters.lock().unwrap();
+        waiters.push(ChannelWaiter { state, receiver });
+        drop(waiters);
+        self.drive_ready();
         task
     }
 
@@ -91,12 +105,10 @@ impl AsyncRuntime {
     #[allow(dead_code)]
     pub fn poll_ready(&self) -> Option<TaskValue> {
         let mut ready = self.shared.ready.lock().ok()?;
-        let now = Instant::now();
-        let pos = ready
+        if let Some(idx) = ready
             .iter()
-            .position(|handle| handle.deadline.map(|d| d <= now).unwrap_or(true))
-            .or_else(|| ready.iter().position(|handle| handle.state.0.lock().map(|g| g.finished).unwrap_or(false)));
-        if let Some(idx) = pos {
+            .position(|handle| handle.state.0.lock().map(|g| g.finished).unwrap_or(false))
+        {
             let handle = ready.remove(idx)?;
             return Some(TaskValue::with_state(handle.state));
         }
@@ -110,11 +122,8 @@ impl AsyncRuntime {
         state: Arc<(Mutex<TaskState>, std::sync::Condvar)>,
         deadline: Instant,
     ) {
-        self.enqueue(TaskHandle {
-            state,
-            deadline: Some(deadline),
-            runnable: None,
-        });
+        let mut sleepers = self.shared.sleepers.lock().unwrap();
+        sleepers.push(TimerHandle { state, deadline });
     }
 
     fn enqueue(&self, handle: TaskHandle) {
@@ -123,32 +132,77 @@ impl AsyncRuntime {
     }
 
     fn next_deadline(&self) -> Option<Instant> {
-        let ready = self.shared.ready.lock().ok()?;
-        ready.iter().filter_map(|h| h.deadline).min()
+        let sleepers = self.shared.sleepers.lock().ok()?;
+        sleepers.iter().map(|h| h.deadline).min()
     }
 
     fn drive_ready(&self) {
         loop {
-            let maybe_handle = {
-                let mut ready = self.shared.ready.lock().unwrap();
-                let now = Instant::now();
-                let pos = ready.iter().position(|h| h.deadline.map(|d| d <= now).unwrap_or(true));
-                match pos {
-                    Some(idx) => Some(ready.remove(idx).unwrap()),
-                    None => ready.pop_front(),
-                }
-            };
-            let Some(mut handle) = maybe_handle else { break };
-            if let Some(runnable) = handle.runnable.take() {
-                let state = handle.state.clone();
-                let result = runnable();
-                TaskValue::store_result(&state, result);
-            } else {
-                // not runnable yet (timer/channel) — if it's a sleep, leave it queued
-                self.enqueue(handle);
+            let mut progressed = false;
+            progressed |= self.run_ready();
+            progressed |= self.poll_sleepers();
+            progressed |= self.poll_channels();
+            if !progressed {
                 break;
             }
         }
+    }
+
+    fn run_ready(&self) -> bool {
+        let maybe_handle = {
+            let mut ready = self.shared.ready.lock().unwrap();
+            ready.pop_front()
+        };
+        let Some(mut handle) = maybe_handle else { return false };
+        if let Some(runnable) = handle.runnable.take() {
+            let state = handle.state.clone();
+            let result = runnable();
+            TaskValue::store_result(&state, result);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn poll_sleepers(&self) -> bool {
+        let now = Instant::now();
+        let mut sleepers = self.shared.sleepers.lock().unwrap();
+        let mut progressed = false;
+        let mut i = 0;
+        while i < sleepers.len() {
+            if sleepers[i].deadline <= now {
+                let handle = sleepers.remove(i);
+                TaskValue::store_result(&handle.state, Ok(Value::Unit));
+                progressed = true;
+            } else {
+                i += 1;
+            }
+        }
+        progressed
+    }
+
+    fn poll_channels(&self) -> bool {
+        let mut waiters = self.shared.channel_waiters.lock().unwrap();
+        let mut progressed = false;
+        let mut i = 0;
+        while i < waiters.len() {
+            match waiters[i].receiver.try_recv() {
+                TryRecvOutcome::Item(v) => {
+                    let handle = waiters.remove(i);
+                    TaskValue::store_result(&handle.state, Ok(make_option_value(Some(v))));
+                    progressed = true;
+                }
+                TryRecvOutcome::Closed => {
+                    let handle = waiters.remove(i);
+                    TaskValue::store_result(&handle.state, Ok(make_option_value(None)));
+                    progressed = true;
+                }
+                TryRecvOutcome::Pending => {
+                    i += 1;
+                }
+            }
+        }
+        progressed
     }
 
     /// Block until the given task completes by draining the ready queue cooperatively.
@@ -158,7 +212,6 @@ impl AsyncRuntime {
             return task.join().map_err(|msg| crate::runtime::error::RuntimeError::Panic { message: msg });
         }
         // Drive until finished.
-        let start = Instant::now();
         loop {
             self.drive_ready();
             if task.is_finished() {
@@ -167,22 +220,43 @@ impl AsyncRuntime {
             if let Some(deadline) = self.next_deadline() {
                 let now = Instant::now();
                 if deadline > now {
-                    let sleep_dur = deadline - now;
-                    std::thread::sleep(sleep_dur);
-                } else {
-                    std::thread::yield_now();
+                    std::thread::sleep(deadline - now);
                 }
             } else {
-                // Avoid busy loop; in the future this will block on pollers.
                 std::thread::sleep(Duration::from_millis(1));
             }
-            if start.elapsed() > Duration::from_secs(1) {
-                break;
-            }
         }
-        Err(crate::runtime::error::RuntimeError::Unsupported {
-            message: "async task did not finish; cooperative scheduler needs wakeups (timers/channels)".into(),
-        })
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::value::{ChannelReceiver, ChannelSender};
+
+    #[test]
+    fn sleep_task_completes() {
+        let rt = AsyncRuntime::new();
+        let task = rt.sleep_task(1);
+        let result = rt.block_on(&task);
+        assert!(result.is_ok(), "sleep_task should complete");
+    }
+
+    #[test]
+    fn recv_task_wakes_without_blocking_thread() {
+        let rt = AsyncRuntime::new();
+        let (tx_raw, rx_raw) = std::sync::mpsc::channel();
+        let sender_state = Arc::new(Mutex::new(Some(tx_raw)));
+        let receiver = Arc::new(Mutex::new(rx_raw));
+        let channel_rx = ChannelReceiver::new(sender_state.clone(), receiver);
+        let channel_tx = ChannelSender::new(sender_state);
+        channel_tx.send(Value::Int(1)).expect("send");
+        let task = rt.recv_task(channel_rx);
+        let result = rt.block_on(&task).expect("recv_task result");
+        match result {
+            Value::Enum(ev) => assert_eq!(ev.variant, "Some"),
+            other => panic!("expected Option::Some from recv_task, got {:?}", other),
+        }
+    }
 }

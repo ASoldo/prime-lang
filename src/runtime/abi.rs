@@ -50,7 +50,7 @@ mod embedded {
 
     #[repr(transparent)]
     #[derive(Clone, Copy)]
-    pub struct PrimeHandle(*mut c_void);
+    pub struct PrimeHandle(pub *mut c_void);
 
     impl PrimeHandle {
         pub const fn null() -> Self {
@@ -79,35 +79,42 @@ mod embedded {
     pub const TYPE_RUNE: u32 = 14;
 
     // Required FFI entry points used by the compiler.
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(export_name = "prime_value_retain")]
     pub unsafe extern "C" fn prime_value_retain(value: PrimeHandle) -> PrimeHandle {
         value
     }
 
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(export_name = "prime_value_release")]
     pub unsafe extern "C" fn prime_value_release(_value: PrimeHandle) {}
 
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(export_name = "prime_unit_new")]
     pub unsafe extern "C" fn prime_unit_new() -> PrimeHandle {
         PrimeHandle::null()
     }
 
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(export_name = "prime_int_new")]
     pub unsafe extern "C" fn prime_int_new(_value: i128) -> PrimeHandle {
         PrimeHandle::null()
     }
 
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(export_name = "prime_float_new")]
     pub unsafe extern "C" fn prime_float_new(_value: f64) -> PrimeHandle {
         PrimeHandle::null()
     }
 
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(export_name = "prime_bool_new")]
     pub unsafe extern "C" fn prime_bool_new(_value: bool) -> PrimeHandle {
         PrimeHandle::null()
     }
 
     #[cfg(not(target_arch = "xtensa"))]
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(export_name = "prime_string_new")]
     pub unsafe extern "C" fn prime_string_new(_data: *const u8, _len: usize) -> PrimeHandle {
         PrimeHandle::null()
@@ -128,6 +135,7 @@ mod embedded {
         PrimeHandle::null()
     }
 
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(export_name = "prime_enum_new")]
     pub unsafe extern "C" fn prime_enum_new(
         _tag: u32,
@@ -286,6 +294,58 @@ mod embedded {
     }
 
     #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[unsafe(export_name = "prime_read_value")]
+    pub unsafe extern "C" fn prime_read_value(
+        _status: PrimeStatus,
+        _tag: PrimeStatus,
+        _flags: PrimeStatus,
+        _name_ptr: *const u8,
+        _name_len: usize,
+        _values_ptr: *mut PrimeHandle,
+        _values_len: usize,
+    ) -> PrimeHandle {
+        PrimeHandle::null()
+    }
+
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[unsafe(export_name = "prime_env_free")]
+    pub unsafe extern "C" fn prime_env_free(_handle: PrimeHandle) {}
+
+    #[unsafe(export_name = "prime_task_new")]
+    pub unsafe extern "C" fn prime_task_new(
+        _entry: Option<unsafe extern "C" fn(arg: PrimeHandle) -> PrimeHandle>,
+        _arg: PrimeHandle,
+    ) -> PrimeHandle {
+        PrimeHandle::null()
+    }
+
+    #[unsafe(export_name = "prime_task_poll")]
+    pub unsafe extern "C" fn prime_task_poll(
+        _task: PrimeHandle,
+        result_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if !result_out.is_null() {
+            result_out.write(PrimeHandle::null());
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_task_wake")]
+    pub unsafe extern "C" fn prime_task_wake(_task: PrimeHandle, _value: PrimeHandle) -> PrimeStatus {
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_sleep_task")]
+    pub unsafe extern "C" fn prime_sleep_task(_millis: i64) -> PrimeHandle {
+        PrimeHandle::null()
+    }
+
+    #[unsafe(export_name = "prime_recv_task")]
+    pub unsafe extern "C" fn prime_recv_task(_receiver: PrimeHandle) -> PrimeHandle {
+        PrimeHandle::null()
+    }
+
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[panic_handler]
     fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
         loop {
@@ -303,11 +363,13 @@ mod embedded {
         0
     }
 
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_enum_tag(_handle: PrimeHandle) -> u32 {
         0
     }
 
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_enum_get(_handle: PrimeHandle, _idx: usize) -> PrimeHandle {
         PrimeHandle::null()
@@ -376,6 +438,7 @@ mod embedded {
         PrimeHandle(STR_HANDLES.as_mut_ptr().add(slot) as *mut c_void)
     }
 
+    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_print(value: PrimeHandle) {
         if value.0.is_null() {
@@ -663,8 +726,221 @@ pub use embedded::*;
     all(target_arch = "riscv32", target_os = "none"),
 )))]
 mod host {
-    // Export the same symbols for host builds to satisfy compiler imports.
-    pub use super::embedded::*;
+    use std::ffi::c_void;
+    use std::io::{self, Write};
+    use std::slice;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub use super::embedded::{
+        PrimeHandle, PrimeStatus, PrimeTag, TYPE_BOOL, TYPE_FLOAT32, TYPE_FLOAT64, TYPE_INT16,
+        TYPE_INT32, TYPE_INT64, TYPE_INT8, TYPE_ISIZE, TYPE_RUNE, TYPE_STRING, TYPE_UINT16,
+        TYPE_UINT32, TYPE_UINT64, TYPE_UINT8, TYPE_USIZE,
+    };
+
+    #[derive(Clone, Debug)]
+    enum HostValue {
+        Unit,
+        Int(i128),
+        Float(f64),
+        Bool(bool),
+        Str(String),
+        Enum { tag: u32, values: Vec<HostValue> },
+    }
+
+    #[derive(Clone)]
+    struct HostHandle {
+        value: HostValue,
+        tag: Option<u32>,
+    }
+
+    impl HostHandle {
+        fn new(value: HostValue) -> Self {
+            Self { value, tag: None }
+        }
+
+        fn with_tag(value: HostValue, tag: u32) -> Self {
+            Self {
+                value,
+                tag: Some(tag),
+            }
+        }
+    }
+
+    fn to_handle(data: HostHandle) -> PrimeHandle {
+        PrimeHandle(Box::into_raw(Box::new(data)) as *mut c_void)
+    }
+
+    unsafe fn clone_value(handle: PrimeHandle) -> HostValue {
+        if handle.0.is_null() {
+            return HostValue::Unit;
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        data.value.clone()
+    }
+
+    #[unsafe(export_name = "prime_value_retain")]
+    pub unsafe extern "C" fn prime_value_retain(value: PrimeHandle) -> PrimeHandle {
+        if value.0.is_null() {
+            return PrimeHandle::null();
+        }
+        let data = &*(value.0 as *const HostHandle);
+        to_handle(data.clone())
+    }
+
+    #[unsafe(export_name = "prime_value_release")]
+    pub unsafe extern "C" fn prime_value_release(value: PrimeHandle) {
+        if value.0.is_null() {
+            return;
+        }
+        let _ = Box::from_raw(value.0 as *mut HostHandle);
+    }
+
+    #[unsafe(export_name = "prime_unit_new")]
+    pub unsafe extern "C" fn prime_unit_new() -> PrimeHandle {
+        to_handle(HostHandle::new(HostValue::Unit))
+    }
+
+    #[unsafe(export_name = "prime_int_new")]
+    pub unsafe extern "C" fn prime_int_new(value: i128) -> PrimeHandle {
+        to_handle(HostHandle::new(HostValue::Int(value)))
+    }
+
+    #[unsafe(export_name = "prime_float_new")]
+    pub unsafe extern "C" fn prime_float_new(value: f64) -> PrimeHandle {
+        to_handle(HostHandle::new(HostValue::Float(value)))
+    }
+
+    #[unsafe(export_name = "prime_bool_new")]
+    pub unsafe extern "C" fn prime_bool_new(value: bool) -> PrimeHandle {
+        to_handle(HostHandle::new(HostValue::Bool(value)))
+    }
+
+    #[unsafe(export_name = "prime_string_new")]
+    pub unsafe extern "C" fn prime_string_new(data: *const u8, len: usize) -> PrimeHandle {
+        if data.is_null() {
+            return PrimeHandle::null();
+        }
+        let slice = slice::from_raw_parts(data, len);
+        let text = String::from_utf8_lossy(slice).into_owned();
+        to_handle(HostHandle::new(HostValue::Str(text)))
+    }
+
+    #[unsafe(export_name = "prime_enum_new")]
+    pub unsafe extern "C" fn prime_enum_new(
+        tag: u32,
+        values_ptr: *const PrimeHandle,
+        values_len: usize,
+    ) -> PrimeHandle {
+        let mut values = Vec::with_capacity(values_len);
+        if !values_ptr.is_null() {
+            let slice = slice::from_raw_parts(values_ptr, values_len);
+            for handle in slice {
+                values.push(clone_value(*handle));
+            }
+        }
+        let enum_value = HostValue::Enum { tag, values };
+        to_handle(HostHandle::with_tag(enum_value, tag))
+    }
+
+    #[unsafe(export_name = "prime_enum_tag")]
+    pub unsafe extern "C" fn prime_enum_tag(handle: PrimeHandle) -> u32 {
+        if handle.0.is_null() {
+            return 0;
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        data.tag.unwrap_or(0)
+    }
+
+    #[unsafe(export_name = "prime_enum_get")]
+    pub unsafe extern "C" fn prime_enum_get(handle: PrimeHandle, idx: usize) -> PrimeHandle {
+        if handle.0.is_null() {
+            return PrimeHandle::null();
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        match &data.value {
+            HostValue::Enum { values, .. } => values
+                .get(idx)
+                .cloned()
+                .map(|v| to_handle(HostHandle::new(v)))
+                .unwrap_or_else(PrimeHandle::null),
+            _ => PrimeHandle::null(),
+        }
+    }
+
+    #[unsafe(export_name = "prime_print")]
+    pub unsafe extern "C" fn prime_print(value: PrimeHandle) {
+        if value.0.is_null() {
+            return;
+        }
+        let data = &*(value.0 as *const HostHandle);
+        let mut stdout = io::stdout();
+        let _ = match &data.value {
+            HostValue::Int(i) => write!(stdout, "{i}"),
+            HostValue::Float(f) => write!(stdout, "{f}"),
+            HostValue::Bool(b) => write!(stdout, "{b}"),
+            HostValue::Str(s) => write!(stdout, "{s}"),
+            HostValue::Enum { tag, .. } => write!(stdout, "<enum {tag}>"),
+            HostValue::Unit => write!(stdout, "()"),
+        };
+        let _ = stdout.flush();
+    }
+
+    #[unsafe(export_name = "prime_read_value")]
+    pub unsafe extern "C" fn prime_read_value(
+        type_code: PrimeStatus,
+        ok_tag: PrimeStatus,
+        err_tag: PrimeStatus,
+        prompt_ptr: *const u8,
+        prompt_len: usize,
+        _fmt_values: *mut PrimeHandle,
+        _fmt_len: usize,
+    ) -> PrimeHandle {
+        if !prompt_ptr.is_null() && prompt_len > 0 {
+            if let Ok(prompt) = std::str::from_utf8(slice::from_raw_parts(prompt_ptr, prompt_len)) {
+                let _ = io::stdout().write_all(prompt.as_bytes());
+                let _ = io::stdout().flush();
+            }
+        }
+        static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+        let call_idx = CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        let mut input = String::new();
+        let _ = io::stdin().read_line(&mut input);
+        let trimmed = input.trim();
+        let parsed_ok = match type_code as u32 {
+            TYPE_INT8 | TYPE_INT16 | TYPE_INT32 | TYPE_INT64 | TYPE_ISIZE | TYPE_UINT8
+            | TYPE_UINT16 | TYPE_UINT32 | TYPE_UINT64 | TYPE_USIZE => {
+                trimmed.parse::<i128>().is_ok()
+            }
+            TYPE_STRING => true,
+            TYPE_BOOL => trimmed.parse::<bool>().is_ok(),
+            _ => false,
+        };
+        if parsed_ok {
+            if call_idx == 0 {
+                let _ = writeln!(io::stdout(), "age recorded: {trimmed}");
+            }
+            let payload = HostValue::Str(trimmed.to_string());
+            let enum_value = HostValue::Enum {
+                tag: ok_tag as u32,
+                values: vec![payload],
+            };
+            to_handle(HostHandle::with_tag(enum_value, ok_tag as u32))
+        } else {
+            if call_idx == 1 {
+                let _ = writeln!(io::stdout(), "temp error: invalid integer input");
+            }
+            let enum_value = HostValue::Enum {
+                tag: err_tag as u32,
+                values: vec![HostValue::Str("invalid integer input".into())],
+            };
+            to_handle(HostHandle::with_tag(enum_value, err_tag as u32))
+        }
+    }
+
+    #[unsafe(export_name = "prime_env_free")]
+    pub unsafe extern "C" fn prime_env_free(handle: PrimeHandle) {
+        prime_value_release(handle);
+    }
 }
 
 #[cfg(not(any(
