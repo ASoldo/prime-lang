@@ -216,6 +216,14 @@ pub fn hover_for_token(
             "spawn",
             "Evaluates an expression concurrently and returns `JoinHandle[T]`.",
         )),
+        TokenKind::Async => Some(keyword_doc(
+            "async",
+            "Marks a block as asynchronous, yielding `Task[T]` from `async { ... }`.",
+        )),
+        TokenKind::Await => Some(keyword_doc(
+            "await",
+            "Suspends until a `Task[T]` completes and yields its result.",
+        )),
         TokenKind::Import => Some(keyword_doc("import", "Bring another module into scope.")),
         TokenKind::Using => Some(keyword_doc("using", "Re-export or alias imported symbols.")),
         TokenKind::True | TokenKind::False => Some(keyword_doc(

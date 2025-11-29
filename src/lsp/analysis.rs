@@ -166,10 +166,10 @@ fn collect_decl_from_block(block: &Block, module: &Module, decls: &mut Vec<DeclI
                 if ty.is_none() {
                     ty = inferred_value_ty.clone();
                 }
-                if let Pattern::Identifier(name, _span) = &stmt.pattern {
+                if let Pattern::Identifier(name, pat_span) = &stmt.pattern {
                     decls.push(DeclInfo {
                         name: name.clone(),
-                        span: stmt.span,
+                        span: *pat_span,
                         scope,
                         available_from: stmt.span.end,
                         ty,
