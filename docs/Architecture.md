@@ -13,7 +13,7 @@ graph TD
   E -->|ABI Decls| F["Runtime ABI<br/>(src/language/runtime_abi.rs)"]
   E -->|IR-&gt;obj| G["LLC"]
   G -->|Link| H["Binary/ELF + runtime lib"]
-  H -->|Flash (optional)| I["ESP32 Device"]
+  H --> I["ESP32 Device<br/>(flash optional)"]
   B -->|Manifests| J["workspace/*/prime.toml"]
   D -->|Builtin FFI| K["Runtime ABI<br/>(src/runtime/abi.rs)"]
 ```
