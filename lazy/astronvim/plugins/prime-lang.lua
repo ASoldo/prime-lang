@@ -144,7 +144,9 @@ return {
 			-- highlights.scm
 			do
 				local highlights = [[
-    ["fn" "async" "await" "let" "mut" "import" "export" "prelude" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "loop" "spawn" "return" "break" "continue" "defer" "module" "test" "library" "macro" "pub" "interface" "impl" "try" "move"] @keyword
+    ["fn" "let" "mut" "import" "export" "prelude" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "loop" "spawn" "return" "break" "continue" "defer" "module" "test" "library" "macro" "pub" "interface" "impl" "try" "move"] @keyword
+    ((identifier) @keyword (#eq? @keyword "async"))
+    ((identifier) @keyword (#eq? @keyword "await"))
 
     (module_declaration name: (module_path) @namespace)
     (module_path (identifier) @namespace)
