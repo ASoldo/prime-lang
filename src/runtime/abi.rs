@@ -906,20 +906,19 @@ mod host {
         let mut input = String::new();
         let _ = io::stdin().read_line(&mut input);
         let trimmed = input.trim();
-        let parsed_ok = match type_code as u32 {
+        let parsed = match type_code as u32 {
             TYPE_INT8 | TYPE_INT16 | TYPE_INT32 | TYPE_INT64 | TYPE_ISIZE | TYPE_UINT8
             | TYPE_UINT16 | TYPE_UINT32 | TYPE_UINT64 | TYPE_USIZE => {
-                trimmed.parse::<i128>().is_ok()
+                trimmed.parse::<i128>().ok().map(HostValue::Int)
             }
-            TYPE_STRING => true,
-            TYPE_BOOL => trimmed.parse::<bool>().is_ok(),
-            _ => false,
+            TYPE_STRING => Some(HostValue::Str(trimmed.to_string())),
+            TYPE_BOOL => trimmed.parse::<bool>().ok().map(HostValue::Bool),
+            _ => None,
         };
-        if parsed_ok {
+        if let Some(payload) = parsed {
             if call_idx == 0 {
                 let _ = writeln!(io::stdout(), "age recorded: {trimmed}");
             }
-            let payload = HostValue::Str(trimmed.to_string());
             let enum_value = HostValue::Enum {
                 tag: ok_tag as u32,
                 values: vec![payload],
