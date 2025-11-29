@@ -151,6 +151,8 @@ return {
     ("}") @keyword
     ("(") @keyword
     (")") @keyword
+    ("[") @keyword
+    ("]") @keyword
     (";") @keyword
     (":") @keyword
     ("::") @keyword
@@ -165,6 +167,7 @@ return {
     ("<") @keyword
     (">") @keyword
     ("->") @keyword
+    ("=>") @keyword
 
     (module_declaration name: (module_path) @namespace)
     (module_path (identifier) @namespace)
@@ -217,10 +220,21 @@ return {
     (map_entry key: (string_literal) @string)
     (field_expression field: (identifier) @field)
 
-    (assign_statement target: (identifier) @field)
-    (assign_statement target: (unary_expression (identifier) @variable))
-    (assign_statement value: (identifier) @variable)
-    (assign_statement target: (unary_expression (identifier) @variable))
+    ;; LHS of assignment: treat as fields (blue)
+    (assign_statement
+      target: (identifier) @field)
+
+    (assign_statement
+      target: (unary_expression
+                (identifier) @field))
+
+    ;; RHS of assignment: normal variables
+    (assign_statement
+      value: (identifier) @variable)
+
+    (assign_statement
+      value: (unary_expression
+                (identifier) @variable))
 
     ;; Constructors / enum variants (Ok, Err, etc.)
     (call_expression
