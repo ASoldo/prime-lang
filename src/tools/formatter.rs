@@ -941,6 +941,17 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             text
         }
         Expr::Range(range) => format_range(range),
+        Expr::Async { block, .. } => {
+            let mut buf = String::new();
+            buf.push_str("async {\n");
+            format_block(&mut buf, block, 2);
+            buf.push('}');
+            buf
+        }
+        Expr::Await { expr, .. } => {
+            let inner = format_expr_prec(expr, 100);
+            format!("await {inner}")
+        }
         Expr::Reference { mutable, expr, .. } => {
             if *mutable {
                 format!("&mut {}", format_expr_prec(expr, 100))

@@ -348,11 +348,18 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
         | Expr::Move {
             expr: inner, span, ..
         }
+        | Expr::Await {
+            expr: inner, span, ..
+        }
         | Expr::Spawn {
             expr: inner, span, ..
         } => {
             shift_span(span, delta);
             shift_expr_spans(inner, delta);
+        }
+        Expr::Async { block, span } => {
+            shift_span(span, delta);
+            shift_block_spans(block, delta);
         }
         Expr::Closure {
             params,
@@ -2069,6 +2076,18 @@ impl Parser {
                 span,
             });
         }
+        if self.matches(TokenKind::Await) {
+            let start = self
+                .previous_span()
+                .map(|s| s.start)
+                .unwrap_or_else(|| self.current_span_start());
+            let expr = self.parse_unary()?;
+            let span = Span::new(start, expr_span(&expr).end);
+            return Ok(Expr::Await {
+                expr: Box::new(expr),
+                span,
+            });
+        }
         self.parse_postfix()
     }
 
@@ -2236,6 +2255,9 @@ impl Parser {
         }
         if self.matches(TokenKind::Try) {
             return self.parse_try_expression();
+        }
+        if self.matches(TokenKind::Async) {
+            return self.parse_async_block();
         }
         if self.matches(TokenKind::Hash) {
             return self.parse_map_literal();
@@ -2447,6 +2469,19 @@ impl Parser {
         let block = self.parse_block()?;
         let span = Span::new(start, block.span.end);
         Ok(Expr::Try {
+            block: Box::new(block),
+            span,
+        })
+    }
+
+    fn parse_async_block(&mut self) -> Result<Expr, SyntaxError> {
+        let start = self
+            .previous_span()
+            .map(|s| s.start)
+            .unwrap_or_else(|| self.current_span_start());
+        let block = self.parse_block()?;
+        let span = Span::new(start, block.span.end);
+        Ok(Expr::Async {
             block: Box::new(block),
             span,
         })
@@ -3685,6 +3720,8 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Deref { span, .. } => *span,
         Expr::Move { span, .. } => *span,
         Expr::FormatString(literal) => literal.span,
+        Expr::Async { span, .. } => *span,
+        Expr::Await { span, .. } => *span,
         Expr::Spawn { span, .. } => *span,
         Expr::Closure { span, .. } => *span,
     }

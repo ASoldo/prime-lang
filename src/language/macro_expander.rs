@@ -1118,6 +1118,8 @@ impl<'a> Expander<'a> {
             | Expr::Literal(_)
             | Expr::Try { .. }
             | Expr::TryPropagate { .. }
+            | Expr::Async { .. }
+            | Expr::Await { .. }
             | Expr::Closure { .. } => expr.clone(),
         }
     }
@@ -1323,6 +1325,14 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             span,
         },
         Expr::Move { expr, span } => Expr::Move {
+            expr: Box::new(substitute_expr(*expr, subst)),
+            span,
+        },
+        Expr::Async { block, span } => Expr::Async {
+            block: Box::new(substitute_block(*block, subst)),
+            span,
+        },
+        Expr::Await { expr, span } => Expr::Await {
             expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
@@ -1792,6 +1802,8 @@ fn collect_bindings_expr(expr: &Expr) -> HashSet<String> {
         | Expr::Deref { expr, .. }
         | Expr::Move { expr, .. }
         | Expr::Spawn { expr, .. } => set.extend(collect_bindings_expr(expr)),
+        Expr::Async { block, .. } => set.extend(collect_bindings_block(block)),
+        Expr::Await { expr, .. } => set.extend(collect_bindings_expr(expr)),
     }
     set
 }
@@ -2021,6 +2033,14 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             span,
         },
         Expr::Move { expr, span } => Expr::Move {
+            expr: Box::new(rename_expr(*expr, map)),
+            span,
+        },
+        Expr::Async { block, span } => Expr::Async {
+            block: Box::new(rename_block(*block, map)),
+            span,
+        },
+        Expr::Await { expr, span } => Expr::Await {
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },
@@ -2336,6 +2356,8 @@ fn expr_span_local(expr: &Expr) -> Span {
         | Expr::Reference { span, .. }
         | Expr::Deref { span, .. }
         | Expr::Move { span, .. }
+        | Expr::Async { span, .. }
+        | Expr::Await { span, .. }
         | Expr::Spawn { span, .. }
         | Expr::Try { span, .. }
         | Expr::TryPropagate { span, .. }

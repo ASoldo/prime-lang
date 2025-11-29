@@ -42,6 +42,8 @@ pub enum TokenKind {
     Continue,
     Defer,
     Spawn,
+    Async,
+    Await,
     Try,
     Move,
     Pub,

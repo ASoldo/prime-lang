@@ -1,0 +1,40 @@
+module demos::async_demo;
+
+import core::types;
+
+fn main() {
+    out("starting async demo (basic task)");
+
+    let task = async {
+        out("task: doing work");
+        42
+    };
+
+    out("awaiting task result...");
+    let result = await task;
+    out(result);
+
+    out("--- channel + sleep demo ---");
+    run_channel_sleep();
+}
+
+fn run_channel_sleep() {
+    let (tx, rx) = channel[int]();
+    let sleeper = async {
+        out("task: sleeping for 100ms");
+        await sleep_task(100);
+        out("task: sending 7");
+        send(tx, 7);
+    };
+    let receiver = async {
+        out("receiver: waiting");
+        let msg = await recv_task[int](rx);
+        match msg {
+            Option::Some(v) => out(v),
+            Option::None => out("channel closed"),
+        }
+    };
+    await sleeper;
+    await receiver;
+    out("done");
+}

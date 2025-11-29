@@ -473,6 +473,14 @@ pub enum Expr {
         expr: Box<Expr>,
         span: Span,
     },
+    Async {
+        block: Box<Block>,
+        span: Span,
+    },
+    Await {
+        expr: Box<Expr>,
+        span: Span,
+    },
     Spawn {
         expr: Box<Expr>,
         span: Span,

@@ -1433,6 +1433,9 @@ impl Compiler {
                 end: self.const_int_value(end),
                 inclusive,
             })),
+            BuildValue::Task(_) => {
+                Err("async/await is not supported in build output yet".into())
+            }
             BuildValue::Boxed(inner) => Ok(Value::Boxed(BoxValue::new(
                 self.build_value_to_value(*inner, channels)?,
             ))),
@@ -4140,6 +4143,8 @@ impl Compiler {
             Expr::Reference { expr, .. } | Expr::Deref { expr, .. } | Expr::Move { expr, .. } => {
                 self.collect_free_in_expr(expr, locals, free)
             }
+            Expr::Async { block, .. } => self.collect_free_in_block(block, locals, free),
+            Expr::Await { expr, .. } => self.collect_free_in_expr(expr, locals, free),
             Expr::Spawn { expr, .. } => self.collect_free_in_expr(expr, locals, free),
             Expr::Closure { .. } => {}
             Expr::FormatString(lit) => {
@@ -4605,6 +4610,8 @@ impl Compiler {
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
+            Expr::Async { .. } => Err("async execution is not implemented in build mode yet".into()),
+            Expr::Await { .. } => Err("await is not implemented in build mode yet".into()),
             Expr::Spawn { expr, .. } => {
                 let experimental = env::var("PRIME_BUILD_PARALLEL")
                     .map(|v| v == "1")
@@ -5174,6 +5181,11 @@ impl Compiler {
             "recv" => Some(self.invoke_builtin(args, |this, values| this.builtin_recv(values))),
             "recv_timeout" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_recv_timeout(values)))
+            }
+            "recv_task" | "sleep_task" => {
+                return Some(Err(
+                    "async builtins are not supported in build/LLVM output yet".into(),
+                ));
             }
             "close" => Some(self.invoke_builtin(args, |this, values| this.builtin_close(values))),
             "join" => Some(self.invoke_builtin(args, |this, values| this.builtin_join(values))),

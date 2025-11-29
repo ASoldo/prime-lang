@@ -6,6 +6,7 @@ use crate::project::Package;
 use crate::runtime::{
     environment::{CleanupAction, DropRecord, Environment},
     error::{RuntimeError, RuntimeResult},
+    async_runtime::AsyncRuntime,
     platform::{platform, std_builtins_enabled, std_disabled_message},
     value::{
         BoxValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue, EnumValue,
@@ -46,6 +47,7 @@ pub struct Interpreter {
     module_stack: Vec<String>,
     bootstrapped: bool,
     target: BuildTarget,
+    async_runtime: AsyncRuntime,
 }
 
 #[derive(Clone)]
@@ -129,6 +131,7 @@ impl Interpreter {
             module_stack: Vec::new(),
             bootstrapped: false,
             target,
+            async_runtime: AsyncRuntime::new(),
         }
     }
 
@@ -775,6 +778,7 @@ impl Interpreter {
             module_stack: Vec::new(),
             bootstrapped: true,
             target: self.target.clone(),
+            async_runtime: self.async_runtime.clone(),
         }
     }
 
@@ -1095,6 +1099,8 @@ impl Interpreter {
             "join" => self.builtin_join(args),
             "sleep" => self.builtin_sleep(args),
             "sleep_ms" => self.builtin_sleep_ms(args),
+            "sleep_task" => self.builtin_sleep_task(args),
+            "recv_task" => self.builtin_recv_task(args),
             "now_ms" => self.builtin_now_ms(args),
             "fs_exists" => self.builtin_fs_exists(args),
             "fs_read" => self.builtin_fs_read(args),
@@ -1893,7 +1899,8 @@ impl Interpreter {
         self.expect_arity("recv_timeout", &args, 2)?;
         let millis = self.expect_int_value("recv_timeout", args.pop().unwrap())?;
         let receiver = self.expect_receiver("recv_timeout", args.remove(0))?;
-        match receiver.recv_timeout(millis as i64) {
+        let result = receiver.recv_timeout(millis as i64);
+        match result {
             Some(value) => {
                 let some = self.instantiate_enum("Option", "Some", vec![value])?;
                 Ok(vec![some])
@@ -1903,6 +1910,17 @@ impl Interpreter {
                 Ok(vec![none])
             }
         }
+    }
+
+    fn builtin_recv_task(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("recv_task")?;
+        self.expect_arity("recv_task", &args, 1)?;
+        let receiver = self.expect_receiver("recv_task", args.remove(0))?;
+        let task = self.async_runtime.spawn_blocking(move || {
+            let value = receiver.recv();
+            Ok(make_option_value(value))
+        });
+        Ok(vec![Value::Task(Box::new(task))])
     }
 
     fn builtin_close(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
@@ -1940,6 +1958,14 @@ impl Interpreter {
     fn builtin_sleep_ms(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("sleep_ms", &args, 1)?;
         self.builtin_sleep(args)
+    }
+
+    fn builtin_sleep_task(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("sleep_task")?;
+        self.expect_arity("sleep_task", &args, 1)?;
+        let millis = self.expect_i32_value("sleep_task", args.remove(0))?;
+        let task = self.async_runtime.sleep_task(millis as i64);
+        Ok(vec![Value::Task(Box::new(task))])
     }
 
     fn builtin_delay_ms(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
@@ -2867,6 +2893,43 @@ impl Interpreter {
             },
             Expr::ArrayLiteral(values, _) => self.eval_array_literal(values),
             Expr::Move { expr, .. } => self.eval_move_expression(expr).map(EvalOutcome::Value),
+            Expr::Async { block, .. } => {
+                require_std_builtins("async")?;
+                self.bootstrap()?;
+                let block_clone = block.clone();
+                let child = self.clone_for_spawn();
+                let rt = self.async_runtime.clone();
+                let handle = rt.spawn(move || {
+                    let mut runner = child;
+                    match runner.eval_block(&block_clone)? {
+                        BlockEval::Value(value) => Ok(value),
+                        BlockEval::Flow(FlowSignal::Return(values)) => {
+                            if values.len() == 1 {
+                                Ok(values.into_iter().next().unwrap())
+                            } else {
+                                Ok(Value::Tuple(values))
+                            }
+                        }
+                        BlockEval::Flow(FlowSignal::Propagate(value)) => Err(RuntimeError::Panic {
+                            message: format!("async task encountered {}", flow_name(&FlowSignal::Propagate(value.clone()))),
+                        }),
+                        BlockEval::Flow(flow) => Err(RuntimeError::Panic {
+                            message: format!("async task exited with {}", flow_name(&flow)),
+                        }),
+                    }
+                });
+                Ok(EvalOutcome::Value(Value::Task(Box::new(handle))))
+            }
+            Expr::Await { expr, span: _ } => match self.eval_expression(expr)? {
+                EvalOutcome::Value(Value::Task(task)) => {
+                    let result = self.async_runtime.block_on(&task)?;
+                    Ok(EvalOutcome::Value(result))
+                }
+                EvalOutcome::Value(other) => Err(RuntimeError::TypeMismatch {
+                    message: format!("`await` expects a Task, found {}", self.describe_value(&other)),
+                }),
+                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+            },
             Expr::Spawn { expr, .. } => {
                 require_std_builtins("spawn")?;
                 self.bootstrap()?;
@@ -3852,6 +3915,7 @@ impl Interpreter {
             Value::Iterator(_) => "iterator",
             Value::Pointer(_) => "pointer",
             Value::JoinHandle(_) => "join handle",
+            Value::Task(_) => "task",
             Value::Closure(_) => "closure",
             Value::Unit => "unit",
             Value::Moved => "moved value",
@@ -3867,6 +3931,22 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
         FlowSignal::Propagate(_) => "error propagation",
     }
 }
+
+fn make_option_value(value: Option<Value>) -> Value {
+    match value {
+        Some(v) => Value::Enum(EnumValue {
+            enum_name: "Option".into(),
+            variant: "Some".into(),
+            values: vec![v],
+        }),
+        None => Value::Enum(EnumValue {
+            enum_name: "Option".into(),
+            variant: "None".into(),
+            values: Vec::new(),
+        }),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

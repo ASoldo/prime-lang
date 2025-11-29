@@ -19,6 +19,7 @@ members = [
   "workspace/demos/patterns",
   "workspace/demos/macro",
   "workspace/demos/lab_demo",
+  "workspace/demos/async_demo",
   "workspace/demos/channel_demo",
   "workspace/demos/parallel_demo",
   "workspace/demos/input",

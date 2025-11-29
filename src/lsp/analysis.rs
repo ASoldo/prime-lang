@@ -328,6 +328,8 @@ fn collect_decl_from_expr(expr: &Expr, module: &Module, decls: &mut Vec<DeclInfo
         Expr::Reference { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
         Expr::Deref { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
         Expr::Move { expr: inner, .. } => collect_decl_from_expr(inner, module, decls),
+        Expr::Async { block, .. } => collect_decl_from_block(block, module, decls),
+        Expr::Await { expr, .. } => collect_decl_from_expr(expr, module, decls),
         Expr::Spawn { expr, .. } => collect_decl_from_expr(expr, module, decls),
     }
 }
@@ -911,6 +913,8 @@ fn collect_macro_expr_idents(expr: &Expr, params: &HashSet<String>, used: &mut H
         Expr::Reference { expr: inner, .. } => collect_macro_expr_idents(inner, params, used),
         Expr::Deref { expr: inner, .. } => collect_macro_expr_idents(inner, params, used),
         Expr::Move { expr: inner, .. } => collect_macro_expr_idents(inner, params, used),
+        Expr::Async { block, .. } => collect_macro_used_in_block(block, params, used),
+        Expr::Await { expr, .. } => collect_macro_expr_idents(expr, params, used),
         Expr::Spawn { expr, .. } => collect_macro_expr_idents(expr, params, used),
         Expr::FormatString(literal) => collect_macro_format_string_idents(literal, params, used),
     }
@@ -1158,6 +1162,8 @@ fn collect_expr_idents(expr: &Expr, used: &mut HashSet<String>) {
         Expr::Reference { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Deref { expr: inner, .. } => collect_expr_idents(inner, used),
         Expr::Move { expr: inner, .. } => collect_expr_idents(inner, used),
+        Expr::Async { block, .. } => collect_used_in_block(block, used),
+        Expr::Await { expr, .. } => collect_expr_idents(expr, used),
         Expr::Spawn { expr, .. } => collect_expr_idents(expr, used),
         Expr::FormatString(literal) => collect_format_string_idents(literal, used),
     }
@@ -1400,6 +1406,8 @@ fn collect_spans_in_expr(expr: &Expr, name: &str, spans: &mut Vec<Span>) {
         | Expr::Deref { expr, .. }
         | Expr::Move { expr, .. }
         | Expr::Spawn { expr, .. } => collect_spans_in_expr(expr, name, spans),
+        Expr::Async { block, .. } => collect_spans_in_block(block, name, spans),
+        Expr::Await { expr, .. } => collect_spans_in_expr(expr, name, spans),
         Expr::Closure { body, .. } => match body {
             ClosureBody::Block(block) => collect_spans_in_block(block, name, spans),
             ClosureBody::Expr(expr) => collect_spans_in_expr(expr.node.as_ref(), name, spans),
@@ -1926,6 +1934,8 @@ pub fn expr_span(expr: &Expr) -> Span {
         Expr::Move { span, .. } => *span,
         Expr::Index { span, .. } => *span,
         Expr::FormatString(literal) => literal.span,
+        Expr::Async { span, .. } => *span,
+        Expr::Await { span, .. } => *span,
         Expr::Spawn { span, .. } => *span,
         Expr::Closure { span, .. } => *span,
     }

@@ -1916,6 +1916,59 @@ impl Checker {
                 }
                 Some(handle_ty)
             }
+            Expr::Async { block, span: _ } => {
+                let inner =
+                    self.check_block(module, block, returns, env)
+                        .unwrap_or(TypeExpr::Unit);
+                Some(make_task_type(inner))
+            }
+            Expr::Await { expr, span } => {
+                let awaited = self.check_expression(module, expr, None, returns, env);
+                // Check borrow/send rules at suspension.
+                if env.has_active_mut_borrows() {
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            *span,
+                            "mutable borrows cannot be held across `await`",
+                        )
+                        .with_code("E0ASYNCBORROW")
+                        .with_help("end mutable borrows before `await` or clone the data"),
+                    );
+                }
+                match awaited {
+                    Some(TypeExpr::Named(name, args)) if name == "Task" => {
+                        if let Some(inner) = args.get(0) {
+                            if matches!(inner, TypeExpr::Reference { .. } | TypeExpr::Pointer { .. }) {
+                                self.errors.push(
+                                    TypeError::new(
+                                        &module.path,
+                                        *span,
+                                        "`await` cannot hold reference/pointer types across suspension",
+                                    )
+                                    .with_code("E0ASYNCSEND")
+                                    .with_help("move owned data into the task or clone before awaiting"),
+                                );
+                            }
+                            Some(inner.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    Some(other) => {
+                        self.errors.push(
+                            TypeError::new(
+                                &module.path,
+                                *span,
+                                "`await` expects a Task value",
+                            )
+                            .with_help(format!("found `{}`", other.canonical_name())),
+                        );
+                        None
+                    }
+                    None => None,
+                }
+            }
             Expr::Closure {
                 params,
                 body,
@@ -2560,7 +2613,7 @@ impl Checker {
         env: &mut FnEnv,
         span: Span,
     ) -> Option<TypeExpr> {
-        let allows_type_args = matches!(name, "channel" | "in");
+        let allows_type_args = matches!(name, "channel" | "in" | "recv_task");
         if !allows_type_args && !type_args.is_empty() {
             self.errors.push(TypeError::new(
                 &module.path,
@@ -3039,6 +3092,33 @@ impl Checker {
                 }
                 Some(TypeExpr::Named("Option".into(), vec![TypeExpr::Unit]))
             }
+            "recv_task" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`recv_task` expects 1 argument",
+                    ));
+                    return None;
+                }
+                if type_args.len() > 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`recv_task` accepts at most one type argument (payload type)",
+                    ));
+                }
+                let receiver_ty = self.check_expression(module, &args[0], None, returns, env);
+                let payload_from_type_arg = type_args.first().cloned();
+                if let Some(TypeExpr::Named(name, params)) = receiver_ty {
+                    if name == "Receiver" && params.len() == 1 {
+                        let payload = payload_from_type_arg.unwrap_or_else(|| params[0].clone());
+                        return Some(make_task_type(make_option_type(payload)));
+                    }
+                }
+                let payload = payload_from_type_arg.unwrap_or(TypeExpr::Unit);
+                Some(make_task_type(make_option_type(payload)))
+            }
             "recv_timeout" => {
                 if args.len() != 2 {
                     self.errors.push(TypeError::new(
@@ -3111,6 +3191,24 @@ impl Checker {
                     env,
                 );
                 Some(TypeExpr::Unit)
+            }
+            "sleep_task" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`sleep_task` expects 1 argument (millis)",
+                    ));
+                    return Some(make_task_type(TypeExpr::Unit));
+                }
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("int64".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                Some(make_task_type(TypeExpr::Unit))
             }
             "delay_ms" => {
                 if args.len() != 1 {
@@ -4411,10 +4509,12 @@ impl Checker {
                 | "send"
                 | "recv"
                 | "recv_timeout"
+                | "recv_task"
                 | "close"
                 | "join"
                 | "sleep"
                 | "sleep_ms"
+                | "sleep_task"
                 | "now_ms"
                 | "fs_exists"
                 | "fs_read"
@@ -4435,10 +4535,12 @@ impl Checker {
                 | "send"
                 | "recv"
                 | "recv_timeout"
+                | "recv_task"
                 | "close"
                 | "join"
                 | "sleep"
                 | "sleep_ms"
+                | "sleep_task"
                 | "now_ms"
                 | "fs_exists"
                 | "fs_read"
@@ -5236,6 +5338,10 @@ impl FnEnv {
         }
     }
 
+    fn has_active_mut_borrows(&self) -> bool {
+        !self.active_mut_borrows.is_empty()
+    }
+
     fn snapshot_borrows(&self) -> BorrowState {
         let mut scope_borrows = Vec::new();
         let mut moved_scopes = Vec::new();
@@ -5802,6 +5908,10 @@ fn make_option_type(inner: TypeExpr) -> TypeExpr {
     TypeExpr::Named("Option".into(), vec![inner])
 }
 
+fn make_task_type(inner: TypeExpr) -> TypeExpr {
+    TypeExpr::Named("Task".into(), vec![inner])
+}
+
 fn is_string_type(ty: &TypeExpr) -> bool {
     matches!(ty, TypeExpr::Named(name, args) if name == "string" && args.is_empty())
 }
@@ -5862,6 +5972,8 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::TryPropagate { span, .. } => *span,
         Expr::Move { span, .. } => *span,
         Expr::Index { span, .. } => *span,
+        Expr::Async { span, .. } => *span,
+        Expr::Await { span, .. } => *span,
         Expr::Spawn { span, .. } => *span,
         Expr::Closure { span, .. } => *span,
     }
@@ -6099,7 +6211,9 @@ fn reference_may_dangle(expr: &Expr) -> bool {
         | Expr::Closure { .. }
         | Expr::Index { .. }
         | Expr::Range(_)
-        | Expr::MacroCall { .. } => true,
+        | Expr::MacroCall { .. }
+        | Expr::Async { .. }
+        | Expr::Await { .. } => true,
         Expr::Spawn { .. } => true,
         Expr::EnumLiteral { .. } => true,
     }

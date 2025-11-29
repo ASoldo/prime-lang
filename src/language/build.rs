@@ -57,6 +57,7 @@ pub enum BuildValue {
         args: Vec<BuildValue>,
     },
     JoinHandle(BuildJoinHandle),
+    Task(Box<BuildTask>),
     Reference(BuildReference),
     Closure(BuildClosure),
     Moved,
@@ -148,6 +149,7 @@ impl BuildValue {
             BuildValue::Iterator(_) => "iterator",
             BuildValue::DeferredCall { .. } => "function call",
             BuildValue::JoinHandle(_) => "join handle",
+            BuildValue::Task(_) => "task",
             BuildValue::Reference(_) => "reference",
             BuildValue::Closure(_) => "closure",
             BuildValue::Moved => "moved value",
@@ -221,6 +223,11 @@ pub enum BuildJoinState {
 #[derive(Clone, Debug)]
 pub struct BuildJoinHandle {
     pub(crate) state: BuildJoinState,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildTask {
+    pub result: BuildValue,
 }
 
 impl BuildJoinHandle {
@@ -853,6 +860,20 @@ impl BuildInterpreter {
             Expr::Try { block, .. } => self.eval_try(block),
             Expr::TryPropagate { expr, .. } => self.eval_try_propagate(expr),
             Expr::Move { expr, .. } => self.eval_move(expr),
+            Expr::Async { block, .. } => {
+                // Execute synchronously for now; async scheduler will make this cooperative.
+                match self.eval_block(block)? {
+                    Flow::Value(value) => Ok(BuildValue::Task(Box::new(BuildTask { result: value }))),
+                    Flow::Return(value) => Ok(BuildValue::Task(Box::new(BuildTask { result: value }))),
+                    Flow::Break | Flow::Continue => {
+                        Err("control flow not allowed in async expression".into())
+                    }
+                }
+            }
+            Expr::Await { expr, .. } => match self.eval_expr_mut(expr)? {
+                BuildValue::Task(task) => Ok(task.result.clone()),
+                other => Err(format!("`await` expects a Task, found {}", other.kind())),
+            },
             Expr::Spawn { expr, .. } => {
                 require_std_builtins("spawn")?;
                 let child = self.clone_for_spawn();
@@ -2877,6 +2898,12 @@ impl BuildInterpreter {
                 }
                 self.eval_builtin_or_deferred("sleep", receiver, type_args, args)
             }
+            "sleep_task" => Err(
+                "`sleep_task` is async-only and not supported in build snapshots yet".into(),
+            ),
+            "recv_task" => Err(
+                "`recv_task` is async-only and not supported in build snapshots yet".into(),
+            ),
             "delay_ms" | "pin_mode" | "digital_write" => Err(
                 "embedded-only built-ins are unavailable in build snapshots; build for the ESP32 target to run them"
                     .into(),

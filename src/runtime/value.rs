@@ -2,7 +2,7 @@ use crate::language::ast::{ClosureBody, FunctionParam};
 use crate::runtime::error::RuntimeResult;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -26,6 +26,7 @@ pub enum Value {
     Receiver(ChannelReceiver),
     Iterator(IteratorValue),
     JoinHandle(Box<JoinHandleValue>),
+    Task(Box<TaskValue>),
     Pointer(PointerValue),
     Closure(ClosureValue),
     Moved,
@@ -46,7 +47,7 @@ impl Value {
             Value::Slice(slice) => !slice.items.lock().unwrap().is_empty(),
             Value::Map(map) => !map.entries.lock().unwrap().is_empty(),
             Value::FormatTemplate(_) => true,
-            Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => true,
+            Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) | Value::Task(_) => true,
             Value::Pointer(_) => true,
             Value::Closure(_) => true,
             Value::Iterator(iter) => {
@@ -90,6 +91,7 @@ impl ChannelSender {
             guard.take();
         }
     }
+
 }
 
 impl ChannelReceiver {
@@ -101,14 +103,8 @@ impl ChannelReceiver {
     }
 
     pub fn recv(&self) -> Option<Value> {
-        let result = {
-            let guard = self.receiver.lock().ok()?;
-            guard.recv()
-        };
-        match result {
-            Ok(value) => Some(value),
-            Err(_) => None,
-        }
+        let guard = self.receiver.lock().ok()?;
+        guard.recv().ok()
     }
 
     pub fn recv_timeout(&self, millis: i64) -> Option<Value> {
@@ -117,12 +113,9 @@ impl ChannelReceiver {
         } else {
             Duration::from_millis(millis as u64)
         };
-        let result = {
-            let guard = self.receiver.lock().ok()?;
-            guard.recv_timeout(duration)
-        };
-        match result {
-            Ok(value) => Some(value),
+        let guard = self.receiver.lock().ok()?;
+        match guard.recv_timeout(duration) {
+            Ok(v) => Some(v),
             Err(_) => None,
         }
     }
@@ -132,6 +125,7 @@ impl ChannelReceiver {
             guard.take();
         }
     }
+
 }
 
 #[derive(Clone, Debug)]
@@ -163,6 +157,73 @@ impl JoinHandleValue {
 pub struct PointerValue {
     pub cell: SharedValue,
     pub mutable: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskValue {
+    state: Arc<(Mutex<TaskState>, Condvar)>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct TaskState {
+    pub(crate) result: Option<RuntimeResult<Value>>,
+    pub(crate) finished: bool,
+}
+
+impl TaskValue {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        TaskValue {
+            state: Arc::new((Mutex::new(TaskState::default()), Condvar::new())),
+        }
+    }
+
+    pub fn new_pair() -> (TaskValue, Arc<(Mutex<TaskState>, Condvar)>) {
+        let state = Arc::new((Mutex::new(TaskState::default()), Condvar::new()));
+        (TaskValue { state: state.clone() }, state)
+    }
+
+    pub fn with_state(state: Arc<(Mutex<TaskState>, Condvar)>) -> Self {
+        TaskValue { state }
+    }
+
+    #[allow(dead_code)]
+    pub fn finish(&self, result: RuntimeResult<Value>) {
+        Self::store_result(&self.state, result);
+    }
+
+    pub fn store_result(state: &Arc<(Mutex<TaskState>, Condvar)>, result: RuntimeResult<Value>) {
+        let (lock, cvar) = &**state;
+        let mut guard = lock.lock().unwrap();
+        guard.result = Some(result);
+        guard.finished = true;
+        cvar.notify_all();
+    }
+
+    pub fn join(&self) -> Result<Value, String> {
+        let (lock, cvar) = &*self.state;
+        let mut guard = lock.lock().map_err(|_| "task state poisoned")?;
+        while !guard.finished {
+            guard = cvar
+                .wait(guard)
+                .map_err(|_| "task wait poisoned".to_string())?;
+        }
+        match guard.result.take() {
+            Some(Ok(value)) => Ok(value),
+            Some(Err(err)) => Err(err.to_string()),
+            None => Err("task missing result".into()),
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        let (lock, _) = &*self.state;
+        lock.lock().map(|g| g.finished).unwrap_or(false)
+    }
+
+    #[allow(dead_code)]
+    pub fn state(&self) -> Arc<(Mutex<TaskState>, Condvar)> {
+        self.state.clone()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -245,6 +306,7 @@ impl fmt::Display for Value {
             Value::Sender(_) => write!(f, "Sender"),
             Value::Receiver(_) => write!(f, "Receiver"),
             Value::JoinHandle(_) => write!(f, "JoinHandle"),
+            Value::Task(_) => write!(f, "Task"),
             Value::Pointer(ptr) => write!(
                 f,
                 "{}Pointer->{}",

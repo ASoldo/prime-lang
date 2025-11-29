@@ -148,6 +148,8 @@ impl<'a> Lexer<'a> {
             "continue" => TokenKind::Continue,
             "defer" => TokenKind::Defer,
             "spawn" => TokenKind::Spawn,
+            "async" => TokenKind::Async,
+            "await" => TokenKind::Await,
             "try" => TokenKind::Try,
             "move" => TokenKind::Move,
             "pub" => TokenKind::Pub,

@@ -1,67 +1,46 @@
-• Context
+  Current core features
 
-  - Goal: Build ESP32 (classic, Xtensa) blink demo with no_std runtime.
-  - Current state: Runtime refactored to minimal no_std stubs; builds succeed. Build reaches link step but fails due to linker/
-    script/toolchain mismatch.
-  - Toolchains/scripts tried:
-      - ESP32-specific toolchain (xtensa-esp32-elf, app.elf.ld/memory.elf.ld) → DRAM overflow/undefined entry, warnings about
-        regions.
-      - IDF toolchain (xtensa-esp-elf) with ESP32-specific llvm → earlier BE/LE mismatches, but runtime now tiny; BE crt0 also
-        failed.
-  - Current prime.toml uses xtensa-esp32-elf toolchain and toolchain scripts; ld_flags still contained IDF ROM scripts at one
-    point, then switched back, still failing.
+  - Modules/libraries/tests with manifest-based workspace loading (prime.toml), preludes, visibility checks.
+  - Strong static type system: structs/enums (with variants), tuples, ranges, pointers, references, slices, maps, arrays; numeric/
+    bool/string/rune primitives; type inference for literals.
+  - Pattern matching across tuples/maps/structs/slices; destructuring in loops/ifs/matches; Option/Result with try {} / ?.
+  - Ownership/borrowing: mutable/immutable refs, Box, Drop (RAII), defers; move semantics enforced by the checker.
+  - Functions + macros: expression/item macros with hygiene controls, tokens/blocks/repeats, param quantifiers, expansion tracing,
+    CLI expand.
+  - Concurrency: spawn/join, channels (send/recv/close/recv_timeout), deterministic in build snapshots; threads in emitted
+    binaries.
+  - Built-ins: out/in, fs (read/write/exists), time (sleep/now), iterators (slice/map), formatting (out with strings/format
+    strings/ints/bools on embedded).
+  - Tooling: interpreter and LLVM build with parity; formatter/lint/docs; LSP (hover/completion/diagnostics); CLI subcommands for
+    run/build/lint/fmt/docs/init/add/test/expand.
+  - Embedded support: ESP32 Xtensa no_std runtime (GPIO2 blink demo), ROM delay/printf, ring-buffered prints, watchdog disable for
+    the demo, manifest-driven toolchains/scripts/flash.
 
-  What failed last
+  V1.0 suggestions (gap check)
 
-  - With xtensa-esp32-elf toolchain and app.elf.ld + memory.elf.ld: iram_seg warnings, DRAM overflow, missing _start.
-  - A manual link with these scripts also warned about regions.
-  - When using IDF toolchain + IDF scripts, big-endian crt0 caused mismatch; BE/LE conflict.
-
-  Plan to switch back to IDF toolchain/scripts (next agent)
-
-  1. Toolchain selection
-      - Use IDF’s xtensa-esp-elf toolchain (the one under ~/.espressif/tools/xtensa-esp-elf/esp-15.2.0_...).
-      - PATH: include only the IDF toolchain bin for linking: ~/.espressif/tools/xtensa-esp-elf/.../xtensa-esp-elf/bin.
-      - CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER = xtensa-esp-elf-gcc.
-      - LLVM_SYS_201_PREFIX = IDF esp-clang with Xtensa backend (the one installed via idf_tools under ~/.espressif/tools/esp-
-        clang/esp-clang). Ensure llc --version shows Xtensa.
-  2. prime.toml
-      - [build.toolchain]
-          - cc = "xtensa-esp-elf-gcc"
-          - ar = "xtensa-esp-elf-ar"
-          - objcopy = "xtensa-esp-elf-objcopy"
-          - ld_script = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
-          - ld_flags = "-Wl,--gc-sections -T/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/
-            memory.ld"
-            (keep it minimal; drop ROM/newlib/periph scripts unless needed)
-          - startup_obj → remove/omit; let IDF scripts/toolchain supply startup.
-      - Ensure no residual toolchain script paths from xtensa-esp32-elf remain.
-  3. Linker adjustments
-      - In link_esp32, avoid adding -L paths for the ESP32 toolchain; rely on IDF toolchain default search paths.
-      - Keep -lc -lgcc.
-      - Ensure -Wl,-EL/-mlongcalls are appropriate for Xtensa.
-  4. Runtime
-      - Already no_std with type constants and a panic handler; builds with -Zbuild-std=core,alloc for embedded.
-      - prime_now_ms stub returns 0 (satisfies compiler).
-      - Keep this minimal runtime for now.
-  5. Build command (example)
-
-     . ~/esp/esp-idf/export.sh
-     env LLVM_SYS_201_PREFIX="$HOME/.espressif/tools/esp-clang/esp-clang" \
-         LD_LIBRARY_PATH="/usr/lib64:/usr/lib:/lib:$HOME/.espressif/tools/esp-clang/esp-clang/lib" \
-         PATH="$HOME/.espressif/tools/esp-clang/esp-clang/bin:$HOME/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-
-  elf/bin:$PATH" \
-         RUSTUP_TOOLCHAIN=esp \
-         CARGO_TARGET_DIR="$HOME/.cache/prime-xtensa" \
-         CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER=xtensa-esp-elf-gcc \
-         PRIME_DEBUG_MEM=1 \
-         ./target/debug/prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink --no-flash
-  6. If link still fails
-      - Check for big-endian hints: ensure xtensa-esp-elf-gcc -v target is LE; if BE, locate an LE IDF toolchain or use ESP32-
-        specific toolchain with its own scripts and custom memory.ld.
-      - If _heap_low_start or region errors persist, simplify ld_flags to only memory.ld and sections.ld, no ROM scripts.
-      - If scripts still mismatch, consider using IDF build outputs’ esp32_out.ld or preprocess sections.ld with ldgen from IDF to
-        ensure region definitions exist.
-
-  With these changes, the linker should use a consistent LE toolchain and matching scripts, eliminating region/endianness
-  conflicts.
+  1. Error handling & diagnostics:
+      - Stabilize error codes/messages; ensure consistent, actionable diagnostics (type errors, borrow errors, macro errors).
+      - Consider panic semantics and unwind/abort strategy in build/runtime; define a clear contract.
+  2. Standard library surface:
+      - Minimal, well-scoped core modules (collections, math, string utilities, option/result helpers).
+      - File/path utilities and time/timers defined in-language (beyond host-specific stubs).
+  3. Formatting & printing:
+      - Unified formatting story (host and embedded) with a small, consistent subset; ensure out supports the same value shapes
+        across targets (or documented deltas).
+  4. Concurrency & async:
+      - Clarify memory model and ordering guarantees for channels/threads; document determinism expectations.
+      - Decide whether async/await is in/out of scope for 1.0; if out, make channels/spawn fully stable.
+  5. FFI & embedding:
+      - Formalize the runtime ABI surface (host and embedded) with versioning; consider a small FFI for host builds.
+      - Document stability guarantees for ABI symbols and target triples.
+  6. Toolchain stability:
+      - Lock host llc/linker behavior; ensure default triples are reliable across platforms.
+      - For embedded, freeze known-good toolchain/script versions and document required layout (or ship templates).
+  7. Testing/story for users:
+      - First-class test runner semantics (fixtures, scripted input already present, but consider assertions/helpers).
+      - Golden-output snapshots for key demos; CI smoke on both host and embedded (emulated where possible).
+  8. Language spec:
+      - A concise reference of syntax/semantics (expressions, patterns, ownership rules, type inference edges, macro hygiene
+        rules).
+  9. Stability/interop:
+      - Stabilize module/import rules and visibility; ensure formatter is idempotent and LSP matches parser/lint.
