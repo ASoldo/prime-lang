@@ -130,7 +130,7 @@ address = "0x10000""#,
             TopicSection {
                 title: "Build & flash",
                 snippet: r#"prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink"#,
-                explanation: "With the manifest env present (or standard tools under `~/.espressif`), no extra shell setup is required. The runtime links a minimal Xtensa entry, pulls in ROM delay/printf, and toggles GPIO2 (active-low) for the on-board LED. Flash is enabled for the demo; pass `--no-flash` to skip. UART output comes from your `out(...)` calls (strings, format strings, ints, bools) and each call adds its own newline; connect at 115200 and press reset to see it.",
+                explanation: "With the manifest env present (or standard tools under `~/.espressif`), no extra shell setup is required. The runtime links a minimal Xtensa entry, pulls in ROM delay/printf, and toggles GPIO2 (active-low) for the on-board LED. Watchdogs are disabled once on boot in the demo so the loop can run indefinitely; re-enable them for projects that need watchdog coverage. Flash is enabled for the demo; pass `--no-flash` to skip. UART output comes from your `out(...)` calls (strings, format strings, ints, bools) and each call adds its own newline; connect at 115200 and press reset to see it.",
             },
             TopicSection {
                 title: "Toolchain detection",

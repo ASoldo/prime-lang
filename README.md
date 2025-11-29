@@ -310,11 +310,13 @@ What it does:
 - `[build.toolchain.env]` injects the esp-clang/Xtensa toolchains, LLVM prefix, linker choice, and a dedicated cache dir. `$PATH` is expanded in-place so existing PATH is preserved.
 - The CLI also autodetects the same defaults under `~/.espressif` if you omit them; keep these entries if your layout differs or you want a self-contained manifest.
 - UART logging: `out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (constants), and bools are rendered; each `out` appends its own newline so successive calls separate cleanly. The blink demo now prints your format strings (e.g., `hello ... {my_var}`) plus per-loop state booleans—no extra boot banner is injected by the runtime.
+  - For the bundled demo, the runtime disables RTC/TIMG watchdogs once at startup so the tight blink loop can run indefinitely without resets. Remove that if you want watchdog coverage in your own projects.
 
 How to build/flash (after installing ESP-IDF tools):
 1. Optional but recommended: `source ~/esp/esp-idf/export.sh` to set IDF_PATH and python deps.
 2. Run the demo: `prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink`
    - The runtime prints your `out(...)` lines on UART (115200) with newlines per call (`hello ... {my_var}`, loop state toggles, etc.), and the on-board blue LED (GPIO2, active-low) blinks.
+   - The demo disables hardware watchdogs once on boot to keep the loop alive; re-enable or adjust if your project needs watchdog protection.
    - Flashing is on by default for the demo; disable with `--no-flash` or set `[build.flash].enabled = false`.
 3. If your board’s user LED sits on another pin (some use GPIO4/5), edit the `led` constant in `esp32_blink.prime`.
 
