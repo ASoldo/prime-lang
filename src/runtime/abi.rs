@@ -362,7 +362,7 @@ mod embedded {
         let s = &*(value.0 as *const PrimeString);
         #[cfg(target_arch = "xtensa")]
         {
-            ets_printf(b"%s\n\0".as_ptr(), s.ptr);
+            ets_printf(b"%s\0".as_ptr(), s.ptr);
         }
         #[cfg(not(target_arch = "xtensa"))]
         let _ = s;

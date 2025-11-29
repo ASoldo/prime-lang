@@ -1935,7 +1935,9 @@ impl Compiler {
                 }
             }
         }
-        self.emit_printf_call("\n", &mut []);
+        if !self.target.is_embedded() {
+            self.emit_printf_call("\n", &mut []);
+        }
         Ok(())
     }
 
