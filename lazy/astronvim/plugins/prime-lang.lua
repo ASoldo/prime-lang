@@ -253,6 +253,10 @@ return {
       target: (type_expression) @name
       (#set! "kind" "Class")) @symbol
 
+    (macro_definition
+      name: (identifier) @name
+      (#set! "kind" "Function")) @symbol
+
     (function_definition
       name: (identifier) @name
       (#set! "kind" "Function")) @symbol
