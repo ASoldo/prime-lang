@@ -495,12 +495,37 @@ mod embedded {
     }
 
     static LOG_ONCE: AtomicBool = AtomicBool::new(false);
+    static WATCHDOGS_DISABLED: AtomicBool = AtomicBool::new(false);
+
+    #[inline]
+    fn disable_watchdogs_once() {
+        if WATCHDOGS_DISABLED.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        #[cfg(target_arch = "xtensa")]
+        unsafe {
+            const WDT_WKEY: u32 = 0x50d83aa1;
+
+            // RTC WDT.
+            core::ptr::write_volatile(RTC_CNTL_WDTWPROTECT_REG, WDT_WKEY);
+            core::ptr::write_volatile(RTC_CNTL_WDTCONFIG0_REG, 0);
+
+            // Timer Group 0 WDT.
+            core::ptr::write_volatile(TIMG0_WDTWPROTECT_REG, WDT_WKEY);
+            core::ptr::write_volatile(TIMG0_WDTCONFIG0_REG, 0);
+
+            // Timer Group 1 WDT.
+            core::ptr::write_volatile(TIMG1_WDTWPROTECT_REG, WDT_WKEY);
+            core::ptr::write_volatile(TIMG1_WDTCONFIG0_REG, 0);
+        }
+    }
 
     #[inline]
     fn log_hello_once() {
         if LOG_ONCE.swap(true, Ordering::Relaxed) {
             return;
         }
+        disable_watchdogs_once();
         // Keep placeholder for optional boot banner; intentionally disabled.
         #[cfg(target_arch = "xtensa")]
         if false {
@@ -521,6 +546,28 @@ mod embedded {
     const IO_MUX_GPIO2_REG: *mut u32 = (DR_REG_IO_MUX_BASE + 0x40) as *mut u32;
     const MCU_SEL_MASK: u32 = 0b111 << 12;
     const FUNC_GPIO: u32 = 0b010;
+
+    // Watchdog control registers.
+    #[cfg(target_arch = "xtensa")]
+    const DR_REG_RTCCNTL_BASE: u32 = 0x3ff48000;
+    #[cfg(target_arch = "xtensa")]
+    const RTC_CNTL_WDTCONFIG0_REG: *mut u32 = (DR_REG_RTCCNTL_BASE + 0x0090) as *mut u32;
+    #[cfg(target_arch = "xtensa")]
+    const RTC_CNTL_WDTWPROTECT_REG: *mut u32 = (DR_REG_RTCCNTL_BASE + 0x00a4) as *mut u32;
+
+    #[cfg(target_arch = "xtensa")]
+    const DR_REG_TIMERGROUP0_BASE: u32 = 0x3ff5f000;
+    #[cfg(target_arch = "xtensa")]
+    const TIMG0_WDTCONFIG0_REG: *mut u32 = (DR_REG_TIMERGROUP0_BASE + 0x0048) as *mut u32;
+    #[cfg(target_arch = "xtensa")]
+    const TIMG0_WDTWPROTECT_REG: *mut u32 = (DR_REG_TIMERGROUP0_BASE + 0x0064) as *mut u32;
+
+    #[cfg(target_arch = "xtensa")]
+    const DR_REG_TIMERGROUP1_BASE: u32 = 0x3ff60000;
+    #[cfg(target_arch = "xtensa")]
+    const TIMG1_WDTCONFIG0_REG: *mut u32 = (DR_REG_TIMERGROUP1_BASE + 0x0048) as *mut u32;
+    #[cfg(target_arch = "xtensa")]
+    const TIMG1_WDTWPROTECT_REG: *mut u32 = (DR_REG_TIMERGROUP1_BASE + 0x0064) as *mut u32;
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_delay_ms(ms: i32) -> PrimeStatus {
