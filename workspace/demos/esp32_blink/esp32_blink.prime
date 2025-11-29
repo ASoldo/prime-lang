@@ -6,6 +6,7 @@ fn main() {
 
   let int32 led = 2;
   pin_mode(led, 1);
+  out(`This is our second text {my_var}`);
   loop {
     digital_write(led, 0);
     delay_ms(1000);
