@@ -10,7 +10,7 @@ graph LR
   CALLS --> HOST_RT["Host runtime (interpreter structures)"]
   BIN --> DEVICE["Host or ESP32"]
 
-  subgraph Staticlib (per target)
+  subgraph "Staticlib (per target)"
     ABI_SRC["src/runtime/abi.rs"] --> HOST_LIB["libruntime_abi.a (host)"]
     ABI_SRC --> XTENSA_LIB["libruntime_abi.a (xtensa)"]
   end
