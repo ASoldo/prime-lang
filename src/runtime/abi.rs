@@ -345,14 +345,24 @@ mod embedded {
     #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_string_new(data: *const u8, len: usize) -> PrimeHandle {
-        let slot = STR_HANDLE_OFF.fetch_add(1, Ordering::Relaxed);
-        if slot >= STR_HANDLES_MAX {
-            return PrimeHandle::null();
-        }
-        let start = STR_STORAGE_OFF.fetch_add(len, Ordering::Relaxed);
-        if start >= STR_STORAGE_SIZE {
-            return PrimeHandle::null();
-        }
+        // Simple ring buffers to keep printing in tight loops without panicking.
+        let slot = {
+            let mut next = STR_HANDLE_OFF.load(Ordering::Relaxed);
+            if next >= STR_HANDLES_MAX {
+                next = 0;
+            }
+            STR_HANDLE_OFF.store(next + 1, Ordering::Relaxed);
+            next
+        };
+        let start = {
+            let mut off = STR_STORAGE_OFF.load(Ordering::Relaxed);
+            // Reserve space for the string plus a null terminator.
+            if off + len + 1 >= STR_STORAGE_SIZE {
+                off = 0;
+            }
+            STR_STORAGE_OFF.store(off + len + 1, Ordering::Relaxed);
+            off
+        };
         let avail = STR_STORAGE_SIZE - start;
         let copy_len = core::cmp::min(len, avail.saturating_sub(1));
         let dst = STR_STORAGE.as_mut_ptr().add(start);

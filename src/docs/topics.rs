@@ -145,11 +145,13 @@ address = "0x10000""#,
             TopicSection {
                 title: "UART logging from Prime",
                 snippet: r#"fn main() {
-  let int32 led = 2;
-  out(`hello from esp32 blink demo and value is {led}`);
+  let int32 my_var = 5;
+  out(`hello from esp32 blink demo and value is {my_var}`);
+  let mut bool state = true;
   // ... blink loop ...
+  out(`State is: {state}`);
 }"#,
-                explanation: "`out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (constants), and bools are rendered; each `out` ends with a newline so successive calls don’t run together. Use these to trace startup and loop activity alongside LED toggles.",
+                explanation: "`out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (constants), and bools are rendered; each `out` ends with a newline so successive calls don’t run together. Use these to trace startup and loop activity alongside LED toggles (the demo prints the formatted value and per-loop state).",
             },
         ],
     },

@@ -8,12 +8,15 @@ fn main() {
   pin_mode(led, 1);
   out(`This is our second text {my_var}`);
 
-  let bool state = true;
-  out(`State is: {state}`);
+  let mut bool state = true;
   loop {
     digital_write(led, 0);
+    state = false;
+    out(`State is: {state}`);
     delay_ms(1000);
     digital_write(led, 1);
+    state = true;
+    out(`State is: {state}`);
     delay_ms(1000);
   }
 }
