@@ -147,6 +147,24 @@ return {
     ["fn" "let" "mut" "import" "export" "prelude" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "loop" "spawn" "return" "break" "continue" "defer" "module" "test" "library" "macro" "pub" "interface" "impl" "try" "move"] @keyword
     ("async") @keyword
     ("await") @keyword
+    ("{") @keyword
+    ("}") @keyword
+    ("(") @keyword
+    (")") @keyword
+    (";") @keyword
+    (":") @keyword
+    ("::") @keyword
+    ("+") @keyword
+    ("-") @keyword
+    ("*") @keyword
+    ("%") @keyword
+    ("&") @keyword
+    ("=") @keyword
+    ("#") @keyword
+    (",") @keyword
+    ("<") @keyword
+    (">") @keyword
+    ("->") @keyword
 
     (module_declaration name: (module_path) @namespace)
     (module_path (identifier) @namespace)
@@ -199,9 +217,10 @@ return {
     (map_entry key: (string_literal) @string)
     (field_expression field: (identifier) @field)
 
-    (assign_statement target: (identifier) @variable)
+    (assign_statement target: (identifier) @field)
     (assign_statement target: (unary_expression (identifier) @variable))
     (assign_statement value: (identifier) @variable)
+    (assign_statement target: (unary_expression (identifier) @variable))
 
     ;; Constructors / enum variants (Ok, Err, etc.)
     (call_expression
