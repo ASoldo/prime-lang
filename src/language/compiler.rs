@@ -1905,7 +1905,10 @@ impl Compiler {
 
     fn emit_out_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         self.print_value(value)?;
-        if !self.target.is_embedded() {
+        if self.target.is_embedded() {
+            // Terminate embedded prints with a newline.
+            self.emit_embedded_newline();
+        } else {
             self.emit_printf_call("\n", &mut []);
         }
         Ok(())
@@ -1935,10 +1938,34 @@ impl Compiler {
                 }
             }
         }
-        if !self.target.is_embedded() {
+        if self.target.is_embedded() {
+            self.emit_embedded_newline();
+        } else {
             self.emit_printf_call("\n", &mut []);
         }
         Ok(())
+    }
+
+    fn emit_embedded_newline(&mut self) {
+        if !self.target.is_embedded() {
+            return;
+        }
+        if let Ok((ptr, len)) = self.build_runtime_bytes("\n", "rt_print_nl") {
+            let mut call_args = [ptr, len];
+            let handle = self.call_runtime(
+                self.runtime_abi.prime_string_new,
+                self.runtime_abi.prime_string_new_ty,
+                &mut call_args,
+                "string_new_nl",
+            );
+            let mut print_args = [handle];
+            self.call_runtime(
+                self.runtime_abi.prime_print,
+                self.runtime_abi.prime_print_ty,
+                &mut print_args,
+                "prime_print_nl",
+            );
+        }
     }
 
     fn print_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
