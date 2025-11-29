@@ -130,7 +130,7 @@ address = "0x10000""#,
             TopicSection {
                 title: "Build & flash",
                 snippet: r#"prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink"#,
-                explanation: "With the manifest env present (or standard tools under `~/.espressif`), no extra shell setup is required. The runtime links a minimal Xtensa entry, pulls in ROM delay/printf, and toggles GPIO2 (active-low) for the on-board LED. Flash is enabled for the demo; pass `--no-flash` to skip. UART output includes a single `out(\"...\")` message; connect at 115200 and press reset to see it.",
+                explanation: "With the manifest env present (or standard tools under `~/.espressif`), no extra shell setup is required. The runtime links a minimal Xtensa entry, pulls in ROM delay/printf, and toggles GPIO2 (active-low) for the on-board LED. Flash is enabled for the demo; pass `--no-flash` to skip. UART output comes from your `out(...)` calls (strings, format strings, ints, bools) and each call adds its own newline; connect at 115200 and press reset to see it.",
             },
             TopicSection {
                 title: "Toolchain detection",
@@ -145,10 +145,11 @@ address = "0x10000""#,
             TopicSection {
                 title: "UART logging from Prime",
                 snippet: r#"fn main() {
-  out("hello from esp32 blink demo");
+  let int32 led = 2;
+  out(`hello from esp32 blink demo and value is {led}`);
   // ... blink loop ...
 }"#,
-                explanation: "`out(\"...\")` prints a UTF-8 string over UART via ROM `ets_printf` (string-only). Use this to trace startup and loop activity alongside LED toggles.",
+                explanation: "`out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (constants), and bools are rendered; each `out` ends with a newline so successive calls don’t run together. Use these to trace startup and loop activity alongside LED toggles.",
             },
         ],
     },
