@@ -6,6 +6,8 @@
     ),
     no_std
 )]
+#![cfg_attr(target_arch = "xtensa", allow(static_mut_refs))]
+#![allow(unstable_features)]
 
 // Minimal no_std runtime ABI for embedded targets.
 // Host builds reuse the same minimal surface just to satisfy compiler imports.
