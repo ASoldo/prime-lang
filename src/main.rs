@@ -1011,6 +1011,21 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
             .arg("-mattr=+windowed");
     } else if let Some(triple) = target.triple() {
         cmd.arg(format!("-mtriple={triple}"));
+    } else {
+        // Ask llvm-config for the default triple; fall back to a standard host triple.
+        let llvm_triple = Command::new("llvm-config")
+            .arg("--host-target")
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                } else {
+                    None
+                }
+            });
+        let triple = llvm_triple.unwrap_or_else(|| "x86_64-pc-linux-gnu".to_string());
+        cmd.arg(format!("-mtriple={triple}"));
     }
     if target.is_esp32c3() {
         cmd.arg("-march=rv32imc");
