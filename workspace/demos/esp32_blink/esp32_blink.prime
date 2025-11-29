@@ -1,7 +1,8 @@
 module demos::esp32_blink;
 
 fn main() {
-  out("hello from esp32 blink demo");
+  let int32 my_var = 5;
+  out(`hello from esp32 blink demo and value is {my_var}`);
 
   let int32 led = 2;
   pin_mode(led, 1);

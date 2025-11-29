@@ -1943,9 +1943,15 @@ impl Compiler {
         let mut value = value;
         let owned = value.clone().into_value();
         if self.target.is_embedded() {
-            // For embedded, only string prints are supported; other types no-op.
-            if let Value::Str(string) = &owned {
-                let (ptr, len) = self.build_runtime_bytes(&string.text, "rt_print")?;
+            // Embedded runtime only knows how to print strings; render common scalars into strings.
+            let printable = match &owned {
+                Value::Str(string) => Some(string.text.as_ref().clone()),
+                Value::Int(int_value) => int_value.constant.map(|c| c.to_string()),
+                Value::Bool(flag) => Some(if *flag { "true".into() } else { "false".into() }),
+                _ => None,
+            };
+            if let Some(text) = printable {
+                let (ptr, len) = self.build_runtime_bytes(&text, "rt_print")?;
                 let mut call_args = [ptr, len];
                 let handle = self.call_runtime(
                     self.runtime_abi.prime_string_new,
