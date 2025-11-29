@@ -1,12 +1,14 @@
 module demos::bare_metal_embedded;
 
-// Minimal example that stays portable when std-builtins are disabled.
-// Avoid fs/time/spawn/channel so the same code runs in `prime run` and `prime build`
-// even when the CLI is compiled with `--no-default-features`.
 fn main() {
   out("bare metal demo starting");
 
-  let []int32 readings = [1, 2, 3, 4];
+  let []int32 readings = [
+    1,
+    2,
+    3,
+    4,
+  ];
   let int32 total = sum(readings);
   out(`total = {total}`);
 
