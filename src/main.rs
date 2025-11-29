@@ -548,7 +548,7 @@ crate-type = ["staticlib"]
         if !new_flags.is_empty() {
             new_flags.push(' ');
         }
-        new_flags.push_str("-C target-feature=+windowed");
+        new_flags.push_str("-Aunstable-features -C target-feature=+windowed");
         cmd.env("RUSTFLAGS", new_flags);
     }
     cmd.arg("build")
