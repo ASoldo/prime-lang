@@ -339,6 +339,8 @@ module.exports = grammar({
       $.method_call_expression,
       $.binary_expression,
       $.unary_expression,
+      $.await_expression,
+      $.async_expression,
       $.call_expression,
       $.field_expression,
       $.question_expression,
@@ -459,6 +461,18 @@ module.exports = grammar({
       seq('move', $.expression),
       seq('spawn', $.expression)
     )),
+
+    await_expression: $ => prec.right(PREC.unary,
+      seq(
+        'await',
+        $.expression
+      )
+    ),
+
+    async_expression: $ => seq(
+      'async',
+      field('body', $.block)
+    ),
 
     call_expression: $ => prec.left(PREC.call,
       seq(

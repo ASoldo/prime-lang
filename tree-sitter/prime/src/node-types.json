@@ -8,6 +8,14 @@
         "named": true
       },
       {
+        "type": "async_expression",
+        "named": true
+      },
+      {
+        "type": "await_expression",
+        "named": true
+      },
+      {
         "type": "binary_expression",
         "named": true
       },
@@ -17,6 +25,10 @@
       },
       {
         "type": "call_expression",
+        "named": true
+      },
+      {
+        "type": "closure_expression",
         "named": true
       },
       {
@@ -232,6 +244,10 @@
         "named": true
       },
       {
+        "type": "function_type",
+        "named": true
+      },
+      {
         "type": "generic_type",
         "named": true
       },
@@ -341,6 +357,37 @@
     }
   },
   {
+    "type": "async_expression",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "await_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "binary_expression",
     "named": true,
     "fields": {},
@@ -421,6 +468,55 @@
         "types": [
           {
             "type": "type_arguments",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "closure_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "closure_parameter",
+          "named": true
+        },
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "type_expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "closure_parameter",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type_expression",
             "named": true
           }
         ]
@@ -796,6 +892,21 @@
           }
         ]
       }
+    }
+  },
+  {
+    "type": "function_type",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "type_expression",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -2334,6 +2445,14 @@
   },
   {
     "type": "as",
+    "named": false
+  },
+  {
+    "type": "async",
+    "named": false
+  },
+  {
+    "type": "await",
     "named": false
   },
   {

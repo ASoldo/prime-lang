@@ -58,7 +58,11 @@ return {
 		-- AstroNvim already loads this; we just extend its config
 		opts = function(_, opts)
 			opts = opts or {}
-
+			vim.filetype.add({
+				filename = {
+					["prime.lock"] = "toml",
+				},
+			})
 			-- make sure categories exist
 			opts.extension = opts.extension or {}
 			opts.filetype = opts.filetype or {}
@@ -140,7 +144,7 @@ return {
 			-- highlights.scm
 			do
 				local highlights = [[
-    ["fn" "let" "mut" "import" "export" "prelude" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "loop" "spawn" "return" "break" "continue" "defer" "module" "test" "library" "macro" "pub" "interface" "impl" "try" "move"] @keyword
+    ["fn" "async" "await" "let" "mut" "import" "export" "prelude" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "loop" "spawn" "return" "break" "continue" "defer" "module" "test" "library" "macro" "pub" "interface" "impl" "try" "move"] @keyword
 
     (module_declaration name: (module_path) @namespace)
     (module_path (identifier) @namespace)
