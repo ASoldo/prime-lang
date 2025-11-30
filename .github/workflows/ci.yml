@@ -24,10 +24,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install ESP-IDF toolchain
-        uses: espressif/setup-esp-idf@v4
+        uses: espressif/install-esp-idf-action@v1
         with:
           version: v5.2
-          tools: esp-clang, xtensa-esp32-elf, esptool
       - name: Build CLI
         run: cargo build --release --locked
       - name: Smoke build ESP32 blink demo (no flash)
