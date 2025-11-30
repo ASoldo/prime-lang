@@ -8,7 +8,9 @@ use crate::language::{
     types::{Mutability, TypeExpr},
 };
 use std::collections::HashSet;
-use tower_lsp_server::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
+use tower_lsp_server::lsp_types::{
+    Hover, HoverContents, MarkedString, MarkupContent, MarkupKind,
+};
 
 use super::{
     analysis::{DeclInfo, DeclKind, find_local_decl},
@@ -1396,5 +1398,63 @@ fn main() {
             }
             _ => panic!("expected markup hover"),
         }
+    }
+
+    #[test]
+    fn hover_shows_field_type_for_member_access() {
+        let text = r#"
+module demo::member;
+
+struct Foo { value: int32; }
+
+fn main() {
+  let Foo foo = Foo { value: 1 };
+  foo.value;
+}
+"#;
+        let tokens = lex(text).expect("lex tokens");
+        let module =
+            parse_module("demo::member", PathBuf::from("member.prime"), text).expect("parse module");
+        let structs = collect_struct_info(&[module.clone()]);
+        let vars = collect_var_infos(text, &tokens);
+        let usage = tokens
+            .iter()
+            .find(|token| {
+                matches!(&token.kind, TokenKind::Identifier(name) if name == "value")
+                    && token.span.start > text.find("foo.value").unwrap()
+            })
+            .expect("member access token");
+
+        let hover = hover_for_token(
+            text,
+            usage,
+            &vars,
+            Some(&module),
+            Some(&structs),
+            Some(&[module.clone()]),
+        )
+        .expect("hover result for member access");
+
+        fn marked_to_string(ms: MarkedString) -> String {
+            match ms {
+                MarkedString::String(s) => s,
+                MarkedString::LanguageString(lang) => lang.value,
+            }
+        }
+
+        let contents = match hover.contents {
+            HoverContents::Markup(content) => content.value,
+            HoverContents::Scalar(ms) => marked_to_string(ms),
+            HoverContents::Array(list) => list
+                .into_iter()
+                .map(marked_to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+
+        assert!(
+            contents.contains("value") && contents.contains("int32"),
+            "expected hover to include field name and type, got {contents}"
+        );
     }
 }

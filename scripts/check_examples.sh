@@ -12,9 +12,22 @@ if ! command -v prime-lang >/dev/null 2>&1; then
   exit 1
 fi
 
-mapfile -t files < <(rg -o 'path = "[^"]+"' prime.toml | sed -E 's/path = "([^"]+)"/\1/')
+mapfile -t manifests < <(find workspace -name prime.toml -print | sort)
 
-echo "Linting ${#files[@]} example modules from prime.toml"
+declare -A seen
+files=()
+for manifest in "${manifests[@]}"; do
+  dir="$(cd -- "$(dirname -- "$manifest")" && pwd)"
+  while IFS= read -r path; do
+    abs="${dir}/${path}"
+    if [[ -f "$abs" && -z "${seen[$abs]:-}" ]]; then
+      files+=("$abs")
+      seen[$abs]=1
+    fi
+  done < <(rg -o 'path = "([^"]+\\.prime)"' -r '$1' "$manifest" || true)
+done
+
+echo "Linting ${#files[@]} example modules from ${#manifests[@]} manifests"
 for file in "${files[@]}"; do
   echo "• lint ${file}"
   prime-lang lint "$file"

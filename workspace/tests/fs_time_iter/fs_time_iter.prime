@@ -5,9 +5,9 @@ import core::types;
 fn fs_roundtrip() -> bool {
   let string path = "workspace/tests/fs_time_iter/tmp_fs.txt";
   match fs_write(path, "fs builtins") {
-    Result::Ok(()) => {},
-    Result::Err(_) => return false,
-  }
+    Result::Ok(_) => {},
+    Result::Err(_) => { return false; },
+  };
   if !fs_exists(path) {
     return false;
   }
@@ -51,8 +51,8 @@ fn map_iter_and_helpers() -> bool {
           saw_two = true;
         }
       }
-      Option::None => break,
-    }
+      Option::None => { break; },
+    };
   }
 
   let []string keys = scores.map_keys();

@@ -30,10 +30,10 @@ each tool easier to navigate.
 git clone https://github.com/asoldo/prime-lang.git
 cd prime-lang
 cargo install --path .
-prime-lang run main.prime         # interpret
-prime-lang build main.prime       # emit LLVM, link to ./.build.prime/output
-./.build.prime/output/output      # run the native binary
-# Try another module: prime-lang run --entry demos::error_handling
+prime-lang run workspace/app/main.prime   # interpret the packaged app::main module
+prime-lang build workspace/app/main.prime # emit LLVM, link to ./.build.prime/output
+./.build.prime/output/output              # run the native binary
+# Try another module: prime-lang run workspace/demos/error_handling/error_handling_demo.prime
 ```
 
 The repository ships with `main.prime` so you can confirm the full toolchain
@@ -51,7 +51,7 @@ build mode, the host binary, and the ESP32 runtime (no stubs or hangs).
 
 ### Example Programs
 
-- `main.prime` – Feature tour: modules, structs/enums, interfaces, ownership, and UI-ish printing.
+- `workspace/app/main.prime` – Feature tour: modules, structs/enums, interfaces, ownership, and UI-ish printing.
 - `pattern_demo.prime` – Match/if/while/for destructuring across tuples, maps, structs, slices.
 - `error_handling_demo.prime` – `Result`, `try {}`, and `?` propagation.
 - `lab_demo.prime` – A syntax-rich lab scenario (range loops, map destructuring, mutable refs, generic interface) used as an internal example; not exposed via `prime-lang docs`.
@@ -61,12 +61,12 @@ build mode, the host binary, and the ESP32 runtime (no stubs or hangs).
 Run any of them directly:
 
 ```bash
-prime-lang run lab_demo.prime            # module demos::lab_demo in the manifest
-prime-lang run pattern_demo.prime        # module demos::patterns
-prime-lang run error_handling_demo.prime # module demos::error_handling
+prime-lang run workspace/demos/lab_demo/lab_demo.prime                  # module demos::lab_demo
+prime-lang run workspace/demos/patterns/pattern_demo.prime              # module demos::patterns
+prime-lang run workspace/demos/error_handling/error_handling_demo.prime # module demos::error_handling
 ```
 
-Validated outputs (fresh run, current syntax):
+Validated outputs (fresh run, current syntax; files live under `workspace/demos/...` unless noted):
 
 - `borrow_demo.prime` — aliasing/borrowing demos; prints loop merges and HP/MP stats.
 - `error_handling_demo.prime` — shows Ok/Err propagation, span calculations.

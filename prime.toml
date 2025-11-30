@@ -22,6 +22,9 @@ members = [
   "workspace/demos/async_demo",
   "workspace/demos/channel_demo",
   "workspace/demos/parallel_demo",
+  "workspace/demos/fs_demo",
+  "workspace/demos/time_demo",
+  "workspace/demos/iter_demo",
   "workspace/demos/input",
   "workspace/demos/pointer_demo",
   "workspace/demos/closures",
@@ -33,5 +36,6 @@ members = [
   "workspace/tests/input_read",
   "workspace/tests/macros",
   "workspace/tests/drop",
+  "workspace/tests/fs_time_iter",
   "workspace/libpkg_a",
 ]

@@ -522,6 +522,7 @@ fn canonical_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::collect_parse_and_manifest_diagnostics;
+    use crate::project::diagnostics::CODE_MANIFEST_MISSING_MODULE;
     use std::fs;
     use tempfile::tempdir;
     use tower_lsp_server::{UriExt, lsp_types::Uri};
@@ -643,6 +644,37 @@ fn main() {
                 .iter()
                 .any(|diag| diag.message.contains("already mutably borrowed")),
             "expected borrow-checker diagnostic, found {diags:?}"
+        );
+    }
+
+    #[test]
+    fn reports_missing_manifest_entry_for_declared_module() {
+        let dir = tempdir().expect("tempdir");
+        let manifest = r#"
+manifest_version = "3"
+
+[package]
+name = "demo"
+version = "0.1.0"
+"#;
+        fs::write(dir.path().join("prime.toml"), manifest).expect("write manifest");
+        let file_path = dir.path().join("main.prime");
+        let text = r#"
+module demo::main;
+
+fn main() {}
+"#;
+        fs::write(&file_path, text).expect("write file");
+        let uri = Uri::from_file_path(&file_path).expect("uri");
+
+        let (_module, diags) = collect_parse_and_manifest_diagnostics(&uri, text);
+        let codes: Vec<&str> = diags
+            .iter()
+            .filter_map(|diag| super::diagnostic_code(diag))
+            .collect();
+        assert!(
+            codes.contains(&CODE_MANIFEST_MISSING_MODULE),
+            "expected missing-manifest-entry diagnostic, found codes: {codes:?}, diags: {diags:?}"
         );
     }
 }
