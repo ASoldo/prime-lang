@@ -502,7 +502,7 @@ fn compile_runtime_abi_with_cargo(
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let triple = target
         .triple()
-        .ok_or_else(|| "embedded runtime build requires a target triple".to_string())?;
+        .unwrap_or("x86_64-unknown-linux-gnu");
     let cargo_dir = runtime_dir.join("cargo");
     fs::create_dir_all(&cargo_dir)
         .map_err(|err| format!("failed to create runtime cargo dir: {err}"))?;
