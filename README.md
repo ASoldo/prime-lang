@@ -45,7 +45,9 @@ and for the new `try {}` / `?` sugar, so you can rely on identical semantics in 
 `prime run` and `prime build`.
 Build-mode also executes concurrency the same way: `spawn`/`join` plus channels work
 while compiling (deterministically unless you opt into `PRIME_BUILD_PARALLEL=1`), and
-the emitted binary uses real OS threads.
+the emitted binary uses real OS threads. Async/await + channels automatically attach
+runtime handles when async appears, so `recv_task`/`sleep_task` block correctly in
+build mode, the host binary, and the ESP32 runtime (no stubs or hangs).
 
 ### Example Programs
 
@@ -80,7 +82,10 @@ Validated outputs (fresh run, current syntax):
 - `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
 - `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
 - `fs_demo.prime` / `time_demo.prime` / `iter_demo.prime` — minimal built-in samples for file I/O, timers, and iterator helpers.
-- `workspace/demos/esp32_blink` — ESP32 Xtensa no_std blink demo with async/await and calibrated delay; manifest includes toolchains and flash settings.
+- `workspace/demos/esp32_blink` — ESP32 Xtensa no_std blink demo with async/await and calibrated delay; manifest includes toolchains and flash settings. Build uses
+  `llc -relocation-model=static -mtriple=xtensa-esp32-elf -mcpu=esp32 -mattr=+windowed`
+  and links `libruntime_abi.a` (Xtensa) plus libc/libgcc before flashing via
+  `esptool elf2image` (falls back to objcopy when elf2image is unavailable).
 
 ### Macros & Traceability
 
@@ -163,6 +168,21 @@ Input prompts accept format strings, so you can interpolate context into the pro
 match in[int32](`Temperature for { "Soldo" }: `) {
   Result::Ok(temp) => out(`temp recorded: {temp}`),
   Result::Err(msg) => out(`temp error: {msg}`),
+}
+
+// Async + channel parity (build/run/embedded):
+fn main() {
+  let (tx, rx) = channel[int32]();
+  let task = async {
+    let Option[int32] received = await recv_task(rx);
+    match received {
+      Some(v) => out(`got {v}`),
+      None => out("closed"),
+    }
+  };
+  let _ = send(tx, 7);
+  close(tx);
+  await task;
 }
 ```
 

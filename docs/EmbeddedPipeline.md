@@ -29,5 +29,7 @@ flowchart TD
 
 Notes:
 - Manifest supplies toolchain/env and linker scripts; defaults fall back to `~/.espressif`.
+- Build uses `-relocation-model=static` for llc plus `-mcpu=esp32 -mattr=+windowed`; linking pulls `libruntime_abi.a` (Xtensa) plus libc/libgcc.
+- Flashing prefers `esptool elf2image` to produce headers; falls back to objcopy when elf2image is unavailable.
 - Runtime disables watchdogs once, uses a calibrated busy-loop delay for sleep, and ring-buffered prints.
-- `out(...)`, channels, async `sleep_task`/`recv_task`, and GPIO built-ins are supported in no_std for ESP32.
+- `out(...)`, channels, async `sleep_task`/`recv_task`, `prime_reference_read`, and GPIO built-ins are supported in no_std for ESP32.

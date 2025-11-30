@@ -21,6 +21,6 @@ graph LR
 ```
 
 Highlights:
-- Interpreter uses its own in-process runtime; build mode only needs ABI shims plus values.
-- The same ABI signatures are declared in IR; linking picks the correct staticlib for the target.
-- Xtensa runtime (no_std) now includes async tasks, channels, calibrated delays (busy loop), GPIO mux for common LED pins, ring-buffered strings, and disables watchdogs once for the demo.
+- Interpreter uses its own in-process runtime; build mode invokes the ABI for async/channels when async appears (runtime handles are auto-attached).
+- The same ABI signatures are declared in IR; linking picks the correct staticlib for the target. Xtensa builds request `-relocation-model=static` and link libc/libgcc alongside `libruntime_abi.a`.
+- Xtensa runtime (no_std) includes async tasks, channels, calibrated delays (busy loop), GPIO mux for common LED pins, ring-buffered strings, watchdog disable, and basic reference helpers (`prime_reference_read` passthrough).

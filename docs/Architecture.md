@@ -81,6 +81,11 @@ flowchart LR
   ELF --> FLASH["esptool flash (optional)"]
 ```
 
+Notes:
+- Host builds default to PIC; Xtensa builds force `-relocation-model=static` and pass
+  `-mcpu=esp32 -mattr=+windowed -mtriple=xtensa-esp32-elf` to match the ESP toolchain.
+- Linking the embedded binary pulls `libruntime_abi.a` (Xtensa) plus libc/libgcc; `esptool` uses `elf2image` when available, with objcopy as a fallback.
+
 ## Interpreter vs Build (Semantics Parity)
 
 ```mermaid
@@ -94,11 +99,13 @@ graph TD
 ```
 
 Both modes share the same AST/type system; build mode records effects (e.g., `out`, channels) and emits equivalent code. Concurrency (spawn/join/channel) is deterministic in build snapshots and mapped to OS threads in the emitted binary.
+Async/await + channels always attach runtime handles when async code is present, so
+`recv_task`/`sleep_task` block correctly in build mode, the host binary, and Xtensa.
 
 ## Embedded Runtime Highlights (src/runtime/abi.rs)
 
 - `no_std` Xtensa runtime: entry (`call_user_start_cpu0`), BSS/data init, GPIO mux for common LED pins (2/4/5), calibrated busy-loop delays, ROM printf bindings.
-- `out(...)` plus channels and async tasks (`sleep_task`/`recv_task`) work in no_std; small static pools back channels/tasks.
+- `out(...)` plus channels and async tasks (`sleep_task`/`recv_task`) work in no_std; small static pools back channels/tasks. `prime_reference_read` is wired for embedded handles.
 - Tiny ring buffers for string storage to avoid print loss in tight loops.
 - Watchdogs disabled once at boot for the demo (RTC + TIMG WDTs); remove if you need watchdog coverage.
 
