@@ -25,6 +25,7 @@ jobs:
             echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21";
             echo "LLVM_SYS_211_FEATURES=all-targets";
             echo "LLVM_SYS_211_PREFER_DYNAMIC=1";
+            echo "PRIME_LLC=/usr/lib/llvm-21/bin/llc";
           } >> $GITHUB_ENV
       - name: Build
         run: cargo build --locked

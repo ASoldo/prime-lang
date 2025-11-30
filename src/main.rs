@@ -1035,6 +1035,7 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
     let mut cmd = if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
         let llc_path = env::var("PRIME_LLC").ok().or_else(|| {
             env::var("LLVM_SYS_201_PREFIX")
+                .or_else(|_| env::var("LLVM_SYS_211_PREFIX"))
                 .ok()
                 .map(|p| format!("{p}/bin/llc"))
                 .or_else(|| {
@@ -1045,7 +1046,11 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
         });
         Command::new(llc_path.unwrap_or_else(|| "llc".to_string()))
     } else {
-        Command::new("llc")
+        let llc_path = env::var("PRIME_LLC")
+            .ok()
+            .or_else(|| env::var("LLVM_SYS_211_PREFIX").ok().map(|p| format!("{p}/bin/llc")))
+            .or_else(|| env::var("LLVM_SYS_201_PREFIX").ok().map(|p| format!("{p}/bin/llc")));
+        Command::new(llc_path.unwrap_or_else(|| "llc".to_string()))
     };
     // Xtensa toolchains typically build static images; PIC relocations are not supported.
     let relocation_model = if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
