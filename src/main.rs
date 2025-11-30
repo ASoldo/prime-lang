@@ -29,6 +29,7 @@ use std::{
     env, fs, io,
     path::{Component, Path, PathBuf},
     process::Command,
+    sync::{Mutex, OnceLock},
 };
 use target::{BuildOptions, BuildTarget};
 use toml::Value;
@@ -476,6 +477,12 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool) {
 }
 
 fn compile_runtime_abi(options: &BuildOptions) -> Result<PathBuf, String> {
+    static RUNTIME_ABI_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _runtime_guard = RUNTIME_ABI_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "runtime ABI build lock poisoned".to_string())?;
+
     let target = &options.target;
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let runtime_dir = match target.triple() {
@@ -489,6 +496,9 @@ fn compile_runtime_abi(options: &BuildOptions) -> Result<PathBuf, String> {
         return compile_runtime_abi_with_cargo(target, &runtime_dir, options);
     }
     let output_lib = runtime_dir.join("libruntime_abi.a");
+    if output_lib.exists() {
+        let _ = fs::remove_file(&output_lib);
+    }
     let mut cmd = Command::new("rustc");
     cmd.arg("--crate-type")
         .arg("staticlib")
