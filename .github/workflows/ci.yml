@@ -65,7 +65,7 @@ jobs:
       - name: Install Rust esp toolchain via espup
         run: |
           cargo install espup --locked
-          espup install -y
+          yes | espup install
           rustup toolchain list
       - name: Build CLI
         run: cargo build --release --locked
