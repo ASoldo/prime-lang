@@ -47,6 +47,7 @@ fn main() {
       digital_write(led, on_level);
       out("async blink: LED ON");
       delay_ms(1000);
+      channel_demo();
 
       let int32 off_level = if led_active_low {
         1
@@ -60,7 +61,6 @@ fn main() {
     }
   };
   await blinker;
-  channel_demo();
   out("falling back to bare-metal blink loop");
 
   let int32 on_level = if led_active_low {

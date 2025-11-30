@@ -508,6 +508,7 @@ mod embedded {
         };
         let start = prime_now_ms();
         let deadline = start.saturating_add(i128::from(_millis.max(0)));
+        let mut spins = 0u32;
         loop {
             match dequeue_channel(slot) {
                 ChannelPoll::Item(v) => {
@@ -518,6 +519,11 @@ mod embedded {
                 ChannelPoll::Empty => {
                     if prime_now_ms() >= deadline {
                         return PrimeStatus::Invalid;
+                    }
+                    // Periodically yield to hardware timer so we don't busy-spin forever.
+                    spins = spins.wrapping_add(1);
+                    if spins & 0xff == 0 {
+                        prime_delay_ms(1);
                     }
                 }
             }
@@ -928,24 +934,29 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_recv_task")]
     pub unsafe extern "C" fn prime_recv_task(_receiver: PrimeHandle) -> PrimeHandle {
+        let Some(slot) = alloc_task_slot() else {
+            return PrimeHandle::null();
+        };
         let option_handle = if let Some(ch) = channel_from_handle(_receiver) {
-            match dequeue_channel(ch) {
-                ChannelPoll::Item(v) => {
-                    let mut buf = [v];
-                    prime_enum_new(1, buf.as_mut_ptr(), 1)
+            loop {
+                match dequeue_channel(ch) {
+                    ChannelPoll::Item(v) => {
+                        let mut buf = [v];
+                        break prime_enum_new(1, buf.as_mut_ptr(), 1);
+                    }
+                    ChannelPoll::Closed => break prime_enum_new(0, core::ptr::null(), 0),
+                    ChannelPoll::Empty => {
+                        // Yield briefly so async waits truly block until a send/close arrives.
+                        prime_delay_ms(1);
+                    }
                 }
-                ChannelPoll::Closed => prime_enum_new(0, core::ptr::null(), 0),
-                ChannelPoll::Empty => prime_enum_new(0, core::ptr::null(), 0),
             }
         } else {
             prime_enum_new(0, core::ptr::null(), 0)
         };
-        if let Some(slot) = alloc_task_slot() {
-            unsafe { *slot.result.get() = option_handle };
-            slot.done.store(true, Ordering::SeqCst);
-            return PrimeHandle(slot as *const TaskSlot as *mut c_void);
-        }
-        PrimeHandle::null()
+        unsafe { *slot.result.get() = option_handle };
+        slot.done.store(true, Ordering::SeqCst);
+        PrimeHandle(slot as *const TaskSlot as *mut c_void)
     }
 
     #[repr(C)]
