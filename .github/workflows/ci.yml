@@ -59,6 +59,9 @@ jobs:
         uses: espressif/install-esp-idf-action@v1
         with:
           version: v5.2
+      - name: Install ESP-IDF tools (esp32)
+        run: |
+          python3 "$IDF_PATH/tools/idf_tools.py" install esp32
       - name: Build CLI
         run: cargo build --release --locked
       - name: Smoke build ESP32 blink demo (no flash)
