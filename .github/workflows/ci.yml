@@ -13,18 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install LLVM (for llvm-sys)
-        id: llvm
-        uses: KyleMayes/install-llvm-action@v1
-        with:
-          version: "21"
+      - name: Install LLVM 21 (for llvm-sys)
+        run: |
+          curl -L -o /tmp/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0/clang+llvm-21.1.0-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+          sudo mkdir -p /opt/llvm-21
+          sudo tar -xf /tmp/llvm.tar.xz -C /opt/llvm-21 --strip-components=1
+          echo "LLVM_SYS_211_PREFIX=/opt/llvm-21" >> $GITHUB_ENV
       - name: Build
-        env:
-          LLVM_SYS_211_PREFIX: ${{ steps.llvm.outputs.llvm-path }}
         run: cargo build --locked
       - name: Test
-        env:
-          LLVM_SYS_211_PREFIX: ${{ steps.llvm.outputs.llvm-path }}
         run: cargo test --locked
 
   esp32-smoke:
