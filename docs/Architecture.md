@@ -6,17 +6,26 @@ This guide gives maintainers a visual map of how the CLI, compiler, runtime, and
 
 ```mermaid
 graph TD
-  A["CLI (src/main.rs)"] -->|Commands| B["Project Loader<br/>Manifest handling"]
-  A -->|Subcommands| C["Formatter/Lint/Docs<br/>(src/tools)"]
-  A -->|Run| D["Interpreter<br/>(src/runtime/interpreter.rs)"]
-  A -->|Build| E["Compiler & LLVM<br/>(src/language)"]
-  E -->|ABI Decls| F["Runtime ABI<br/>(src/language/runtime_abi.rs)"]
-  E -->|IR-&gt;obj| G["LLC"]
-  G -->|Link| H["Binary/ELF + runtime lib"]
-  H --> J["Host run (native)"]
-  H --> I["ESP32 Device<br/>(flash optional)"]
-  B -->|Manifests| W["workspace/*/prime.toml"]
-  D -->|Builtin FFI| K["Runtime ABI<br/>(src/runtime/abi.rs)"]
+  A["CLI (src/main.rs)"] --> PL["Project loader<br/>manifests"]
+  A --> TOOLS["Formatter / Lint / Docs<br/>(src/tools)"]
+  A --> RUN["Run -> Interpreter<br/>(src/runtime/interpreter.rs)"]
+  A --> BUILD["Build -> Compiler/LLVM<br/>(src/language)"]
+  A --> LSP["LSP server<br/>(src/lsp/server.rs)"]
+
+  PL --> MAN["workspace/*/prime.toml"]
+
+  RUN --> RT_HOST["Runtime ABI (host interp)<br/>(src/runtime/abi.rs)"]
+
+  BUILD --> ABI_DECL["ABI decls in IR<br/>(src/language/runtime_abi.rs)"]
+  ABI_DECL --> IR["IR/object"]
+  ABI_SRC["Runtime staticlib source<br/>(src/runtime/abi.rs)"] --> RT_HOST_LIB["libruntime_abi.a (host)"]
+  ABI_SRC --> RT_ESP_LIB["libruntime_abi.a (xtensa)"]
+
+  IR --> LINK["Link"]
+  RT_HOST_LIB --> LINK
+  RT_ESP_LIB --> LINK
+  LINK --> BIN_HOST["Host binary"]
+  LINK --> BIN_ESP["ESP32 ELF/bin"]
 ```
 
 ## CLI Command Flow
