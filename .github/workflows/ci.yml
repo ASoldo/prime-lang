@@ -62,6 +62,10 @@ jobs:
       - name: Install ESP-IDF tools (esp32)
         run: |
           "$IDF_PYTHON_ENV_PATH/bin/python3" "$IDF_PATH/tools/idf_tools.py" install esp32 esp-rom-elfs
+      - name: Install Rust esp toolchain
+        run: |
+          rustup toolchain install esp --component rust-std-xtensa-espidf
+          rustup target add xtensa-esp32-espidf --toolchain esp || true
       - name: Build CLI
         run: cargo build --release --locked
       - name: Smoke build ESP32 blink demo (no flash)

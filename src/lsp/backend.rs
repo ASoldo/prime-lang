@@ -325,6 +325,44 @@ fn argument_index(segment: &str) -> usize {
     count
 }
 
+fn signature_help_from_modules(modules: &[Module], ctx: &CallContext) -> Option<SignatureHelp> {
+    let mut signatures = Vec::new();
+    for module in modules {
+        for item in &module.items {
+            if let Item::Function(func) = item {
+                if func.name == ctx.name {
+                    let params_info = func
+                        .params
+                        .iter()
+                        .map(|param| ParameterInformation {
+                            label: ParameterLabel::Simple(format_function_param(param)),
+                            documentation: None,
+                        })
+                        .collect();
+                    signatures.push(SignatureInformation {
+                        label: format_function_signature(func),
+                        documentation: None,
+                        parameters: Some(params_info),
+                        active_parameter: None,
+                    });
+                }
+            }
+        }
+    }
+    if signatures.is_empty() {
+        return None;
+    }
+    let active_param = signatures[0]
+        .parameters
+        .as_ref()
+        .map(|params| ctx.arg_index.min(params.len().saturating_sub(1)));
+    Some(SignatureHelp {
+        signatures,
+        active_signature: Some(0),
+        active_parameter: active_param.map(|idx| idx as u32),
+    })
+}
+
 fn select_symbol_location<'a>(
     current_uri: &Uri,
     module: Option<&Module>,
@@ -1256,41 +1294,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let modules = self.modules.snapshot().await;
-        let mut signatures = Vec::new();
-        for (_, module) in modules {
-            for item in &module.items {
-                if let Item::Function(func) = item {
-                    if func.name == ctx.name {
-                        let params_info = func
-                            .params
-                            .iter()
-                            .map(|param| ParameterInformation {
-                                label: ParameterLabel::Simple(format_function_param(param)),
-                                documentation: None,
-                            })
-                            .collect();
-                        signatures.push(SignatureInformation {
-                            label: format_function_signature(func),
-                            documentation: None,
-                            parameters: Some(params_info),
-                            active_parameter: None,
-                        });
-                    }
-                }
-            }
-        }
-        if signatures.is_empty() {
-            return Ok(None);
-        }
-        let active_param = signatures[0]
-            .parameters
-            .as_ref()
-            .map(|params| ctx.arg_index.min(params.len().saturating_sub(1)));
-        Ok(Some(SignatureHelp {
-            signatures,
-            active_signature: Some(0),
-            active_parameter: active_param.map(|idx| idx as u32),
-        }))
+        let only_modules: Vec<Module> = modules.into_iter().map(|(_, m)| m).collect();
+        Ok(signature_help_from_modules(&only_modules, &ctx))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> RpcResult<Option<CodeActionResponse>> {
@@ -1570,4 +1575,53 @@ fn unused_variable_name(message: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::language::parser::parse_module;
+    use std::path::PathBuf;
+
+    #[test]
+    fn signature_help_tracks_active_parameter_for_nested_calls() {
+        let src = r#"
+module demo::sig;
+
+fn add(a: int32, b: int32) -> int32 { a + b }
+
+fn main() {
+  add(1, add(2, 3));
+}
+"#;
+        let module =
+            parse_module("demo::sig", PathBuf::from("sig.prime"), src).expect("parse module");
+        let modules = vec![module];
+
+        let inner_offset = src.find("add(2, 3").expect("inner call offset") + "add(2".len();
+        let inner_ctx = call_context(src, inner_offset).expect("call context for inner call");
+        assert_eq!(inner_ctx.name, "add");
+        assert_eq!(inner_ctx.arg_index, 0);
+        let inner_help =
+            signature_help_from_modules(&modules, &inner_ctx).expect("signature help for inner");
+        assert_eq!(inner_help.active_parameter, Some(0));
+        assert_eq!(
+            inner_help.signatures[0]
+                .parameters
+                .as_ref()
+                .map(|p| p.len()),
+            Some(2)
+        );
+
+        let outer_offset = src
+            .find("add(1, add(2, 3)")
+            .expect("outer call offset")
+            + "add(1, add(2, 3)".len();
+        let outer_ctx = call_context(src, outer_offset).expect("call context for outer call");
+        assert_eq!(outer_ctx.name, "add");
+        assert_eq!(outer_ctx.arg_index, 1);
+        let outer_help =
+            signature_help_from_modules(&modules, &outer_ctx).expect("signature help for outer");
+        assert_eq!(outer_help.active_parameter, Some(1));
+    }
 }
