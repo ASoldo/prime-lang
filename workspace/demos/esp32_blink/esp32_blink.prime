@@ -49,18 +49,21 @@ fn main() {
 };
   await blinker;
   out("falling back to bare-metal blink loop");
+
+  let int32 on_level = if led_active_low {
+    0
+  } else {
+    1
+  };
+  let int32 off_level = if led_active_low {
+    1
+  } else {
+    0
+  };
   loop {
-    digital_write(led, if led_active_low {
-  0
-} else {
-  1
-});
+    digital_write(led, on_level);
     delay_ms(1000);
-    digital_write(led, if led_active_low {
-  1
-} else {
-  0
-});
+    digital_write(led, off_level);
     delay_ms(1000);
   }
 }
