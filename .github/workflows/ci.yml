@@ -15,8 +15,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install LLVM 21 (for llvm-sys)
         run: |
-          curl -L -o /tmp/llvm.tar.xz \
-            https://releases.llvm.org/21.1.0/LLVM-21.1.0-Linux-x86_64.tar.xz
+          curl -L -o /tmp/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0/clang+llvm-21.1.0-x86_64-linux-gnu-ubuntu-22.04.tar.xz
           sudo mkdir -p /opt/llvm-21
           sudo tar -xf /tmp/llvm.tar.xz -C /opt/llvm-21 --strip-components=1
           echo "LLVM_SYS_211_PREFIX=/opt/llvm-21" >> $GITHUB_ENV
