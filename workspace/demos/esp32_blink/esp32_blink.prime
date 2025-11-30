@@ -83,7 +83,6 @@ fn main() {
     delay_ms(1000);
     loops = loops + 1;
     if loops >= 600 {
-      // Avoid log spam on very long runs.
       loops = 0;
       out("bare blink: still alive");
     }
