@@ -50,6 +50,10 @@ jobs:
             echo "LLVM_SYS_211_FEATURES=all-targets";
             echo "LLVM_SYS_211_PREFER_DYNAMIC=1";
             echo "PRIME_LLC=/usr/lib/llvm-21/bin/llc";
+            echo "CC=clang-21";
+            echo "CXX=clang++-21";
+            echo "AR=llvm-ar-21";
+            echo "RANLIB=llvm-ranlib-21";
           } >> $GITHUB_ENV
       - name: Install ESP-IDF toolchain
         uses: espressif/install-esp-idf-action@v1

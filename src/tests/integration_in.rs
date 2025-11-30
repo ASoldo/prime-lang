@@ -105,6 +105,8 @@ fn build_mode_in_preserves_values() {
             "--name",
             build_name,
         ])
+        .env_remove("PRIME_TEST_INPUTS")
+        .env_remove("PRIME_TEST_INPUTS_FILE")
         .status()
         .expect("failed to run build");
     assert!(status.success(), "build failed for integration input demo");
@@ -118,12 +120,12 @@ fn build_mode_in_preserves_values() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to run compiled binary");
-    child
-        .stdin
-        .as_mut()
-        .expect("child stdin missing")
-        .write_all(b"16\nabc\n")
-        .expect("failed to write stdin");
+    {
+        let mut stdin = child.stdin.take().expect("child stdin missing");
+        stdin
+            .write_all(b"16\nabc\n")
+            .expect("failed to write stdin");
+    }
     let output = child
         .wait_with_output()
         .expect("failed to read binary output");
