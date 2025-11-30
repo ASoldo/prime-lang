@@ -15,10 +15,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install LLVM 21 (for llvm-sys)
         run: |
-          curl -L -o /tmp/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0/clang+llvm-21.1.0-x86_64-linux-gnu-ubuntu-22.04.tar.xz
-          sudo mkdir -p /opt/llvm-21
-          sudo tar -xf /tmp/llvm.tar.xz -C /opt/llvm-21 --strip-components=1
-          echo "LLVM_SYS_211_PREFIX=/opt/llvm-21" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y wget lsb-release software-properties-common
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> $GITHUB_ENV
       - name: Build
         run: cargo build --locked
       - name: Test
