@@ -73,10 +73,19 @@ fn main() {
   } else {
     0
   };
+  let mut int32 loops = 0;
   loop {
     digital_write(led, on_level);
+    out("bare blink: LED ON");
     delay_ms(1000);
     digital_write(led, off_level);
+    out("bare blink: LED OFF");
     delay_ms(1000);
+    loops = loops + 1;
+    if loops >= 600 {
+      // Avoid log spam on very long runs.
+      loops = 0;
+      out("bare blink: still alive");
+    }
   }
 }
