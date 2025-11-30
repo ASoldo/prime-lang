@@ -111,6 +111,8 @@ fn build_mode_in_preserves_values() {
 
     let binary = artifact_dir.join(build_name);
     let mut child = Command::new(&binary)
+        .env_remove("PRIME_TEST_INPUTS")
+        .env_remove("PRIME_TEST_INPUTS_FILE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
