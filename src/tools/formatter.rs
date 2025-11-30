@@ -510,7 +510,9 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
                 }
                 _ => {
                     write_indent(out, indent);
-                    out.push_str(&format!("{};\n", format_expr(&expr.expr)));
+                    let formatted = format_expr(&expr.expr);
+                    indent_multiline_into(out, indent, formatted);
+                    out.push_str(";\n");
                 }
             }
             false
@@ -673,6 +675,13 @@ fn emit_initializer_expression(out: &mut String, base_indent: usize, expr: &Expr
         }
         Expr::Block(block) => {
             out.push_str("{\n");
+            format_block(out, block, base_indent + 2);
+            write_indent(out, base_indent);
+            out.push('}');
+            true
+        }
+        Expr::Async { block, .. } => {
+            out.push_str("async {\n");
             format_block(out, block, base_indent + 2);
             write_indent(out, base_indent);
             out.push('}');
@@ -1078,6 +1087,24 @@ fn indent_multiline_arg(arg: String) -> String {
         out.push_str(line);
     }
     out
+}
+
+fn indent_multiline_into(out: &mut String, indent: usize, text: String) {
+    if !text.contains('\n') {
+        out.push_str(&text);
+        return;
+    }
+    let mut lines = text.split('\n');
+    if let Some(first) = lines.next() {
+        out.push_str(first);
+    }
+    for line in lines {
+        out.push('\n');
+        if !line.is_empty() {
+            write_indent(out, indent);
+        }
+        out.push_str(line);
+    }
 }
 
 fn format_struct_literal_inline(
