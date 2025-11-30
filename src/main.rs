@@ -484,7 +484,6 @@ fn compile_runtime_abi(options: &BuildOptions) -> Result<PathBuf, String> {
         .map_err(|_| "runtime ABI build lock poisoned".to_string())?;
 
     let target = &options.target;
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let runtime_dir = match target.triple() {
         Some(triple) => PathBuf::from(".build.prime/runtime").join(triple),
         None => PathBuf::from(".build.prime/runtime").join("host"),
@@ -492,38 +491,7 @@ fn compile_runtime_abi(options: &BuildOptions) -> Result<PathBuf, String> {
     if let Err(err) = fs::create_dir_all(&runtime_dir) {
         return Err(format!("failed to create runtime build dir: {err}"));
     }
-    if target.is_embedded() {
-        return compile_runtime_abi_with_cargo(target, &runtime_dir, options);
-    }
-    let output_lib = runtime_dir.join("libruntime_abi.a");
-    if output_lib.exists() {
-        let _ = fs::remove_file(&output_lib);
-    }
-    let mut cmd = Command::new("rustc");
-    cmd.arg("--crate-type")
-        .arg("staticlib")
-        .arg("--edition")
-        .arg("2021")
-        .arg(manifest_dir.join("src/runtime/abi.rs"))
-        .arg("-o")
-        .arg(&output_lib);
-    if env::var_os("PRIME_DEBUG_RT_ABI").is_some() {
-        eprintln!(
-            "[prime-debug] runtime ABI build: manifest_dir={:?} cmd={:?}",
-            manifest_dir, cmd
-        );
-    }
-    if let Some(triple) = target.triple() {
-        cmd.arg("--target").arg(triple);
-    }
-    apply_runtime_env(&mut cmd, options);
-    let status = cmd
-        .status()
-        .map_err(|err| format!("failed to spawn rustc for runtime ABI: {err}"))?;
-    if !status.success() {
-        return Err("rustc failed compiling runtime ABI".into());
-    }
-    Ok(output_lib)
+    compile_runtime_abi_with_cargo(target, &runtime_dir, options)
 }
 
 fn compile_runtime_abi_with_cargo(
@@ -586,9 +554,6 @@ crate-type = ["staticlib"]
         .arg(cargo_dir.join("Cargo.toml"));
     if target.is_embedded() {
         cmd.arg("-Zbuild-std=core,alloc");
-    } else {
-        cmd.arg("-Zbuild-std=std,panic_abort")
-            .arg("-Zbuild-std-features=panic_immediate_abort");
     }
     let linker_var = format!(
         "CARGO_TARGET_{}_LINKER",
