@@ -475,7 +475,8 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool) {
     }
 }
 
-fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
+fn compile_runtime_abi(options: &BuildOptions) -> Result<PathBuf, String> {
+    let target = &options.target;
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let runtime_dir = match target.triple() {
         Some(triple) => PathBuf::from(".build.prime/runtime").join(triple),
@@ -485,7 +486,7 @@ fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
         return Err(format!("failed to create runtime build dir: {err}"));
     }
     if target.is_embedded() {
-        return compile_runtime_abi_with_cargo(target, &runtime_dir);
+        return compile_runtime_abi_with_cargo(target, &runtime_dir, options);
     }
     let output_lib = runtime_dir.join("libruntime_abi.a");
     let mut cmd = Command::new("rustc");
@@ -505,6 +506,7 @@ fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
     if let Some(triple) = target.triple() {
         cmd.arg("--target").arg(triple);
     }
+    apply_runtime_env(&mut cmd, options);
     let status = cmd
         .status()
         .map_err(|err| format!("failed to spawn rustc for runtime ABI: {err}"))?;
@@ -517,6 +519,7 @@ fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
 fn compile_runtime_abi_with_cargo(
     target: &BuildTarget,
     runtime_dir: &Path,
+    options: &BuildOptions,
 ) -> Result<PathBuf, String> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let triple = target
@@ -599,6 +602,7 @@ crate-type = ["staticlib"]
         linker_var,
         env::var("PRIME_RUNTIME_LINKER").unwrap_or_else(|_| default_linker.into()),
     );
+    apply_runtime_env(&mut cmd, options);
     let status = cmd
         .status()
         .map_err(|err| format!("failed to spawn cargo for runtime ABI: {err}"))?;
@@ -619,6 +623,29 @@ crate-type = ["staticlib"]
             "expected runtime staticlib at {}, but it was not produced",
             output_lib.display()
         ))
+    }
+}
+
+fn runtime_env_pairs(options: &BuildOptions) -> Vec<(&'static str, String)> {
+    let mut vars = Vec::new();
+    if let Some(slots) = options.runtime.task_slots {
+        vars.push(("PRIME_RT_TASK_SLOTS", slots.to_string()));
+    }
+    if let Some(slots) = options.runtime.channel_slots {
+        vars.push(("PRIME_RT_CHANNEL_SLOTS", slots.to_string()));
+    }
+    if let Some(cap) = options.runtime.channel_capacity {
+        vars.push(("PRIME_RT_CHANNEL_CAP", cap.to_string()));
+    }
+    if let Some(poll_ms) = options.runtime.recv_poll_ms {
+        vars.push(("PRIME_RT_RECV_POLL_MS", poll_ms.to_string()));
+    }
+    vars
+}
+
+fn apply_runtime_env(cmd: &mut Command, options: &BuildOptions) {
+    for (key, value) in runtime_env_pairs(options) {
+        cmd.env(key, value);
     }
 }
 
@@ -692,11 +719,7 @@ fn configure_embedded_env(options: &BuildOptions) {
     // Apply user-provided env overrides from the manifest toolchain block.
     if let Some(env_map) = &options.toolchain.env {
         for (key, val) in env_map {
-            let expanded = if key == "PATH" && val.contains("$PATH") {
-                val.replace("$PATH", &env::var("PATH").unwrap_or_default())
-            } else {
-                val.clone()
-            };
+            let expanded = expand_env_vars(val);
             unsafe { env::set_var(key, expanded) };
         }
     }
@@ -781,7 +804,7 @@ fn build_entry(
                 std::process::exit(1);
             }
             println!("[prime-debug] llc done -> {}", obj_path.display());
-            let runtime_lib = match compile_runtime_abi(&build_options.target) {
+            let runtime_lib = match compile_runtime_abi(&build_options) {
                 Ok(path) => Some(path),
                 Err(err) => {
                     eprintln!("Failed to compile runtime ABI: {err}");
@@ -1256,12 +1279,67 @@ fn link_host(obj_path: &Path, runtime_lib: Option<&Path>, bin_path: &Path) -> Re
     Ok(())
 }
 
+fn expand_env_vars(raw: &str) -> String {
+    let mut out = String::new();
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            if matches!(chars.peek(), Some('{')) {
+                let _ = chars.next();
+                let mut name = String::new();
+                while let Some(next) = chars.next() {
+                    if next == '}' {
+                        break;
+                    }
+                    name.push(next);
+                }
+                if !name.is_empty() {
+                    if let Ok(val) = env::var(&name) {
+                        out.push_str(&val);
+                    } else {
+                        out.push_str("${");
+                        out.push_str(&name);
+                        out.push('}');
+                    }
+                    continue;
+                }
+            } else {
+                let mut name = String::new();
+                while let Some(peek) = chars.peek() {
+                    if peek.is_alphanumeric() || *peek == '_' {
+                        name.push(*peek);
+                        let _ = chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if !name.is_empty() {
+                    if let Ok(val) = env::var(&name) {
+                        out.push_str(&val);
+                    } else {
+                        out.push('$');
+                        out.push_str(&name);
+                    }
+                    continue;
+                }
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn link_esp32(
     obj_path: &Path,
     runtime_lib: Option<&Path>,
     bin_path: &Path,
     build_options: &BuildOptions,
 ) -> Result<(), String> {
+    if build_options.target.is_esp32_xtensa_espidf()
+        && env::var("IDF_PATH").is_err()
+    {
+        return Err("ESP-IDF builds require IDF_PATH to point at your ESP-IDF checkout (see docs/esp32_toolchain_template.toml)".to_string());
+    }
     let cc_default = if build_options.target.is_esp32_xtensa()
         || build_options.target.is_esp32_xtensa_espidf()
     {
@@ -1274,7 +1352,7 @@ fn link_esp32(
         .cc
         .clone()
         .unwrap_or_else(|| cc_default.clone());
-    let ld_script = build_options
+    let ld_script_raw = build_options
         .toolchain
         .ld_script
         .clone()
@@ -1283,6 +1361,13 @@ fn link_esp32(
             "No linker script set; configure build.toolchain.ld_script or PRIME_RISCV_LD_SCRIPT"
                 .to_string()
         })?;
+    let ld_script = expand_env_vars(&ld_script_raw);
+    if ld_script.contains("${") || ld_script.contains("$IDF_PATH") {
+        return Err(format!(
+            "Linker script still contains unresolved env vars: {} (set IDF_PATH or update build.toolchain.ld_script)",
+            ld_script_raw
+        ));
+    }
     let mut cmd = Command::new(cc);
     if build_options.target.is_esp32c3() {
         cmd.arg("-march=rv32imc").arg("-mabi=ilp32");
@@ -1305,7 +1390,14 @@ fn link_esp32(
         .or_else(|| env::var("PRIME_RISCV_LD_FLAGS").ok());
     let mut extra_args: Vec<String> = Vec::new();
     if let Some(flags) = ld_flags_val.take() {
-        for tok in flags.split_whitespace() {
+        let expanded_flags = expand_env_vars(&flags);
+        if expanded_flags.contains("${") || expanded_flags.contains("$IDF_PATH") {
+            return Err(format!(
+                "Linker flags still contain unresolved env vars: {} (set IDF_PATH or update build.toolchain.ld_flags)",
+                flags
+            ));
+        }
+        for tok in expanded_flags.split_whitespace() {
             if tok.starts_with("-T") && tok.contains("memory.ld") {
                 let path_str = tok.trim_start_matches("-T");
                 ld_scripts.push(PathBuf::from(path_str));
@@ -1339,7 +1431,7 @@ fn link_esp32(
         .clone()
         .or_else(|| env::var("PRIME_RISCV_STARTUP_OBJ").ok())
     {
-        cmd.arg(startup);
+        cmd.arg(expand_env_vars(&startup));
     }
     if let Some(lib) = runtime_lib {
         cmd.arg(lib);

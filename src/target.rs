@@ -89,6 +89,7 @@ pub struct BuildOptions {
     pub platform: Option<String>,
     pub toolchain: ToolchainSettings,
     pub flash: FlashSettings,
+    pub runtime: RuntimeLimits,
 }
 
 impl BuildOptions {
@@ -141,11 +142,27 @@ impl BuildOptions {
                 address: b.flash.address.clone(),
             })
             .unwrap_or_default();
+        let runtime_defaults = manifest_build
+            .map(|b| b.runtime.clone())
+            .unwrap_or_default();
+        let parse_usize_env = |key: &str| env::var(key).ok().and_then(|v| v.parse().ok());
+        let parse_u32_env = |key: &str| env::var(key).ok().and_then(|v| v.parse().ok());
+        let runtime = RuntimeLimits {
+            channel_slots: parse_usize_env("PRIME_RT_CHANNEL_SLOTS")
+                .or(runtime_defaults.channel_slots),
+            channel_capacity: parse_usize_env("PRIME_RT_CHANNEL_CAP")
+                .or(runtime_defaults.channel_capacity),
+            task_slots: parse_usize_env("PRIME_RT_TASK_SLOTS")
+                .or(runtime_defaults.task_slots),
+            recv_poll_ms: parse_u32_env("PRIME_RT_RECV_POLL_MS")
+                .or(runtime_defaults.recv_poll_ms),
+        };
         Self {
             target,
             platform,
             toolchain,
             flash,
+            runtime,
         }
     }
 }
@@ -157,6 +174,7 @@ impl Default for BuildOptions {
             platform: None,
             toolchain: ToolchainSettings::default(),
             flash: FlashSettings::default(),
+            runtime: RuntimeLimits::default(),
         }
     }
 }
@@ -167,4 +185,12 @@ pub struct FlashSettings {
     pub port: Option<String>,
     pub baud: Option<u32>,
     pub address: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeLimits {
+    pub channel_slots: Option<usize>,
+    pub channel_capacity: Option<usize>,
+    pub task_slots: Option<usize>,
+    pub recv_poll_ms: Option<u32>,
 }

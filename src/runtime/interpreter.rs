@@ -1960,6 +1960,12 @@ impl Interpreter {
         require_std_builtins("sleep_task")?;
         self.expect_arity("sleep_task", &args, 1)?;
         let millis = self.expect_i32_value("sleep_task", args.remove(0))?;
+        if std::env::var_os("PRIME_DEBUG_ASYNC").is_some() {
+            eprintln!(
+                "[prime-debug] interpreter sleep_task({}) requested",
+                millis
+            );
+        }
         let task = self.async_runtime.sleep_task(millis as i64);
         Ok(vec![Value::Task(Box::new(task))])
     }
@@ -2911,7 +2917,13 @@ impl Interpreter {
             }
             Expr::Await { expr, span: _ } => match self.eval_expression(expr)? {
                 EvalOutcome::Value(Value::Task(task)) => {
+                    if std::env::var_os("PRIME_DEBUG_ASYNC").is_some() {
+                        eprintln!("[prime-debug] interpreter await start");
+                    }
                     let result = self.async_runtime.block_on(&task)?;
+                    if std::env::var_os("PRIME_DEBUG_ASYNC").is_some() {
+                        eprintln!("[prime-debug] interpreter await complete");
+                    }
                     Ok(EvalOutcome::Value(result))
                 }
                 EvalOutcome::Value(other) => Err(RuntimeError::TypeMismatch {

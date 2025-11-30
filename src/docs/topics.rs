@@ -99,25 +99,31 @@ struct Player {
 target = "xtensa-esp32-espidf"
 platform = "esp32"
 
+[build.runtime]
+channel_slots = 12
+channel_capacity = 12
+task_slots = 12
+recv_poll_ms = 2
+
 [build.toolchain]
 cc = "xtensa-esp32-elf-gcc"
 ar = "xtensa-esp32-elf-ar"
 objcopy = "xtensa-esp32-elf-objcopy"
 esptool = "esptool"
-ld_script = "/home/user/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
+ld_script = "${IDF_PATH}/components/esp_system/ld/esp32/sections.ld"
 ld_flags = """
   -Wl,--gc-sections
-  -T/home/user/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/memory.ld
-  -T/home/user/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.ld
-  -T/home/user/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.api.ld
-  -T/home/user/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld"""
+  -T${IDF_PATH}/components/esp_system/ld/esp32/memory.ld
+  -T${IDF_PATH}/components/esp_rom/esp32/ld/esp32.rom.ld
+  -T${IDF_PATH}/components/esp_rom/esp32/ld/esp32.rom.api.ld
+  -T${IDF_PATH}/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld"""
 
 [build.toolchain.env]
 RUSTUP_TOOLCHAIN = "esp"
-CARGO_TARGET_DIR = "/home/user/.cache/prime-xtensa"
-LLVM_SYS_201_PREFIX = "/home/user/.espressif/tools/esp-clang/esp-clang"
-LD_LIBRARY_PATH = "/usr/lib64:/usr/lib:/lib:/home/user/.espressif/tools/esp-clang/esp-clang/lib"
-PATH = "/home/user/.espressif/tools/esp-clang/esp-clang/bin:/home/user/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-elf/bin:$PATH"
+CARGO_TARGET_DIR = "${HOME}/.cache/prime-xtensa"
+LLVM_SYS_201_PREFIX = "${HOME}/.espressif/tools/esp-clang/esp-clang"
+LD_LIBRARY_PATH = "/usr/lib64:/usr/lib:/lib:${HOME}/.espressif/tools/esp-clang/esp-clang/lib"
+PATH = "${HOME}/.espressif/tools/esp-clang/esp-clang/bin:${HOME}/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-elf/bin:${PATH}"
 CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER = "xtensa-esp32-elf-gcc"
 
 [build.flash]
@@ -125,12 +131,12 @@ enabled = true
 port = "/dev/ttyUSB0"
 baud = 460800
 address = "0x10000""#,
-                explanation: "The workspace demo `workspace/demos/esp32_blink/prime.toml` ships with these settings. The toolchain uses IDF-generated `sections.ld`/`memory.ld` plus ROM scripts so Xtensa ROM symbols resolve. `[build.toolchain.env]` injects the esp-clang/Xtensa toolchains and cache dir; `$PATH` expands inline, preserving your existing PATH. Flashing defaults to /dev/ttyUSB0 at 0x10000.",
+                explanation: "The workspace demo `workspace/demos/esp32_blink/prime.toml` ships with these settings and mirrors `docs/esp32_toolchain_template.toml`. The toolchain uses IDF `sections.ld`/`memory.ld` plus ROM scripts so Xtensa ROM symbols resolve; `[build.runtime]` tunes channel/task pool sizes and the recv poll interval for async waits. `[build.toolchain.env]` injects the esp-clang/Xtensa toolchains and cache dir; `$PATH` expands inline, preserving your existing PATH. Flashing defaults to /dev/ttyUSB0 at 0x10000.",
             },
             TopicSection {
                 title: "Build & flash",
                 snippet: r#"prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink"#,
-                explanation: "With the manifest env present (or standard tools under `~/.espressif`), no extra shell setup is required. The build passes `-relocation-model=static -mtriple=xtensa-esp32-elf -mcpu=esp32 -mattr=+windowed` to llc, then links `libruntime_abi.a` (Xtensa) plus libc/libgcc. Flashing uses `esptool elf2image` when available and falls back to objcopy. The runtime links a minimal Xtensa entry, pulls in ROM delay/printf, and toggles GPIO2 (active-low) for the on-board LED. Watchdogs are disabled once on boot in the demo; pass `--no-flash` to skip.",
+                explanation: "With the manifest env present (or standard tools under `~/.espressif`), no extra shell setup is required. The build passes `-relocation-model=static -mtriple=xtensa-esp32-elf -mcpu=esp32 -mattr=+windowed` to llc, then links `libruntime_abi.a` (Xtensa) plus libc/libgcc. Flashing uses `esptool elf2image` when available and falls back to objcopy. The runtime links a minimal Xtensa entry, drives `recv_task`/`recv_timeout` via a waiter queue + tiny poll (default 1–2ms latency), and toggles GPIO2 (active-low on many boards) for the on-board LED. Watchdogs are disabled once on boot in the demo; pass `--no-flash` to skip.",
             },
             TopicSection {
                 title: "Toolchain detection",

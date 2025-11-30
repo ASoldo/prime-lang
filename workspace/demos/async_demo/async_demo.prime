@@ -20,21 +20,19 @@ fn main() {
 
 fn run_channel_sleep() {
     let (tx, rx) = channel[int]();
+    out("receiver: waiting");
+    let receiver = recv_task[int](rx);
     let sleeper = async {
         out("task: sleeping for 100ms");
         await sleep_task(100);
         out("task: sending 7");
         send(tx, 7);
     };
-    let receiver = async {
-        out("receiver: waiting");
-        let msg = await recv_task[int](rx);
-        match msg {
-            Option::Some(v) => out(v),
-            Option::None => out("channel closed"),
-        }
-    };
     await sleeper;
-    await receiver;
+    let msg = await receiver;
+    match msg {
+        Option::Some(v) => out(v),
+        Option::None => out("channel closed"),
+    }
     out("done");
 }

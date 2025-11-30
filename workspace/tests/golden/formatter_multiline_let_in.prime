@@ -1,0 +1,15 @@
+test tests::formatter_multiline_let;
+
+fn demo() {
+  let []int32 values=[
+1,
+2,
+  ];
+  let int32 decision=if true{
+1
+}else{
+2
+};
+  values;
+  decision;
+}

@@ -288,6 +288,30 @@ fn main() {
 }
 
 #[test]
+fn async_demo_matches_golden_output() {
+    let expected = fs::read_to_string("workspace/tests/golden/async_demo_output.txt")
+        .expect("expected async demo golden output");
+    let output = Command::new(bin_path())
+        .current_dir(root())
+        .args(["run", "workspace/demos/async_demo/async_demo.prime"])
+        .output()
+        .expect("run async demo");
+    assert!(
+        output.status.success(),
+        "async demo failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        stdout,
+        expected.trim(),
+        "async demo output differed from golden"
+    );
+}
+
+#[test]
 fn git_dependency_is_loaded_via_manifest() {
     let workspace = tempdir().expect("workspace tempdir");
     let workspace_root = workspace.path().to_path_buf();
@@ -585,4 +609,24 @@ fn main() {
         stdout.contains("0"),
         "expected library value in output, got:\n{stdout}"
     );
+}
+
+#[test]
+fn esp32_blink_smoke_builds_when_enabled() {
+    if env::var("PRIME_EMBEDDED_SMOKE").is_err() {
+        eprintln!("skipping esp32 blink smoke test (set PRIME_EMBEDDED_SMOKE=1 to enable)");
+        return;
+    }
+    let status = Command::new(bin_path())
+        .current_dir(root())
+        .args([
+            "build",
+            "workspace/demos/esp32_blink/esp32_blink.prime",
+            "--name",
+            "esp32_blink_ci",
+            "--no-flash",
+        ])
+        .status()
+        .expect("run esp32 blink build");
+    assert!(status.success(), "esp32 blink build failed");
 }

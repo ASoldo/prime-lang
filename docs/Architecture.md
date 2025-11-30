@@ -104,8 +104,8 @@ Async/await + channels always attach runtime handles when async code is present,
 
 ## Embedded Runtime Highlights (src/runtime/abi.rs)
 
-- `no_std` Xtensa runtime: entry (`call_user_start_cpu0`), BSS/data init, GPIO mux for common LED pins (2/4/5), calibrated busy-loop delays, ROM printf bindings.
-- `out(...)` plus channels and async tasks (`sleep_task`/`recv_task`) work in no_std; small static pools back channels/tasks. `prime_reference_read` is wired for embedded handles.
+- `no_std` Xtensa runtime: entry (`call_user_start_cpu0`), BSS/data init, GPIO mux for common LED pins (2/4/5), calibrated delays for `sleep_task`, ROM printf bindings.
+- `out(...)` plus channels and async tasks (`sleep_task`/`recv_task`) work in no_std; configurable static pools (`[build.runtime]` or `PRIME_RT_*`) back channels/tasks with a waiter queue + tiny poll for `recv_task`/`recv_timeout`.
 - Tiny ring buffers for string storage to avoid print loss in tight loops.
 - Watchdogs disabled once at boot for the demo (RTC + TIMG WDTs); remove if you need watchdog coverage.
 
@@ -123,6 +123,12 @@ graph TD
 ```
 
 Defaults: if env vars are absent, the CLI auto-detects esp-clang/xtensa toolchains under `~/.espressif`, sets `RUSTUP_TOOLCHAIN=esp`, and caches artifacts in `~/.cache/prime-xtensa`.
+
+## Memory Model & ABI Stability
+
+- Channels are FIFO with at-most-once delivery; sends/recvs honor program order on host and embedded. Xtensa async waits wake within the poll interval (default 1–2ms), so plan for ~2–3ms latency when waiting on channels.
+- Build snapshots preserve channel inboxes and join handles to keep build/run parity; non-determinism is limited to I/O or explicit parallel builds (`PRIME_BUILD_PARALLEL=1`).
+- Runtime ABI symbols are shared between host and embedded binaries via `libruntime_abi.a`; the frozen Xtensa toolchain and linker recipe lives in `docs/esp32_toolchain_template.toml` (-relocation-model=static + libc/libgcc).
 
 ## Repo Pointers
 

@@ -39,6 +39,7 @@ pub struct BuildSettings {
     pub platform: Option<String>,
     pub toolchain: ToolchainSettings,
     pub flash: FlashSettings,
+    pub runtime: RuntimeSettings,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -59,6 +60,14 @@ pub struct FlashSettings {
     pub port: Option<String>,
     pub baud: Option<u32>,
     pub address: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeSettings {
+    pub channel_slots: Option<usize>,
+    pub channel_capacity: Option<usize>,
+    pub task_slots: Option<usize>,
+    pub recv_poll_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +138,7 @@ struct RawBuildTable {
     platform: Option<String>,
     toolchain: Option<RawToolchainTable>,
     flash: Option<RawFlashTable>,
+    runtime: Option<RawRuntimeTable>,
 }
 
 #[derive(Deserialize, Default)]
@@ -149,6 +159,14 @@ struct RawFlashTable {
     port: Option<String>,
     baud: Option<u32>,
     address: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawRuntimeTable {
+    channel_slots: Option<usize>,
+    channel_capacity: Option<usize>,
+    task_slots: Option<usize>,
+    recv_poll_ms: Option<u32>,
 }
 
 impl PackageManifest {
@@ -445,7 +463,12 @@ fn parse_build_settings(value: &Value) -> Option<BuildSettings> {
         .get("build")
         .and_then(|build| build.clone().try_into().ok())
         .unwrap_or_default();
-    if raw.target.is_none() && raw.platform.is_none() && raw.toolchain.is_none() {
+    if raw.target.is_none()
+        && raw.platform.is_none()
+        && raw.toolchain.is_none()
+        && raw.flash.is_none()
+        && raw.runtime.is_none()
+    {
         return None;
     }
     let toolchain_raw = raw.toolchain.unwrap_or_default();
@@ -466,11 +489,19 @@ fn parse_build_settings(value: &Value) -> Option<BuildSettings> {
         baud: flash_raw.baud,
         address: flash_raw.address,
     };
+    let runtime_raw = raw.runtime.unwrap_or_default();
+    let runtime = RuntimeSettings {
+        channel_slots: runtime_raw.channel_slots,
+        channel_capacity: runtime_raw.channel_capacity,
+        task_slots: runtime_raw.task_slots,
+        recv_poll_ms: runtime_raw.recv_poll_ms,
+    };
     Some(BuildSettings {
         target: raw.target,
         platform: raw.platform,
         toolchain,
         flash,
+        runtime,
     })
 }
 

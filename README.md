@@ -186,6 +186,8 @@ fn main() {
 }
 ```
 
+For a compact reference on expressions, ownership, and macro hygiene, see `docs/LanguageOutline.md`.
+
 Input supports all primitives (`string`, `bool`, signed/unsigned ints, floats, `rune`).
 For non-interactive test runs, set `PRIME_TEST_INPUTS` to a delimited list of lines
 (supports `|`, `,`, or `;` as separators) so `in[...]` consumes scripted input instead

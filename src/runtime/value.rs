@@ -72,6 +72,7 @@ pub struct ChannelReceiver {
     receiver: Arc<Mutex<mpsc::Receiver<Value>>>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum TryRecvOutcome {
     Pending,
@@ -113,6 +114,7 @@ impl ChannelReceiver {
         guard.recv().ok()
     }
 
+    #[allow(dead_code)]
     pub fn try_recv(&self) -> TryRecvOutcome {
         let guard = match self.receiver.lock() {
             Ok(g) => g,
@@ -205,6 +207,7 @@ impl TaskValue {
         )
     }
 
+    #[allow(dead_code)]
     pub fn with_state(state: Arc<(Mutex<TaskState>, Condvar)>) -> Self {
         TaskValue { state }
     }
@@ -219,6 +222,9 @@ impl TaskValue {
         let mut guard = lock.lock().unwrap();
         guard.result = Some(result);
         guard.finished = true;
+        if std::env::var_os("PRIME_DEBUG_ASYNC").is_some() {
+            eprintln!("[prime-debug] task store_result signaled");
+        }
         cvar.notify_all();
     }
 
@@ -237,6 +243,7 @@ impl TaskValue {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_finished(&self) -> bool {
         let (lock, _) = &*self.state;
         lock.lock().map(|g| g.finished).unwrap_or(false)

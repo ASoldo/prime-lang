@@ -547,6 +547,7 @@ impl TaskValue {
         }
     }
 
+    #[allow(dead_code)]
     fn complete(&self, value: EvaluatedValue) {
         let (lock, cv) = &*self.state;
         if let Ok(mut guard) = lock.lock() {
@@ -1331,6 +1332,26 @@ impl Compiler {
             return false;
         }
         self.force_runtime_handles || env::var("PRIME_ENABLE_RT_HANDLES").is_ok()
+    }
+
+    fn ensure_async_supported(&self) -> Result<(), String> {
+        match &self.target {
+            BuildTarget::Host => Ok(()),
+            BuildTarget::Triple(triple) => {
+                let supported = self.target.is_esp32_xtensa()
+                    || self.target.is_esp32_xtensa_espidf()
+                    || self.target.is_esp32c3();
+                if !supported {
+                    Err(format!(
+                        "async/await requires runtime handles; target `{}` is not supported (embedded targets: {})",
+                        triple,
+                        embedded_target_hint()
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 
     fn await_runtime_task(
@@ -4866,6 +4887,7 @@ impl Compiler {
             },
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
             Expr::Async { block, .. } => {
+                self.ensure_async_supported()?;
                 self.force_runtime_handles = true;
                 let mut locals = HashSet::new();
                 let mut free = HashSet::new();
@@ -4875,6 +4897,7 @@ impl Compiler {
                 Ok(EvalOutcome::Value(Value::Task(Box::new(task)).into()))
             }
             Expr::Await { expr, .. } => {
+                self.ensure_async_supported()?;
                 self.force_runtime_handles = true;
                 match self.emit_expression(expr)? {
                     EvalOutcome::Value(value) => {

@@ -1,0 +1,10 @@
+test tests::formatter_async_init;
+
+fn demo() {
+  let task = async {
+    let int32 value = 1;
+    value
+  };
+  let Option[int32] pulled = await task;
+  pulled;
+}

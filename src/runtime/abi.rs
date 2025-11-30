@@ -82,26 +82,89 @@ mod embedded {
     pub const TYPE_FLOAT64: u32 = 13;
     pub const TYPE_RUNE: u32 = 14;
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    const fn parse_usize_env(var: Option<&str>, default: usize, min: usize) -> usize {
+        match var {
+            Some(value) => match parse_usize(value) {
+                Some(parsed) if parsed >= min => parsed,
+                _ => default,
+            },
+            None => default,
+        }
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    const fn parse_u32_env(var: Option<&str>, default: u32, min: u32) -> u32 {
+        match var {
+            Some(value) => match parse_usize(value) {
+                Some(parsed) if parsed as u32 >= min => parsed as u32,
+                _ => default,
+            },
+            None => default,
+        }
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    const fn parse_usize(value: &str) -> Option<usize> {
+        let bytes = value.as_bytes();
+        let mut idx = 0;
+        let mut out: usize = 0;
+        while idx < bytes.len() {
+            let b = bytes[idx];
+            if b < b'0' || b > b'9' {
+                return None;
+            }
+            out = match out.checked_mul(10) {
+                Some(v) => v,
+                None => return None,
+            };
+            out = match out.checked_add((b - b'0') as usize) {
+                Some(v) => v,
+                None => return None,
+            };
+            idx += 1;
+        }
+        Some(out)
+    }
+
     // Simple handle pool for tiny, no_std-friendly async/enum support on embedded targets.
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
+    const PRIME_TASK_SLOTS: usize = parse_usize_env(option_env!("PRIME_RT_TASK_SLOTS"), 8, 1);
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    const PRIME_TASK_SLOTS: usize = 8;
+    const PRIME_CHANNEL_SLOTS: usize =
+        parse_usize_env(option_env!("PRIME_RT_CHANNEL_SLOTS"), 8, 1);
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    const PRIME_CHANNEL_SLOTS: usize = 8;
+    const PRIME_CHANNEL_CAP: usize = parse_usize_env(option_env!("PRIME_RT_CHANNEL_CAP"), 8, 1);
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    const PRIME_CHANNEL_CAP: usize = 8;
+    const PRIME_CHANNEL_WAITERS: usize =
+        parse_usize_env(option_env!("PRIME_RT_CHANNEL_WAITERS"), PRIME_TASK_SLOTS, 1);
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    const PRIME_RECV_POLL_MS: u32 =
+        parse_u32_env(option_env!("PRIME_RT_RECV_POLL_MS"), 1, 1);
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -132,6 +195,7 @@ mod embedded {
     ))]
     static mut TASK_SLOTS: [MaybeUninit<TaskSlot>; PRIME_TASK_SLOTS] =
         [const { MaybeUninit::uninit() }; PRIME_TASK_SLOTS];
+    #[allow(dead_code)]
     static TASK_SLOTS_READY: AtomicBool = AtomicBool::new(false);
 
     #[cfg(any(
@@ -165,7 +229,41 @@ mod embedded {
     ))]
     static mut CHANNEL_SLOTS: [MaybeUninit<ChannelSlot>; PRIME_CHANNEL_SLOTS] =
         [const { MaybeUninit::uninit() }; PRIME_CHANNEL_SLOTS];
+    #[allow(dead_code)]
     static CHANNEL_SLOTS_READY: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    #[derive(Debug)]
+    struct ChannelWaiterSlot {
+        used: AtomicBool,
+        channel: UnsafeCell<*const ChannelSlot>,
+        task: UnsafeCell<*const TaskSlot>,
+        deadline_ms: UnsafeCell<i128>,
+        has_deadline: AtomicBool,
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    unsafe impl Send for ChannelWaiterSlot {}
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    unsafe impl Sync for ChannelWaiterSlot {}
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    static mut CHANNEL_WAITERS: [MaybeUninit<ChannelWaiterSlot>; PRIME_CHANNEL_WAITERS] =
+        [const { MaybeUninit::uninit() }; PRIME_CHANNEL_WAITERS];
+    #[allow(dead_code)]
+    static CHANNEL_WAITERS_READY: AtomicBool = AtomicBool::new(false);
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -371,6 +469,37 @@ mod embedded {
         unsafe { &*(CHANNEL_SLOTS.as_ptr() as *const [ChannelSlot; PRIME_CHANNEL_SLOTS]) }
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn ensure_channel_waiters() {
+        if CHANNEL_WAITERS_READY.load(Ordering::SeqCst) {
+            return;
+        }
+        unsafe {
+            for slot in CHANNEL_WAITERS.iter_mut() {
+                slot.write(ChannelWaiterSlot {
+                    used: AtomicBool::new(false),
+                    channel: UnsafeCell::new(core::ptr::null()),
+                    task: UnsafeCell::new(core::ptr::null()),
+                    deadline_ms: UnsafeCell::new(0),
+                    has_deadline: AtomicBool::new(false),
+                });
+            }
+        }
+        CHANNEL_WAITERS_READY.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn channel_waiters() -> &'static [ChannelWaiterSlot; PRIME_CHANNEL_WAITERS] {
+        ensure_channel_waiters();
+        unsafe { &*(CHANNEL_WAITERS.as_ptr() as *const [ChannelWaiterSlot; PRIME_CHANNEL_WAITERS]) }
+    }
+
     // Required FFI entry points used by the compiler (embedded).
     #[cfg(any(
         target_arch = "xtensa",
@@ -563,6 +692,7 @@ mod embedded {
         unsafe { (*slot.queue.get())[tail] = _value };
         unsafe { *slot.tail.get() = (tail + 1) % PRIME_CHANNEL_CAP };
         unsafe { *slot.len.get() = len + 1 };
+        let _ = poll_channel_waiters();
         PrimeStatus::Ok
     }
 
@@ -601,7 +731,6 @@ mod embedded {
         _millis: i64,
         value_out: *mut PrimeHandle,
     ) -> PrimeStatus {
-        // Poll with a tiny spin until deadline; still bounded to keep deterministic.
         if value_out.is_null() {
             return PrimeStatus::Invalid;
         }
@@ -610,7 +739,6 @@ mod embedded {
         };
         let start = prime_now_ms();
         let deadline = start.saturating_add(i128::from(_millis.max(0)));
-        let mut spins = 0u32;
         loop {
             match dequeue_channel(slot) {
                 ChannelPoll::Item(v) => {
@@ -620,13 +748,11 @@ mod embedded {
                 ChannelPoll::Closed => return PrimeStatus::Closed,
                 ChannelPoll::Empty => {
                     if prime_now_ms() >= deadline {
+                        value_out.write(PrimeHandle::null());
                         return PrimeStatus::Invalid;
                     }
-                    // Periodically yield to hardware timer so we don't busy-spin forever.
-                    spins = spins.wrapping_add(1);
-                    if spins & 0xff == 0 {
-                        prime_delay_ms(1);
-                    }
+                    let _ = poll_channel_waiters();
+                    prime_delay_ms(recv_poll_ms());
                 }
             }
         }
@@ -640,6 +766,7 @@ mod embedded {
     pub unsafe extern "C" fn prime_close(_handle: PrimeHandle) -> PrimeStatus {
         if let Some(slot) = channel_from_handle(_handle) {
             slot.closed.store(true, Ordering::SeqCst);
+            let _ = poll_channel_waiters();
             return PrimeStatus::Ok;
         }
         PrimeStatus::Invalid
@@ -672,6 +799,109 @@ mod embedded {
         unsafe { *slot.head.get() = (head + 1) % PRIME_CHANNEL_CAP };
         unsafe { *slot.len.get() = len - 1 };
         ChannelPoll::Item(value)
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn option_handle_from_payload(payload: Option<PrimeHandle>) -> PrimeHandle {
+        match payload {
+            Some(value) => {
+                let mut buf = [value];
+                unsafe { prime_enum_new(0, buf.as_mut_ptr(), 1) }
+            }
+            None => unsafe { prime_enum_new(1, core::ptr::null(), 0) },
+        }
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn register_channel_waiter(
+        channel: &ChannelSlot,
+        task: &TaskSlot,
+        deadline_ms: Option<i128>,
+    ) -> bool {
+        for waiter in channel_waiters().iter() {
+            if waiter
+                .used
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                unsafe {
+                    *waiter.channel.get() = channel as *const ChannelSlot;
+                    *waiter.task.get() = task as *const TaskSlot;
+                    *waiter.deadline_ms.get() = deadline_ms.unwrap_or(0);
+                }
+                waiter
+                    .has_deadline
+                    .store(deadline_ms.is_some(), Ordering::SeqCst);
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn complete_channel_waiter(
+        waiter: &ChannelWaiterSlot,
+        task_ptr: *const TaskSlot,
+        payload: Option<PrimeHandle>,
+    ) {
+        let Some(task) = (unsafe { task_ptr.as_ref() }) else {
+            waiter.used.store(false, Ordering::SeqCst);
+            return;
+        };
+        unsafe {
+            *task.result.get() = option_handle_from_payload(payload);
+        }
+        task.done.store(true, Ordering::SeqCst);
+        waiter.used.store(false, Ordering::SeqCst);
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn poll_channel_waiters() -> bool {
+        let mut progressed = false;
+        for waiter in channel_waiters().iter() {
+            if !waiter.used.load(Ordering::SeqCst) {
+                continue;
+            }
+            let channel_ptr = unsafe { *waiter.channel.get() };
+            let task_ptr = unsafe { *waiter.task.get() };
+            if channel_ptr.is_null() || task_ptr.is_null() {
+                waiter.used.store(false, Ordering::SeqCst);
+                continue;
+            }
+            let channel = unsafe { &*channel_ptr };
+            match dequeue_channel(channel) {
+                ChannelPoll::Item(v) => {
+                    complete_channel_waiter(waiter, task_ptr, Some(v));
+                    progressed = true;
+                }
+                ChannelPoll::Closed => {
+                    complete_channel_waiter(waiter, task_ptr, None);
+                    progressed = true;
+                }
+                ChannelPoll::Empty => {
+                    if waiter.has_deadline.load(Ordering::SeqCst) {
+                        let deadline = unsafe { *waiter.deadline_ms.get() };
+                        if deadline > 0 && unsafe { prime_now_ms() } >= deadline {
+                            complete_channel_waiter(waiter, task_ptr, None);
+                            progressed = true;
+                        }
+                    }
+                }
+            }
+        }
+        progressed
     }
 
     #[cfg(any(
@@ -1007,14 +1237,20 @@ mod embedded {
             return PrimeStatus::Invalid;
         };
         if !slot.done.load(Ordering::SeqCst) {
-            // Sleep tasks: check deadline; recv tasks complete immediately.
-            let now = unsafe { prime_now_ms() };
+            let _ = poll_channel_waiters();
+        }
+        if !slot.done.load(Ordering::SeqCst) {
             let deadline = unsafe { *slot.deadline_ms.get() };
-            if now >= deadline {
-                slot.done.store(true, Ordering::SeqCst);
-            } else {
-                return PrimeStatus::Invalid;
+            if deadline > 0 {
+                let now = unsafe { prime_now_ms() };
+                if now >= deadline {
+                    slot.done.store(true, Ordering::SeqCst);
+                }
             }
+        }
+        if !slot.done.load(Ordering::SeqCst) {
+            prime_delay_ms(recv_poll_ms());
+            return PrimeStatus::Invalid;
         }
         let value = unsafe { *slot.result.get() };
         unsafe {
@@ -1067,25 +1303,35 @@ mod embedded {
         let Some(slot) = alloc_task_slot() else {
             return PrimeHandle::null();
         };
-        let option_handle = if let Some(ch) = channel_from_handle(_receiver) {
-            loop {
-                match dequeue_channel(ch) {
-                    ChannelPoll::Item(v) => {
-                        let mut buf = [v];
-                        break prime_enum_new(0, buf.as_mut_ptr(), 1);
+        if let Some(ch) = channel_from_handle(_receiver) {
+            match dequeue_channel(ch) {
+                ChannelPoll::Item(v) => {
+                    unsafe {
+                        *slot.result.get() = option_handle_from_payload(Some(v));
                     }
-                    ChannelPoll::Closed => break prime_enum_new(1, core::ptr::null(), 0),
-                    ChannelPoll::Empty => {
-                        // Yield briefly so async waits truly block until a send/close arrives.
-                        prime_delay_ms(1);
+                    slot.done.store(true, Ordering::SeqCst);
+                }
+                ChannelPoll::Closed => {
+                    unsafe {
+                        *slot.result.get() = option_handle_from_payload(None);
+                    }
+                    slot.done.store(true, Ordering::SeqCst);
+                }
+                ChannelPoll::Empty => {
+                    if !register_channel_waiter(ch, slot, None) {
+                        unsafe {
+                            *slot.result.get() = option_handle_from_payload(None);
+                        }
+                        slot.done.store(true, Ordering::SeqCst);
                     }
                 }
             }
         } else {
-            prime_enum_new(1, core::ptr::null(), 0)
-        };
-        unsafe { *slot.result.get() = option_handle };
-        slot.done.store(true, Ordering::SeqCst);
+            unsafe {
+                *slot.result.get() = option_handle_from_payload(None);
+            }
+            slot.done.store(true, Ordering::SeqCst);
+        }
         PrimeHandle(slot as *const TaskSlot as *mut c_void)
     }
 
@@ -1342,6 +1588,15 @@ mod embedded {
             }
             core::hint::spin_loop();
         }
+    }
+
+    #[inline]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn recv_poll_ms() -> i32 {
+        PRIME_RECV_POLL_MS as i32
     }
 
     #[allow(dead_code)]

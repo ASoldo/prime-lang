@@ -1,17 +1,7 @@
-manifest_version = "3"
-
-[package]
-name = "demos::esp32_blink"
-version = "0.1.0"
-
-[module]
-name = "demos::esp32_blink"
-path = "esp32_blink.prime"
-visibility = "pub"
-no_std = true
+# ESP32 Xtensa toolchain template (esp-idf + esp-clang)
+# Uses llc -relocation-model=static and links libc/libgcc plus ROM scripts.
 
 [build]
-# Classic ESP32 (Xtensa)
 target = "xtensa-esp32-espidf"
 platform = "esp32"
 
@@ -22,28 +12,25 @@ task_slots = 12
 recv_poll_ms = 2
 
 [build.toolchain]
-  cc = "xtensa-esp32-elf-gcc"
-  ar = "xtensa-esp32-elf-ar"
-  objcopy = "xtensa-esp32-elf-objcopy"
-  esptool = "esptool"
+cc = "xtensa-esp32-elf-gcc"
+ar = "xtensa-esp32-elf-ar"
+objcopy = "xtensa-esp32-elf-objcopy"
+esptool = "esptool"
 
-  ld_script = "${IDF_BUILD_ROOT}/esp_system/ld/sections.ld"
-
-  ld_flags = """-Wl,--gc-sections \
-  -T${IDF_BUILD_ROOT}/esp_system/ld/memory.ld \
+ld_script = "${IDF_PATH}/components/esp_system/ld/esp32/sections.ld"
+ld_flags = """-Wl,--gc-sections \
+  -T${IDF_PATH}/components/esp_system/ld/esp32/memory.ld \
   -T${IDF_PATH}/components/esp_rom/esp32/ld/esp32.rom.ld \
   -T${IDF_PATH}/components/esp_rom/esp32/ld/esp32.rom.api.ld \
   -T${IDF_PATH}/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld"""
 
 [build.toolchain.env]
 RUSTUP_TOOLCHAIN = "esp"
-CARGO_TARGET_DIR = "${HOME}/.cache/prime-xtensa"
 LLVM_SYS_201_PREFIX = "${HOME}/.espressif/tools/esp-clang/esp-clang"
 LD_LIBRARY_PATH = "/usr/lib64:/usr/lib:/lib:${HOME}/.espressif/tools/esp-clang/esp-clang/lib"
 PATH = "${HOME}/.espressif/tools/esp-clang/esp-clang/bin:${HOME}/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-elf/bin:${PATH}"
+CARGO_TARGET_DIR = "${HOME}/.cache/prime-xtensa"
 CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER = "xtensa-esp32-elf-gcc"
-IDF_PATH = "/home/rootster/esp/esp-idf"
-IDF_BUILD_ROOT = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf"
 
 [build.flash]
 enabled = true

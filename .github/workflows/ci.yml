@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --locked
+      - name: Test
+        run: cargo test --locked
+
+  esp32-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install ESP-IDF toolchain
+        uses: espressif/setup-esp-idf@v3
+        with:
+          version: v5.2
+          tools: esp-clang, xtensa-esp32-elf, esptool
+      - name: Build CLI
+        run: cargo build --release --locked
+      - name: Smoke build ESP32 blink demo (no flash)
+        env:
+          PRIME_EMBEDDED_SMOKE: "1"
+        run: |
+          source $IDF_PATH/export.sh
+          ./target/release/prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name ci-esp32 --no-flash

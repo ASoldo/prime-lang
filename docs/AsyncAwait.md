@@ -48,3 +48,4 @@ This note captures the intended shape of async/await for Prime. It is a checkpoi
 - Runtime uses `AsyncRuntime` with a task state + condvar handle; the cooperative scheduler now polls timers and channel inboxes instead of relying on blocking helper threads.
 - Build mode lowers `async`/`await` into the same runtime calls; `sleep_task`/`recv_task` now compile for LLVM output while keeping deterministic snapshots.
 - Borrow/send checks across suspension points are not enforced yet; add these once the scheduler is wired.
+- Xtensa builds drive `recv_task`/`recv_timeout` through a small waiter queue plus a configurable poll interval; channel/task pool sizes live under `[build.runtime]` or `PRIME_RT_*` with defaults tuned for the demos.

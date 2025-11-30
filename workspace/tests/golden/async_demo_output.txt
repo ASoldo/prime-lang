@@ -1,0 +1,10 @@
+starting async demo (basic task)
+awaiting task result...
+task: doing work
+42
+--- channel + sleep demo ---
+receiver: waiting
+task: sleeping for 100ms
+task: sending 7
+7
+done

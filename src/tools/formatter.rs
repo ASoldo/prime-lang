@@ -1663,6 +1663,26 @@ mod tests {
     }
 
     #[test]
+    fn formatter_async_initializer() {
+        let input = fs::read_to_string("workspace/tests/golden/formatter_async_init_in.prime")
+            .expect("fixture input");
+        let output = fs::read_to_string("workspace/tests/golden/formatter_async_init_out.prime")
+            .expect("fixture out");
+        let formatted = format_fixture(&input);
+        assert_eq!(formatted, output);
+    }
+
+    #[test]
+    fn formatter_multiline_let_bindings() {
+        let input = fs::read_to_string("workspace/tests/golden/formatter_multiline_let_in.prime")
+            .expect("fixture input");
+        let output = fs::read_to_string("workspace/tests/golden/formatter_multiline_let_out.prime")
+            .expect("fixture out");
+        let formatted = format_fixture(&input);
+        assert_eq!(formatted, output);
+    }
+
+    #[test]
     fn formatter_macro_call_blocks_indent() {
         let input = r#"test tests::formatter_macro_call;
 
