@@ -88,7 +88,7 @@ struct Player {
         key: "embedded",
         title: "Embedded / ESP32 (Xtensa)",
         category: "Platforms",
-        summary: "Build and flash the bundled ESP32 blink demo using the ESP-IDF toolchains, ROM linker scripts, and manifest-provided environment overrides.",
+        summary: "Build and flash the bundled ESP32 blink demo using the ESP-IDF toolchains, ROM linker scripts, and manifest-provided environment overrides; async/await + channels use runtime handles in no_std.",
         aliases: &["esp32", "xtensa", "embedded", "bare-metal", "no_std"],
         sections: &[
             TopicSection {
@@ -130,7 +130,7 @@ address = "0x10000""#,
             TopicSection {
                 title: "Build & flash",
                 snippet: r#"prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink"#,
-                explanation: "With the manifest env present (or standard tools under `~/.espressif`), no extra shell setup is required. The runtime links a minimal Xtensa entry, pulls in ROM delay/printf, and toggles GPIO2 (active-low) for the on-board LED. Watchdogs are disabled once on boot in the demo so the loop can run indefinitely; re-enable them for projects that need watchdog coverage. Flash is enabled for the demo; pass `--no-flash` to skip. UART output comes from your `out(...)` calls (strings, format strings, ints, bools) and each call adds its own newline; connect at 115200 and press reset to see it.",
+                explanation: "With the manifest env present (or standard tools under `~/.espressif`), no extra shell setup is required. The build passes `-relocation-model=static -mtriple=xtensa-esp32-elf -mcpu=esp32 -mattr=+windowed` to llc, then links `libruntime_abi.a` (Xtensa) plus libc/libgcc. Flashing uses `esptool elf2image` when available and falls back to objcopy. The runtime links a minimal Xtensa entry, pulls in ROM delay/printf, and toggles GPIO2 (active-low) for the on-board LED. Watchdogs are disabled once on boot in the demo; pass `--no-flash` to skip.",
             },
             TopicSection {
                 title: "Toolchain detection",
@@ -147,11 +147,19 @@ address = "0x10000""#,
                 snippet: r#"fn main() {
   let int32 my_var = 5;
   out(`hello from esp32 blink demo and value is {my_var}`);
-  let mut bool state = true;
-  // ... blink loop ...
-  out(`State is: {state}`);
+  let (tx, rx) = channel[int32]();
+  let task = async {
+    let Option[int32] received = await recv_task(rx);
+    match received {
+      Some(v) => out(`got {v}`),
+      None => out("closed"),
+    }
+  };
+  let _ = send(tx, 7);
+  close(tx);
+  await task;
 }"#,
-                explanation: "`out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (constants), and bools are rendered; each `out` ends with a newline so successive calls don’t run together. Use these to trace startup and loop activity alongside LED toggles (the demo prints the formatted value and per-loop state).",
+                explanation: "`out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (constants), and bools are rendered; each `out` ends with a newline so successive calls don’t run together. Async/await + channels attach runtime handles automatically, so `recv_task`/`sleep_task` block through the Xtensa runtime. Use these to trace startup and loop activity alongside LED toggles.",
             },
         ],
     },

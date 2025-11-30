@@ -25,22 +25,20 @@ use crate::{
 use llvm_sys::{
     LLVMLinkage, LLVMTypeKind,
     core::{
-        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAdd,
+        LLVMAddCase, LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAdd,
         LLVMBuildAlloca, LLVMBuildArrayMalloc, LLVMBuildBitCast, LLVMBuildBr, LLVMBuildCall2,
         LLVMBuildCondBr, LLVMBuildExtractValue, LLVMBuildFAdd, LLVMBuildFDiv, LLVMBuildFMul,
         LLVMBuildFRem, LLVMBuildFSub, LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2,
         LLVMBuildIntCast, LLVMBuildLoad2, LLVMBuildMul, LLVMBuildRet, LLVMBuildRetVoid,
         LLVMBuildSDiv, LLVMBuildSExt, LLVMBuildSIToFP, LLVMBuildSRem, LLVMBuildStore,
-        LLVMBuildSwitch, LLVMAddCase,
-        LLVMBuildStructGEP2, LLVMBuildSub, LLVMConstInt, LLVMConstIntGetZExtValue, LLVMConstNull,
-        LLVMConstPointerNull, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
-        LLVMCreateBuilderInContext,
-        LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext,
-        LLVMFloatTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetElementType,
-        LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetGlobalParent, LLVMGetInsertBlock,
-        LLVMGetIntTypeWidth, LLVMGetLastInstruction, LLVMGetModuleContext, LLVMGetParam,
-        LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
-        LLVMIntTypeInContext, LLVMIsAConstantInt, LLVMIsAFunction,
+        LLVMBuildStructGEP2, LLVMBuildSub, LLVMBuildSwitch, LLVMConstInt, LLVMConstIntGetZExtValue,
+        LLVMConstNull, LLVMConstPointerNull, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
+        LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
+        LLVMDoubleTypeInContext, LLVMFloatTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent,
+        LLVMGetElementType, LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetGlobalParent,
+        LLVMGetInsertBlock, LLVMGetIntTypeWidth, LLVMGetLastInstruction, LLVMGetModuleContext,
+        LLVMGetParam, LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext,
+        LLVMInt32TypeInContext, LLVMIntTypeInContext, LLVMIsAConstantInt, LLVMIsAFunction,
         LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilder,
         LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMPrintModuleToFile, LLVMSetLinkage,
         LLVMSetTarget, LLVMStructCreateNamed, LLVMStructSetBody, LLVMStructTypeInContext,
@@ -420,10 +418,7 @@ impl ChannelReceiver {
         loop {
             if let Some(v) = guard.queue.pop_front() {
                 if debug {
-                    eprintln!(
-                        "[prime-debug] recv -> Some({})",
-                        describe_value(&v)
-                    );
+                    eprintln!("[prime-debug] recv -> Some({})", describe_value(&v));
                 }
                 return Some(v);
             }
@@ -4882,20 +4877,20 @@ impl Compiler {
             Expr::Await { expr, .. } => {
                 self.force_runtime_handles = true;
                 match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => {
-                    let concrete = value.into_value();
-                    match concrete {
-                        Value::Task(task) => match task.take(self) {
-                            Ok(result) => Ok(EvalOutcome::Value(result)),
-                            Err(err) => Err(err),
-                        },
-                        other => Err(format!(
-                            "`await` expects a Task, found {}",
-                            self.describe_value(&other)
-                        )),
+                    EvalOutcome::Value(value) => {
+                        let concrete = value.into_value();
+                        match concrete {
+                            Value::Task(task) => match task.take(self) {
+                                Ok(result) => Ok(EvalOutcome::Value(result)),
+                                Err(err) => Err(err),
+                            },
+                            other => Err(format!(
+                                "`await` expects a Task, found {}",
+                                self.describe_value(&other)
+                            )),
+                        }
                     }
-                }
-                EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                    EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                 }
             }
             Expr::Spawn { expr, .. } => {
@@ -6249,7 +6244,10 @@ impl Compiler {
         if let (Ok(a), Ok(b)) = (self.expect_int(lhs.clone()), self.expect_int(rhs.clone())) {
             return self.eval_int_binary(op, a, b);
         }
-        if let (Ok(a), Ok(b)) = (self.expect_float(lhs.clone()), self.expect_float(rhs.clone())) {
+        if let (Ok(a), Ok(b)) = (
+            self.expect_float(lhs.clone()),
+            self.expect_float(rhs.clone()),
+        ) {
             return self.eval_float_binary(op, a, b);
         }
         match (lhs, rhs) {
@@ -8975,8 +8973,9 @@ impl Compiler {
             };
             let ok_const =
                 unsafe { LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0) };
-            let closed_const =
-                unsafe { LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Closed as u64, 0) };
+            let closed_const = unsafe {
+                LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Closed as u64, 0)
+            };
             let some_tag = unsafe {
                 LLVMConstInt(
                     LLVMInt32TypeInContext(self.context),
@@ -8998,8 +8997,7 @@ impl Compiler {
                 )
             };
             unsafe {
-                let switch =
-                    LLVMBuildSwitch(self.builder, status, other_block, 2);
+                let switch = LLVMBuildSwitch(self.builder, status, other_block, 2);
                 LLVMAddCase(switch, ok_const, ok_block);
                 LLVMAddCase(switch, closed_const, closed_block);
 
