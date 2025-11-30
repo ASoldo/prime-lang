@@ -2898,12 +2898,49 @@ impl BuildInterpreter {
                 }
                 self.eval_builtin_or_deferred("sleep", receiver, type_args, args)
             }
-            "sleep_task" => Err(
-                "`sleep_task` is async-only and not supported in build snapshots yet".into(),
-            ),
-            "recv_task" => Err(
-                "`recv_task` is async-only and not supported in build snapshots yet".into(),
-            ),
+            "sleep_task" => {
+                require_std_builtins("sleep_task")?;
+                if args.len() != 1 {
+                    return Err("sleep_task expects 1 argument".into());
+                }
+                let millis = match self.eval_expr_mut(&args[0])? {
+                    BuildValue::Int(v) => v,
+                    other => {
+                        return Err(format!(
+                            "sleep_task expects integer millis, found {}",
+                            other.kind()
+                        ));
+                    }
+                };
+                if millis > 0 {
+                    self.clock_ms = self.clock_ms.saturating_add(millis);
+                }
+                self.effects.push(BuildEffect::SleepMs { millis });
+                Ok(BuildValue::Task(Box::new(BuildTask {
+                    result: BuildValue::Unit,
+                })))
+            }
+            "recv_task" => {
+                require_std_builtins("recv_task")?;
+                if args.len() != 1 {
+                    return Err("recv_task expects 1 argument".into());
+                }
+                let receiver = match self.eval_expr_mut(&args[0])? {
+                    BuildValue::ChannelReceiver(rx) => rx,
+                    other => {
+                        return Err(format!(
+                            "recv_task expects channel receiver, found {}",
+                            other.kind()
+                        ));
+                    }
+                };
+                // Block until the channel delivers a value or closes to mirror runtime await semantics.
+                let value = match receiver.recv() {
+                    Some(v) => self.wrap_enum("Some", vec![v]),
+                    None => self.wrap_enum("None", vec![]),
+                };
+                Ok(BuildValue::Task(Box::new(BuildTask { result: value })))
+            }
             "delay_ms" | "pin_mode" | "digital_write" => Err(
                 "embedded-only built-ins are unavailable in build snapshots; build for the ESP32 target to run them"
                     .into(),

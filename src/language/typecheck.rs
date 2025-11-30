@@ -2417,7 +2417,10 @@ impl Checker {
                     );
                     return None;
                 }
-                if self.current_no_std && self.is_std_only_builtin(&ident.name) {
+                if self.current_no_std
+                    && self.is_std_only_builtin(&ident.name)
+                    && !self.embedded_std_compatible_builtin(&ident.name)
+                {
                     self.errors.push(
                         TypeError::new(
                             &module.path,
@@ -4468,6 +4471,23 @@ impl Checker {
 
     fn embedded_builtins_enabled(&self) -> bool {
         self.target.is_embedded()
+    }
+
+    fn embedded_std_compatible_builtin(&self, name: &str) -> bool {
+        self.target.is_embedded()
+            && matches!(
+                name,
+                "channel"
+                    | "send"
+                    | "recv"
+                    | "recv_timeout"
+                    | "recv_task"
+                    | "close"
+                    | "sleep"
+                    | "sleep_ms"
+                    | "sleep_task"
+                    | "now_ms"
+            )
     }
 
     fn is_embedded_builtin(&self, name: &str) -> bool {

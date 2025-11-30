@@ -1,22 +1,66 @@
 module demos::esp32_blink;
 
+pub enum Option[T] {
+  Some(T),
+  None,
+}
+
+pub enum Result[T, E] {
+  Ok(T),
+  Err(E),
+}
+
 fn main() {
   let int32 my_var = 5;
   out(`hello from esp32 blink demo and value is {my_var}`);
 
   let int32 led = 2;
+  let bool led_active_low = false;
   pin_mode(led, 1);
   out(`This is our second text {my_var}`);
+  out("starting async blink demo on esp32 (no_std)");
 
-  let mut bool state = true;
+  let blinker = async {
+  let mut int32 i = 0;
   loop {
-    digital_write(led, 0);
-    state = false;
-    out(`State is: {state}`);
-    delay_ms(2000);
-    digital_write(led, 1);
-    state = true;
-    out(`State is: {state}`);
+    if i >= 6 {
+      break;
+    }
+
+    let int32 on_level = if led_active_low {
+      0
+    } else {
+      1
+    };
+    digital_write(led, on_level);
+    out("async blink: LED ON");
+    delay_ms(1000);
+
+    let int32 off_level = if led_active_low {
+      1
+    } else {
+      0
+    };
+    digital_write(led, off_level);
+    out("async blink: LED OFF");
+    delay_ms(1000);
+    i = i + 1;
+  }
+};
+  await blinker;
+  out("falling back to bare-metal blink loop");
+  loop {
+    digital_write(led, if led_active_low {
+  0
+} else {
+  1
+});
+    delay_ms(1000);
+    digital_write(led, if led_active_low {
+  1
+} else {
+  0
+});
     delay_ms(1000);
   }
 }

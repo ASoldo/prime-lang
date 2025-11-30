@@ -4814,16 +4814,19 @@ impl Compiler {
                 ))
             }
             Expr::Await { expr, .. } => match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => match value.into_value() {
-                    Value::Task(task) => match task.take(self) {
-                        Ok(result) => Ok(EvalOutcome::Value(result)),
-                        Err(err) => Err(err),
-                    },
-                    other => Err(format!(
-                        "`await` expects a Task, found {}",
-                        self.describe_value(&other)
-                    )),
-                },
+                EvalOutcome::Value(value) => {
+                    let concrete = value.into_value();
+                    match concrete {
+                        Value::Task(task) => match task.take(self) {
+                            Ok(result) => Ok(EvalOutcome::Value(result)),
+                            Err(err) => Err(err),
+                        },
+                        other => Err(format!(
+                            "`await` expects a Task, found {}",
+                            self.describe_value(&other)
+                        )),
+                    }
+                }
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::Spawn { expr, .. } => {
