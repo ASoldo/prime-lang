@@ -919,9 +919,9 @@ impl Parser {
             (interface_ident.name, target.name, false)
         } else {
             if !type_args.is_empty() {
-                return Err(self.error_here(
-                    "Type arguments are not supported on inherent impl blocks",
-                ));
+                return Err(
+                    self.error_here("Type arguments are not supported on inherent impl blocks")
+                );
             }
             type_args = Vec::new();
             (interface_ident.name.clone(), interface_ident.name, true)

@@ -1,4 +1,4 @@
-use crate::target::{embedded_target_hint, BuildOptions};
+use crate::target::{BuildOptions, embedded_target_hint};
 use std::sync::OnceLock;
 
 /// Thin platform abstraction for std-only built-ins (fs/time/etc.). This allows
@@ -53,8 +53,7 @@ impl Platform for StdPlatform {
     }
 
     fn fs_write(&self, path: &str, contents: &str) -> Result<(), String> {
-        std::fs::write(path, contents)
-            .map_err(|err| err.to_string())
+        std::fs::write(path, contents).map_err(|err| err.to_string())
     }
 }
 
@@ -101,9 +100,7 @@ fn default_platform() -> Box<dyn Platform> {
 static PLATFORM: OnceLock<Box<dyn Platform>> = OnceLock::new();
 
 pub fn platform() -> &'static dyn Platform {
-    PLATFORM
-        .get_or_init(default_platform)
-        .as_ref()
+    PLATFORM.get_or_init(default_platform).as_ref()
 }
 
 #[allow(dead_code)]

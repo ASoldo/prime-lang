@@ -5,16 +5,16 @@ use crate::runtime::abi::{
 };
 use crate::runtime::environment::{CleanupAction, DropRecord};
 use crate::runtime::platform::platform;
-use crate::target::{embedded_target_hint, BuildTarget};
+use crate::target::{BuildTarget, embedded_target_hint};
 use crate::{
     language::{
         ast::*,
         build::{
-            BuildBinding, BuildChannelReceiver, BuildChannelSender, BuildChannelState,
-            BuildCaptured, BuildClosure, BuildEffect, BuildEnumVariant, BuildEvaluation,
-            BuildFormatTemplate, BuildFunction, BuildFunctionKey, BuildInterpreter, BuildIterator,
-            BuildJoinHandle, BuildJoinOutcome, BuildReference, BuildScope, BuildSnapshot,
-            BuildValue, BuildCleanup, BuildDropRecord, BuildTask,
+            BuildBinding, BuildCaptured, BuildChannelReceiver, BuildChannelSender,
+            BuildChannelState, BuildCleanup, BuildClosure, BuildDropRecord, BuildEffect,
+            BuildEnumVariant, BuildEvaluation, BuildFormatTemplate, BuildFunction,
+            BuildFunctionKey, BuildInterpreter, BuildIterator, BuildJoinHandle, BuildJoinOutcome,
+            BuildReference, BuildScope, BuildSnapshot, BuildTask, BuildValue,
         },
         runtime_abi::RuntimeAbi,
         span::Span,
@@ -36,8 +36,8 @@ use llvm_sys::{
         LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext,
         LLVMFloatTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetElementType,
         LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetGlobalParent, LLVMGetInsertBlock,
-        LLVMGetLastInstruction, LLVMGetModuleContext, LLVMGetParam, LLVMGetReturnType,
-        LLVMGetIntTypeWidth, LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
+        LLVMGetIntTypeWidth, LLVMGetLastInstruction, LLVMGetModuleContext, LLVMGetParam,
+        LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
         LLVMIntTypeInContext, LLVMIsAConstantInt, LLVMIsAFunction,
         LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilder,
         LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMPrintModuleToFile, LLVMSetLinkage,
@@ -50,11 +50,11 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     env,
     ffi::{CStr, CString},
+    fs,
+    io::Read,
     mem,
     path::Path,
     ptr,
-    fs,
-    io::Read,
     sync::{Arc, Condvar, Mutex, RwLock},
     thread,
 };
@@ -304,6 +304,7 @@ enum TaskResultKind {
     Ready,
     RuntimeUnit,
     RuntimeOption,
+    Deferred,
 }
 
 #[derive(Clone)]
@@ -311,6 +312,13 @@ struct TaskValue {
     state: Arc<(Mutex<Option<EvaluatedValue>>, Condvar)>,
     handle: Option<LLVMValueRef>,
     kind: TaskResultKind,
+    pending: Option<Arc<Mutex<Option<DeferredTask>>>>,
+}
+
+#[derive(Clone)]
+struct DeferredTask {
+    block: Block,
+    capture_names: Vec<String>,
 }
 
 struct ChannelState {
@@ -505,6 +513,19 @@ impl TaskValue {
             state: Arc::new((Mutex::new(Some(value)), Condvar::new())),
             handle: None,
             kind: TaskResultKind::Ready,
+            pending: None,
+        }
+    }
+
+    fn deferred(block: Block, capture_names: Vec<String>) -> Self {
+        Self {
+            state: Arc::new((Mutex::new(None), Condvar::new())),
+            handle: None,
+            kind: TaskResultKind::Deferred,
+            pending: Some(Arc::new(Mutex::new(Some(DeferredTask {
+                block,
+                capture_names,
+            })))),
         }
     }
 
@@ -513,6 +534,7 @@ impl TaskValue {
             state: Arc::new((Mutex::new(None), Condvar::new())),
             handle: Some(handle),
             kind,
+            pending: None,
         }
     }
 
@@ -528,9 +550,7 @@ impl TaskValue {
         match self.kind {
             TaskResultKind::Ready => {
                 let (lock, cv) = &*self.state;
-                let mut guard = lock
-                    .lock()
-                    .map_err(|_| "task state poisoned".to_string())?;
+                let mut guard = lock.lock().map_err(|_| "task state poisoned".to_string())?;
                 while guard.is_none() {
                     guard = cv
                         .wait(guard)
@@ -549,6 +569,24 @@ impl TaskValue {
                     .handle
                     .ok_or_else(|| "runtime task missing handle".to_string())?;
                 compiler.await_runtime_task(handle, TaskResultKind::RuntimeOption)
+            }
+            TaskResultKind::Deferred => {
+                let pending = self
+                    .pending
+                    .clone()
+                    .ok_or_else(|| "deferred task missing body".to_string())?;
+                let task = pending
+                    .lock()
+                    .map_err(|_| "deferred task poisoned".to_string())?
+                    .take()
+                    .ok_or_else(|| "deferred task already taken".to_string())?;
+                let mut captures = Vec::new();
+                for name in task.capture_names {
+                    if let Some(value) = compiler.get_var(&name) {
+                        captures.push((name, value));
+                    }
+                }
+                compiler.eval_async_block(&task.block, &captures)
             }
         }
     }
@@ -807,7 +845,10 @@ impl BuildCaptureContext {
         for value in queue {
             converted.push_back(value_to_build_value_with_ctx(&value, self)?);
         }
-        let state = BuildChannelState { queue: converted, closed };
+        let state = BuildChannelState {
+            queue: converted,
+            closed,
+        };
         let shared = Arc::new((Mutex::new(state), Condvar::new()));
         let id = self.next_channel_id;
         self.next_channel_id += 1;
@@ -893,10 +934,7 @@ fn value_to_build_value_with_ctx(
         Value::Struct(instance) => {
             let mut fields = BTreeMap::new();
             for (name, field) in &instance.fields {
-                fields.insert(
-                    name.clone(),
-                    value_to_build_value_with_ctx(field, ctx)?,
-                );
+                fields.insert(name.clone(), value_to_build_value_with_ctx(field, ctx)?);
             }
             Ok(BuildValue::Struct {
                 name: instance.name.clone(),
@@ -925,9 +963,9 @@ fn value_to_build_value_with_ctx(
                 .cell
                 .lock()
                 .map_err(|_| "Box value poisoned while capturing build snapshot")?;
-            Ok(BuildValue::Boxed(Box::new(
-                value_to_build_value_with_ctx(&guard, ctx)?,
-            )))
+            Ok(BuildValue::Boxed(Box::new(value_to_build_value_with_ctx(
+                &guard, ctx,
+            )?)))
         }
         Value::Slice(slice) => {
             let guard = slice
@@ -947,10 +985,7 @@ fn value_to_build_value_with_ctx(
                 .map_err(|_| "Map value poisoned while capturing build snapshot")?;
             let mut converted = BTreeMap::new();
             for (key, value) in guard.iter() {
-                converted.insert(
-                    key.clone(),
-                    value_to_build_value_with_ctx(value, ctx)?,
-                );
+                converted.insert(key.clone(), value_to_build_value_with_ctx(value, ctx)?);
             }
             Ok(BuildValue::Map(converted))
         }
@@ -977,11 +1012,10 @@ fn value_to_build_value_with_ctx(
                     converted.push(value_to_build_value_with_ctx(value, ctx)?);
                 }
             }
-            let index =
-                *iter
-                    .index
-                    .lock()
-                    .map_err(|_| "Iterator index poisoned while capturing build snapshot")?;
+            let index = *iter
+                .index
+                .lock()
+                .map_err(|_| "Iterator index poisoned while capturing build snapshot")?;
             Ok(BuildValue::Iterator(BuildIterator {
                 items: Arc::new(Mutex::new(converted)),
                 index: Arc::new(Mutex::new(index)),
@@ -992,7 +1026,9 @@ fn value_to_build_value_with_ctx(
         )),
         Value::Sender(sender) => {
             let (id, inner) = ctx.channel_from_inner(&sender.inner)?;
-            Ok(BuildValue::ChannelSender(BuildChannelSender::new(id, inner)))
+            Ok(BuildValue::ChannelSender(BuildChannelSender::new(
+                id, inner,
+            )))
         }
         Value::Receiver(receiver) => {
             let (id, inner) = ctx.channel_from_inner(&receiver.inner)?;
@@ -1072,9 +1108,7 @@ fn value_to_build_value_with_ctx(
                         Err("join handle already consumed".into())
                     }
                 }
-                JoinResult::Immediate(None) => {
-                    Err("join handle already consumed".into())
-                }
+                JoinResult::Immediate(None) => Err("join handle already consumed".into()),
             }
         }
         Value::Moved => Err(format!(
@@ -1280,7 +1314,7 @@ impl Compiler {
     }
 
     fn runtime_handles_enabled(&self) -> bool {
-        env::var("PRIME_ENABLE_RT_HANDLES").is_ok()
+        !self.runtime_abi.handle_type.is_null()
     }
 
     fn await_runtime_task(
@@ -1359,6 +1393,9 @@ impl Compiler {
             })),
             TaskResultKind::Ready => {
                 return Err("ready task routed through runtime await".into());
+            }
+            TaskResultKind::Deferred => {
+                return Err("deferred task routed through runtime await".into());
             }
         };
         value.set_runtime(loaded);
@@ -1812,7 +1849,12 @@ impl Compiler {
             .ok_or_else(|| "closure metadata missing".to_string())?;
 
         let env_alloca = self.allocate_closure_env(info.env_type, key);
-        for (idx, (captured, ty)) in closure.captures.iter().zip(info.capture_types.iter()).enumerate() {
+        for (idx, (captured, ty)) in closure
+            .captures
+            .iter()
+            .zip(info.capture_types.iter())
+            .enumerate()
+        {
             let value = self.build_value_to_value(captured.value.clone(), channels)?;
             let llvm_value = self.value_to_llvm_for_type(value, ty)?;
             let field_ptr = unsafe {
@@ -4546,10 +4588,16 @@ impl Compiler {
                         let func = LLVMGetBasicBlockParent(current_bb);
                         let loop_bb_name = CString::new("loop").unwrap();
                         let after_bb_name = CString::new("after_loop").unwrap();
-                        let loop_bb =
-                            LLVMAppendBasicBlockInContext(self.context, func, loop_bb_name.as_ptr());
-                        let after_bb =
-                            LLVMAppendBasicBlockInContext(self.context, func, after_bb_name.as_ptr());
+                        let loop_bb = LLVMAppendBasicBlockInContext(
+                            self.context,
+                            func,
+                            loop_bb_name.as_ptr(),
+                        );
+                        let after_bb = LLVMAppendBasicBlockInContext(
+                            self.context,
+                            func,
+                            after_bb_name.as_ptr(),
+                        );
                         LLVMBuildBr(self.builder, loop_bb);
                         LLVMPositionBuilderAtEnd(self.builder, loop_bb);
                         self.push_scope();
@@ -4589,7 +4637,11 @@ impl Compiler {
                         (start_value.constant(), end_value.constant())
                     {
                         let mut current = start_const;
-                        let limit = if range_expr.inclusive { end_const + 1 } else { end_const };
+                        let limit = if range_expr.inclusive {
+                            end_const + 1
+                        } else {
+                            end_const
+                        };
                         while current < limit {
                             self.push_scope();
                             self.insert_var(
@@ -4604,7 +4656,7 @@ impl Compiler {
                                 BlockEval::Flow(FlowSignal::Continue) => {}
                                 BlockEval::Flow(FlowSignal::Break) => break,
                                 BlockEval::Flow(flow @ FlowSignal::Return(_)) => {
-                                    return Ok(Some(flow))
+                                    return Ok(Some(flow));
                                 }
                                 BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
                                     return Ok(Some(flow));
@@ -4782,36 +4834,12 @@ impl Compiler {
             },
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
             Expr::Async { block, .. } => {
-                self.push_scope();
-                let result = self.execute_block_contents(block)?;
-                self.exit_scope()?;
-                let value = match result {
-                    BlockEval::Value(val) => val,
-                    BlockEval::Flow(FlowSignal::Return(values)) => {
-                        if values.len() == 1 {
-                            values.into_iter().next().unwrap()
-                        } else {
-                            let mut items = Vec::new();
-                            for v in values {
-                                items.push(v.into_value());
-                            }
-                            self.evaluated(Value::Tuple(items))
-                        }
-                    }
-                    BlockEval::Flow(FlowSignal::Propagate(value)) => {
-                        return Err(format!(
-                            "async block propagated error: {}",
-                            flow_name(&FlowSignal::Propagate(value.clone()))
-                        ))
-                    }
-                    BlockEval::Flow(_) => {
-                        return Err("control flow cannot exit async block in build mode".into())
-                    }
-                };
-                let task = TaskValue::ready(value);
-                Ok(EvalOutcome::Value(
-                    Value::Task(Box::new(task)).into(),
-                ))
+                let mut locals = HashSet::new();
+                let mut free = HashSet::new();
+                self.collect_free_in_block(block, &mut locals, &mut free);
+                let capture_names: Vec<String> = free.into_iter().collect();
+                let task = TaskValue::deferred((**block).clone(), capture_names);
+                Ok(EvalOutcome::Value(Value::Task(Box::new(task)).into()))
             }
             Expr::Await { expr, .. } => match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => {
@@ -5051,6 +5079,38 @@ impl Compiler {
             }
         };
         Ok(value)
+    }
+
+    fn eval_async_block(
+        &mut self,
+        block: &Block,
+        captures: &[(String, EvaluatedValue)],
+    ) -> Result<EvaluatedValue, String> {
+        self.push_scope();
+        for (name, value) in captures {
+            self.insert_var(name, value.clone(), true)?;
+        }
+        let result = self.execute_block_contents(block)?;
+        self.exit_scope()?;
+        match result {
+            BlockEval::Value(val) => Ok(val),
+            BlockEval::Flow(FlowSignal::Return(values)) => {
+                if values.len() == 1 {
+                    Ok(values.into_iter().next().unwrap())
+                } else {
+                    let mut items = Vec::new();
+                    for v in values {
+                        items.push(v.into_value());
+                    }
+                    Ok(self.evaluated(Value::Tuple(items)))
+                }
+            }
+            BlockEval::Flow(FlowSignal::Propagate(value)) => Err(format!(
+                "async block propagated error: {}",
+                flow_name(&FlowSignal::Propagate(value.clone()))
+            )),
+            BlockEval::Flow(_) => Err("control flow cannot exit async block in build mode".into()),
+        }
     }
 
     fn emit_call_expression(
@@ -5342,9 +5402,9 @@ impl Compiler {
             "slice_get" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_slice_get(values)))
             }
-            "slice_remove" => Some(self.invoke_builtin(args, |this, values| {
-                this.builtin_slice_remove(values)
-            })),
+            "slice_remove" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_slice_remove(values)))
+            }
             "map_new" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_map_new(values)))
             }
@@ -5360,14 +5420,12 @@ impl Compiler {
             "map_values" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_map_values(values)))
             }
-            "map_remove" => Some(self.invoke_builtin(args, |this, values| {
-                this.builtin_map_remove(values)
-            })),
+            "map_remove" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_map_remove(values)))
+            }
             "len" => Some(self.invoke_builtin(args, |this, values| this.builtin_len(values))),
             "get" => Some(self.invoke_builtin(args, |this, values| this.builtin_get(values))),
-            "remove" => {
-                Some(self.invoke_builtin(args, |this, values| this.builtin_remove(values)))
-            }
+            "remove" => Some(self.invoke_builtin(args, |this, values| this.builtin_remove(values))),
             "push" => Some(self.invoke_builtin(args, |this, values| this.builtin_push(values))),
             "insert" => Some(self.invoke_builtin(args, |this, values| this.builtin_insert(values))),
             "iter" => Some(self.invoke_builtin(args, |this, values| this.builtin_iter(values))),
@@ -5416,10 +5474,10 @@ impl Compiler {
             "sleep_ms" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_sleep_ms(values)))
             }
-            "delay_ms" => Some(self.invoke_builtin(args, |this, values| this.builtin_delay_ms(values))),
-            "now_ms" => {
-                Some(self.invoke_builtin(args, |this, values| this.builtin_now_ms(values)))
+            "delay_ms" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_delay_ms(values)))
             }
+            "now_ms" => Some(self.invoke_builtin(args, |this, values| this.builtin_now_ms(values))),
             "fs_exists" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_fs_exists(values)))
             }
@@ -5429,7 +5487,9 @@ impl Compiler {
             "fs_write" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_fs_write(values)))
             }
-            "pin_mode" => Some(self.invoke_builtin(args, |this, values| this.builtin_pin_mode(values))),
+            "pin_mode" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_pin_mode(values)))
+            }
             "digital_write" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_digital_write(values)))
             }
@@ -6435,11 +6495,7 @@ impl Compiler {
                 idx_ty,
                 CString::new("for_range_idx").unwrap().as_ptr(),
             );
-            LLVMBuildStore(
-                slot_builder,
-                start.llvm(),
-                loop_var,
-            );
+            LLVMBuildStore(slot_builder, start.llvm(), loop_var);
             LLVMDisposeBuilder(slot_builder);
 
             let one = LLVMConstInt(idx_ty, 1, 0);
@@ -6505,11 +6561,7 @@ impl Compiler {
                         one,
                         CString::new("for_range_next").unwrap().as_ptr(),
                     );
-                    LLVMBuildStore(
-                        self.builder,
-                        next,
-                        loop_var,
-                    );
+                    LLVMBuildStore(self.builder, next, loop_var);
                     LLVMBuildBr(self.builder, cond_block);
                 }
                 BlockEval::Flow(FlowSignal::Break) => {
@@ -7769,8 +7821,8 @@ impl Compiler {
             };
             return self.instantiate_enum_variant("Some", vec![Value::Reference(reference)]);
         }
-        let idx = idx_const
-            .ok_or_else(|| "remove index must be constant in build mode".to_string())?;
+        let idx =
+            idx_const.ok_or_else(|| "remove index must be constant in build mode".to_string())?;
         if idx < 0 {
             return self.instantiate_enum_variant("None", Vec::new());
         }
@@ -8015,7 +8067,10 @@ impl Compiler {
                     guard.iter().skip(start).cloned().collect(),
                 )))
             }
-            other => Err(format!("iter not supported for {}", self.describe_value(&other))),
+            other => Err(format!(
+                "iter not supported for {}",
+                self.describe_value(&other)
+            )),
         }
     }
 
@@ -8045,7 +8100,7 @@ impl Compiler {
                 return Err(format!(
                     "next expects iterator, found {}",
                     self.describe_value(&other)
-                ))
+                ));
             }
         };
         match iter.next() {
@@ -8727,6 +8782,14 @@ impl Compiler {
         if !args.is_empty() {
             return Err("channel expects 0 arguments".into());
         }
+        if self.runtime_handles_enabled() {
+            self.ensure_runtime_symbols();
+            if let Some((sender_handle, receiver_handle)) = self.build_channel_handles() {
+                let sender = Value::Sender(ChannelSender::with_handle(sender_handle));
+                let receiver = Value::Receiver(ChannelReceiver::with_handle(receiver_handle));
+                return Ok(Value::Tuple(vec![sender, receiver]));
+            }
+        }
         let state = ChannelState {
             queue: VecDeque::new(),
             closed: false,
@@ -8887,6 +8950,7 @@ impl Compiler {
         let receiver = self.expect_receiver(args.pop().unwrap(), "recv_task")?;
         if let Some(handle) = receiver.handle {
             if self.runtime_handles_enabled() {
+                self.ensure_runtime_symbols();
                 let mut call_args = [handle];
                 let task_handle = self.call_runtime(
                     self.runtime_abi.prime_recv_task,
@@ -8897,7 +8961,6 @@ impl Compiler {
                 let task = TaskValue::with_handle(task_handle, TaskResultKind::RuntimeOption);
                 return Ok(Value::Task(Box::new(task)));
             }
-            return Err("recv_task with runtime handles is not supported in build mode yet".into());
         }
         let option = match receiver.recv() {
             Some(value) => self.instantiate_enum_variant("Some", vec![value])?,
@@ -9051,8 +9114,7 @@ impl Compiler {
             Value::Bool(flag) => Ok(flag),
             other => {
                 let int_value = self.expect_int(other)?;
-                let constant =
-                    self.int_constant_or_llvm(&int_value, "Condition expression")?;
+                let constant = self.int_constant_or_llvm(&int_value, "Condition expression")?;
                 Ok(constant != 0)
             }
         }
@@ -9130,12 +9192,10 @@ impl Compiler {
                     .iter()
                     .filter_map(|action| match action {
                         CleanupAction::Defer(expr) => Some(BuildCleanup::Defer(expr.clone())),
-                        CleanupAction::Drop(record) => {
-                            Some(BuildCleanup::Drop(BuildDropRecord {
-                                binding: record.binding.clone(),
-                                type_name: record.type_name.clone(),
-                            }))
-                        }
+                        CleanupAction::Drop(record) => Some(BuildCleanup::Drop(BuildDropRecord {
+                            binding: record.binding.clone(),
+                            type_name: record.type_name.clone(),
+                        })),
                     })
                     .collect()
             })
@@ -9233,7 +9293,8 @@ impl Compiler {
             handle: None,
         });
         let eval = self.evaluated(reference);
-        let _ = self.call_function_with_values(&key.name, key.receiver.as_deref(), &[], vec![eval])?;
+        let _ =
+            self.call_function_with_values(&key.name, key.receiver.as_deref(), &[], vec![eval])?;
         Ok(())
     }
 
@@ -9352,8 +9413,7 @@ impl Compiler {
     fn collect_iterable_values(&mut self, value: Value) -> Result<Vec<EvaluatedValue>, String> {
         match value {
             Value::Range(range) => {
-                let start_const =
-                    self.int_constant_or_llvm(&range.start, "Range start")?;
+                let start_const = self.int_constant_or_llvm(&range.start, "Range start")?;
                 let end_const = self.int_constant_or_llvm(&range.end, "Range end")?;
                 let end = if range.inclusive {
                     end_const + 1
@@ -10174,7 +10234,10 @@ fn main() {
                 .expect("closure callable");
             match result.value() {
                 Value::Int(_) => {}
-                other => panic!("expected int return, found {}", compiler.describe_value(other)),
+                other => panic!(
+                    "expected int return, found {}",
+                    compiler.describe_value(other)
+                ),
             }
         });
     }
@@ -10472,7 +10535,10 @@ fn main() {
                     assert_eq!(enum_value.enum_name, "Option");
                     assert_eq!(enum_value.variant, "None");
                 }
-                other => panic!("expected Option::None, found {}", compiler.describe_value(&other)),
+                other => panic!(
+                    "expected Option::None, found {}",
+                    compiler.describe_value(&other)
+                ),
             }
         });
     }

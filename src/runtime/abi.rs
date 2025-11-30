@@ -15,8 +15,8 @@
 mod embedded {
     #![allow(unused_imports)]
     use core::array;
-    use core::ffi::c_void;
     use core::cell::UnsafeCell;
+    use core::ffi::c_void;
     use core::mem::MaybeUninit;
     use core::ptr;
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -83,15 +83,30 @@ mod embedded {
     pub const TYPE_RUNE: u32 = 14;
 
     // Simple handle pool for tiny, no_std-friendly async/enum support on embedded targets.
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     const PRIME_TASK_SLOTS: usize = 8;
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     const PRIME_CHANNEL_SLOTS: usize = 8;
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     const PRIME_CHANNEL_CAP: usize = 8;
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[derive(Debug)]
     struct TaskSlot {
         used: AtomicBool,
@@ -100,17 +115,29 @@ mod embedded {
         result: UnsafeCell<PrimeHandle>,
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     unsafe impl Send for TaskSlot {}
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     unsafe impl Sync for TaskSlot {}
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     static mut TASK_SLOTS: [MaybeUninit<TaskSlot>; PRIME_TASK_SLOTS] =
         [const { MaybeUninit::uninit() }; PRIME_TASK_SLOTS];
     static TASK_SLOTS_READY: AtomicBool = AtomicBool::new(false);
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[derive(Debug)]
     struct ChannelSlot {
         used: AtomicBool,
@@ -121,17 +148,29 @@ mod embedded {
         len: UnsafeCell<usize>,
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     unsafe impl Send for ChannelSlot {}
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     unsafe impl Sync for ChannelSlot {}
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     static mut CHANNEL_SLOTS: [MaybeUninit<ChannelSlot>; PRIME_CHANNEL_SLOTS] =
         [const { MaybeUninit::uninit() }; PRIME_CHANNEL_SLOTS];
     static CHANNEL_SLOTS_READY: AtomicBool = AtomicBool::new(false);
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[derive(Copy, Clone)]
     #[repr(C)]
     struct PrimeEnum {
@@ -140,13 +179,22 @@ mod embedded {
         len: usize,
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     static mut PRIME_UNIT_HANDLE: PrimeHandle = PrimeHandle::null();
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     static mut ENUM_HANDLES: [Option<PrimeEnum>; 8] = [None; 8];
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn init_unit_handle() {
         #[cfg(target_arch = "xtensa")]
         unsafe {
@@ -164,14 +212,17 @@ mod embedded {
         }
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn alloc_enum(tag: u32, value: PrimeHandle, len: usize) -> PrimeHandle {
         unsafe {
             for slot in ENUM_HANDLES.iter_mut() {
                 if slot.is_none() {
                     *slot = Some(PrimeEnum { tag, value, len });
                     return PrimeHandle(
-                        slot.as_ref().unwrap() as *const PrimeEnum as *mut core::ffi::c_void,
+                        slot.as_ref().unwrap() as *const PrimeEnum as *mut core::ffi::c_void
                     );
                 }
             }
@@ -179,7 +230,10 @@ mod embedded {
         PrimeHandle::null()
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn alloc_task_slot() -> Option<&'static TaskSlot> {
         ensure_task_slots();
         unsafe {
@@ -199,7 +253,10 @@ mod embedded {
         None
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn task_from_handle(handle: PrimeHandle) -> Option<&'static TaskSlot> {
         if handle.0.is_null() {
             return None;
@@ -210,7 +267,10 @@ mod embedded {
             .find(|slot| *slot as *const TaskSlot == ptr)
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn alloc_channel_slot() -> Option<&'static ChannelSlot> {
         ensure_channel_slots();
         for slot in channel_slots().iter() {
@@ -235,7 +295,10 @@ mod embedded {
         None
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn channel_from_handle(handle: PrimeHandle) -> Option<&'static ChannelSlot> {
         if handle.0.is_null() {
             return None;
@@ -246,7 +309,10 @@ mod embedded {
             .find(|slot| *slot as *const ChannelSlot == ptr)
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn ensure_task_slots() {
         if TASK_SLOTS_READY.load(Ordering::SeqCst) {
             return;
@@ -264,13 +330,19 @@ mod embedded {
         TASK_SLOTS_READY.store(true, Ordering::SeqCst);
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn task_slots() -> &'static [TaskSlot; PRIME_TASK_SLOTS] {
         ensure_task_slots();
         unsafe { &*(TASK_SLOTS.as_ptr() as *const [TaskSlot; PRIME_TASK_SLOTS]) }
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn ensure_channel_slots() {
         if CHANNEL_SLOTS_READY.load(Ordering::SeqCst) {
             return;
@@ -290,50 +362,74 @@ mod embedded {
         CHANNEL_SLOTS_READY.store(true, Ordering::SeqCst);
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn channel_slots() -> &'static [ChannelSlot; PRIME_CHANNEL_SLOTS] {
         ensure_channel_slots();
         unsafe { &*(CHANNEL_SLOTS.as_ptr() as *const [ChannelSlot; PRIME_CHANNEL_SLOTS]) }
     }
 
     // Required FFI entry points used by the compiler (embedded).
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[unsafe(export_name = "prime_value_retain")]
     pub unsafe extern "C" fn prime_value_retain(value: PrimeHandle) -> PrimeHandle {
         value
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[unsafe(export_name = "prime_value_release")]
     pub unsafe extern "C" fn prime_value_release(_value: PrimeHandle) {}
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[unsafe(export_name = "prime_unit_new")]
     pub unsafe extern "C" fn prime_unit_new() -> PrimeHandle {
         init_unit_handle();
         PRIME_UNIT_HANDLE
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[unsafe(export_name = "prime_int_new")]
     pub unsafe extern "C" fn prime_int_new(_value: i128) -> PrimeHandle {
         PrimeHandle::null()
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[unsafe(export_name = "prime_float_new")]
     pub unsafe extern "C" fn prime_float_new(_value: f64) -> PrimeHandle {
         PrimeHandle::null()
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[unsafe(export_name = "prime_bool_new")]
     pub unsafe extern "C" fn prime_bool_new(_value: bool) -> PrimeHandle {
         PrimeHandle::null()
     }
 
     #[cfg(not(target_arch = "xtensa"))]
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[unsafe(export_name = "prime_string_new")]
     pub unsafe extern "C" fn prime_string_new(_data: *const u8, _len: usize) -> PrimeHandle {
         PrimeHandle::null()
@@ -344,11 +440,17 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none"),
     ))]
     #[unsafe(export_name = "prime_struct_new")]
-    pub unsafe extern "C" fn prime_struct_new(_name_ptr: *const u8, _name_len: usize) -> PrimeHandle {
+    pub unsafe extern "C" fn prime_struct_new(
+        _name_ptr: *const u8,
+        _name_len: usize,
+    ) -> PrimeHandle {
         PrimeHandle::null()
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[unsafe(export_name = "prime_enum_new")]
     pub unsafe extern "C" fn prime_enum_new(
         _tag: u32,
@@ -397,7 +499,10 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none"),
     ))]
     #[unsafe(export_name = "prime_reference_new")]
-    pub unsafe extern "C" fn prime_reference_new(_target: PrimeHandle, _mutable: bool) -> PrimeHandle {
+    pub unsafe extern "C" fn prime_reference_new(
+        _target: PrimeHandle,
+        _mutable: bool,
+    ) -> PrimeHandle {
         PrimeHandle::null()
     }
 
@@ -443,10 +548,7 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none"),
     ))]
     #[unsafe(export_name = "prime_send")]
-    pub unsafe extern "C" fn prime_send(
-        _sender: PrimeHandle,
-        _value: PrimeHandle,
-    ) -> PrimeStatus {
+    pub unsafe extern "C" fn prime_send(_sender: PrimeHandle, _value: PrimeHandle) -> PrimeStatus {
         let Some(slot) = channel_from_handle(_sender) else {
             return PrimeStatus::Invalid;
         };
@@ -543,14 +645,20 @@ mod embedded {
         PrimeStatus::Invalid
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     enum ChannelPoll {
         Item(PrimeHandle),
         Closed,
         Empty,
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     fn dequeue_channel(slot: &ChannelSlot) -> ChannelPoll {
         let len = unsafe { *slot.len.get() };
         if len == 0 {
@@ -942,9 +1050,9 @@ mod embedded {
                 match dequeue_channel(ch) {
                     ChannelPoll::Item(v) => {
                         let mut buf = [v];
-                        break prime_enum_new(1, buf.as_mut_ptr(), 1);
+                        break prime_enum_new(0, buf.as_mut_ptr(), 1);
                     }
-                    ChannelPoll::Closed => break prime_enum_new(0, core::ptr::null(), 0),
+                    ChannelPoll::Closed => break prime_enum_new(1, core::ptr::null(), 0),
                     ChannelPoll::Empty => {
                         // Yield briefly so async waits truly block until a send/close arrives.
                         prime_delay_ms(1);
@@ -952,7 +1060,7 @@ mod embedded {
                 }
             }
         } else {
-            prime_enum_new(0, core::ptr::null(), 0)
+            prime_enum_new(1, core::ptr::null(), 0)
         };
         unsafe { *slot.result.get() = option_handle };
         slot.done.store(true, Ordering::SeqCst);
@@ -1018,7 +1126,10 @@ mod embedded {
         PrimeHandle(STR_HANDLES.as_mut_ptr().add(slot) as *mut c_void)
     }
 
-    #[cfg(any(target_arch = "xtensa", all(target_arch = "riscv32", target_os = "none")))]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_print(value: PrimeHandle) {
         if value.0.is_null() {
@@ -1076,39 +1187,39 @@ mod embedded {
     }
 
     // Minimal ROM bindings for timing.
-#[cfg(target_arch = "xtensa")]
-unsafe extern "C" {
-    fn ets_delay_us(us: u32);
-    fn ets_printf(fmt: *const u8, ...) -> i32;
-    fn xthal_get_ccount() -> u32;
-}
-
-#[cfg(target_arch = "xtensa")]
-fn cycles_per_ms() -> u32 {
-    use core::sync::atomic::{AtomicU32, Ordering};
-
-    static CYCLES_PER_MS: AtomicU32 = AtomicU32::new(0);
-    let cached = CYCLES_PER_MS.load(Ordering::Relaxed);
-    if cached != 0 {
-        return cached;
+    #[cfg(target_arch = "xtensa")]
+    unsafe extern "C" {
+        fn ets_delay_us(us: u32);
+        fn ets_printf(fmt: *const u8, ...) -> i32;
+        fn xthal_get_ccount() -> u32;
     }
 
-    // Calibrate against ROM delay to match boards running at lower CPU clocks (e.g., 80MHz).
-    let start = unsafe { xthal_get_ccount() };
-    unsafe { ets_delay_us(1000) }; // 1 ms reference
-    let delta = unsafe { xthal_get_ccount() }.wrapping_sub(start);
-    let fallback = unsafe { prime_clock_hz_get().max(1) / 1000 };
-    // Trust the measurement so slower clock configs (e.g., 80MHz) don't get overestimated.
-    let final_cycles = if delta == 0 { fallback } else { delta };
-    CYCLES_PER_MS.store(final_cycles, Ordering::Relaxed);
-    final_cycles
-}
+    #[cfg(target_arch = "xtensa")]
+    fn cycles_per_ms() -> u32 {
+        use core::sync::atomic::{AtomicU32, Ordering};
 
-#[cfg(target_arch = "xtensa")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn prime_clock_hz_get() -> u32 {
-    240_000_000
-}
+        static CYCLES_PER_MS: AtomicU32 = AtomicU32::new(0);
+        let cached = CYCLES_PER_MS.load(Ordering::Relaxed);
+        if cached != 0 {
+            return cached;
+        }
+
+        // Calibrate against ROM delay to match boards running at lower CPU clocks (e.g., 80MHz).
+        let start = unsafe { xthal_get_ccount() };
+        unsafe { ets_delay_us(1000) }; // 1 ms reference
+        let delta = unsafe { xthal_get_ccount() }.wrapping_sub(start);
+        let fallback = unsafe { prime_clock_hz_get().max(1) / 1000 };
+        // Trust the measurement so slower clock configs (e.g., 80MHz) don't get overestimated.
+        let final_cycles = if delta == 0 { fallback } else { delta };
+        CYCLES_PER_MS.store(final_cycles, Ordering::Relaxed);
+        final_cycles
+    }
+
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_clock_hz_get() -> u32 {
+        240_000_000
+    }
     #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, len: usize) -> *mut u8 {
@@ -1408,7 +1519,6 @@ pub unsafe extern "C" fn prime_clock_hz_get() -> u32 {
             core::hint::spin_loop();
         }
     }
-
 }
 
 #[cfg(any(
@@ -1422,20 +1532,24 @@ pub use embedded::*;
     all(target_arch = "riscv32", target_os = "none"),
 )))]
 mod host {
+    use std::collections::BTreeMap;
     use std::ffi::c_void;
     use std::io::{self, Write};
     use std::slice;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::collections::BTreeMap;
     use std::sync::mpsc;
     use std::sync::{Arc, Condvar, Mutex};
     use std::thread;
 
     pub use super::embedded::{
-        PrimeHandle, PrimeStatus, PrimeTag, TYPE_BOOL, TYPE_FLOAT32, TYPE_FLOAT64, TYPE_INT16,
-        TYPE_INT32, TYPE_INT64, TYPE_INT8, TYPE_ISIZE, TYPE_RUNE, TYPE_STRING, TYPE_UINT16,
-        TYPE_UINT32, TYPE_UINT64, TYPE_UINT8, TYPE_USIZE,
+        PrimeHandle, PrimeStatus, PrimeTag, TYPE_BOOL, TYPE_FLOAT32, TYPE_FLOAT64, TYPE_INT8,
+        TYPE_INT16, TYPE_INT32, TYPE_INT64, TYPE_ISIZE, TYPE_RUNE, TYPE_STRING, TYPE_UINT8,
+        TYPE_UINT16, TYPE_UINT32, TYPE_UINT64, TYPE_USIZE,
     };
+
+    unsafe extern "C" {
+        fn fflush(stream: *mut std::ffi::c_void) -> i32;
+    }
 
     #[derive(Clone, Debug)]
     enum HostValue {
@@ -1499,17 +1613,16 @@ mod host {
         }
         let (tx, rx) = mpsc::channel::<PrimeHandle>();
         let sender = to_handle(HostHandle::new(HostValue::Sender(tx)));
-        let receiver = to_handle(HostHandle::new(HostValue::Receiver(Arc::new(Mutex::new(rx)))));
+        let receiver = to_handle(HostHandle::new(HostValue::Receiver(Arc::new(Mutex::new(
+            rx,
+        )))));
         sender_out.write(sender);
         receiver_out.write(receiver);
         PrimeStatus::Ok
     }
 
     #[unsafe(export_name = "prime_send")]
-    pub unsafe extern "C" fn prime_send(
-        sender: PrimeHandle,
-        value: PrimeHandle,
-    ) -> PrimeStatus {
+    pub unsafe extern "C" fn prime_send(sender: PrimeHandle, value: PrimeHandle) -> PrimeStatus {
         if sender.0.is_null() {
             return PrimeStatus::Invalid;
         }
@@ -1737,8 +1850,8 @@ mod host {
         }
         let data = &*(map.0 as *const HostHandle);
         if let HostValue::Map(entries) = &data.value {
-            let key = std::str::from_utf8(slice::from_raw_parts(key_ptr, key_len))
-                .unwrap_or_default();
+            let key =
+                std::str::from_utf8(slice::from_raw_parts(key_ptr, key_len)).unwrap_or_default();
             if let Some(val) = entries.get(key) {
                 value_out.write(prime_value_retain(*val));
                 return PrimeStatus::Ok;
@@ -2090,19 +2203,20 @@ mod host {
             return;
         }
         let data = &*(value.0 as *const HostHandle);
+        let _ = unsafe { fflush(std::ptr::null_mut()) };
         let mut stdout = io::stdout();
         let _ = match &data.value {
-            HostValue::Int(i) => writeln!(stdout, "{i}"),
-            HostValue::Float(f) => writeln!(stdout, "{f}"),
-            HostValue::Bool(b) => writeln!(stdout, "{b}"),
-            HostValue::Str(s) => writeln!(stdout, "{s}"),
-            HostValue::Enum { tag, .. } => writeln!(stdout, "<enum {tag}>"),
-            HostValue::Unit => writeln!(stdout, "()"),
-            HostValue::Task(_) => writeln!(stdout, "<task>"),
-            HostValue::Receiver(_) => writeln!(stdout, "<receiver>"),
-            HostValue::Sender(_) => writeln!(stdout, "<sender>"),
-            HostValue::Slice(_) => writeln!(stdout, "<slice>"),
-            HostValue::Map(_) => writeln!(stdout, "<map>"),
+            HostValue::Int(i) => write!(stdout, "{i}"),
+            HostValue::Float(f) => write!(stdout, "{f}"),
+            HostValue::Bool(b) => write!(stdout, "{b}"),
+            HostValue::Str(s) => write!(stdout, "{s}"),
+            HostValue::Enum { tag, .. } => write!(stdout, "<enum {tag}>"),
+            HostValue::Unit => write!(stdout, "()"),
+            HostValue::Task(_) => write!(stdout, "<task>"),
+            HostValue::Receiver(_) => write!(stdout, "<receiver>"),
+            HostValue::Sender(_) => write!(stdout, "<sender>"),
+            HostValue::Slice(_) => write!(stdout, "<slice>"),
+            HostValue::Map(_) => write!(stdout, "<map>"),
         };
         let _ = stdout.flush();
     }
@@ -2256,29 +2370,22 @@ mod host {
         let state_clone = state.clone();
         let rx_clone = rx.clone();
         thread::spawn(move || {
-            let value = match rx_clone.lock() {
-                Ok(guard) => match guard.try_recv() {
-                    Ok(handle) => handle,
-                    Err(mpsc::TryRecvError::Empty)
-                    | Err(mpsc::TryRecvError::Disconnected) => {
-                        let none = HostValue::Enum {
-                            tag: 0,
-                            values: Vec::new(),
-                        };
-                        to_handle(HostHandle::new(none))
-                    }
-                },
-                Err(_) => {
-                    let none = HostValue::Enum {
-                        tag: 0,
-                        values: Vec::new(),
-                    };
-                    to_handle(HostHandle::new(none))
-                }
+            let received = match rx_clone.lock() {
+                Ok(guard) => guard.recv().ok(),
+                Err(_) => None,
             };
+            let (tag, payloads) = match received {
+                Some(handle) => (0, vec![clone_value(handle)]),
+                None => (1, Vec::new()),
+            };
+            let enum_value = HostValue::Enum {
+                tag,
+                values: payloads,
+            };
+            let option_handle = to_handle(HostHandle::with_tag(enum_value, tag));
             let (lock, cv) = (&state_clone.result, &state_clone.done);
             if let Ok(mut guard) = lock.lock() {
-                *guard = Some(value);
+                *guard = Some(option_handle);
                 cv.notify_all();
             }
         });

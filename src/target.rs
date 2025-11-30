@@ -64,7 +64,10 @@ impl BuildTarget {
 }
 
 pub fn embedded_target_hint() -> String {
-    format!("{}, {}, {}", ESP32C3_TRIPLE, ESP32_XTENSA_TRIPLE, ESP32_XTENSA_ESPIDF_TRIPLE)
+    format!(
+        "{}, {}, {}",
+        ESP32C3_TRIPLE, ESP32_XTENSA_TRIPLE, ESP32_XTENSA_ESPIDF_TRIPLE
+    )
 }
 
 #[derive(Clone, Debug, Default)]

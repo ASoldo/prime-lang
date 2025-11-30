@@ -4,9 +4,9 @@ use crate::language::{
 };
 use crate::project::Package;
 use crate::runtime::{
+    async_runtime::AsyncRuntime,
     environment::{CleanupAction, DropRecord, Environment},
     error::{RuntimeError, RuntimeResult},
-    async_runtime::AsyncRuntime,
     platform::{platform, std_builtins_enabled, std_disabled_message},
     value::{
         BoxValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue, EnumValue,
@@ -14,7 +14,7 @@ use crate::runtime::{
         PointerValue, RangeValue, ReferenceValue, SliceValue, StructInstance, Value,
     },
 };
-use crate::target::{embedded_target_hint, BuildTarget};
+use crate::target::{BuildTarget, embedded_target_hint};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
@@ -567,11 +567,7 @@ impl Interpreter {
             self.declare_with_drop(&captured.name, captured.value.clone(), captured.mutable)?;
         }
         for (param, value) in closure.params.iter().zip(args.into_iter()) {
-            self.declare_with_drop(
-                &param.name,
-                value,
-                param.mutability == Mutability::Mutable,
-            )?;
+            self.declare_with_drop(&param.name, value, param.mutability == Mutability::Mutable)?;
         }
         let result = match &closure.body {
             ClosureBody::Block(block) => self.eval_block(block)?,
@@ -1178,9 +1174,7 @@ impl Interpreter {
                 args.insert(0, Value::Float(f));
                 Some(self.builtin_max(args))
             }
-            (Value::Slice(slice), "iter") => {
-                Some(self.builtin_iter(vec![Value::Slice(slice)]))
-            }
+            (Value::Slice(slice), "iter") => Some(self.builtin_iter(vec![Value::Slice(slice)])),
             (Value::Map(map), "iter") => Some(self.builtin_iter(vec![Value::Map(map)])),
             (Value::Map(map), "map_keys") => Some(self.builtin_map_keys(vec![Value::Map(map)])),
             (Value::Map(map), "map_values") => Some(self.builtin_map_values(vec![Value::Map(map)])),
@@ -1188,7 +1182,9 @@ impl Interpreter {
                 args.insert(0, Value::JoinHandle(handle));
                 Some(self.builtin_join(args))
             }
-            (Value::Iterator(iter), "next") => Some(self.builtin_iter_next(vec![Value::Iterator(iter)])),
+            (Value::Iterator(iter), "next") => {
+                Some(self.builtin_iter_next(vec![Value::Iterator(iter)]))
+            }
             (Value::Pointer(pointer), _) => {
                 let cloned = pointer.cell.lock().unwrap().clone();
                 let mut all_args = vec![cloned];
@@ -1427,7 +1423,10 @@ impl Interpreter {
             Value::Map(map) => {
                 let mut items = Vec::new();
                 for (key, value) in map.entries.lock().unwrap().iter() {
-                    items.push(Value::Tuple(vec![Value::String(key.clone()), value.clone()]));
+                    items.push(Value::Tuple(vec![
+                        Value::String(key.clone()),
+                        value.clone(),
+                    ]));
                 }
                 Ok(items)
             }
@@ -1990,11 +1989,8 @@ impl Interpreter {
                 Ok(vec![ok])
             }
             Err(err) => {
-                let err_val = self.instantiate_enum(
-                    "Result",
-                    "Err",
-                    vec![Value::String(err.to_string())],
-                )?;
+                let err_val =
+                    self.instantiate_enum("Result", "Err", vec![Value::String(err.to_string())])?;
                 Ok(vec![err_val])
             }
         }
@@ -2011,11 +2007,8 @@ impl Interpreter {
                 Ok(vec![ok])
             }
             Err(err) => {
-                let err_val = self.instantiate_enum(
-                    "Result",
-                    "Err",
-                    vec![Value::String(err.to_string())],
-                )?;
+                let err_val =
+                    self.instantiate_enum("Result", "Err", vec![Value::String(err.to_string())])?;
                 Ok(vec![err_val])
             }
         }
@@ -2558,12 +2551,7 @@ impl Interpreter {
         Ok(EvalOutcome::Value(values))
     }
 
-    fn declare_with_drop(
-        &mut self,
-        name: &str,
-        value: Value,
-        mutable: bool,
-    ) -> RuntimeResult<()> {
+    fn declare_with_drop(&mut self, name: &str, value: Value, mutable: bool) -> RuntimeResult<()> {
         self.env.declare(name, value.clone(), mutable)?;
         if !self.suppress_drop_schedule {
             self.schedule_drop_for_value(name, &value);
@@ -2603,12 +2591,12 @@ impl Interpreter {
     fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<EvalOutcome<Value>> {
         match expr {
             Expr::Identifier(ident) => {
-                let value = self
-                    .env
-                    .get(&ident.name)
-                    .ok_or_else(|| RuntimeError::UnknownSymbol {
-                        name: ident.name.clone(),
-                    })?;
+                let value =
+                    self.env
+                        .get(&ident.name)
+                        .ok_or_else(|| RuntimeError::UnknownSymbol {
+                            name: ident.name.clone(),
+                        })?;
                 if matches!(value, Value::Moved) {
                     return Err(RuntimeError::MovedValue {
                         name: ident.name.clone(),
@@ -2815,11 +2803,12 @@ impl Interpreter {
                     }),
                 }?;
                 let struct_name = struct_value.name.clone();
-                let field_value = struct_value.get_field(field).ok_or_else(|| {
-                    RuntimeError::UnknownSymbol {
-                        name: format!("{}::{}", struct_name, field),
-                    }
-                })?;
+                let field_value =
+                    struct_value
+                        .get_field(field)
+                        .ok_or_else(|| RuntimeError::UnknownSymbol {
+                            name: format!("{}::{}", struct_name, field),
+                        })?;
                 Ok(EvalOutcome::Value(field_value))
             }
             Expr::StructLiteral { name, fields, .. } => self.instantiate_struct(name, fields),
@@ -2908,7 +2897,10 @@ impl Interpreter {
                             }
                         }
                         BlockEval::Flow(FlowSignal::Propagate(value)) => Err(RuntimeError::Panic {
-                            message: format!("async task encountered {}", flow_name(&FlowSignal::Propagate(value.clone()))),
+                            message: format!(
+                                "async task encountered {}",
+                                flow_name(&FlowSignal::Propagate(value.clone()))
+                            ),
                         }),
                         BlockEval::Flow(flow) => Err(RuntimeError::Panic {
                             message: format!("async task exited with {}", flow_name(&flow)),
@@ -2923,7 +2915,10 @@ impl Interpreter {
                     Ok(EvalOutcome::Value(result))
                 }
                 EvalOutcome::Value(other) => Err(RuntimeError::TypeMismatch {
-                    message: format!("`await` expects a Task, found {}", self.describe_value(&other)),
+                    message: format!(
+                        "`await` expects a Task, found {}",
+                        self.describe_value(&other)
+                    ),
                 }),
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
@@ -3928,7 +3923,6 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
         FlowSignal::Propagate(_) => "error propagation",
     }
 }
-
 
 #[cfg(test)]
 mod tests {

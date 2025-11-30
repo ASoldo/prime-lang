@@ -243,9 +243,7 @@ impl BuildJoinHandle {
         }
     }
 
-    pub fn into_outcome(
-        self,
-    ) -> Result<BuildJoinOutcome, String> {
+    pub fn into_outcome(self) -> Result<BuildJoinOutcome, String> {
         match self.state {
             BuildJoinState::Pending(handle) => {
                 let thread = handle
@@ -309,18 +307,35 @@ pub struct BuildEvaluation {
 #[derive(Clone, Debug)]
 pub enum BuildEffect {
     Out(Vec<BuildValue>),
-    ChannelCreate { id: u64 },
-    ChannelSend { id: u64, value: BuildValue },
-    ChannelClose { id: u64 },
-    FsExists { path: String, exists: bool },
-    FsRead { path: String, result: Result<String, String> },
+    ChannelCreate {
+        id: u64,
+    },
+    ChannelSend {
+        id: u64,
+        value: BuildValue,
+    },
+    ChannelClose {
+        id: u64,
+    },
+    FsExists {
+        path: String,
+        exists: bool,
+    },
+    FsRead {
+        path: String,
+        result: Result<String, String>,
+    },
     FsWrite {
         path: String,
         contents: String,
         result: Result<(), String>,
     },
-    NowMs { value: i128 },
-    SleepMs { millis: i128 },
+    NowMs {
+        value: i128,
+    },
+    SleepMs {
+        millis: i128,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -576,7 +591,10 @@ impl BuildInterpreter {
     fn format_moved_use(&self, name: &str, last_move: Option<Span>, action: &str) -> String {
         let mut message = format!("`{}` {}", name, action);
         if let Some(span) = last_move {
-            message.push_str(&format!("\n  move occurred at {}..{}", span.start, span.end));
+            message.push_str(&format!(
+                "\n  move occurred at {}..{}",
+                span.start, span.end
+            ));
         }
         message.push_str("\n  help: borrow a reference instead of moving if reuse is needed");
         message
@@ -863,8 +881,12 @@ impl BuildInterpreter {
             Expr::Async { block, .. } => {
                 // Execute synchronously for now; async scheduler will make this cooperative.
                 match self.eval_block(block)? {
-                    Flow::Value(value) => Ok(BuildValue::Task(Box::new(BuildTask { result: value }))),
-                    Flow::Return(value) => Ok(BuildValue::Task(Box::new(BuildTask { result: value }))),
+                    Flow::Value(value) => {
+                        Ok(BuildValue::Task(Box::new(BuildTask { result: value })))
+                    }
+                    Flow::Return(value) => {
+                        Ok(BuildValue::Task(Box::new(BuildTask { result: value })))
+                    }
                     Flow::Break | Flow::Continue => {
                         Err("control flow not allowed in async expression".into())
                     }
@@ -1484,17 +1506,15 @@ impl BuildInterpreter {
                     )),
                 }
             }
-            BuildValue::Boxed(inner) => {
-                match *inner {
-                    BuildValue::Struct { mut fields, .. } => fields
-                        .remove(field)
-                        .ok_or_else(|| format!("field `{}` not found in struct", field)),
-                    _ => Err(format!(
-                        "field access not supported for {} in build spawn",
-                        inner.kind()
-                    )),
-                }
-            }
+            BuildValue::Boxed(inner) => match *inner {
+                BuildValue::Struct { mut fields, .. } => fields
+                    .remove(field)
+                    .ok_or_else(|| format!("field `{}` not found in struct", field)),
+                _ => Err(format!(
+                    "field access not supported for {} in build spawn",
+                    inner.kind()
+                )),
+            },
             BuildValue::Map(mut entries) => entries
                 .remove(field)
                 .ok_or_else(|| format!("key `{}` not found in map", field)),
@@ -1680,11 +1700,9 @@ impl BuildInterpreter {
         for captured in captures.read().unwrap().iter() {
             let value = match captured.mode {
                 CaptureMode::Move => self.take_binding_value(&captured.name, captured.span)?,
-                CaptureMode::Reference { mutable } => {
-                    BuildValue::Reference(
-                        self.capture_reference_by_name(&captured.name, mutable, captured.span)?,
-                    )
-                }
+                CaptureMode::Reference { mutable } => BuildValue::Reference(
+                    self.capture_reference_by_name(&captured.name, mutable, captured.span)?,
+                ),
             };
             captured_values.push(BuildCaptured {
                 name: captured.name.clone(),
@@ -1991,7 +2009,12 @@ impl BuildInterpreter {
         Ok(())
     }
 
-    fn begin_shared_borrow(&mut self, name: &str, borrower: &str, span: Span) -> Result<(), String> {
+    fn begin_shared_borrow(
+        &mut self,
+        name: &str,
+        borrower: &str,
+        span: Span,
+    ) -> Result<(), String> {
         if self.active_mut_borrows.get(name).is_some() {
             let origin_span = self
                 .find_binding_mut(name)
@@ -3971,10 +3994,7 @@ mod tests {
             err.contains("first mutable borrow"),
             "expected borrower information, got {err}"
         );
-        assert!(
-            err.contains("10..14"),
-            "expected borrower span, got {err}"
-        );
+        assert!(err.contains("10..14"), "expected borrower span, got {err}");
         assert!(
             err.contains("binding declared at 2..6"),
             "expected origin span, got {err}"

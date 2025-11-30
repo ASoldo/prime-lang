@@ -194,6 +194,100 @@ fn channel_demo_build_matches_run_output() {
 }
 
 #[test]
+fn async_recv_task_build_matches_run_output() {
+    let workspace = tempdir().expect("temp workspace");
+    let root_dir = workspace.path();
+    let build_name = "async_channel_parity";
+
+    // minimal package manifest with core dependency so prelude is available
+    let manifest = format!(
+        r#"
+manifest_version = "3"
+
+[package]
+name = "async_bin"
+version = "0.1.0"
+
+[dependencies]
+core = {{ name = "core", path = "{}/workspace/core" }}
+
+[module]
+name = "async_bin::main"
+path = "main.prime"
+visibility = "pub"
+"#,
+        root().replace('\\', "\\\\")
+    );
+    fs::write(root_dir.join("prime.toml"), manifest).expect("write manifest");
+
+    fs::write(
+        root_dir.join("main.prime"),
+        r#"
+module async_bin::main;
+
+import core::types::prelude::{*};
+
+fn main() {
+  let (tx, rx) = channel[int32]();
+  let task = async {
+    let Option[int32] received = await recv_task(rx);
+    match received {
+      Some(v) => out(`got {v}`),
+      None => out("closed"),
+    }
+  };
+  let _ = send(tx, 7);
+  close(tx);
+  await task;
+}
+"#,
+    )
+    .expect("write program");
+
+    let artifact_dir = root_dir.join(".build.prime").join(build_name);
+    let _ = fs::remove_dir_all(&artifact_dir);
+
+    let status = Command::new(bin_path())
+        .current_dir(root_dir)
+        .args(["build", "main.prime", "--name", build_name])
+        .status()
+        .expect("build async_bin");
+    assert!(status.success(), "async_bin build failed");
+
+    let binary = artifact_dir.join(build_name);
+    let build_output = Command::new(&binary)
+        .output()
+        .expect("run compiled async_bin");
+    assert!(
+        build_output.status.success(),
+        "compiled async_bin failed: {}",
+        String::from_utf8_lossy(&build_output.stderr)
+    );
+
+    let run_output = Command::new(bin_path())
+        .current_dir(root_dir)
+        .args(["run", "main.prime"])
+        .output()
+        .expect("run interpreted async_bin");
+    assert!(
+        run_output.status.success(),
+        "interpreted async_bin failed: {}",
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let build_stdout = String::from_utf8_lossy(&build_output.stdout)
+        .trim()
+        .to_string();
+    let run_stdout = String::from_utf8_lossy(&run_output.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        build_stdout, run_stdout,
+        "build/run output mismatch for async recv_task"
+    );
+}
+
+#[test]
 fn git_dependency_is_loaded_via_manifest() {
     let workspace = tempdir().expect("workspace tempdir");
     let workspace_root = workspace.path().to_path_buf();
@@ -370,10 +464,7 @@ fn main() {
         .args(["run", file.to_str().unwrap()])
         .output()
         .expect("run move diag");
-    assert!(
-        !output.status.success(),
-        "move diag unexpectedly succeeded"
-    );
+    assert!(!output.status.success(), "move diag unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("cannot be moved because it is mutably borrowed"),

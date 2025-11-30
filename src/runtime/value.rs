@@ -98,7 +98,6 @@ impl ChannelSender {
             guard.take();
         }
     }
-
 }
 
 impl ChannelReceiver {
@@ -144,7 +143,6 @@ impl ChannelReceiver {
             guard.take();
         }
     }
-
 }
 
 #[derive(Clone, Debug)]
@@ -199,7 +197,12 @@ impl TaskValue {
 
     pub fn new_pair() -> (TaskValue, Arc<(Mutex<TaskState>, Condvar)>) {
         let state = Arc::new((Mutex::new(TaskState::default()), Condvar::new()));
-        (TaskValue { state: state.clone() }, state)
+        (
+            TaskValue {
+                state: state.clone(),
+            },
+            state,
+        )
     }
 
     pub fn with_state(state: Arc<(Mutex<TaskState>, Condvar)>) -> Self {

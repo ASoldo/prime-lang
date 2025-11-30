@@ -329,7 +329,9 @@ PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh"#,
         title: "Built-ins: fs, time, iterators",
         category: "Built-ins",
         summary: "Minimal stdlib-style helpers for file I/O, timing, and iterator ergonomics. All work in run/build and are recorded for deterministic build-mode snapshots.",
-        aliases: &["fs", "time", "iter", "iterator", "sleep_ms", "now_ms", "fs_read", "fs_write"],
+        aliases: &[
+            "fs", "time", "iter", "iterator", "sleep_ms", "now_ms", "fs_read", "fs_write",
+        ],
         sections: &[
             TopicSection {
                 title: "File I/O",

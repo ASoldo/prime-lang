@@ -259,18 +259,10 @@ impl RuntimeAbi {
         );
         let (prime_value_tag, prime_value_tag_ty) =
             declare_fn(module, "prime_value_tag", status_type, &mut [handle_type]);
-        let (prime_value_as_int, prime_value_as_int_ty) = declare_fn(
-            module,
-            "prime_value_as_int",
-            int_type,
-            &mut [handle_type],
-        );
-        let (prime_value_as_bool, prime_value_as_bool_ty) = declare_fn(
-            module,
-            "prime_value_as_bool",
-            bool_type,
-            &mut [handle_type],
-        );
+        let (prime_value_as_int, prime_value_as_int_ty) =
+            declare_fn(module, "prime_value_as_int", int_type, &mut [handle_type]);
+        let (prime_value_as_bool, prime_value_as_bool_ty) =
+            declare_fn(module, "prime_value_as_bool", bool_type, &mut [handle_type]);
         let (prime_value_as_float, prime_value_as_float_ty) = declare_fn(
             module,
             "prime_value_as_float",
@@ -383,18 +375,10 @@ impl RuntimeAbi {
             status_type,
             &mut [handle_type, handle_type],
         );
-        let (prime_sleep_task, prime_sleep_task_ty) = declare_fn(
-            module,
-            "prime_sleep_task",
-            handle_type,
-            &mut [int_type],
-        );
-        let (prime_recv_task, prime_recv_task_ty) = declare_fn(
-            module,
-            "prime_recv_task",
-            handle_type,
-            &mut [handle_type],
-        );
+        let (prime_sleep_task, prime_sleep_task_ty) =
+            declare_fn(module, "prime_sleep_task", handle_type, &mut [int_type]);
+        let (prime_recv_task, prime_recv_task_ty) =
+            declare_fn(module, "prime_recv_task", handle_type, &mut [handle_type]);
         let (prime_print, prime_print_ty) =
             declare_fn(module, "prime_print", void_type, &mut [handle_type]);
         let (prime_read_value, prime_read_value_ty) = declare_fn(
@@ -435,16 +419,21 @@ impl RuntimeAbi {
             module,
             "prime_pin_mode",
             status_type,
-            &mut [LLVMInt32TypeInContext(context), LLVMInt32TypeInContext(context)],
+            &mut [
+                LLVMInt32TypeInContext(context),
+                LLVMInt32TypeInContext(context),
+            ],
         );
         let (prime_digital_write, prime_digital_write_ty) = declare_fn(
             module,
             "prime_digital_write",
             status_type,
-            &mut [LLVMInt32TypeInContext(context), LLVMInt32TypeInContext(context)],
+            &mut [
+                LLVMInt32TypeInContext(context),
+                LLVMInt32TypeInContext(context),
+            ],
         );
-        let (prime_now_ms, prime_now_ms_ty) =
-            declare_fn(module, "prime_now_ms", int_type, &mut []);
+        let (prime_now_ms, prime_now_ms_ty) = declare_fn(module, "prime_now_ms", int_type, &mut []);
 
         Self {
             handle_type,

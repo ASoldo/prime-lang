@@ -5,7 +5,7 @@ use crate::language::{
     span::Span,
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
-use crate::target::{embedded_target_hint, BuildTarget};
+use crate::target::{BuildTarget, embedded_target_hint};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -983,10 +983,7 @@ impl Checker {
                         self.errors.push(TypeError::new(
                             &candidate.module_path,
                             param_ty.span,
-                            format!(
-                                "`drop` expects type `&mut {}`",
-                                block.target
-                            ),
+                            format!("`drop` expects type `&mut {}`", block.target),
                         ));
                     }
                 },
@@ -994,10 +991,7 @@ impl Checker {
                     self.errors.push(TypeError::new(
                         &candidate.module_path,
                         param_ty.span,
-                        format!(
-                            "`drop` expects type `&mut {}`",
-                            block.target
-                        ),
+                        format!("`drop` expects type `&mut {}`", block.target),
                     ));
                 }
             }
@@ -1917,9 +1911,9 @@ impl Checker {
                 Some(handle_ty)
             }
             Expr::Async { block, span: _ } => {
-                let inner =
-                    self.check_block(module, block, returns, env)
-                        .unwrap_or(TypeExpr::Unit);
+                let inner = self
+                    .check_block(module, block, returns, env)
+                    .unwrap_or(TypeExpr::Unit);
                 Some(make_task_type(inner))
             }
             Expr::Await { expr, span } => {
@@ -1939,7 +1933,10 @@ impl Checker {
                 match awaited {
                     Some(TypeExpr::Named(name, args)) if name == "Task" => {
                         if let Some(inner) = args.get(0) {
-                            if matches!(inner, TypeExpr::Reference { .. } | TypeExpr::Pointer { .. }) {
+                            if matches!(
+                                inner,
+                                TypeExpr::Reference { .. } | TypeExpr::Pointer { .. }
+                            ) {
                                 self.errors.push(
                                     TypeError::new(
                                         &module.path,
@@ -1957,12 +1954,8 @@ impl Checker {
                     }
                     Some(other) => {
                         self.errors.push(
-                            TypeError::new(
-                                &module.path,
-                                *span,
-                                "`await` expects a Task value",
-                            )
-                            .with_help(format!("found `{}`", other.canonical_name())),
+                            TypeError::new(&module.path, *span, "`await` expects a Task value")
+                                .with_help(format!("found `{}`", other.canonical_name())),
                         );
                         None
                     }
@@ -3373,9 +3366,7 @@ impl Checker {
                     return None;
                 }
                 let map_ty = self.check_expression(module, &args[0], None, returns, env);
-                if let Some((_, value_ty)) =
-                    self.expect_map_type(module, span, map_ty.as_ref())
-                {
+                if let Some((_, value_ty)) = self.expect_map_type(module, span, map_ty.as_ref()) {
                     return Some(TypeExpr::Slice(Box::new(value_ty)));
                 }
                 None
@@ -3514,8 +3505,9 @@ impl Checker {
                     return None;
                 }
                 let value_ty = self.check_expression(module, &args[0], None, returns, env);
-                let value_kind =
-                    value_ty.as_ref().and_then(|ty| numeric_kind(ty, self.pointer_bits()));
+                let value_kind = value_ty
+                    .as_ref()
+                    .and_then(|ty| numeric_kind(ty, self.pointer_bits()));
                 if value_kind.is_none() {
                     self.errors.push(
                         TypeError::new(
@@ -4543,9 +4535,8 @@ impl Checker {
                 | "ptr_mut"
                 | "cast"
                 | "assert_eq"
-            | "panic"
-        )
-            || self.is_embedded_builtin(name)
+                | "panic"
+        ) || self.is_embedded_builtin(name)
     }
 
     fn is_std_only_builtin(&self, name: &str) -> bool {
@@ -5085,12 +5076,18 @@ impl Checker {
             (Some(NumericKind::Float(_, bits)), Some(_))
             | (Some(_), Some(NumericKind::Float(_, bits))) => Some(float_kind(bits)),
             (Some(NumericKind::Signed(_, left_bits)), Some(NumericKind::Signed(_, right_bits))) => {
-                Some(signed_kind_for_bits(left_bits.max(right_bits), pointer_bits))
+                Some(signed_kind_for_bits(
+                    left_bits.max(right_bits),
+                    pointer_bits,
+                ))
             }
             (
                 Some(NumericKind::Unsigned(_, left_bits)),
                 Some(NumericKind::Unsigned(_, right_bits)),
-            ) => Some(unsigned_kind_for_bits(left_bits.max(right_bits), pointer_bits)),
+            ) => Some(unsigned_kind_for_bits(
+                left_bits.max(right_bits),
+                pointer_bits,
+            )),
             _ => {
                 self.emit_signedness_mismatch(module, span, left_ty, right_ty);
                 None
@@ -5608,7 +5605,10 @@ impl FnEnv {
                     name, first.borrower
                 ));
                 let origin_text = if let Some(origin) = self.binding_origin(name) {
-                    format!(" (binding declared at bytes {}..{})", origin.start, origin.end)
+                    format!(
+                        " (binding declared at bytes {}..{})",
+                        origin.start, origin.end
+                    )
                 } else {
                     String::new()
                 };
@@ -5766,7 +5766,10 @@ impl FnEnv {
                     target, first.borrower
                 );
                 let origin_text = if let Some(origin) = self.binding_origin(target) {
-                    format!(" (binding declared at bytes {}..{})", origin.start, origin.end)
+                    format!(
+                        " (binding declared at bytes {}..{})",
+                        origin.start, origin.end
+                    )
                 } else {
                     String::new()
                 };

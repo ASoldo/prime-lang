@@ -3,12 +3,16 @@
 
 use crate::runtime::{
     error::RuntimeResult,
-    value::{make_option_value, TaskState, TaskValue, TryRecvOutcome, Value},
+    value::{TaskState, TaskValue, TryRecvOutcome, Value, make_option_value},
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+fn debug_enabled() -> bool {
+    std::env::var_os("PRIME_DEBUG_ASYNC").is_some()
+}
 
 #[derive(Clone, Default)]
 pub struct AsyncRuntime {
@@ -55,11 +59,13 @@ impl AsyncRuntime {
         F: FnOnce() -> RuntimeResult<Value> + Send + 'static,
     {
         let (task, state) = TaskValue::new_pair();
+        if debug_enabled() {
+            eprintln!("[prime-debug] async_runtime spawn task");
+        }
         self.enqueue(TaskHandle {
             state: state.clone(),
             runnable: Some(Box::new(f)),
         });
-        self.drive_ready();
         task
     }
 
@@ -89,11 +95,11 @@ impl AsyncRuntime {
     }
 
     /// Create a task that resolves when the channel yields a value or closes.
-    pub fn recv_task(
-        &self,
-        receiver: crate::runtime::value::ChannelReceiver,
-    ) -> TaskValue {
+    pub fn recv_task(&self, receiver: crate::runtime::value::ChannelReceiver) -> TaskValue {
         let (task, state) = TaskValue::new_pair();
+        if debug_enabled() {
+            eprintln!("[prime-debug] async_runtime recv_task registered");
+        }
         let mut waiters = self.shared.channel_waiters.lock().unwrap();
         waiters.push(ChannelWaiter { state, receiver });
         drop(waiters);
@@ -153,7 +159,9 @@ impl AsyncRuntime {
             let mut ready = self.shared.ready.lock().unwrap();
             ready.pop_front()
         };
-        let Some(mut handle) = maybe_handle else { return false };
+        let Some(mut handle) = maybe_handle else {
+            return false;
+        };
         if let Some(runnable) = handle.runnable.take() {
             let state = handle.state.clone();
             let result = runnable();
@@ -190,11 +198,17 @@ impl AsyncRuntime {
                 TryRecvOutcome::Item(v) => {
                     let handle = waiters.remove(i);
                     TaskValue::store_result(&handle.state, Ok(make_option_value(Some(v))));
+                    if debug_enabled() {
+                        eprintln!("[prime-debug] async_runtime channel woke with item");
+                    }
                     progressed = true;
                 }
                 TryRecvOutcome::Closed => {
                     let handle = waiters.remove(i);
                     TaskValue::store_result(&handle.state, Ok(make_option_value(None)));
+                    if debug_enabled() {
+                        eprintln!("[prime-debug] async_runtime channel closed wake");
+                    }
                     progressed = true;
                 }
                 TryRecvOutcome::Pending => {
@@ -209,13 +223,20 @@ impl AsyncRuntime {
     pub fn block_on(&self, task: &TaskValue) -> RuntimeResult<Value> {
         // Fast path: already done.
         if task.is_finished() {
-            return task.join().map_err(|msg| crate::runtime::error::RuntimeError::Panic { message: msg });
+            return task
+                .join()
+                .map_err(|msg| crate::runtime::error::RuntimeError::Panic { message: msg });
         }
         // Drive until finished.
         loop {
             self.drive_ready();
             if task.is_finished() {
-                return task.join().map_err(|msg| crate::runtime::error::RuntimeError::Panic { message: msg });
+                if debug_enabled() {
+                    eprintln!("[prime-debug] async_runtime task finished");
+                }
+                return task
+                    .join()
+                    .map_err(|msg| crate::runtime::error::RuntimeError::Panic { message: msg });
             }
             if let Some(deadline) = self.next_deadline() {
                 let now = Instant::now();
@@ -225,9 +246,11 @@ impl AsyncRuntime {
             } else {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            if debug_enabled() {
+                eprintln!("[prime-debug] async_runtime block_on tick");
+            }
         }
     }
-
 }
 
 #[cfg(test)]

@@ -260,11 +260,7 @@ impl PackageManifest {
 
     pub fn module_no_std(&self, name: &str) -> bool {
         let name = canonical_module_name(name);
-        if let Some(entry) = self
-            .modules
-            .get(&name)
-            .or_else(|| self.tests.get(&name))
-        {
+        if let Some(entry) = self.modules.get(&name).or_else(|| self.tests.get(&name)) {
             return entry.no_std;
         }
         for dep in &self.dependency_manifests {
@@ -449,10 +445,7 @@ fn parse_build_settings(value: &Value) -> Option<BuildSettings> {
         .get("build")
         .and_then(|build| build.clone().try_into().ok())
         .unwrap_or_default();
-    if raw.target.is_none()
-        && raw.platform.is_none()
-        && raw.toolchain.is_none()
-    {
+    if raw.target.is_none() && raw.platform.is_none() && raw.toolchain.is_none() {
         return None;
     }
     let toolchain_raw = raw.toolchain.unwrap_or_default();

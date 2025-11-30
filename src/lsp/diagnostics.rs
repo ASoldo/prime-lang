@@ -1,3 +1,4 @@
+use crate::target::BuildOptions;
 use crate::{
     language::{
         ast::{ImportPath, Module, Program},
@@ -16,7 +17,6 @@ use crate::{
         manifest::{ModuleVisibility, PackageManifest, manifest_key_for},
     },
 };
-use crate::target::BuildOptions;
 use serde_json::json;
 use std::{
     collections::{HashSet, VecDeque},

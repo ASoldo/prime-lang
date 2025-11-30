@@ -3,10 +3,10 @@ mod language;
 mod lsp;
 mod project;
 mod runtime;
+mod target;
 #[cfg(test)]
 mod tests;
 mod tools;
-mod target;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use language::{
@@ -14,10 +14,7 @@ use language::{
     span::Span,
 };
 use language::{
-    compiler::Compiler,
-    macro_expander,
-    parser::parse_module,
-    typecheck,
+    compiler::Compiler, macro_expander, parser::parse_module, typecheck,
     typecheck::TypecheckOptions,
 };
 use miette::NamedSource;
@@ -27,12 +24,13 @@ use project::{
     load_package, load_package_with_manifest, manifest::PackageManifest,
     manifest::canonical_module_name, manifest::manifest_key_for, warn_manifest_drift,
 };
-use runtime::{platform, Interpreter};
+use runtime::{Interpreter, platform};
 use std::{
     env, fs, io,
     path::{Component, Path, PathBuf},
     process::Command,
 };
+use target::{BuildOptions, BuildTarget};
 use toml::Value;
 use toml_edit::{
     self, Array, DocumentMut, InlineTable, Item as TomlItem, Table as TomlEditTable,
@@ -46,7 +44,6 @@ use tools::{
     formatter::format_module,
     lint::run_lint,
 };
-use target::{BuildOptions, BuildTarget};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -479,6 +476,7 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool) {
 }
 
 fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let runtime_dir = match target.triple() {
         Some(triple) => PathBuf::from(".build.prime/runtime").join(triple),
         None => PathBuf::from(".build.prime/runtime").join("host"),
@@ -495,9 +493,15 @@ fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
         .arg("staticlib")
         .arg("--edition")
         .arg("2021")
-        .arg("src/runtime/abi.rs")
+        .arg(manifest_dir.join("src/runtime/abi.rs"))
         .arg("-o")
         .arg(&output_lib);
+    if env::var_os("PRIME_DEBUG_RT_ABI").is_some() {
+        eprintln!(
+            "[prime-debug] runtime ABI build: manifest_dir={:?} cmd={:?}",
+            manifest_dir, cmd
+        );
+    }
     if let Some(triple) = target.triple() {
         cmd.arg("--target").arg(triple);
     }
@@ -510,15 +514,25 @@ fn compile_runtime_abi(target: &BuildTarget) -> Result<PathBuf, String> {
     Ok(output_lib)
 }
 
-fn compile_runtime_abi_with_cargo(target: &BuildTarget, runtime_dir: &Path) -> Result<PathBuf, String> {
+fn compile_runtime_abi_with_cargo(
+    target: &BuildTarget,
+    runtime_dir: &Path,
+) -> Result<PathBuf, String> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let triple = target
         .triple()
         .ok_or_else(|| "embedded runtime build requires a target triple".to_string())?;
     let cargo_dir = runtime_dir.join("cargo");
     fs::create_dir_all(&cargo_dir)
         .map_err(|err| format!("failed to create runtime cargo dir: {err}"))?;
-    let abi_path = fs::canonicalize("src/runtime/abi.rs")
+    let abi_path = fs::canonicalize(manifest_dir.join("src/runtime/abi.rs"))
         .map_err(|err| format!("failed to canonicalize src/runtime/abi.rs: {err}"))?;
+    if env::var_os("PRIME_DEBUG_RT_ABI").is_some() {
+        eprintln!(
+            "[prime-debug] runtime ABI cargo build: manifest_dir={:?} abi_path={:?}",
+            manifest_dir, abi_path
+        );
+    }
     let manifest = format!(
         r#"[package]
 name = "runtime-abi"
@@ -567,7 +581,11 @@ crate-type = ["staticlib"]
         "CARGO_TARGET_{}_LINKER",
         triple
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+            .map(|c| if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            })
             .collect::<String>()
     );
     let default_linker = if triple.contains("xtensa") {
@@ -577,7 +595,10 @@ crate-type = ["staticlib"]
     } else {
         "gcc"
     };
-    cmd.env(linker_var, env::var("PRIME_RUNTIME_LINKER").unwrap_or_else(|_| default_linker.into()));
+    cmd.env(
+        linker_var,
+        env::var("PRIME_RUNTIME_LINKER").unwrap_or_else(|_| default_linker.into()),
+    );
     let status = cmd
         .status()
         .map_err(|err| format!("failed to spawn cargo for runtime ABI: {err}"))?;
@@ -659,7 +680,12 @@ fn configure_embedded_env(options: &BuildOptions) {
             unsafe { env::set_var("PATH", parts.join(":")) };
         }
         if env::var("CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER").is_err() {
-            unsafe { env::set_var("CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER", "xtensa-esp32-elf-gcc") };
+            unsafe {
+                env::set_var(
+                    "CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER",
+                    "xtensa-esp32-elf-gcc",
+                )
+            };
         }
     }
 
@@ -755,13 +781,13 @@ fn build_entry(
                 std::process::exit(1);
             }
             println!("[prime-debug] llc done -> {}", obj_path.display());
-    let runtime_lib = match compile_runtime_abi(&build_options.target) {
-        Ok(path) => Some(path),
-        Err(err) => {
-            eprintln!("Failed to compile runtime ABI: {err}");
-            std::process::exit(1);
-        }
-    };
+            let runtime_lib = match compile_runtime_abi(&build_options.target) {
+                Ok(path) => Some(path),
+                Err(err) => {
+                    eprintln!("Failed to compile runtime ABI: {err}");
+                    std::process::exit(1);
+                }
+            };
             println!("[prime-debug] runtime lib {:?}", runtime_lib);
             let bin_path = artifact_dir.join(name);
             if let Err(err) =
@@ -989,16 +1015,22 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
                 .ok()
                 .map(|p| format!("{p}/bin/llc"))
                 .or_else(|| {
-                    env::var("HOME").ok().map(|home| {
-                        format!("{home}/.espressif/tools/esp-clang/esp-clang/bin/llc")
-                    })
+                    env::var("HOME")
+                        .ok()
+                        .map(|home| format!("{home}/.espressif/tools/esp-clang/esp-clang/bin/llc"))
                 })
         });
         Command::new(llc_path.unwrap_or_else(|| "llc".to_string()))
     } else {
         Command::new("llc")
     };
-    cmd.arg("-relocation-model=pic")
+    // Xtensa toolchains typically build static images; PIC relocations are not supported.
+    let relocation_model = if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
+        "static"
+    } else {
+        "pic"
+    };
+    cmd.arg(format!("-relocation-model={relocation_model}"))
         .arg("-filetype=obj")
         .arg(ir_path)
         .arg("-o")
@@ -1019,7 +1051,9 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
             .ok()
             .and_then(|o| {
                 if o.status.success() {
-                    String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                    String::from_utf8(o.stdout)
+                        .ok()
+                        .map(|s| s.trim().to_string())
                 } else {
                     None
                 }
@@ -1069,7 +1103,11 @@ fn maybe_objcopy_and_flash(bin_path: &Path, build_options: &BuildOptions) -> Res
     // Prefer generating a proper ESP image header with elf2image; fall back to objcopy if unavailable.
     let elf2image_output = Command::new(&esptool)
         .arg("--chip")
-        .arg(if build_options.target.is_esp32c3() { "esp32c3" } else { "esp32" })
+        .arg(if build_options.target.is_esp32c3() {
+            "esp32c3"
+        } else {
+            "esp32"
+        })
         .arg("elf2image")
         .arg("--flash_mode")
         .arg("dio")
@@ -1123,7 +1161,9 @@ fn resolve_esptool(build_options: &BuildOptions) -> String {
 
 fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), String> {
     let esptool = resolve_esptool(build_options);
-    let chip = if build_options.target.is_esp32_xtensa() || build_options.target.is_esp32_xtensa_espidf() {
+    let chip = if build_options.target.is_esp32_xtensa()
+        || build_options.target.is_esp32_xtensa_espidf()
+    {
         "esp32"
     } else {
         "esp32c3"
@@ -1155,12 +1195,10 @@ fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), Str
         .arg("-z");
 
     // Include bootloader and partition table if present to avoid invalid header resets.
-    let default_bootloader =
-        PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
-            .join("esp/esp-idf/examples/get-started/blink/build/bootloader/bootloader.bin");
-    let default_partitions =
-        PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
-            .join("esp/esp-idf/examples/get-started/blink/build/partition_table/partition-table.bin");
+    let default_bootloader = PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
+        .join("esp/esp-idf/examples/get-started/blink/build/bootloader/bootloader.bin");
+    let default_partitions = PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
+        .join("esp/esp-idf/examples/get-started/blink/build/partition_table/partition-table.bin");
     let bootloader = env::var("PRIME_ESP_BOOTLOADER")
         .map(PathBuf::from)
         .unwrap_or(default_bootloader);
@@ -1241,7 +1279,10 @@ fn link_esp32(
         .ld_script
         .clone()
         .or_else(|| env::var("PRIME_RISCV_LD_SCRIPT").ok())
-        .ok_or_else(|| "No linker script set; configure build.toolchain.ld_script or PRIME_RISCV_LD_SCRIPT".to_string())?;
+        .ok_or_else(|| {
+            "No linker script set; configure build.toolchain.ld_script or PRIME_RISCV_LD_SCRIPT"
+                .to_string()
+        })?;
     let mut cmd = Command::new(cc);
     if build_options.target.is_esp32c3() {
         cmd.arg("-march=rv32imc").arg("-mabi=ilp32");
@@ -1251,7 +1292,8 @@ fn link_esp32(
         cmd.arg("-mlongcalls").arg("-Wl,-EL");
     }
     // Keep the Xtensa entry symbol so the image has a valid entry point.
-    cmd.arg("-Wl,-u,call_user_start_cpu0").arg("-Wl,-e,call_user_start_cpu0");
+    cmd.arg("-Wl,-u,call_user_start_cpu0")
+        .arg("-Wl,-e,call_user_start_cpu0");
     cmd.arg("-nostdlib");
     // Allow passing a sections.ld from ESP-IDF; include memory.ld before it.
     // If memory.ld is already in ld_flags, pull it out and order it before sections.ld.
@@ -1302,14 +1344,13 @@ fn link_esp32(
     if let Some(lib) = runtime_lib {
         cmd.arg(lib);
     }
-    // Minimal runtime: just pull in libgcc; avoid newlib/libc to sidestep syscall stubs.
+    // Minimal runtime: include libc for memset/memcpy and libgcc for compiler builtins.
+    cmd.arg("-lc");
     cmd.arg("-lgcc");
     if !extra_args.is_empty() {
         cmd.args(&extra_args);
     }
-    cmd.arg("-Wl,--gc-sections")
-        .arg("-o")
-        .arg(bin_path);
+    cmd.arg("-Wl,--gc-sections").arg("-o").arg(bin_path);
 
     let output = cmd
         .output()
