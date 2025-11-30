@@ -7321,16 +7321,6 @@ impl Compiler {
                 // Box borrows are represented by references/pointers to their inner cell; do not
                 // treat the box binding itself as a borrow origin to avoid double-counting moves.
             }
-            Value::Sender(sender) => {
-                if let Some(origin) = &sender.origin {
-                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
-                }
-            }
-            Value::Receiver(receiver) => {
-                if let Some(origin) = &receiver.origin {
-                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
-                }
-            }
             Value::FormatTemplate(template) => {
                 for segment in &template.segments {
                     if let FormatRuntimeSegment::Named(named) = segment {

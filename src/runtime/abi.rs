@@ -1033,12 +1033,7 @@ mod embedded {
             static LAST_CYCLES: AtomicU32 = AtomicU32::new(0);
             static ACCUM_MS: AtomicU32 = AtomicU32::new(0);
             static REM_CYCLES: AtomicU32 = AtomicU32::new(0);
-            let freq_hz = prime_clock_hz_get();
-            let cycles_per_ms = if freq_hz > 0 {
-                (freq_hz / 1000) as u32
-            } else {
-                240_000 // 240MHz default CPU clock on ESP32 classic
-            };
+            let cycles_per_ms = cycles_per_ms();
             let cycles: u32 = xthal_get_ccount();
             let last = LAST_CYCLES.swap(cycles, Ordering::Relaxed);
             let delta = cycles.wrapping_sub(last);
@@ -1070,18 +1065,39 @@ mod embedded {
     }
 
     // Minimal ROM bindings for timing.
-    #[cfg(target_arch = "xtensa")]
-    unsafe extern "C" {
-        fn ets_delay_us(us: u32);
-        fn ets_printf(fmt: *const u8, ...) -> i32;
-        fn xthal_get_ccount() -> u32;
+#[cfg(target_arch = "xtensa")]
+unsafe extern "C" {
+    fn ets_delay_us(us: u32);
+    fn ets_printf(fmt: *const u8, ...) -> i32;
+    fn xthal_get_ccount() -> u32;
+}
+
+#[cfg(target_arch = "xtensa")]
+fn cycles_per_ms() -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    static CYCLES_PER_MS: AtomicU32 = AtomicU32::new(0);
+    let cached = CYCLES_PER_MS.load(Ordering::Relaxed);
+    if cached != 0 {
+        return cached;
     }
 
-    #[cfg(target_arch = "xtensa")]
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn prime_clock_hz_get() -> u32 {
-        240_000_000
-    }
+    // Calibrate against ROM delay to match boards running at lower CPU clocks (e.g., 80MHz).
+    let start = unsafe { xthal_get_ccount() };
+    unsafe { ets_delay_us(1000) }; // 1 ms reference
+    let delta = unsafe { xthal_get_ccount() }.wrapping_sub(start);
+    let fallback = unsafe { prime_clock_hz_get().max(1) / 1000 };
+    // Trust the measurement so slower clock configs (e.g., 80MHz) don't get overestimated.
+    let final_cycles = if delta == 0 { fallback } else { delta };
+    CYCLES_PER_MS.store(final_cycles, Ordering::Relaxed);
+    final_cycles
+}
+
+#[cfg(target_arch = "xtensa")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prime_clock_hz_get() -> u32 {
+    240_000_000
+}
     #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, len: usize) -> *mut u8 {
@@ -1170,8 +1186,7 @@ mod embedded {
     #[cfg(target_arch = "xtensa")]
     fn calibrated_delay_ms(ms: u32) {
         // Simple busy loop calibrated off CPU frequency; avoids ROM deps.
-        let freq = unsafe { prime_clock_hz_get().max(1) };
-        let cycles_per_ms = freq / 1000;
+        let cycles_per_ms = cycles_per_ms();
         let total_cycles = cycles_per_ms.saturating_mul(ms);
         // Read current cycle count and spin until target is reached (handles wrap).
         let start = unsafe { xthal_get_ccount() };

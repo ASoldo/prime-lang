@@ -142,6 +142,58 @@ fn build_mode_in_preserves_values() {
 }
 
 #[test]
+fn channel_demo_build_matches_run_output() {
+    let build_name = "channel_demo_parity";
+    let root_dir = PathBuf::from(root());
+    let artifact_dir = root_dir.join(".build.prime").join(build_name);
+    let _ = fs::remove_dir_all(&artifact_dir);
+
+    let status = Command::new(bin_path())
+        .current_dir(&root_dir)
+        .args([
+            "build",
+            "workspace/demos/channel_demo/channel_demo.prime",
+            "--name",
+            build_name,
+        ])
+        .status()
+        .expect("build channel demo");
+    assert!(status.success(), "channel demo build failed");
+
+    let binary = artifact_dir.join(build_name);
+    let build_output = Command::new(&binary)
+        .output()
+        .expect("run compiled channel demo");
+    assert!(
+        build_output.status.success(),
+        "compiled channel demo failed: {}",
+        String::from_utf8_lossy(&build_output.stderr)
+    );
+
+    let run_output = Command::new(bin_path())
+        .current_dir(&root_dir)
+        .args(["run", "workspace/demos/channel_demo/channel_demo.prime"])
+        .output()
+        .expect("run interpreted channel demo");
+    assert!(
+        run_output.status.success(),
+        "interpreted channel demo failed: {}",
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let build_stdout = String::from_utf8_lossy(&build_output.stdout)
+        .trim()
+        .to_string();
+    let run_stdout = String::from_utf8_lossy(&run_output.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        build_stdout, run_stdout,
+        "build/run output mismatch for channel demo"
+    );
+}
+
+#[test]
 fn git_dependency_is_loaded_via_manifest() {
     let workspace = tempdir().expect("workspace tempdir");
     let workspace_root = workspace.path().to_path_buf();
