@@ -15,7 +15,7 @@ graph TD
   G -->|Link| H["Binary/ELF + runtime lib"]
   H --> J["Host run (native)"]
   H --> I["ESP32 Device<br/>(flash optional)"]
-  B -->|Manifests| J["workspace/*/prime.toml"]
+  B -->|Manifests| W["workspace/*/prime.toml"]
   D -->|Builtin FFI| K["Runtime ABI<br/>(src/runtime/abi.rs)"]
 ```
 
