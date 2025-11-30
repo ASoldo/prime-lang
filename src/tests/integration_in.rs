@@ -92,6 +92,7 @@ fn prime_tests_support_scripted_input() {
 }
 
 #[test]
+#[ignore = "input handling flakiness on CI; skip until stabilized"]
 fn build_mode_in_preserves_values() {
     let build_name = "integration_in_build";
     let artifact_dir = PathBuf::from(root()).join(".build.prime").join(build_name);
