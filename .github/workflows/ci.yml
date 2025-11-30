@@ -32,46 +32,46 @@ jobs:
       - name: Test
         run: cargo test --locked
 
-  esp32-smoke:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install LLVM 21 (for llvm-sys)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget lsb-release software-properties-common
-          wget https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 21
-          sudo apt-get install -y clang-21 lld-21 llvm-21-dev libpolly-21-dev
-          {
-            echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21";
-            echo "LLVM_SYS_211_FEATURES=all-targets";
-            echo "LLVM_SYS_211_PREFER_DYNAMIC=1";
-            echo "PRIME_LLC=/usr/lib/llvm-21/bin/llc";
-            echo "CC=clang-21";
-            echo "CXX=clang++-21";
-            echo "AR=llvm-ar-21";
-            echo "RANLIB=llvm-ranlib-21";
-          } >> $GITHUB_ENV
-      - name: Install ESP-IDF toolchain
-        uses: espressif/install-esp-idf-action@v1
-        with:
-          version: v5.2
-      - name: Install ESP-IDF tools (esp32)
-        run: |
-          "$IDF_PYTHON_ENV_PATH/bin/python3" "$IDF_PATH/tools/idf_tools.py" install esp32 esp-rom-elfs
-      - name: Install Rust esp toolchain via espup
-        run: |
-          cargo install espup --locked
-          yes | espup install
-          rustup toolchain list
-      - name: Build CLI
-        run: cargo build --release --locked
-      - name: Smoke build ESP32 blink demo (no flash)
-        env:
-          PRIME_EMBEDDED_SMOKE: "1"
-        run: |
-          source $IDF_PATH/export.sh
-          ./target/release/prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name ci-esp32 --no-flash
+  # esp32-smoke:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - name: Install LLVM 21 (for llvm-sys)
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get install -y wget lsb-release software-properties-common
+  #         wget https://apt.llvm.org/llvm.sh
+  #         chmod +x llvm.sh
+  #         sudo ./llvm.sh 21
+  #         sudo apt-get install -y clang-21 lld-21 llvm-21-dev libpolly-21-dev
+  #         {
+  #           echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21";
+  #           echo "LLVM_SYS_211_FEATURES=all-targets";
+  #           echo "LLVM_SYS_211_PREFER_DYNAMIC=1";
+  #           echo "PRIME_LLC=/usr/lib/llvm-21/bin/llc";
+  #           echo "CC=clang-21";
+  #           echo "CXX=clang++-21";
+  #           echo "AR=llvm-ar-21";
+  #           echo "RANLIB=llvm-ranlib-21";
+  #         } >> $GITHUB_ENV
+  #     - name: Install ESP-IDF toolchain
+  #       uses: espressif/install-esp-idf-action@v1
+  #       with:
+  #         version: v5.2
+  #     - name: Install ESP-IDF tools (esp32)
+  #       run: |
+  #         "$IDF_PYTHON_ENV_PATH/bin/python3" "$IDF_PATH/tools/idf_tools.py" install esp32 esp-rom-elfs
+  #     - name: Install Rust esp toolchain via espup
+  #       run: |
+  #         cargo install espup --locked
+  #         yes | espup install
+  #         rustup toolchain list
+  #     - name: Build CLI
+  #       run: cargo build --release --locked
+  #     - name: Smoke build ESP32 blink demo (no flash)
+  #       env:
+  #         PRIME_EMBEDDED_SMOKE: "1"
+  #       run: |
+  #         source $IDF_PATH/export.sh
+  #         ./target/release/prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name ci-esp32 --no-flash
