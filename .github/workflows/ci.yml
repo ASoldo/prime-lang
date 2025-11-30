@@ -13,9 +13,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install LLVM (for llvm-sys)
+        id: llvm
+        uses: KyleMayes/install-llvm-action@v1
+        with:
+          version: "21"
       - name: Build
+        env:
+          LLVM_SYS_211_PREFIX: ${{ steps.llvm.outputs.llvm-path }}
         run: cargo build --locked
       - name: Test
+        env:
+          LLVM_SYS_211_PREFIX: ${{ steps.llvm.outputs.llvm-path }}
         run: cargo test --locked
 
   esp32-smoke:
