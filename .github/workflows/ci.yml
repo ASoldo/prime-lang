@@ -21,6 +21,7 @@ jobs:
           chmod +x llvm.sh
           sudo ./llvm.sh 21
           echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> $GITHUB_ENV
+          echo "LLVM_STATIC=1" >> $GITHUB_ENV
       - name: Build
         run: cargo build --locked
       - name: Test
