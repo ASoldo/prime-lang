@@ -23,4 +23,4 @@ graph LR
 Highlights:
 - Interpreter uses its own in-process runtime; build mode only needs ABI shims plus values.
 - The same ABI signatures are declared in IR; linking picks the correct staticlib for the target.
-- Xtensa runtime uses ROM `ets_delay_us`/`ets_printf`, GPIO2 toggles, ring-buffered strings, and disables watchdogs once for the demo.
+- Xtensa runtime (no_std) now includes async tasks, channels, calibrated delays (busy loop), GPIO mux for common LED pins, ring-buffered strings, and disables watchdogs once for the demo.

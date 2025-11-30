@@ -80,6 +80,7 @@ Validated outputs (fresh run, current syntax):
 - `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
 - `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
 - `fs_demo.prime` / `time_demo.prime` / `iter_demo.prime` — minimal built-in samples for file I/O, timers, and iterator helpers.
+- `workspace/demos/esp32_blink` — ESP32 Xtensa no_std blink demo with async/await and calibrated delay; manifest includes toolchains and flash settings.
 
 ### Macros & Traceability
 

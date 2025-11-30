@@ -15,13 +15,19 @@ flowchart TD
   LLC --> OBJ["Object file (.o)"]
 
   subgraph Runtime Lib
-    ABI_SRC["src/runtime/abi.rs"] --> RT_LIB["libruntime_abi.a"]
+    ABI_SRC["src/runtime/abi.rs"] --> RT_LIB_HOST["libruntime_abi.a (host)"]
+    ABI_SRC --> RT_LIB_ESP["libruntime_abi.a (xtensa)"]
   end
 
-  OBJ --> LINK["Linker (gcc/xtensa-esp32-elf-gcc)"]
-  RT_LIB --> LINK
-  LINK --> BIN["Binary/ELF"]
-  BIN --> RUN["Run / Flash"]
+  OBJ --> LINK_HOST["Linker (host gcc/clang)"]
+  RT_LIB_HOST --> LINK_HOST
+  LINK_HOST --> BIN_HOST["Host binary"]
+  BIN_HOST --> RUN_HOST["Run on host"]
+
+  OBJ --> LINK_ESP["Linker (xtensa-esp32-elf-gcc)"]
+  RT_LIB_ESP --> LINK_ESP
+  LINK_ESP --> BIN_ESP["ESP32 ELF/bin"]
+  BIN_ESP --> RUN_ESP["Flash / run on device"]
 ```
 
 Key notes:

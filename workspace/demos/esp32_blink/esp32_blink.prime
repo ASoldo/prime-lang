@@ -10,6 +10,18 @@ pub enum Result[T, E] {
   Err(E),
 }
 
+fn channel_demo() {
+  let (tx, rx) = channel[int32]();
+  out("channel demo: sending 42");
+
+  let _ = send(tx, 42);
+  match recv(rx) {
+    Option::Some(v) => out(`channel recv: {v}`),
+    Option::None => out("channel closed before recv"),
+  }
+  close(tx);
+}
+
 fn main() {
   let int32 my_var = 5;
   out(`hello from esp32 blink demo and value is {my_var}`);
@@ -35,6 +47,7 @@ fn main() {
       digital_write(led, on_level);
       out("async blink: LED ON");
       delay_ms(1000);
+      channel_demo();
 
       let int32 off_level = if led_active_low {
         1

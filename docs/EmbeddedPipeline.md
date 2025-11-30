@@ -29,5 +29,5 @@ flowchart TD
 
 Notes:
 - Manifest supplies toolchain/env and linker scripts; defaults fall back to `~/.espressif`.
-- Runtime disables watchdogs once, uses ROM delay/printf, and ring-buffered prints.
-- `out(...)` supports strings/format strings/ints/bools with newline per call.
+- Runtime disables watchdogs once, uses a calibrated busy-loop delay for sleep, and ring-buffered prints.
+- `out(...)`, channels, async `sleep_task`/`recv_task`, and GPIO built-ins are supported in no_std for ESP32.

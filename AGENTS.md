@@ -13,8 +13,8 @@
     strings/ints/bools on embedded).
   - Tooling: interpreter and LLVM build with parity; formatter/lint/docs; LSP (hover/completion/diagnostics); CLI subcommands for
     run/build/lint/fmt/docs/init/add/test/expand.
-  - Embedded support: ESP32 Xtensa no_std runtime (GPIO2 blink demo), ROM delay/printf, ring-buffered prints, watchdog disable for
-    the demo, manifest-driven toolchains/scripts/flash.
+  - Embedded support: ESP32 Xtensa no_std runtime (GPIO2/4/5 mux, busy-loop delay, watchdog disable for demo), async/await +
+    channels with small static pools, ring-buffered prints, manifest-driven toolchains/scripts/flash.
 
   V1.0 suggestions (gap check)
 
@@ -29,7 +29,8 @@
         across targets (or documented deltas).
   4. Concurrency & async:
       - Clarify memory model and ordering guarantees for channels/threads; document determinism expectations.
-      - Async/await is being prototyped: interpreter runs async cooperatively with `sleep_task` and `recv_task` (blocking fallback for recv), typechecker rejects awaits that hold mutable borrows or reference/pointer types. Build mode still errors on async builtins; compiler emits a clear diagnostic. LLVM lowering/runtime ABI for async remains TODO.
+      - Async/await now emits in build mode and links in both host and ESP32 targets; embedded runtime uses calibrated delays and
+        snapshot recv (no wait queue) with small task/channel pools. Document limits and plan proper wait/poll queues.
   5. FFI & embedding:
       - Formalize the runtime ABI surface (host and embedded) with versioning; consider a small FFI for host builds.
       - Document stability guarantees for ABI symbols and target triples.

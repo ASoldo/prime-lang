@@ -14,6 +14,7 @@ graph TD
   E -->|IR-&gt;obj| G["LLC"]
   G -->|Link| H["Binary/ELF + runtime lib"]
   H --> I["ESP32 Device<br/>(flash optional)"]
+  H --> J["Host run (native)"]
   B -->|Manifests| J["workspace/*/prime.toml"]
   D -->|Builtin FFI| K["Runtime ABI<br/>(src/runtime/abi.rs)"]
 ```
@@ -87,8 +88,8 @@ Both modes share the same AST/type system; build mode records effects (e.g., `ou
 
 ## Embedded Runtime Highlights (src/runtime/abi.rs)
 
-- `no_std` Xtensa stubs: entry (`call_user_start_cpu0`), BSS/data init, GPIO2 setup, ROM delay/printf bindings.
-- `out(...)` support: strings, format strings, ints (constants), bools; each call newline-terminated.
+- `no_std` Xtensa runtime: entry (`call_user_start_cpu0`), BSS/data init, GPIO mux for common LED pins (2/4/5), calibrated busy-loop delays, ROM printf bindings.
+- `out(...)` plus channels and async tasks (`sleep_task`/`recv_task`) work in no_std; small static pools back channels/tasks.
 - Tiny ring buffers for string storage to avoid print loss in tight loops.
 - Watchdogs disabled once at boot for the demo (RTC + TIMG WDTs); remove if you need watchdog coverage.
 
