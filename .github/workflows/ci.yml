@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   host:
     runs-on: ubuntu-latest
@@ -21,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install ESP-IDF toolchain
-        uses: espressif/setup-esp-idf@v3
+        uses: espressif/setup-esp-idf@v4
         with:
           version: v5.2
           tools: esp-clang, xtensa-esp32-elf, esptool
