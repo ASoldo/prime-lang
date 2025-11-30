@@ -935,6 +935,28 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none"),
     ))]
+    #[unsafe(export_name = "prime_reference_read")]
+    pub unsafe extern "C" fn prime_reference_read(target: PrimeHandle) -> PrimeHandle {
+        target
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_reference_write")]
+    pub unsafe extern "C" fn prime_reference_write(
+        _target: PrimeHandle,
+        _value: PrimeHandle,
+    ) -> PrimeStatus {
+        // Embedded references are opaque; writes are not supported yet.
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_spawn")]
     pub unsafe extern "C" fn prime_spawn(
         entry: Option<unsafe extern "C" fn(arg: PrimeHandle) -> PrimeHandle>,

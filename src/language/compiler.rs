@@ -31,8 +31,10 @@ use llvm_sys::{
         LLVMBuildFRem, LLVMBuildFSub, LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2,
         LLVMBuildIntCast, LLVMBuildLoad2, LLVMBuildMul, LLVMBuildRet, LLVMBuildRetVoid,
         LLVMBuildSDiv, LLVMBuildSExt, LLVMBuildSIToFP, LLVMBuildSRem, LLVMBuildStore,
+        LLVMBuildSwitch, LLVMAddCase,
         LLVMBuildStructGEP2, LLVMBuildSub, LLVMConstInt, LLVMConstIntGetZExtValue, LLVMConstNull,
-        LLVMConstReal, LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext,
+        LLVMConstPointerNull, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
+        LLVMCreateBuilderInContext,
         LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext,
         LLVMFloatTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetElementType,
         LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetGlobalParent, LLVMGetInsertBlock,
@@ -122,6 +124,8 @@ pub struct Compiler {
     closure_value_type: LLVMTypeRef,
     closure_envs: Vec<(usize, LLVMValueRef)>,
     build_clock_ms: i128,
+    pending_runtime: Option<LLVMValueRef>,
+    force_runtime_handles: bool,
 }
 
 #[derive(Clone)]
@@ -410,13 +414,23 @@ impl ChannelReceiver {
     }
 
     fn recv(&self) -> Option<Value> {
+        let debug = env::var_os("PRIME_DEBUG_RECV").is_some();
         let (lock, cv) = &*self.inner;
         let mut guard = lock.lock().unwrap();
         loop {
             if let Some(v) = guard.queue.pop_front() {
+                if debug {
+                    eprintln!(
+                        "[prime-debug] recv -> Some({})",
+                        describe_value(&v)
+                    );
+                }
                 return Some(v);
             }
             if guard.closed {
+                if debug {
+                    eprintln!("[prime-debug] recv -> None (closed)");
+                }
                 return None;
             }
             guard = cv.wait(guard).unwrap();
@@ -1207,7 +1221,11 @@ impl Compiler {
     }
 
     fn evaluated(&mut self, value: Value) -> EvaluatedValue {
-        EvaluatedValue::from_value(value)
+        let mut evaluated = EvaluatedValue::from_value(value);
+        if let Some(handle) = self.pending_runtime.take() {
+            evaluated.set_runtime(handle);
+        }
+        evaluated
     }
 
     fn runtime_release(&mut self, handle: LLVMValueRef) {
@@ -1314,7 +1332,10 @@ impl Compiler {
     }
 
     fn runtime_handles_enabled(&self) -> bool {
-        !self.runtime_abi.handle_type.is_null()
+        if self.runtime_abi.handle_type.is_null() {
+            return false;
+        }
+        self.force_runtime_handles || env::var("PRIME_ENABLE_RT_HANDLES").is_ok()
     }
 
     fn await_runtime_task(
@@ -1472,6 +1493,8 @@ impl Compiler {
                 closure_value_type: ptr::null_mut(),
                 closure_envs: Vec::new(),
                 build_clock_ms: 0,
+                pending_runtime: None,
+                force_runtime_handles: false,
             };
             compiler.reset_module();
             compiler
@@ -1945,6 +1968,8 @@ impl Compiler {
             Self::log_rss("[prime-debug] compile_program/start", true);
         }
         self.reset_module();
+        self.force_runtime_handles = false;
+        self.pending_runtime = None;
         self.scopes.clear();
         self.active_mut_borrows.clear();
         self.borrow_frames.clear();
@@ -2004,6 +2029,9 @@ impl Compiler {
                 }
             }
         }
+        if env::var_os("PRIME_DEBUG_TRACE").is_some() {
+            eprintln!("[prime-debug] collected structs/enums/interfaces");
+        }
 
         // With interfaces/types present, register impls, functions, and consts.
         for module in &program.modules {
@@ -2025,6 +2053,9 @@ impl Compiler {
                     | Item::MacroInvocation(_) => {}
                 }
             }
+        }
+        if env::var_os("PRIME_DEBUG_TRACE").is_some() {
+            eprintln!("[prime-debug] registered impls/functions/consts");
         }
 
         let (main_module, main_fn) = program
@@ -2074,7 +2105,13 @@ impl Compiler {
         }
 
         self.module_stack.push(main_module.clone());
+        if env::var_os("PRIME_DEBUG_TRACE").is_some() {
+            eprintln!("[prime-debug] entering main body {}", main_module);
+        }
         let exec_result = self.execute_block_contents(body);
+        if env::var_os("PRIME_DEBUG_TRACE").is_some() {
+            eprintln!("[prime-debug] main body finished");
+        }
         self.module_stack.pop();
         match exec_result? {
             BlockEval::Value(_) => {}
@@ -4834,6 +4871,7 @@ impl Compiler {
             },
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
             Expr::Async { block, .. } => {
+                self.force_runtime_handles = true;
                 let mut locals = HashSet::new();
                 let mut free = HashSet::new();
                 self.collect_free_in_block(block, &mut locals, &mut free);
@@ -4841,7 +4879,9 @@ impl Compiler {
                 let task = TaskValue::deferred((**block).clone(), capture_names);
                 Ok(EvalOutcome::Value(Value::Task(Box::new(task)).into()))
             }
-            Expr::Await { expr, .. } => match self.emit_expression(expr)? {
+            Expr::Await { expr, .. } => {
+                self.force_runtime_handles = true;
+                match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => {
                     let concrete = value.into_value();
                     match concrete {
@@ -4856,7 +4896,8 @@ impl Compiler {
                     }
                 }
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-            },
+                }
+            }
             Expr::Spawn { expr, .. } => {
                 let experimental = env::var("PRIME_BUILD_PARALLEL")
                     .map(|v| v == "1")
@@ -5882,8 +5923,13 @@ impl Compiler {
                         }],
                         "enum_get",
                     );
-                    let mut bound = self.evaluated(Value::Unit);
-                    bound.set_runtime(field_handle);
+                    let reference = ReferenceValue {
+                        cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                        mutable: false,
+                        origin: None,
+                        handle: Some(field_handle),
+                    };
+                    let bound = self.evaluated(Value::Reference(reference));
                     self.insert_var(name, bound, false)?;
                 }
             }
@@ -5944,7 +5990,7 @@ impl Compiler {
             Pattern::Wildcard => Ok(true),
             Pattern::Identifier(name, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => {
+                    Value::Reference(reference) if reference.handle.is_none() => {
                         reference.cell.lock().unwrap().clone().into_value()
                     }
                     other => other.clone(),
@@ -5960,7 +6006,7 @@ impl Compiler {
                 ..
             } => {
                 let concrete = match value {
-                    Value::Reference(reference) => {
+                    Value::Reference(reference) if reference.handle.is_none() => {
                         reference.cell.lock().unwrap().clone().into_value()
                     }
                     other => other.clone(),
@@ -6002,7 +6048,7 @@ impl Compiler {
             }
             Pattern::Tuple(patterns, _) => {
                 let concrete = match value {
-                    Value::Reference(reference) => {
+                    Value::Reference(reference) if reference.handle.is_none() => {
                         reference.cell.lock().unwrap().clone().into_value()
                     }
                     other => other.clone(),
@@ -6200,6 +6246,12 @@ impl Compiler {
     fn eval_binary(&mut self, op: BinaryOp, left: Value, right: Value) -> Result<Value, String> {
         let lhs = Self::deref_if_reference(left);
         let rhs = Self::deref_if_reference(right);
+        if let (Ok(a), Ok(b)) = (self.expect_int(lhs.clone()), self.expect_int(rhs.clone())) {
+            return self.eval_int_binary(op, a, b);
+        }
+        if let (Ok(a), Ok(b)) = (self.expect_float(lhs.clone()), self.expect_float(rhs.clone())) {
+            return self.eval_float_binary(op, a, b);
+        }
         match (lhs, rhs) {
             (Value::Bool(a), Value::Bool(b)) => self.eval_bool_binary(op, a, b),
             (Value::Int(a), Value::Int(b)) => self.eval_int_binary(op, a, b),
@@ -6216,11 +6268,21 @@ impl Compiler {
                 let cmp = (*a.text == *b.text) == matches!(op, BinaryOp::Eq);
                 Ok(Value::Bool(cmp))
             }
-            (other_l, other_r) => Err(format!(
-                "Operation `{op:?}` not supported in build mode for {} and {}",
-                describe_value(&other_l),
-                describe_value(&other_r)
-            )),
+            (other_l, other_r) => {
+                if env::var_os("PRIME_DEBUG_BINOP").is_some() {
+                    eprintln!(
+                        "[prime-debug] binop {:?} lhs={} rhs={}",
+                        op,
+                        describe_value(&other_l),
+                        describe_value(&other_r)
+                    );
+                }
+                Err(format!(
+                    "Operation `{op:?}` not supported in build mode for {} and {}",
+                    describe_value(&other_l),
+                    describe_value(&other_r)
+                ))
+            }
         }
     }
 
@@ -6411,15 +6473,32 @@ impl Compiler {
 
     fn deref_if_reference(value: Value) -> Value {
         match value {
-            Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
+            Value::Reference(reference) => {
+                if reference.handle.is_some() {
+                    Value::Reference(reference)
+                } else {
+                    reference.cell.lock().unwrap().clone().into_value()
+                }
+            }
             other => other,
         }
     }
 
-    fn expect_int(&self, value: Value) -> Result<IntValue, String> {
+    fn expect_int(&mut self, value: Value) -> Result<IntValue, String> {
         match value {
             Value::Int(v) => Ok(v),
             Value::Reference(reference) => {
+                if let Some(handle) = reference.handle {
+                    self.ensure_runtime_symbols();
+                    let mut args = [handle];
+                    let llvm = self.call_runtime(
+                        self.runtime_abi.prime_value_as_int,
+                        self.runtime_abi.prime_value_as_int_ty,
+                        &mut args,
+                        "value_as_int",
+                    );
+                    return Ok(IntValue::new(llvm, None));
+                }
                 let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_int(inner)
             }
@@ -6585,10 +6664,21 @@ impl Compiler {
         }
     }
 
-    fn expect_float(&self, value: Value) -> Result<FloatValue, String> {
+    fn expect_float(&mut self, value: Value) -> Result<FloatValue, String> {
         match value {
             Value::Float(v) => Ok(v),
             Value::Reference(reference) => {
+                if let Some(handle) = reference.handle {
+                    self.ensure_runtime_symbols();
+                    let mut args = [handle];
+                    let llvm = self.call_runtime(
+                        self.runtime_abi.prime_value_as_float,
+                        self.runtime_abi.prime_value_as_float_ty,
+                        &mut args,
+                        "value_as_float",
+                    );
+                    return Ok(FloatValue::new(llvm, None));
+                }
                 let inner = reference.cell.lock().unwrap().clone().into_value();
                 self.expect_float(inner)
             }
@@ -8832,6 +8922,7 @@ impl Compiler {
         }
         let receiver = self.expect_receiver(args.pop().unwrap(), "recv")?;
         if let Some(handle) = receiver.handle {
+            self.ensure_runtime_symbols();
             let slot = unsafe {
                 LLVMBuildAlloca(
                     self.builder,
@@ -8840,27 +8931,152 @@ impl Compiler {
                 )
             };
             let mut call_args = [handle, slot];
-            let _ = self.call_runtime(
+            let status = self.call_runtime(
                 self.runtime_abi.prime_recv,
                 self.runtime_abi.prime_recv_ty,
                 &mut call_args,
                 "recv_handle",
             );
-            let loaded = unsafe {
-                LLVMBuildLoad2(
+            let function = unsafe { LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)) };
+            let ok_block = unsafe {
+                LLVMAppendBasicBlockInContext(
+                    self.context,
+                    function,
+                    CString::new("recv_ok").unwrap().as_ptr(),
+                )
+            };
+            let closed_block = unsafe {
+                LLVMAppendBasicBlockInContext(
+                    self.context,
+                    function,
+                    CString::new("recv_closed").unwrap().as_ptr(),
+                )
+            };
+            let other_block = unsafe {
+                LLVMAppendBasicBlockInContext(
+                    self.context,
+                    function,
+                    CString::new("recv_other").unwrap().as_ptr(),
+                )
+            };
+            let merge_block = unsafe {
+                LLVMAppendBasicBlockInContext(
+                    self.context,
+                    function,
+                    CString::new("recv_merge").unwrap().as_ptr(),
+                )
+            };
+            let option_slot = unsafe {
+                LLVMBuildAlloca(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    CString::new("recv_option").unwrap().as_ptr(),
+                )
+            };
+            let ok_const =
+                unsafe { LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0) };
+            let closed_const =
+                unsafe { LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Closed as u64, 0) };
+            let some_tag = unsafe {
+                LLVMConstInt(
+                    LLVMInt32TypeInContext(self.context),
+                    self.enum_variants
+                        .get("Some")
+                        .map(|v| v.variant_index as u64)
+                        .unwrap_or(0),
+                    0,
+                )
+            };
+            let none_tag = unsafe {
+                LLVMConstInt(
+                    LLVMInt32TypeInContext(self.context),
+                    self.enum_variants
+                        .get("None")
+                        .map(|v| v.variant_index as u64)
+                        .unwrap_or(0),
+                    0,
+                )
+            };
+            unsafe {
+                let switch =
+                    LLVMBuildSwitch(self.builder, status, other_block, 2);
+                LLVMAddCase(switch, ok_const, ok_block);
+                LLVMAddCase(switch, closed_const, closed_block);
+
+                LLVMPositionBuilderAtEnd(self.builder, ok_block);
+                let loaded = LLVMBuildLoad2(
                     self.builder,
                     self.runtime_abi.handle_type,
                     slot,
                     CString::new("recv_loaded").unwrap().as_ptr(),
+                );
+                let payload_ptr = LLVMBuildAlloca(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    CString::new("recv_payload").unwrap().as_ptr(),
+                );
+                LLVMBuildStore(self.builder, loaded, payload_ptr);
+                let mut ok_args = [
+                    payload_ptr,
+                    LLVMConstInt(self.runtime_abi.usize_type, 1, 0),
+                    some_tag,
+                ];
+                let option_handle = self.call_runtime(
+                    self.runtime_abi.prime_enum_new,
+                    self.runtime_abi.prime_enum_new_ty,
+                    &mut ok_args,
+                    "recv_option_some",
+                );
+                LLVMBuildStore(self.builder, option_handle, option_slot);
+                LLVMBuildBr(self.builder, merge_block);
+
+                LLVMPositionBuilderAtEnd(self.builder, closed_block);
+                let mut none_args = [
+                    LLVMConstPointerNull(LLVMPointerType(self.runtime_abi.handle_type, 0)),
+                    LLVMConstInt(self.runtime_abi.usize_type, 0, 0),
+                    none_tag,
+                ];
+                let none_handle = self.call_runtime(
+                    self.runtime_abi.prime_enum_new,
+                    self.runtime_abi.prime_enum_new_ty,
+                    &mut none_args,
+                    "recv_option_none",
+                );
+                LLVMBuildStore(self.builder, none_handle, option_slot);
+                LLVMBuildBr(self.builder, merge_block);
+
+                LLVMPositionBuilderAtEnd(self.builder, other_block);
+                let mut other_none_args = [
+                    LLVMConstPointerNull(LLVMPointerType(self.runtime_abi.handle_type, 0)),
+                    LLVMConstInt(self.runtime_abi.usize_type, 0, 0),
+                    none_tag,
+                ];
+                let other_none = self.call_runtime(
+                    self.runtime_abi.prime_enum_new,
+                    self.runtime_abi.prime_enum_new_ty,
+                    &mut other_none_args,
+                    "recv_option_none_other",
+                );
+                LLVMBuildStore(self.builder, other_none, option_slot);
+                LLVMBuildBr(self.builder, merge_block);
+
+                LLVMPositionBuilderAtEnd(self.builder, merge_block);
+            }
+            let option_loaded = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    option_slot,
+                    CString::new("recv_option_loaded").unwrap().as_ptr(),
                 )
             };
-            let reference = ReferenceValue {
-                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
-                mutable: false,
-                origin: None,
-                handle: Some(loaded),
-            };
-            return self.instantiate_enum_variant("Some", vec![Value::Reference(reference)]);
+            self.pending_runtime = Some(option_loaded);
+            return Ok(Value::Enum(EnumValue {
+                enum_name: "Option".into(),
+                variant: "<runtime>".into(),
+                values: Vec::new(),
+                variant_index: 0,
+            }));
         }
         match receiver.recv() {
             Some(value) => self.instantiate_enum_variant("Some", vec![value]),
@@ -9055,7 +9271,25 @@ impl Compiler {
     }
 
     fn execute_block_contents(&mut self, block: &Block) -> Result<BlockEval, String> {
+        let trace = env::var_os("PRIME_DEBUG_TRACE").is_some();
         for statement in &block.statements {
+            if trace {
+                let kind = match statement {
+                    Statement::Let(_) => "let",
+                    Statement::Expr(_) => "expr",
+                    Statement::Return(_) => "return",
+                    Statement::Break => "break",
+                    Statement::Continue => "continue",
+                    Statement::Loop(_) => "loop",
+                    Statement::For(_) => "for",
+                    Statement::While(_) => "while",
+                    Statement::Assign(_) => "assign",
+                    Statement::Defer(_) => "defer",
+                    Statement::MacroSemi(_) => "macro",
+                    Statement::Block(_) => "block",
+                };
+                eprintln!("[prime-debug] stmt {kind}");
+            }
             if let Some(flow) = self.emit_statement(statement)? {
                 return Ok(BlockEval::Flow(flow));
             }
@@ -9104,7 +9338,7 @@ impl Compiler {
         Err(format!("Unknown variable {}", name))
     }
 
-    fn value_to_bool(&self, value: Value) -> Result<bool, String> {
+    fn value_to_bool(&mut self, value: Value) -> Result<bool, String> {
         let concrete = match value {
             Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
             Value::Pointer(pointer) => pointer.cell.lock().unwrap().clone().into_value(),
