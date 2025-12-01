@@ -1526,7 +1526,10 @@ mod embedded {
         {
             let count = PRINT_COUNT.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
             ets_printf(b"%s\0".as_ptr(), s.ptr);
-            if count % 64 == 0 {
+            let should_log = count % 64 == 0
+                && s.len > 0
+                && unsafe { *s.ptr.add(s.len.saturating_sub(1)) == b'\n' };
+            if should_log {
                 log_stats_snapshot();
             }
         }
