@@ -9,7 +9,7 @@ use crate::language::{
 };
 use std::collections::HashSet;
 use tower_lsp_server::lsp_types::{
-    Hover, HoverContents, MarkedString, MarkupContent, MarkupKind,
+    Hover, HoverContents, MarkupContent, MarkupKind,
 };
 
 use super::{

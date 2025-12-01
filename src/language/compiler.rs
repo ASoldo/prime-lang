@@ -25,14 +25,15 @@ use crate::{
 use llvm_sys::{
     LLVMLinkage, LLVMTypeKind,
     core::{
-        LLVMAddCase, LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMArrayType2, LLVMBuildAdd,
-        LLVMBuildAlloca, LLVMBuildArrayMalloc, LLVMBuildBitCast, LLVMBuildBr, LLVMBuildCall2,
-        LLVMBuildCondBr, LLVMBuildExtractValue, LLVMBuildFAdd, LLVMBuildFDiv, LLVMBuildFMul,
-        LLVMBuildFRem, LLVMBuildFSub, LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2,
-        LLVMBuildIntCast, LLVMBuildLoad2, LLVMBuildMul, LLVMBuildRet, LLVMBuildRetVoid,
-        LLVMBuildSDiv, LLVMBuildSExt, LLVMBuildSIToFP, LLVMBuildSRem, LLVMBuildStore,
-        LLVMBuildStructGEP2, LLVMBuildSub, LLVMBuildSwitch, LLVMConstInt, LLVMConstIntGetZExtValue,
-        LLVMConstNull, LLVMConstPointerNull, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
+        LLVMAddCase, LLVMAddFunction, LLVMAddIncoming, LLVMAppendBasicBlockInContext, LLVMArrayType2,
+        LLVMBuildAdd, LLVMBuildAlloca, LLVMBuildAnd, LLVMBuildArrayMalloc, LLVMBuildBitCast, LLVMBuildBr,
+        LLVMBuildCall2, LLVMBuildCondBr, LLVMBuildExtractValue, LLVMBuildFAdd, LLVMBuildFCmp,
+        LLVMBuildFDiv, LLVMBuildFMul, LLVMBuildFRem, LLVMBuildFSub, LLVMBuildGlobalString,
+        LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildIntCast, LLVMBuildLoad2, LLVMBuildMul,
+        LLVMBuildNot, LLVMBuildOr, LLVMBuildPhi, LLVMBuildRet, LLVMBuildRetVoid, LLVMBuildSDiv,
+        LLVMBuildSExt, LLVMBuildSIToFP, LLVMBuildSRem, LLVMBuildStore, LLVMBuildStructGEP2,
+        LLVMBuildSub, LLVMBuildSwitch, LLVMConstInt, LLVMConstIntGetZExtValue, LLVMConstNull,
+        LLVMConstPointerNull, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
         LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
         LLVMDoubleTypeInContext, LLVMFloatTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent,
         LLVMGetElementType, LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetGlobalParent,
@@ -822,6 +823,12 @@ fn expect_constant_float(float: &FloatValue) -> Result<f64, String> {
         .ok_or_else(|| "Non-constant float cannot be captured for parallel build execution".into())
 }
 
+fn expect_constant_bool(bool_val: &BoolValue) -> Result<bool, String> {
+    bool_val.constant.ok_or_else(|| {
+        "Non-constant boolean cannot be captured for parallel build execution".into()
+    })
+}
+
 struct BuildCaptureContext {
     channels: HashMap<*const (), (u64, Arc<(Mutex<BuildChannelState>, Condvar)>)>,
     references: HashMap<*const (), BuildReference>,
@@ -939,7 +946,7 @@ fn value_to_build_value_with_ctx(
         Value::Unit => Ok(BuildValue::Unit),
         Value::Int(int) => Ok(BuildValue::Int(expect_constant_int(int)?)),
         Value::Float(float) => Ok(BuildValue::Float(expect_constant_float(float)?)),
-        Value::Bool(flag) => Ok(BuildValue::Bool(*flag)),
+        Value::Bool(flag) => Ok(BuildValue::Bool(expect_constant_bool(flag)?)),
         Value::Str(text) => Ok(BuildValue::String((*text.text).clone())),
         Value::Tuple(items) => {
             let mut converted = Vec::with_capacity(items.len());
@@ -1663,7 +1670,7 @@ impl Compiler {
             BuildValue::Unit => Ok(Value::Unit),
             BuildValue::Int(v) => Ok(Value::Int(self.const_int_value(v))),
             BuildValue::Float(v) => Ok(Value::Float(self.const_float_value(v))),
-            BuildValue::Bool(v) => Ok(Value::Bool(v)),
+            BuildValue::Bool(v) => Ok(Value::Bool(self.const_bool_value(v))),
             BuildValue::String(text) => self.build_string_constant(text),
             BuildValue::Tuple(items) => {
                 let mut converted = Vec::with_capacity(items.len());
@@ -2374,23 +2381,25 @@ impl Compiler {
                     return Ok(());
                 }
                 Value::Bool(flag) => {
-                    let text = if *flag { "true" } else { "false" };
-                    let (ptr, len) = self.build_runtime_bytes(text, "rt_print_bool")?;
-                    let mut call_args = [ptr, len];
-                    let handle = self.call_runtime(
-                        self.runtime_abi.prime_string_new,
-                        self.runtime_abi.prime_string_new_ty,
-                        &mut call_args,
-                        "string_new",
-                    );
-                    let mut print_args = [handle];
-                    self.call_runtime(
-                        self.runtime_abi.prime_print,
-                        self.runtime_abi.prime_print_ty,
-                        &mut print_args,
-                        "prime_print",
-                    );
-                    return Ok(());
+                    if let Some(constant) = flag.constant() {
+                        let text = if constant { "true" } else { "false" };
+                        let (ptr, len) = self.build_runtime_bytes(text, "rt_print_bool")?;
+                        let mut call_args = [ptr, len];
+                        let handle = self.call_runtime(
+                            self.runtime_abi.prime_string_new,
+                            self.runtime_abi.prime_string_new_ty,
+                            &mut call_args,
+                            "string_new",
+                        );
+                        let mut print_args = [handle];
+                        self.call_runtime(
+                            self.runtime_abi.prime_print,
+                            self.runtime_abi.prime_print_ty,
+                            &mut print_args,
+                            "prime_print",
+                        );
+                        return Ok(());
+                    }
                 }
                 _ => {}
             }
@@ -2413,12 +2422,23 @@ impl Compiler {
                 Ok(())
             }
             Value::Bool(flag) => {
-                if flag {
-                    self.emit_printf_call("true", &mut []);
+                if let Some(constant) = flag.constant() {
+                    if constant {
+                        self.emit_printf_call("true", &mut []);
+                    } else {
+                        self.emit_printf_call("false", &mut []);
+                    }
+                    Ok(())
+                } else if let Some(handle) = value.runtime_handle() {
+                    self.emit_runtime_print(handle);
+                    Ok(())
+                } else if let Some(handle) = self.maybe_attach_runtime_handle(&mut value) {
+                    self.emit_runtime_print(handle);
+                    Ok(())
                 } else {
-                    self.emit_printf_call("false", &mut []);
+                    self.emit_printf_call("<bool>", &mut []);
+                    Ok(())
                 }
-                Ok(())
             }
             Value::Str(string) => {
                 self.emit_printf_call("%s", &mut [string.llvm]);
@@ -2639,7 +2659,11 @@ impl Compiler {
                 ))
             }
             Value::Bool(flag) => {
-                let arg = unsafe { LLVMConstInt(self.runtime_abi.bool_type, flag as u64, 0) };
+                let arg = if let Some(constant) = flag.constant() {
+                    unsafe { LLVMConstInt(self.runtime_abi.bool_type, constant as u64, 0) }
+                } else {
+                    self.bool_llvm_value(&flag)
+                };
                 Ok(self.call_runtime(
                     self.runtime_abi.prime_bool_new,
                     self.runtime_abi.prime_bool_new_ty,
@@ -3019,7 +3043,10 @@ impl Compiler {
                 .constant()
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "<float>".to_string()),
-            Value::Bool(flag) => flag.to_string(),
+            Value::Bool(flag) => flag
+                .constant()
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "<bool>".to_string()),
             Value::Str(text) => text.text.to_string(),
             Value::Unit => "()".to_string(),
             Value::Tuple(values) => {
@@ -3439,9 +3466,7 @@ impl Compiler {
                     )),
                 },
                 "bool" => match value {
-                    Value::Bool(flag) => {
-                        Ok(unsafe { LLVMConstInt(self.runtime_abi.bool_type, flag as u64, 0) })
-                    }
+                    Value::Bool(flag) => Ok(self.bool_llvm_value(&flag)),
                     other => Err(format!(
                         "Expected bool value for capture, found {}",
                         describe_value(&other)
@@ -3551,8 +3576,14 @@ impl Compiler {
                 | "uint64" | "usize" | "rune" => Ok(Value::Int(IntValue::new(llvm, None))),
                 "float32" | "float64" => Ok(Value::Float(FloatValue::new(llvm, None))),
                 "bool" => {
-                    let flag = unsafe { LLVMConstIntGetZExtValue(llvm) != 0 };
-                    Ok(Value::Bool(flag))
+                    let constant = unsafe {
+                        if LLVMIsAConstantInt(llvm).is_null() {
+                            None
+                        } else {
+                            Some(LLVMConstIntGetZExtValue(llvm) != 0)
+                        }
+                    };
+                    Ok(Value::Bool(BoolValue::new(llvm, constant)))
                 }
                 "string" => Ok(Value::Str(StringValue::new(llvm, Arc::new(String::new())))),
                 "Map" => Ok(Value::Map(MapValue::with_handle(llvm))),
@@ -4724,18 +4755,77 @@ impl Compiler {
                         EvalOutcome::Value(value) => value.into_value(),
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
-                    if !self.value_to_bool(condition)? {
+                    let cond_value = self.value_to_bool(condition)?;
+                    if let Some(flag) = cond_value.constant() {
+                        if !flag {
+                            break;
+                        }
+                        self.push_scope();
+                        let result = self.execute_block_contents(&stmt.body)?;
+                        self.exit_scope()?;
+                        match result {
+                            BlockEval::Value(_) => {}
+                            BlockEval::Flow(FlowSignal::Continue) => continue,
+                            BlockEval::Flow(FlowSignal::Break) => break,
+                            BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                            BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                return Ok(Some(flow))
+                            }
+                        }
+                    } else {
+                        unsafe {
+                            let current_block = LLVMGetInsertBlock(self.builder);
+                            if current_block.is_null() {
+                                return Err("no insertion block for while loop".into());
+                            }
+                            let function = LLVMGetBasicBlockParent(current_block);
+                            if function.is_null() {
+                                return Err("while loop outside function".into());
+                            }
+                            let cond_block = LLVMAppendBasicBlockInContext(
+                                self.context,
+                                function,
+                                CString::new("while_cond").unwrap().as_ptr(),
+                            );
+                            let body_block = LLVMAppendBasicBlockInContext(
+                                self.context,
+                                function,
+                                CString::new("while_body").unwrap().as_ptr(),
+                            );
+                            let after_block = LLVMAppendBasicBlockInContext(
+                                self.context,
+                                function,
+                                CString::new("while_after").unwrap().as_ptr(),
+                            );
+                            LLVMBuildBr(self.builder, cond_block);
+                            LLVMPositionBuilderAtEnd(self.builder, cond_block);
+                            let cond_value = match self.emit_expression(expr)? {
+                                EvalOutcome::Value(value) => value.into_value(),
+                                EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                            };
+                            let cond_bool = self.value_to_bool(cond_value)?;
+                            let cond_llvm = self.bool_llvm_value(&cond_bool);
+                            LLVMBuildCondBr(self.builder, cond_llvm, body_block, after_block);
+                            LLVMPositionBuilderAtEnd(self.builder, body_block);
+                            self.push_scope();
+                            let result = self.execute_block_contents(&stmt.body)?;
+                            self.exit_scope()?;
+                            match result {
+                                BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {
+                                    LLVMBuildBr(self.builder, cond_block);
+                                }
+                                BlockEval::Flow(FlowSignal::Break) => {
+                                    LLVMBuildBr(self.builder, after_block);
+                                }
+                                BlockEval::Flow(flow @ FlowSignal::Return(_))
+                                | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                    LLVMPositionBuilderAtEnd(self.builder, after_block);
+                                    return Ok(Some(flow));
+                                }
+                            }
+                            LLVMPositionBuilderAtEnd(self.builder, after_block);
+                        }
                         break;
-                    }
-                    self.push_scope();
-                    let result = self.execute_block_contents(&stmt.body)?;
-                    self.exit_scope()?;
-                    match result {
-                        BlockEval::Value(_) => {}
-                        BlockEval::Flow(FlowSignal::Continue) => continue,
-                        BlockEval::Flow(FlowSignal::Break) => break,
-                        BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
-                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
                     }
                 },
                 WhileCondition::Let { pattern, value } => loop {
@@ -5709,28 +5799,132 @@ impl Compiler {
                     EvalOutcome::Value(value) => value.into_value(),
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
-                if self.value_to_bool(cond_value)? {
-                    self.push_scope();
-                    let value = self.execute_block_contents(&if_expr.then_branch)?;
-                    self.exit_scope()?;
-                    match value {
-                        BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                        BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-                    }
-                } else if let Some(else_branch) = &if_expr.else_branch {
-                    match else_branch {
-                        ElseBranch::Block(block) => {
-                            self.push_scope();
-                            let value = self.execute_block_contents(block)?;
-                            self.exit_scope()?;
-                            match value {
-                                BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                                BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-                            }
+                let cond_bool = self.value_to_bool(cond_value)?;
+                if let Some(flag) = cond_bool.constant() {
+                    if flag {
+                        self.push_scope();
+                        let value = self.execute_block_contents(&if_expr.then_branch)?;
+                        self.exit_scope()?;
+                        match value {
+                            BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                            BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                         }
-                        ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
+                    } else if let Some(else_branch) = &if_expr.else_branch {
+                        match else_branch {
+                            ElseBranch::Block(block) => {
+                                self.push_scope();
+                                let value = self.execute_block_contents(block)?;
+                                self.exit_scope()?;
+                                match value {
+                                    BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                                    BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                                }
+                            }
+                            ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
+                        }
+                    } else {
+                        Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
                     }
                 } else {
+                    unsafe {
+                        let current_block = LLVMGetInsertBlock(self.builder);
+                        if current_block.is_null() {
+                            return Err("no insertion block for if expression".into());
+                        }
+                        let function = LLVMGetBasicBlockParent(current_block);
+                        if function.is_null() {
+                            return Err("if expression outside function".into());
+                        }
+                        let then_block = LLVMAppendBasicBlockInContext(
+                            self.context,
+                            function,
+                            CString::new("if_then").unwrap().as_ptr(),
+                        );
+                        let else_block = LLVMAppendBasicBlockInContext(
+                            self.context,
+                            function,
+                            CString::new("if_else").unwrap().as_ptr(),
+                        );
+                        let merge_block = LLVMAppendBasicBlockInContext(
+                            self.context,
+                            function,
+                            CString::new("if_merge").unwrap().as_ptr(),
+                        );
+                        let cond_llvm = self.bool_llvm_value(&cond_bool);
+                        LLVMBuildCondBr(self.builder, cond_llvm, then_block, else_block);
+
+                        LLVMPositionBuilderAtEnd(self.builder, then_block);
+                        self.push_scope();
+                        let mut then_value: Option<EvaluatedValue> = None;
+                        let then_eval = self.execute_block_contents(&if_expr.then_branch)?;
+                        self.exit_scope()?;
+                        match then_eval {
+                            BlockEval::Flow(flow @ FlowSignal::Return(_))
+                            | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                LLVMPositionBuilderAtEnd(self.builder, merge_block);
+                                return Ok(EvalOutcome::Flow(flow));
+                            }
+                            BlockEval::Value(val) => {
+                                then_value = Some(val);
+                                LLVMBuildBr(self.builder, merge_block);
+                            }
+                            BlockEval::Flow(FlowSignal::Break)
+                            | BlockEval::Flow(FlowSignal::Continue) => {
+                                LLVMBuildBr(self.builder, merge_block);
+                            }
+                        };
+
+                        LLVMPositionBuilderAtEnd(self.builder, else_block);
+                        let mut else_value: Option<EvaluatedValue> = None;
+                        if let Some(else_branch) = &if_expr.else_branch {
+                            match else_branch {
+                                ElseBranch::Block(block) => {
+                                    self.push_scope();
+                                    let else_eval = self.execute_block_contents(block)?;
+                                    self.exit_scope()?;
+                                    match else_eval {
+                                        BlockEval::Flow(flow @ FlowSignal::Return(_))
+                                        | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                            LLVMPositionBuilderAtEnd(self.builder, merge_block);
+                                            return Ok(EvalOutcome::Flow(flow));
+                                        }
+                                        BlockEval::Value(val) => {
+                                            else_value = Some(val);
+                                            LLVMBuildBr(self.builder, merge_block);
+                                        }
+                                        BlockEval::Flow(FlowSignal::Break)
+                                        | BlockEval::Flow(FlowSignal::Continue) => {
+                                            LLVMBuildBr(self.builder, merge_block);
+                                        }
+                                    };
+                                }
+                                ElseBranch::ElseIf(nested) => {
+                                    match self.emit_if_expression(nested)? {
+                                        EvalOutcome::Flow(flow) => {
+                                            LLVMPositionBuilderAtEnd(self.builder, merge_block);
+                                            return Ok(EvalOutcome::Flow(flow));
+                                        }
+                                        EvalOutcome::Value(val) => {
+                                            else_value = Some(val);
+                                            LLVMBuildBr(self.builder, merge_block);
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            LLVMBuildBr(self.builder, merge_block);
+                        }
+
+                        LLVMPositionBuilderAtEnd(self.builder, merge_block);
+                        if let (Some(then_val), Some(else_val)) = (then_value, else_value) {
+                            return Ok(EvalOutcome::Value(self.merge_if_values(
+                                then_val,
+                                then_block,
+                                else_val,
+                                else_block,
+                            )?));
+                        }
+                    }
                     Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
                 }
             }
@@ -5768,6 +5962,87 @@ impl Compiler {
                     }
                 }
             }
+        }
+    }
+
+    fn merge_if_values(
+        &mut self,
+        then_val: EvaluatedValue,
+        then_block: LLVMBasicBlockRef,
+        else_val: EvaluatedValue,
+        else_block: LLVMBasicBlockRef,
+    ) -> Result<EvaluatedValue, String> {
+        match (then_val.into_value(), else_val.into_value()) {
+            (Value::Int(a), Value::Int(b)) => {
+                let ty = unsafe { LLVMTypeOf(a.llvm()) };
+                let phi = unsafe {
+                    LLVMBuildPhi(
+                        self.builder,
+                        ty,
+                        CString::new("if_int_phi").unwrap().as_ptr(),
+                    )
+                };
+                let mut vals = [a.llvm(), b.llvm()];
+                let mut blocks = [then_block, else_block];
+                unsafe {
+                    LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);
+                }
+                let constant = a
+                    .constant()
+                    .zip(b.constant())
+                    .and_then(|(lhs, rhs)| if lhs == rhs { Some(lhs) } else { None });
+                Ok(self.evaluated(Value::Int(IntValue::new(phi, constant))))
+            }
+            (Value::Float(a), Value::Float(b)) => {
+                let ty = unsafe { LLVMTypeOf(a.llvm()) };
+                let phi = unsafe {
+                    LLVMBuildPhi(
+                        self.builder,
+                        ty,
+                        CString::new("if_float_phi").unwrap().as_ptr(),
+                    )
+                };
+                let mut vals = [a.llvm(), b.llvm()];
+                let mut blocks = [then_block, else_block];
+                unsafe {
+                    LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);
+                }
+                let constant = a
+                    .constant()
+                    .zip(b.constant())
+                    .and_then(|(lhs, rhs)| if (lhs - rhs).abs() < f64::EPSILON {
+                        Some(lhs)
+                    } else {
+                        None
+                    });
+                Ok(self.evaluated(Value::Float(FloatValue::new(phi, constant))))
+            }
+            (Value::Bool(a), Value::Bool(b)) => {
+                let ty = unsafe { LLVMTypeOf(a.llvm()) };
+                let phi = unsafe {
+                    LLVMBuildPhi(
+                        self.builder,
+                        ty,
+                        CString::new("if_bool_phi").unwrap().as_ptr(),
+                    )
+                };
+                let mut vals = [a.llvm(), b.llvm()];
+                let mut blocks = [then_block, else_block];
+                unsafe {
+                    LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);
+                }
+                let constant = a
+                    .constant()
+                    .zip(b.constant())
+                    .and_then(|(lhs, rhs)| if lhs == rhs { Some(lhs) } else { None });
+                Ok(self.evaluated(Value::Bool(BoolValue::new(phi, constant))))
+            }
+            (Value::Unit, Value::Unit) => Ok(self.evaluated(Value::Unit)),
+            (lhs, rhs) => Err(format!(
+                "Dynamic if expression not supported for branch values {} and {}",
+                self.describe_value(&lhs),
+                self.describe_value(&rhs)
+            )),
         }
     }
 
@@ -6338,7 +6613,9 @@ impl Compiler {
                     .map(|val| val == want)
                     .ok_or_else(|| "Non-constant boolean pattern in build mode".into())
             }
-            (Literal::Bool(expected, _), Value::Bool(actual)) => Ok(*expected == actual),
+            (Literal::Bool(expected, _), Value::Bool(actual)) => self
+                .bool_constant_or_llvm(&actual, "Boolean pattern")
+                .map(|val| *expected == val),
             (Literal::Float(expected, _), Value::Float(float_value)) => float_value
                 .constant()
                 .map(|val| val == *expected)
@@ -6424,7 +6701,7 @@ impl Compiler {
             }
             (Value::Str(a), Value::Str(b)) if matches!(op, BinaryOp::Eq | BinaryOp::NotEq) => {
                 let cmp = (*a.text == *b.text) == matches!(op, BinaryOp::Eq);
-                Ok(Value::Bool(cmp))
+                Ok(Value::Bool(self.const_bool_value(cmp)))
             }
             (other_l, other_r) => {
                 if env::var_os("PRIME_DEBUG_BINOP").is_some() {
@@ -6458,7 +6735,20 @@ impl Compiler {
                 .ok_or_else(|| {
                     "Operation `Neg` not supported in build mode for non-constant floats".into()
                 }),
-            (UnaryOp::Not, Value::Bool(flag)) => Ok(Value::Bool(!flag)),
+            (UnaryOp::Not, Value::Bool(flag)) => {
+                if let Some(constant) = flag.constant() {
+                    Ok(Value::Bool(self.const_bool_value(!constant)))
+                } else {
+                    let llvm = unsafe {
+                        LLVMBuildNot(
+                            self.builder,
+                            self.bool_llvm_value(&flag),
+                            CString::new("bool_not").unwrap().as_ptr(),
+                        )
+                    };
+                    Ok(Value::Bool(BoolValue::new(llvm, None)))
+                }
+            }
             (op_variant, other) => Err(format!(
                 "Operation `{op_variant:?}` not supported in build mode for {}",
                 describe_value(&other)
@@ -6466,19 +6756,57 @@ impl Compiler {
         }
     }
 
-    fn eval_bool_binary(&self, op: BinaryOp, lhs: bool, rhs: bool) -> Result<Value, String> {
-        let value = match op {
-            BinaryOp::And => Value::Bool(lhs && rhs),
-            BinaryOp::Or => Value::Bool(lhs || rhs),
-            BinaryOp::Eq => Value::Bool(lhs == rhs),
-            BinaryOp::NotEq => Value::Bool(lhs != rhs),
+    fn eval_bool_binary(
+        &mut self,
+        op: BinaryOp,
+        lhs: BoolValue,
+        rhs: BoolValue,
+    ) -> Result<Value, String> {
+        if let Some((a, b)) = lhs.constant().zip(rhs.constant()) {
+            let value = match op {
+                BinaryOp::And => self.const_bool_value(a && b),
+                BinaryOp::Or => self.const_bool_value(a || b),
+                BinaryOp::Eq => self.const_bool_value(a == b),
+                BinaryOp::NotEq => self.const_bool_value(a != b),
+                _ => {
+                    return Err(format!(
+                        "Operation `{op:?}` not supported in build mode for booleans"
+                    ));
+                }
+            };
+            return Ok(Value::Bool(value));
+        }
+        let lhs_llvm = self.bool_llvm_value(&lhs);
+        let rhs_llvm = self.bool_llvm_value(&rhs);
+        let name = CString::new("bool_bin").unwrap();
+        let llvm = match op {
+            BinaryOp::And => unsafe { LLVMBuildAnd(self.builder, lhs_llvm, rhs_llvm, name.as_ptr()) },
+            BinaryOp::Or => unsafe { LLVMBuildOr(self.builder, lhs_llvm, rhs_llvm, name.as_ptr()) },
+            BinaryOp::Eq => unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                    lhs_llvm,
+                    rhs_llvm,
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::NotEq => unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntNE,
+                    lhs_llvm,
+                    rhs_llvm,
+                    name.as_ptr(),
+                )
+            },
             _ => {
                 return Err(format!(
                     "Operation `{op:?}` not supported in build mode for booleans"
-                ));
+                ))
             }
         };
-        Ok(value)
+        Ok(Value::Bool(BoolValue::new(llvm, None)))
     }
 
     fn eval_int_binary(
@@ -6511,27 +6839,27 @@ impl Compiler {
             BinaryOp::Lt => lhs
                 .constant()
                 .zip(rhs.constant())
-                .map(|(a, b)| Value::Bool(a < b)),
+                .map(|(a, b)| Value::Bool(self.const_bool_value(a < b))),
             BinaryOp::LtEq => lhs
                 .constant()
                 .zip(rhs.constant())
-                .map(|(a, b)| Value::Bool(a <= b)),
+                .map(|(a, b)| Value::Bool(self.const_bool_value(a <= b))),
             BinaryOp::Gt => lhs
                 .constant()
                 .zip(rhs.constant())
-                .map(|(a, b)| Value::Bool(a > b)),
+                .map(|(a, b)| Value::Bool(self.const_bool_value(a > b))),
             BinaryOp::GtEq => lhs
                 .constant()
                 .zip(rhs.constant())
-                .map(|(a, b)| Value::Bool(a >= b)),
+                .map(|(a, b)| Value::Bool(self.const_bool_value(a >= b))),
             BinaryOp::Eq => lhs
                 .constant()
                 .zip(rhs.constant())
-                .map(|(a, b)| Value::Bool(a == b)),
+                .map(|(a, b)| Value::Bool(self.const_bool_value(a == b))),
             BinaryOp::NotEq => lhs
                 .constant()
                 .zip(rhs.constant())
-                .map(|(a, b)| Value::Bool(a != b)),
+                .map(|(a, b)| Value::Bool(self.const_bool_value(a != b))),
             _ => None,
         };
         if let Some(value) = result {
@@ -6554,13 +6882,75 @@ impl Compiler {
             BinaryOp::Rem => unsafe {
                 LLVMBuildSRem(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr())
             },
+            BinaryOp::Lt => unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntSLT,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::LtEq => unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntSLE,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::Gt => unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntSGT,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::GtEq => unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntSGE,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::Eq => unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::NotEq => unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntNE,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
             _ => {
                 return Err(format!(
                     "Operation `{op:?}` not supported in build mode for integers (non-constant operands)"
                 ));
             }
         };
-        Ok(Value::Int(IntValue::new(llvm, None)))
+        if matches!(
+            op,
+            BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq | BinaryOp::Eq
+                | BinaryOp::NotEq
+        ) {
+            Ok(Value::Bool(BoolValue::new(llvm, None)))
+        } else {
+            Ok(Value::Int(IntValue::new(llvm, None)))
+        }
     }
 
     fn eval_float_binary(
@@ -6576,12 +6966,12 @@ impl Compiler {
             BinaryOp::Mul => values.map(|(a, b)| Value::Float(self.const_float_value(a * b))),
             BinaryOp::Div => values.map(|(a, b)| Value::Float(self.const_float_value(a / b))),
             BinaryOp::Rem => values.map(|(a, b)| Value::Float(self.const_float_value(a % b))),
-            BinaryOp::Lt => values.map(|(a, b)| Value::Bool(a < b)),
-            BinaryOp::LtEq => values.map(|(a, b)| Value::Bool(a <= b)),
-            BinaryOp::Gt => values.map(|(a, b)| Value::Bool(a > b)),
-            BinaryOp::GtEq => values.map(|(a, b)| Value::Bool(a >= b)),
-            BinaryOp::Eq => values.map(|(a, b)| Value::Bool(a == b)),
-            BinaryOp::NotEq => values.map(|(a, b)| Value::Bool(a != b)),
+            BinaryOp::Lt => values.map(|(a, b)| Value::Bool(self.const_bool_value(a < b))),
+            BinaryOp::LtEq => values.map(|(a, b)| Value::Bool(self.const_bool_value(a <= b))),
+            BinaryOp::Gt => values.map(|(a, b)| Value::Bool(self.const_bool_value(a > b))),
+            BinaryOp::GtEq => values.map(|(a, b)| Value::Bool(self.const_bool_value(a >= b))),
+            BinaryOp::Eq => values.map(|(a, b)| Value::Bool(self.const_bool_value(a == b))),
+            BinaryOp::NotEq => values.map(|(a, b)| Value::Bool(self.const_bool_value(a != b))),
             _ => None,
         };
         if let Some(value) = result {
@@ -6604,13 +6994,75 @@ impl Compiler {
             BinaryOp::Rem => unsafe {
                 LLVMBuildFRem(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr())
             },
+            BinaryOp::Lt => unsafe {
+                LLVMBuildFCmp(
+                    self.builder,
+                    llvm_sys::LLVMRealPredicate::LLVMRealOLT,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::LtEq => unsafe {
+                LLVMBuildFCmp(
+                    self.builder,
+                    llvm_sys::LLVMRealPredicate::LLVMRealOLE,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::Gt => unsafe {
+                LLVMBuildFCmp(
+                    self.builder,
+                    llvm_sys::LLVMRealPredicate::LLVMRealOGT,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::GtEq => unsafe {
+                LLVMBuildFCmp(
+                    self.builder,
+                    llvm_sys::LLVMRealPredicate::LLVMRealOGE,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::Eq => unsafe {
+                LLVMBuildFCmp(
+                    self.builder,
+                    llvm_sys::LLVMRealPredicate::LLVMRealOEQ,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
+            BinaryOp::NotEq => unsafe {
+                LLVMBuildFCmp(
+                    self.builder,
+                    llvm_sys::LLVMRealPredicate::LLVMRealONE,
+                    lhs.llvm(),
+                    rhs.llvm(),
+                    name.as_ptr(),
+                )
+            },
             _ => {
                 return Err(format!(
                     "Operation `{op:?}` not supported in build mode for floats (non-constant operands)"
                 ));
             }
         };
-        Ok(Value::Float(FloatValue::new(llvm, None)))
+        if matches!(
+            op,
+            BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq | BinaryOp::Eq
+                | BinaryOp::NotEq
+        ) {
+            Ok(Value::Bool(BoolValue::new(llvm, None)))
+        } else {
+            Ok(Value::Float(FloatValue::new(llvm, None)))
+        }
     }
 
     fn int_to_float(&self, value: &IntValue) -> Result<FloatValue, String> {
@@ -6664,10 +7116,18 @@ impl Compiler {
                 let inner = pointer.cell.lock().unwrap().clone().into_value();
                 self.expect_int(inner)
             }
-            other => Err(format!(
-                "Expected integer value in build mode, got {}",
-                describe_value(&other)
-            )),
+            other => {
+                if env::var_os("PRIME_DEBUG_EXPECT_INT").is_some() {
+                    eprintln!(
+                        "[prime-debug] expect_int saw {}",
+                        describe_value(&other)
+                    );
+                }
+                Err(format!(
+                    "Expected integer value in build mode, got {}",
+                    describe_value(&other)
+                ))
+            }
         }
     }
 
@@ -6694,6 +7154,35 @@ impl Compiler {
                     }
                 };
                 Ok(signed)
+            }
+        }
+    }
+
+    fn bool_constant_or_llvm(&self, value: &BoolValue, ctx: &str) -> Result<bool, String> {
+        if let Some(c) = value.constant() {
+            return Ok(c);
+        }
+        unsafe {
+            if LLVMIsAConstantInt(value.llvm()).is_null() {
+                Err(format!("{ctx} must be constant in build mode"))
+            } else {
+                Ok(LLVMConstIntGetZExtValue(value.llvm()) != 0)
+            }
+        }
+    }
+
+    fn bool_llvm_value(&mut self, value: &BoolValue) -> LLVMValueRef {
+        let current = unsafe { LLVMTypeOf(value.llvm()) };
+        if current == self.runtime_abi.bool_type {
+            value.llvm()
+        } else {
+            unsafe {
+                LLVMBuildIntCast(
+                    self.builder,
+                    value.llvm(),
+                    self.runtime_abi.bool_type,
+                    CString::new("bool_cast").unwrap().as_ptr(),
+                )
             }
         }
     }
@@ -8648,7 +9137,9 @@ impl Compiler {
             return Err("fs_exists expects 1 argument".into());
         }
         let path = self.expect_string_value(args.pop().unwrap(), "fs_exists")?;
-        Ok(Value::Bool(platform().fs_exists(&path)))
+        Ok(Value::Bool(
+            self.const_bool_value(platform().fs_exists(&path)),
+        ))
     }
 
     fn builtin_fs_read(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
@@ -8854,7 +9345,8 @@ impl Compiler {
         if args.len() != 1 {
             return Err("assert expects 1 argument".into());
         }
-        let cond = self.value_to_bool(args.pop().unwrap())?;
+        let cond_value = self.value_to_bool(args.pop().unwrap())?;
+        let cond = self.bool_constant_or_llvm(&cond_value, "assert condition")?;
         if !cond {
             return Err("assertion failed".into());
         }
@@ -8865,7 +9357,8 @@ impl Compiler {
         if args.len() != 2 {
             return Err("expect expects 2 arguments".into());
         }
-        let cond = self.value_to_bool(args.remove(0))?;
+        let cond_value = self.value_to_bool(args.remove(0))?;
+        let cond = self.bool_constant_or_llvm(&cond_value, "expect condition")?;
         let msg = self.expect_string_value(args.remove(0), "expect")?;
         if !cond {
             return Err(msg);
@@ -8887,7 +9380,9 @@ impl Compiler {
         }
         let needle = self.expect_string_value(args.pop().unwrap(), "str_contains")?;
         let haystack = self.expect_string_value(args.pop().unwrap(), "str_contains")?;
-        Ok(Value::Bool(haystack.contains(&needle)))
+        Ok(Value::Bool(
+            self.const_bool_value(haystack.contains(&needle)),
+        ))
     }
 
     fn builtin_str_trim(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
@@ -9514,18 +10009,66 @@ impl Compiler {
         Err(format!("Unknown variable {}", name))
     }
 
-    fn value_to_bool(&mut self, value: Value) -> Result<bool, String> {
+    fn value_to_bool(&mut self, value: Value) -> Result<BoolValue, String> {
         let concrete = match value {
-            Value::Reference(reference) => reference.cell.lock().unwrap().clone().into_value(),
+            Value::Reference(reference) => {
+                if let Some(handle) = reference.handle {
+                    self.ensure_runtime_symbols();
+                    let mut args = [handle];
+                    let llvm = self.call_runtime(
+                        self.runtime_abi.prime_value_as_bool,
+                        self.runtime_abi.prime_value_as_bool_ty,
+                        &mut args,
+                        "value_as_bool",
+                    );
+                    return Ok(BoolValue::new(llvm, None));
+                }
+                reference.cell.lock().unwrap().clone().into_value()
+            }
             Value::Pointer(pointer) => pointer.cell.lock().unwrap().clone().into_value(),
             other => other,
         };
         match concrete {
             Value::Bool(flag) => Ok(flag),
             other => {
-                let int_value = self.expect_int(other)?;
-                let constant = self.int_constant_or_llvm(&int_value, "Condition expression")?;
-                Ok(constant != 0)
+                if let Ok(int_value) = self.expect_int(other.clone()) {
+                    if let Some(constant) = int_value.constant() {
+                        return Ok(self.const_bool_value(constant != 0));
+                    }
+                    let zero = unsafe { LLVMConstInt(LLVMTypeOf(int_value.llvm()), 0, 0) };
+                    let llvm = unsafe {
+                        LLVMBuildICmp(
+                            self.builder,
+                            llvm_sys::LLVMIntPredicate::LLVMIntNE,
+                            int_value.llvm(),
+                            zero,
+                            CString::new("int_to_bool").unwrap().as_ptr(),
+                        )
+                    };
+                    return Ok(BoolValue::new(llvm, None));
+                }
+                if let Ok(float_value) = self.expect_float(other.clone()) {
+                    if let Some(constant) = float_value.constant() {
+                        return Ok(self.const_bool_value(constant != 0.0));
+                    }
+                    let zero = unsafe {
+                        LLVMConstReal(LLVMTypeOf(float_value.llvm()), 0.0f64 as f64)
+                    };
+                    let llvm = unsafe {
+                        LLVMBuildFCmp(
+                            self.builder,
+                            llvm_sys::LLVMRealPredicate::LLVMRealONE,
+                            float_value.llvm(),
+                            zero,
+                            CString::new("float_to_bool").unwrap().as_ptr(),
+                        )
+                    };
+                    return Ok(BoolValue::new(llvm, None));
+                }
+                Err(format!(
+                    "Expected boolean-convertible value in build mode, got {}",
+                    describe_value(&other)
+                ))
             }
         }
     }
@@ -9722,7 +10265,7 @@ impl Compiler {
         }
         Self::attach_origin(&mut value, name);
         let mut slot = None;
-        if self.target.is_embedded() && mutable {
+        if mutable {
             if let Value::Int(int_val) = value.value() {
                 unsafe {
                     let ty = LLVMTypeOf(int_val.llvm());
@@ -9787,6 +10330,7 @@ impl Compiler {
         match value.value_mut() {
             Value::Int(int_value) => int_value.constant = None,
             Value::Float(float_value) => float_value.constant = None,
+            Value::Bool(bool_value) => bool_value.constant = None,
             _ => {}
         }
     }
@@ -10299,19 +10843,22 @@ mod tests {
                 IntValue::new(ptr::null_mut(), Some(7)),
             )))),
             mutable: false,
+            slot: None,
         };
         let tuple_binding = Binding {
             cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Tuple(vec![
-                Value::Bool(true),
+                Value::Bool(compiler.const_bool_value(true)),
                 Value::Int(IntValue::new(ptr::null_mut(), Some(2))),
             ])))),
             mutable: true,
+            slot: None,
         };
         let string_binding = Binding {
             cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Str(
                 StringValue::new(ptr::null_mut(), Arc::new("hello".to_string())),
             )))),
             mutable: false,
+            slot: None,
         };
         if let Some(scope) = compiler.scopes.last_mut() {
             scope.insert("seven".into(), int_binding);
