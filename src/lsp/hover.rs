@@ -11,6 +11,8 @@ use std::collections::HashSet;
 use tower_lsp_server::lsp_types::{
     Hover, HoverContents, MarkupContent, MarkupKind,
 };
+#[cfg(test)]
+use tower_lsp_server::lsp_types::MarkedString;
 
 use super::{
     analysis::{DeclInfo, DeclKind, find_local_decl},

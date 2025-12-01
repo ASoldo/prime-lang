@@ -4828,27 +4828,99 @@ impl Compiler {
                         break;
                     }
                 },
-                WhileCondition::Let { pattern, value } => loop {
-                    let candidate = match self.emit_expression(value)? {
-                        EvalOutcome::Value(value) => value,
-                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
-                    };
-                    self.push_scope();
-                    let matched = self.match_pattern(candidate.value(), pattern, false)?;
-                    if !matched {
-                        self.exit_scope()?;
-                        break;
+                WhileCondition::Let { pattern, value } => {
+                    if let Pattern::Literal(Literal::Bool(expected, _)) = pattern {
+                        unsafe {
+                            let current_block = LLVMGetInsertBlock(self.builder);
+                            if current_block.is_null() {
+                                return Err("no insertion block for while-let loop".into());
+                            }
+                            let function = LLVMGetBasicBlockParent(current_block);
+                            if function.is_null() {
+                                return Err("while-let loop outside function".into());
+                            }
+                            let cond_block = LLVMAppendBasicBlockInContext(
+                                self.context,
+                                function,
+                                CString::new("while_let_cond").unwrap().as_ptr(),
+                            );
+                            let body_block = LLVMAppendBasicBlockInContext(
+                                self.context,
+                                function,
+                                CString::new("while_let_body").unwrap().as_ptr(),
+                            );
+                            let after_block = LLVMAppendBasicBlockInContext(
+                                self.context,
+                                function,
+                                CString::new("while_let_after").unwrap().as_ptr(),
+                            );
+                            LLVMBuildBr(self.builder, cond_block);
+                            loop {
+                                LLVMPositionBuilderAtEnd(self.builder, cond_block);
+                                let cond_value = match self.emit_expression(value)? {
+                                    EvalOutcome::Value(value) => value.into_value(),
+                                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                                };
+                                let cond_bool = self.value_to_bool(cond_value)?;
+                                let mut cond_llvm = self.bool_llvm_value(&cond_bool);
+                                if !*expected {
+                                    cond_llvm = LLVMBuildNot(
+                                        self.builder,
+                                        cond_llvm,
+                                        CString::new("while_let_not").unwrap().as_ptr(),
+                                    );
+                                }
+                                LLVMBuildCondBr(self.builder, cond_llvm, body_block, after_block);
+
+                                LLVMPositionBuilderAtEnd(self.builder, body_block);
+                                self.push_scope();
+                                let result = self.execute_block_contents(&stmt.body)?;
+                                self.exit_scope()?;
+                                match result {
+                                    BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {
+                                        LLVMBuildBr(self.builder, cond_block);
+                                    }
+                                    BlockEval::Flow(FlowSignal::Break) => {
+                                        LLVMBuildBr(self.builder, after_block);
+                                    }
+                                    BlockEval::Flow(flow @ FlowSignal::Return(_))
+                                    | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                        LLVMPositionBuilderAtEnd(self.builder, after_block);
+                                        return Ok(Some(flow));
+                                    }
+                                }
+                                LLVMPositionBuilderAtEnd(self.builder, after_block);
+                                break;
+                            }
+                        }
+                    } else {
+                        loop {
+                            let candidate = match self.emit_expression(value)? {
+                                EvalOutcome::Value(value) => value,
+                                EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                            };
+                            self.push_scope();
+                            let matched = self.match_pattern(candidate.value(), pattern, false)?;
+                            if !matched {
+                                self.exit_scope()?;
+                                break;
+                            }
+                            let result = self.execute_block_contents(&stmt.body)?;
+                            self.exit_scope()?;
+                            match result {
+                                BlockEval::Value(_) => {}
+                                BlockEval::Flow(FlowSignal::Continue) => continue,
+                                BlockEval::Flow(FlowSignal::Break) => break,
+                                BlockEval::Flow(flow @ FlowSignal::Return(_)) => {
+                                    return Ok(Some(flow))
+                                }
+                                BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                    return Ok(Some(flow))
+                                }
+                            }
+                        }
                     }
-                    let result = self.execute_block_contents(&stmt.body)?;
-                    self.exit_scope()?;
-                    match result {
-                        BlockEval::Value(_) => {}
-                        BlockEval::Flow(FlowSignal::Continue) => continue,
-                        BlockEval::Flow(FlowSignal::Break) => break,
-                        BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
-                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
-                    }
-                },
+                }
             },
             Statement::Loop(loop_stmt) => {
                 // For embedded targets, avoid unrolling an infinite loop at compile time;
@@ -6036,6 +6108,37 @@ impl Compiler {
                     .zip(b.constant())
                     .and_then(|(lhs, rhs)| if lhs == rhs { Some(lhs) } else { None });
                 Ok(self.evaluated(Value::Bool(BoolValue::new(phi, constant))))
+            }
+            (Value::Reference(a), Value::Reference(b)) => {
+                if let (Some(ha), Some(hb)) = (a.handle, b.handle) {
+                    let ty = unsafe { LLVMTypeOf(ha) };
+                    let phi = unsafe {
+                        LLVMBuildPhi(
+                            self.builder,
+                            ty,
+                            CString::new("if_ref_phi").unwrap().as_ptr(),
+                        )
+                    };
+                    let mut vals = [ha, hb];
+                    let mut blocks = [then_block, else_block];
+                    unsafe {
+                        LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);
+                    }
+                    return Ok(self.evaluated(Value::Reference(ReferenceValue {
+                        cell: a.cell.clone(),
+                        mutable: a.mutable || b.mutable,
+                        origin: a.origin.clone().or(b.origin.clone()),
+                        handle: Some(phi),
+                    })));
+                }
+                if Arc::ptr_eq(&a.cell, &b.cell) {
+                    return Ok(self.evaluated(Value::Reference(a)));
+                }
+                Err(format!(
+                    "Dynamic if expression not supported for branch values {} and {}",
+                    self.describe_value(&Value::Reference(a)),
+                    self.describe_value(&Value::Reference(b))
+                ))
             }
             (Value::Unit, Value::Unit) => Ok(self.evaluated(Value::Unit)),
             (lhs, rhs) => Err(format!(
@@ -10911,6 +11014,7 @@ mod tests {
                 IntValue::new(ptr::null_mut(), None),
             )))),
             mutable: false,
+            slot: None,
         };
         if let Some(scope) = compiler.scopes.last_mut() {
             scope.insert("ephemeral".into(), non_const_int);

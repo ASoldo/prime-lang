@@ -332,7 +332,7 @@ What it does:
 - Toolchain/ROM scripts point at the IDF-generated `sections.ld`/`memory.ld` plus ROM ld files so Xtensa ROM symbols (e.g., `ets_delay_us`, `ets_printf`) resolve correctly.
 - `[build.toolchain.env]` injects the esp-clang/Xtensa toolchains, LLVM prefix, linker choice, and a dedicated cache dir. `$PATH` is expanded in-place so existing PATH is preserved.
 - The CLI also autodetects the same defaults under `~/.espressif` if you omit them; keep these entries if your layout differs or you want a self-contained manifest.
-- UART logging: `out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (constants), and bools are rendered; each `out` appends its own newline so successive calls separate cleanly. The blink demo now prints your format strings (e.g., `hello ... {my_var}`) plus per-loop state booleans—no extra boot banner is injected by the runtime.
+ - UART logging: `out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (mutable/SSA-backed, so loop counters stay fresh), and bools are rendered; each `out` appends its own newline so successive calls separate cleanly. The blink demo now prints your format strings (e.g., `hello ... {my_var}`) plus per-loop state booleans—no extra boot banner is injected by the runtime.
   - For the bundled demo, the runtime disables RTC/TIMG watchdogs once at startup so the tight blink loop can run indefinitely without resets. Remove that if you want watchdog coverage in your own projects.
 
 How to build/flash (after installing ESP-IDF tools):
@@ -976,5 +976,11 @@ With the CLI, LSP, formatter, lint watch, and Tree-sitter grammar in place, you
 get a complete Prime editing experience: diagnostics and formatting via LSP,
 syntax highlighting via Treesitter, and a sample toolchain for learning how
 language infrastructure fits together.
+
+### Recent Updates (current)
+
+- Build-mode now lowers non-constant integer/float comparisons to LLVM `icmp`/`fcmp`, so `if/while` conditions and pattern guards can depend on runtime values without bailing out of the host build.
+- Booleans are SSA-backed (`BoolValue`), so dynamic conditions work in build mode and the emitted binaries while still folding constants for snapshots and control-flow checks.
+- Mutable scalars (ints/bools) use stack slots on all targets, keeping prints/format strings in sync with in-loop mutations for both host and embedded builds.
 
 ### Recent Updates (November 2025)

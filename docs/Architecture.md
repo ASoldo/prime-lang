@@ -101,6 +101,7 @@ graph TD
 Both modes share the same AST/type system; build mode records effects (e.g., `out`, channels) and emits equivalent code. Concurrency (spawn/join/channel) is deterministic in build snapshots and mapped to OS threads in the emitted binary.
 Async/await + channels always attach runtime handles when async code is present, so
 `recv_task`/`sleep_task` block correctly in build mode, the host binary, and Xtensa.
+Non-constant comparisons now lower to LLVM `icmp`/`fcmp` with SSA-backed booleans, keeping `if`/`while`/pattern conditions working even when values are only known at runtime.
 
 ## Embedded Runtime Highlights (src/runtime/abi.rs)
 

@@ -943,6 +943,13 @@ out(roster); // error points at the move site"#,
         ],
         sections: &[
             TopicSection {
+                title: "SSA booleans and dynamic comparisons (current)",
+                snippet: r#"- Int/float comparisons lower to LLVM icmp/fcmp when operands are non-constant
+- Booleans are SSA-backed (`BoolValue`), so `if`/`while` can depend on runtime values
+- Mutable scalars keep stack slots on all targets for accurate prints/format strings"#,
+                explanation: "Build-mode no longer bails on Lt/Gt/Eq with non-constant integers or floats; comparisons emit LLVM `icmp`/`fcmp` and return SSA booleans. Conditions (and pattern guards) accept dynamic booleans, while constant folding still applies where possible. Mutable ints/bools stay in stack slots so embedded/host prints reflect the latest value.",
+            },
+            TopicSection {
                 title: "Interpreter and build parity (April 2026)",
                 snippet: r#"- Native binary now exits with status code 0 after successful build
 - Build-mode mirrors interpreter control flow, including return/break/continue

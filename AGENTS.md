@@ -1,0 +1,3 @@
+- [x] Host build no longer fails on non-constant int/float comparisons; comparisons lower to LLVM `icmp`/`fcmp` and return SSA-backed booleans.
+- [x] Booleans are stored as `BoolValue` (SSA + optional constant) throughout the compiler; conditions accept non-constant i1 values in build mode.
+- [x] Mutable scalars (ints/bools) keep stack slots on host and embedded targets so prints/format strings reflect in-loop mutations.
