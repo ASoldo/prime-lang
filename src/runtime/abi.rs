@@ -147,18 +147,18 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     const PRIME_CHANNEL_SLOTS: usize =
-        parse_usize_env(option_env!("PRIME_RT_CHANNEL_SLOTS"), 8, 1);
+        parse_usize_env(option_env!("PRIME_RT_CHANNEL_SLOTS"), 32, 1);
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    const PRIME_CHANNEL_CAP: usize = parse_usize_env(option_env!("PRIME_RT_CHANNEL_CAP"), 8, 1);
+    const PRIME_CHANNEL_CAP: usize = parse_usize_env(option_env!("PRIME_RT_CHANNEL_CAP"), 16, 1);
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
     const PRIME_CHANNEL_WAITERS: usize =
-        parse_usize_env(option_env!("PRIME_RT_CHANNEL_WAITERS"), PRIME_TASK_SLOTS, 1);
+        parse_usize_env(option_env!("PRIME_RT_CHANNEL_WAITERS"), PRIME_TASK_SLOTS * 2, 1);
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
