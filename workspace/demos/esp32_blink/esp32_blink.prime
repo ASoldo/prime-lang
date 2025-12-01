@@ -11,9 +11,9 @@ pub enum Result[T, E] {
 }
 
 fn channel_demo() {
-  let (tx, rx) = channel[int32]();
   out("channel demo: sending 42");
 
+  let (tx, rx) = channel[int32]();
   let _ = send(tx, 42);
   match recv(rx) {
     Option::Some(v) => out(`channel recv: {v}`),
