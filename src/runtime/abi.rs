@@ -287,7 +287,30 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    static mut ENUM_HANDLES: [Option<PrimeEnum>; 8] = [None; 8];
+    static mut ENUM_HANDLES: [Option<PrimeEnum>; 128] = [None; 128];
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    static ENUM_HANDLE_NEXT: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(target_arch = "xtensa")]
+    static PRINT_COUNT: AtomicU32 = AtomicU32::new(0);
+    #[cfg(target_arch = "xtensa")]
+    static STRING_COUNT: AtomicU32 = AtomicU32::new(0);
+    #[cfg(target_arch = "xtensa")]
+    static ENUM_COUNT: AtomicU32 = AtomicU32::new(0);
+    #[cfg(target_arch = "xtensa")]
+    static STRING_WRAP_COUNT: AtomicU32 = AtomicU32::new(0);
+    #[cfg(target_arch = "xtensa")]
+    static STRING_HANDLE_WRAP: AtomicU32 = AtomicU32::new(0);
+    #[cfg(target_arch = "xtensa")]
+    static CHANNEL_ALLOC_COUNT: AtomicU32 = AtomicU32::new(0);
+    #[cfg(target_arch = "xtensa")]
+    static CHANNEL_FREE_COUNT: AtomicU32 = AtomicU32::new(0);
+    #[cfg(target_arch = "xtensa")]
+    static TASK_ALLOC_COUNT: AtomicU32 = AtomicU32::new(0);
+    #[cfg(target_arch = "xtensa")]
+    static TASK_FREE_COUNT: AtomicU32 = AtomicU32::new(0);
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -316,14 +339,14 @@ mod embedded {
     ))]
     fn alloc_enum(tag: u32, value: PrimeHandle, len: usize) -> PrimeHandle {
         unsafe {
-            for slot in ENUM_HANDLES.iter_mut() {
-                if slot.is_none() {
-                    *slot = Some(PrimeEnum { tag, value, len });
-                    return PrimeHandle(
-                        slot.as_ref().unwrap() as *const PrimeEnum as *mut core::ffi::c_void
-                    );
-                }
+            let idx = ENUM_HANDLE_NEXT.fetch_add(1, Ordering::Relaxed) % ENUM_HANDLES.len();
+            ENUM_HANDLES[idx] = Some(PrimeEnum { tag, value, len });
+            let handle_ptr = ENUM_HANDLES[idx].as_ref().unwrap() as *const PrimeEnum;
+            #[cfg(target_arch = "xtensa")]
+            {
+                ENUM_COUNT.fetch_add(1, Ordering::Relaxed);
             }
+            return PrimeHandle(handle_ptr as *mut core::ffi::c_void);
         }
         PrimeHandle::null()
     }
@@ -341,6 +364,10 @@ mod embedded {
                     .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
                 {
+                    #[cfg(target_arch = "xtensa")]
+                    {
+                        TASK_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+                    }
                     slot.done.store(false, Ordering::SeqCst);
                     *slot.deadline_ms.get() = 0;
                     *slot.result.get() = PrimeHandle::null();
@@ -362,7 +389,10 @@ mod embedded {
         let ptr = handle.0 as *const TaskSlot;
         task_slots()
             .iter()
-            .find(|slot| *slot as *const TaskSlot == ptr)
+            .find(|slot| {
+                // Reject stale handles for recycled slots.
+                slot.used.load(Ordering::SeqCst) && *slot as *const TaskSlot == ptr
+            })
     }
 
     #[cfg(any(
@@ -377,6 +407,10 @@ mod embedded {
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
+                #[cfg(target_arch = "xtensa")]
+                {
+                    CHANNEL_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
                 slot.closed.store(false, Ordering::SeqCst);
                 unsafe {
                     *slot.head.get() = 0;
@@ -404,7 +438,10 @@ mod embedded {
         let ptr = handle.0 as *const ChannelSlot;
         channel_slots()
             .iter()
-            .find(|slot| *slot as *const ChannelSlot == ptr)
+            .find(|slot| {
+                // Guard against stale handles after a slot is recycled.
+                slot.used.load(Ordering::SeqCst) && *slot as *const ChannelSlot == ptr
+            })
     }
 
     #[cfg(any(
@@ -767,6 +804,28 @@ mod embedded {
         if let Some(slot) = channel_from_handle(_handle) {
             slot.closed.store(true, Ordering::SeqCst);
             let _ = poll_channel_waiters();
+            // Drop any waiters that were bound to this channel to avoid stale pointers
+            // keeping the slot “in use” after we recycle it.
+            for waiter in channel_waiters().iter() {
+                let channel_ptr = unsafe { *waiter.channel.get() };
+                if channel_ptr == slot as *const ChannelSlot {
+                    waiter.used.store(false, Ordering::SeqCst);
+                }
+            }
+            #[cfg(target_arch = "xtensa")]
+            {
+                CHANNEL_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+            unsafe {
+                *slot.head.get() = 0;
+                *slot.tail.get() = 0;
+                *slot.len.get() = 0;
+                let buf = &mut *slot.queue.get();
+                for elem in buf.iter_mut() {
+                    *elem = PrimeHandle::null();
+                }
+            }
+            slot.used.store(false, Ordering::SeqCst);
             return PrimeStatus::Ok;
         }
         PrimeStatus::Invalid
@@ -1256,6 +1315,16 @@ mod embedded {
         unsafe {
             result_out.write(value);
         }
+        slot.used.store(false, Ordering::SeqCst);
+        slot.done.store(false, Ordering::SeqCst);
+        unsafe {
+            *slot.result.get() = PrimeHandle::null();
+            *slot.deadline_ms.get() = 0;
+        }
+        #[cfg(target_arch = "xtensa")]
+        {
+            TASK_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
         PrimeStatus::Ok
     }
 
@@ -1343,11 +1412,13 @@ mod embedded {
         len: usize,
     }
 
-    // Tiny bump allocator for strings; enough for demo prints (Xtensa only).
+    // String ring buffer for UART prints; big enough for steady logging and
+    // wraps safely. Each entry stores a copy so callers can pass stack/data
+    // pointers without lifetime issues.
     #[cfg(target_arch = "xtensa")]
-    const STR_STORAGE_SIZE: usize = 1024;
+    const STR_STORAGE_SIZE: usize = 8192;
     #[cfg(target_arch = "xtensa")]
-    const STR_HANDLES_MAX: usize = 16;
+    const STR_HANDLES_MAX: usize = 64;
     #[cfg(target_arch = "xtensa")]
     static mut STR_STORAGE: [u8; STR_STORAGE_SIZE] = [0; STR_STORAGE_SIZE];
     #[cfg(target_arch = "xtensa")]
@@ -1363,35 +1434,82 @@ mod embedded {
     #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_string_new(data: *const u8, len: usize) -> PrimeHandle {
-        // Simple ring buffers to keep printing in tight loops without panicking.
+        if data.is_null() {
+            return PrimeHandle::null();
+        }
+        STRING_COUNT.fetch_add(1, Ordering::Relaxed);
         let slot = {
             let mut next = STR_HANDLE_OFF.load(Ordering::Relaxed);
             if next >= STR_HANDLES_MAX {
                 next = 0;
+                STRING_HANDLE_WRAP.fetch_add(1, Ordering::Relaxed);
             }
             STR_HANDLE_OFF.store(next + 1, Ordering::Relaxed);
             next
         };
         let start = {
             let mut off = STR_STORAGE_OFF.load(Ordering::Relaxed);
-            // Reserve space for the string plus a null terminator.
-            if off + len + 1 >= STR_STORAGE_SIZE {
+            let need = len.saturating_add(1); // room for null
+            if off + need >= STR_STORAGE_SIZE {
                 off = 0;
+                STRING_WRAP_COUNT.fetch_add(1, Ordering::Relaxed);
             }
-            STR_STORAGE_OFF.store(off + len + 1, Ordering::Relaxed);
+            STR_STORAGE_OFF.store(off + need, Ordering::Relaxed);
             off
         };
         let avail = STR_STORAGE_SIZE - start;
         let copy_len = core::cmp::min(len, avail.saturating_sub(1));
         let dst = STR_STORAGE.as_mut_ptr().add(start);
         core::ptr::copy_nonoverlapping(data, dst, copy_len);
-        // Null-terminate for %s printing.
         core::ptr::write(dst.add(copy_len), 0);
         STR_HANDLES[slot] = PrimeString {
             ptr: dst as *const u8,
             len: copy_len,
         };
         PrimeHandle(STR_HANDLES.as_mut_ptr().add(slot) as *mut c_void)
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_int_to_string(value: i128) -> PrimeHandle {
+        // Render i128 into decimal string using the same ring buffer as prime_string_new.
+        let mut buf = [0u8; 48];
+        let mut idx = buf.len();
+        let neg = value < 0;
+        let mut n = if neg {
+            value.wrapping_neg() as u128
+        } else {
+            value as u128
+        };
+        if n == 0 {
+            idx -= 1;
+            buf[idx] = b'0';
+        } else {
+            while n > 0 {
+                let digit = (n % 10) as u8;
+                idx -= 1;
+                buf[idx] = b'0' + digit;
+                n /= 10;
+            }
+        }
+        if neg {
+            idx -= 1;
+            buf[idx] = b'-';
+        }
+        prime_string_new(buf.as_ptr().add(idx), buf.len() - idx)
+    }
+
+    #[cfg(any(
+        not(target_arch = "xtensa"),
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_int_to_string(_value: i128) -> PrimeHandle {
+        // Host stub: ints are printed directly by host runtime, so this is unused.
+        PrimeHandle::null()
     }
 
     #[cfg(any(
@@ -1406,7 +1524,11 @@ mod embedded {
         let s = &*(value.0 as *const PrimeString);
         #[cfg(target_arch = "xtensa")]
         {
+            let count = PRINT_COUNT.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
             ets_printf(b"%s\0".as_ptr(), s.ptr);
+            if count % 64 == 0 {
+                log_stats_snapshot();
+            }
         }
         #[cfg(not(target_arch = "xtensa"))]
         let _ = s;
@@ -1667,6 +1789,37 @@ mod embedded {
     const MCU_SEL_MASK: u32 = 0b111 << 12;
     #[cfg(target_arch = "xtensa")]
     const FUNC_GPIO: u32 = 0b010;
+
+    #[cfg(target_arch = "xtensa")]
+    #[inline]
+    fn log_stats_snapshot() {
+        let pc = PRINT_COUNT.load(Ordering::Relaxed);
+        let sc = STRING_COUNT.load(Ordering::Relaxed);
+        let ec = ENUM_COUNT.load(Ordering::Relaxed);
+        let ca = CHANNEL_ALLOC_COUNT.load(Ordering::Relaxed);
+        let cf = CHANNEL_FREE_COUNT.load(Ordering::Relaxed);
+        let ta = TASK_ALLOC_COUNT.load(Ordering::Relaxed);
+        let tf = TASK_FREE_COUNT.load(Ordering::Relaxed);
+        let sw = STRING_WRAP_COUNT.load(Ordering::Relaxed);
+        let shw = STRING_HANDLE_WRAP.load(Ordering::Relaxed);
+        let off = STR_STORAGE_OFF.load(Ordering::Relaxed) as u32;
+        unsafe {
+            ets_printf(
+                b"[rt] pc=%u sc=%u ec=%u ca=%u cf=%u ta=%u tf=%u sw=%u shw=%u off=%u\n\0"
+                    .as_ptr(),
+                pc,
+                sc,
+                ec,
+                ca,
+                cf,
+                ta,
+                tf,
+                sw,
+                shw,
+                off,
+            );
+        }
+    }
 
     // Watchdog control registers.
     #[cfg(target_arch = "xtensa")]

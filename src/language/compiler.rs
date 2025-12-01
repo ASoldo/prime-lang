@@ -130,7 +130,7 @@ pub struct Compiler {
 enum Value {
     Int(IntValue),
     Float(FloatValue),
-    Bool(bool),
+    Bool(BoolValue),
     Str(StringValue),
     Struct(StructValue),
     Enum(EnumValue),
@@ -193,6 +193,12 @@ type FormatRuntimeSegment = FormatRuntimeSegmentGeneric<EvaluatedValue>;
 struct IntValue {
     llvm: LLVMValueRef,
     constant: Option<i128>,
+}
+
+#[derive(Clone)]
+struct BoolValue {
+    llvm: LLVMValueRef,
+    constant: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -612,6 +618,7 @@ struct StructValue {
 struct Binding {
     cell: Arc<Mutex<EvaluatedValue>>,
     mutable: bool,
+    slot: Option<LLVMValueRef>, // Optional alloca backing for mutable scalars (embedded loops).
 }
 
 #[derive(Clone, Copy)]
@@ -1183,6 +1190,20 @@ impl IntValue {
     }
 }
 
+impl BoolValue {
+    fn new(llvm: LLVMValueRef, constant: Option<bool>) -> Self {
+        Self { llvm, constant }
+    }
+
+    fn llvm(&self) -> LLVMValueRef {
+        self.llvm
+    }
+
+    fn constant(&self) -> Option<bool> {
+        self.constant
+    }
+}
+
 impl FloatValue {
     fn new(llvm: LLVMValueRef, constant: Option<f64>) -> Self {
         Self { llvm, constant }
@@ -1623,6 +1644,13 @@ impl Compiler {
         unsafe {
             let llvm = LLVMConstReal(self.f64_type, value);
             FloatValue::new(llvm, Some(value))
+        }
+    }
+
+    fn const_bool_value(&self, value: bool) -> BoolValue {
+        unsafe {
+            let llvm = LLVMConstInt(self.runtime_abi.bool_type, value as u64, 0);
+            BoolValue::new(llvm, Some(value))
         }
     }
 
@@ -2195,11 +2223,13 @@ impl Compiler {
                 }
                 FormatRuntimeSegment::Named(value) => {
                     let mut wrapped = value;
+                    wrapped.runtime = None;
                     self.maybe_attach_runtime_handle(&mut wrapped);
                     self.print_value(wrapped)?;
                 }
                 FormatRuntimeSegment::Implicit => {
                     if let Some(mut value) = args_iter.next() {
+                        value.runtime = None;
                         self.maybe_attach_runtime_handle(&mut value);
                         self.print_value(value)?;
                     }
@@ -2236,38 +2266,136 @@ impl Compiler {
         }
     }
 
+    fn emit_embedded_labeled_print(&mut self, label: &str, handle: LLVMValueRef) {
+        if handle.is_null() || !self.target.is_embedded() {
+            return;
+        }
+        if let Ok((ptr, len)) = self.build_runtime_bytes(label, "rt_label") {
+            let mut call_args = [ptr, len];
+            let label_handle = self.call_runtime(
+                self.runtime_abi.prime_string_new,
+                self.runtime_abi.prime_string_new_ty,
+                &mut call_args,
+                "string_new_label",
+            );
+            let mut print_args = [label_handle];
+            self.call_runtime(
+                self.runtime_abi.prime_print,
+                self.runtime_abi.prime_print_ty,
+                &mut print_args,
+                "prime_print_label",
+            );
+        }
+        let mut print_args = [handle];
+        self.call_runtime(
+            self.runtime_abi.prime_print,
+            self.runtime_abi.prime_print_ty,
+            &mut print_args,
+            "prime_print_value",
+        );
+    }
+
     fn print_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         let mut value = value;
+        let runtime_handle = if self.target.is_embedded() {
+            value
+                .runtime_handle()
+                .or_else(|| self.maybe_attach_runtime_handle(&mut value))
+        } else {
+            value.runtime_handle()
+        };
         let owned = value.clone().into_value();
         if self.target.is_embedded() {
-            // Embedded runtime only knows how to print strings; render common scalars into strings.
-            let printable = match &owned {
-                Value::Str(string) => Some(string.text.as_ref().clone()),
-                Value::Int(int_value) => int_value.constant.map(|c| c.to_string()),
-                Value::Bool(flag) => Some(if *flag { "true".into() } else { "false".into() }),
-                _ => None,
-            };
-            if let Some(text) = printable {
-                let (ptr, len) = self.build_runtime_bytes(&text, "rt_print")?;
-                let mut call_args = [ptr, len];
-                let handle = self.call_runtime(
-                    self.runtime_abi.prime_string_new,
-                    self.runtime_abi.prime_string_new_ty,
-                    &mut call_args,
-                    "string_new",
-                );
-                let mut print_args = [handle];
-                self.call_runtime(
-                    self.runtime_abi.prime_print,
-                    self.runtime_abi.prime_print_ty,
-                    &mut print_args,
-                    "prime_print",
-                );
-                return Ok(());
+            // Embedded runtime: render scalars into strings via runtime helpers.
+            match &owned {
+                Value::Reference(reference) => {
+                    // Print the current pointed-to value.
+                    let inner = reference.cell.lock().unwrap().clone();
+                    return self.print_value(inner);
+                }
+                Value::Str(string) => {
+                    let (ptr, len) = self.build_runtime_bytes(&string.text, "rt_print")?;
+                    let mut call_args = [ptr, len];
+                    let handle = self.call_runtime(
+                        self.runtime_abi.prime_string_new,
+                        self.runtime_abi.prime_string_new_ty,
+                        &mut call_args,
+                        "string_new",
+                    );
+                    let mut print_args = [handle];
+                    self.call_runtime(
+                        self.runtime_abi.prime_print,
+                        self.runtime_abi.prime_print_ty,
+                        &mut print_args,
+                        "prime_print",
+                    );
+                    return Ok(());
+                }
+                Value::Int(int_value) => {
+                    // Always use the current SSA value so mutable ints print correctly.
+                    let arg = self.int_to_runtime_int(int_value, "print_int_cast")?;
+                    let mut args = [arg];
+                    let handle = self.call_runtime(
+                        self.runtime_abi.prime_int_to_string,
+                        self.runtime_abi.prime_int_to_string_ty,
+                        &mut args,
+                        "int_to_string",
+                    );
+                    // Optional diagnostic for tracking stale handles in embedded format prints.
+                    if env::var_os("PRIME_DEBUG_EMBED_INT").is_some() {
+                        self.emit_embedded_labeled_print("ssa=", handle);
+                        if let Some(rt_handle) = runtime_handle
+                            .or_else(|| self.maybe_attach_runtime_handle(&mut value))
+                        {
+                            let mut val_args = [rt_handle];
+                            let rt_int = self.call_runtime(
+                                self.runtime_abi.prime_value_as_int,
+                                self.runtime_abi.prime_value_as_int_ty,
+                                &mut val_args,
+                                "debug_value_as_int",
+                            );
+                            let mut to_string_args = [rt_int];
+                            let rt_string = self.call_runtime(
+                                self.runtime_abi.prime_int_to_string,
+                                self.runtime_abi.prime_int_to_string_ty,
+                                &mut to_string_args,
+                                "debug_int_to_string",
+                            );
+                            self.emit_embedded_labeled_print("rt=", rt_string);
+                        }
+                    }
+                    let mut print_args = [handle];
+                    self.call_runtime(
+                        self.runtime_abi.prime_print,
+                        self.runtime_abi.prime_print_ty,
+                        &mut print_args,
+                        "prime_print",
+                    );
+                    return Ok(());
+                }
+                Value::Bool(flag) => {
+                    let text = if *flag { "true" } else { "false" };
+                    let (ptr, len) = self.build_runtime_bytes(text, "rt_print_bool")?;
+                    let mut call_args = [ptr, len];
+                    let handle = self.call_runtime(
+                        self.runtime_abi.prime_string_new,
+                        self.runtime_abi.prime_string_new_ty,
+                        &mut call_args,
+                        "string_new",
+                    );
+                    let mut print_args = [handle];
+                    self.call_runtime(
+                        self.runtime_abi.prime_print,
+                        self.runtime_abi.prime_print_ty,
+                        &mut print_args,
+                        "prime_print",
+                    );
+                    return Ok(());
+                }
+                _ => {}
             }
         }
-        if let Some(handle) = value
-            .runtime_handle()
+        if let Some(handle) = runtime_handle
             .or_else(|| self.maybe_attach_runtime_handle(&mut value))
         {
             self.emit_runtime_print(handle);
@@ -4760,9 +4888,18 @@ impl Compiler {
             Expr::Literal(Literal::Int(value, _)) => Ok(EvalOutcome::Value(
                 self.evaluated(Value::Int(self.const_int_value(*value as i128))),
             )),
-            Expr::Literal(Literal::Bool(value, _)) => {
-                Ok(EvalOutcome::Value(self.evaluated(Value::Bool(*value))))
-            }
+            Expr::Literal(Literal::Bool(value, _)) => Ok(EvalOutcome::Value(
+                self.evaluated(Value::Bool(BoolValue::new(
+                    unsafe {
+                        LLVMConstInt(
+                            self.runtime_abi.bool_type,
+                            *value as u64,
+                            0,
+                        )
+                    },
+                    Some(*value),
+                ))),
+            )),
             Expr::Literal(Literal::Float(value, _)) => Ok(EvalOutcome::Value(
                 self.evaluated(Value::Float(self.const_float_value(*value))),
             )),
@@ -8882,10 +9019,10 @@ impl Compiler {
         let mut call_args = [handle];
         self.call_runtime(
             self.runtime_abi.prime_print,
-            self.runtime_abi.prime_print_ty,
-            &mut call_args,
-            "debug_show",
-        );
+                self.runtime_abi.prime_print_ty,
+                &mut call_args,
+                "debug_show",
+            );
         Ok(Value::Unit)
     }
 
@@ -9342,17 +9479,35 @@ impl Compiler {
 
     fn assign_var(&mut self, name: &str, value: EvaluatedValue) -> Result<(), String> {
         for index in (0..self.scopes.len()).rev() {
+            let mut found = None;
             if let Some(binding) = self.scopes[index].get(name) {
-                if !binding.mutable {
+                found = Some((binding.cell.clone(), binding.mutable, binding.slot));
+            }
+            if let Some((cell, mutable, slot)) = found {
+                if !mutable {
                     return Err(format!("Variable {} is immutable", name));
                 }
-                let cell = binding.cell.clone();
                 self.track_reference_borrow_in_scope(value.value(), index)?;
                 {
                     let current = cell.lock().unwrap();
                     self.release_reference_borrow(current.value());
                 }
-                *cell.lock().unwrap() = value;
+                let mut updated = value;
+                if mutable {
+                    Self::clear_scalar_constant(&mut updated);
+                }
+                if let (Some(slot), Value::Int(int_val)) =
+                    (slot, updated.value().clone())
+                {
+                    unsafe {
+                        LLVMBuildStore(
+                            self.builder,
+                            int_val.llvm(),
+                            slot,
+                        );
+                    }
+                }
+                *cell.lock().unwrap() = updated;
                 return Ok(());
             }
         }
@@ -9562,14 +9717,39 @@ impl Compiler {
         let scope_index = self.scopes.len().saturating_sub(1);
         let drop_target = self.drop_type_for_value(value.value());
         let mut value = value;
+        if mutable {
+            Self::clear_scalar_constant(&mut value);
+        }
         Self::attach_origin(&mut value, name);
+        let mut slot = None;
+        if self.target.is_embedded() && mutable {
+            if let Value::Int(int_val) = value.value() {
+                unsafe {
+                    let ty = LLVMTypeOf(int_val.llvm());
+                    let alloca = LLVMBuildAlloca(
+                        self.builder,
+                        ty,
+                        CString::new(format!("{name}_slot")).unwrap().as_ptr(),
+                    );
+                    LLVMBuildStore(self.builder, int_val.llvm(), alloca);
+                    slot = Some(alloca);
+                }
+            }
+        }
         let cell = Arc::new(Mutex::new(value));
         {
             let stored = cell.lock().unwrap();
             self.track_reference_borrow_in_scope(stored.value(), scope_index)?;
         }
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), Binding { cell, mutable });
+            scope.insert(
+                name.to_string(),
+                Binding {
+                    cell,
+                    mutable,
+                    slot,
+                },
+            );
             if let Some(type_name) = drop_target {
                 self.queue_drop(name, type_name);
             }
@@ -9603,9 +9783,33 @@ impl Compiler {
         }
     }
 
-    fn get_var(&self, name: &str) -> Option<EvaluatedValue> {
+    fn clear_scalar_constant(value: &mut EvaluatedValue) {
+        match value.value_mut() {
+            Value::Int(int_value) => int_value.constant = None,
+            Value::Float(float_value) => float_value.constant = None,
+            _ => {}
+        }
+    }
+
+    fn get_var(&mut self, name: &str) -> Option<EvaluatedValue> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.get(name) {
+                if let Some(slot) = binding.slot {
+                    let guard = binding.cell.lock().unwrap().clone();
+                    if let Value::Int(int_val) = guard.value() {
+                        unsafe {
+                            let loaded = LLVMBuildLoad2(
+                                self.builder,
+                                LLVMTypeOf(int_val.llvm()),
+                                slot,
+                                CString::new(format!("{name}_load")).unwrap().as_ptr(),
+                            );
+                            return Some(self.evaluated(Value::Int(IntValue::new(
+                                loaded, None,
+                            ))));
+                        }
+                    }
+                }
                 return Some(binding.cell.lock().unwrap().clone());
             }
         }

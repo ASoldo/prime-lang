@@ -33,6 +33,7 @@ fn main() {
   out("starting async blink demo on esp32 (no_std)");
 
   let blinker = async {
+    let mut int32 counter = 0;
     loop {
       let int32 on_level = if led_active_low {
         0
@@ -40,7 +41,7 @@ fn main() {
         1
       };
       digital_write(led, on_level);
-      out("async blink: LED ON");
+      out(`async blink: LED ON (count {counter})`);
       delay_ms(1000);
       channel_demo();
 
@@ -50,8 +51,9 @@ fn main() {
         0
       };
       digital_write(led, off_level);
-      out("async blink: LED OFF");
+      out(`async blink: LED OFF (count {counter})`);
       delay_ms(1000);
+      counter = counter + 1;
     }
   };
   await blinker;

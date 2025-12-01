@@ -111,6 +111,8 @@ pub struct RuntimeAbi {
     pub prime_recv_task_ty: LLVMTypeRef,
     pub prime_print: LLVMValueRef,
     pub prime_print_ty: LLVMTypeRef,
+    pub prime_int_to_string: LLVMValueRef,
+    pub prime_int_to_string_ty: LLVMTypeRef,
     pub prime_read_value: LLVMValueRef,
     pub prime_read_value_ty: LLVMTypeRef,
     pub prime_struct_new: LLVMValueRef,
@@ -381,6 +383,8 @@ impl RuntimeAbi {
             declare_fn(module, "prime_recv_task", handle_type, &mut [handle_type]);
         let (prime_print, prime_print_ty) =
             declare_fn(module, "prime_print", void_type, &mut [handle_type]);
+        let (prime_int_to_string, prime_int_to_string_ty) =
+            declare_fn(module, "prime_int_to_string", handle_type, &mut [int_type]);
         let (prime_read_value, prime_read_value_ty) = declare_fn(
             module,
             "prime_read_value",
@@ -533,6 +537,8 @@ impl RuntimeAbi {
             prime_recv_task_ty,
             prime_print,
             prime_print_ty,
+            prime_int_to_string,
+            prime_int_to_string_ty,
             prime_read_value,
             prime_read_value_ty,
             prime_struct_new,
@@ -651,6 +657,8 @@ impl RuntimeAbi {
             prime_recv_task_ty: std::ptr::null_mut(),
             prime_print: std::ptr::null_mut(),
             prime_print_ty: std::ptr::null_mut(),
+            prime_int_to_string: std::ptr::null_mut(),
+            prime_int_to_string_ty: std::ptr::null_mut(),
             prime_read_value: std::ptr::null_mut(),
             prime_read_value_ty: std::ptr::null_mut(),
             prime_struct_new: std::ptr::null_mut(),
