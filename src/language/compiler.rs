@@ -8542,6 +8542,13 @@ impl Compiler {
         let mut slice = self.expect_slice_value(args.pop().unwrap(), "slice_get")?;
         let int_value = self.expect_int(index_value)?;
         let idx_const = int_value.constant();
+        if env::var_os("PRIME_DEBUG_SLICE_GET").is_some() {
+            if let Some(c) = idx_const {
+                eprintln!("[prime-debug] slice_get idx const={c} len={}", slice.len());
+            } else {
+                eprintln!("[prime-debug] slice_get idx non-const len={}", slice.len());
+            }
+        }
         let mut handle = slice.handle;
         if handle.is_none() && idx_const.is_none() {
             if let Ok(runtime) = self.build_runtime_handle(Value::Slice(slice.clone())) {
@@ -8588,9 +8595,7 @@ impl Compiler {
                 origin: None,
                 handle: Some(loaded),
             };
-            return self
-                .instantiate_enum_variant("Some", vec![Value::Reference(reference.clone())])
-                .or_else(|_| Ok(Value::Reference(reference)));
+            return self.instantiate_enum_variant("Some", vec![Value::Reference(reference)]);
         }
         let idx = idx_const
             .ok_or_else(|| "slice_get index must be constant in build mode".to_string())?;
@@ -10094,15 +10099,11 @@ impl Compiler {
                 if mutable {
                     Self::clear_scalar_constant(&mut updated);
                 }
-                if let (Some(slot), Value::Int(int_val)) =
-                    (slot, updated.value().clone())
-                {
-                    unsafe {
-                        LLVMBuildStore(
-                            self.builder,
-                            int_val.llvm(),
-                            slot,
-                        );
+                if let Some(slot) = slot {
+                    if let Value::Int(int_val) = updated.value() {
+                        unsafe {
+                            LLVMBuildStore(self.builder, int_val.llvm(), slot);
+                        }
                     }
                 }
                 *cell.lock().unwrap() = updated;
@@ -10431,9 +10432,11 @@ impl Compiler {
 
     fn clear_scalar_constant(value: &mut EvaluatedValue) {
         match value.value_mut() {
-            Value::Int(int_value) => int_value.constant = None,
-            Value::Float(float_value) => float_value.constant = None,
-            Value::Bool(bool_value) => bool_value.constant = None,
+            Value::Int(_)
+            | Value::Float(_)
+            | Value::Bool(_) => {
+                // Keep tracked constants for mutable scalars so build-mode loops can observe updated values.
+            }
             _ => {}
         }
     }
@@ -10452,7 +10455,8 @@ impl Compiler {
                                 CString::new(format!("{name}_load")).unwrap().as_ptr(),
                             );
                             return Some(self.evaluated(Value::Int(IntValue::new(
-                                loaded, None,
+                                loaded,
+                                int_val.constant(),
                             ))));
                         }
                     }
