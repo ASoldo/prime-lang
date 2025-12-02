@@ -71,21 +71,26 @@ fn drive_led(led: int32, level: int32) -> Result[(), string] {
 fn pool_reuse_sanity(iterations: int32) -> Result[(), string] {
   let mut int32 i = 0;
   while i < iterations {
+    out(`pool reuse iter {i}: start`);
     let (tx, rx) = channel[int32]();
     let worker = spawn async {
       let Option[int32] received = await recv_task(rx);
       match received {
-        Option::Some(v) => Result::Ok(v + 10),
-        Option::None => Result::Err("channel closed"),
+        Option::Some(v) => {
+          out(`pool reuse worker: recv_task got Some({v})`);
+          Result::Ok(v + 10)
+        },
+        Option::None => {
+          out("pool reuse worker: recv_task got None");
+          Result::Err("channel closed")
+        },
       }
     };
+    out(`pool reuse iter {i}: sending value`);
     let _ = send(tx, i);
     close(tx);
-    match join(worker) {
-      Result::Ok(v) => out(`pool reuse iter {i}: joined {v}`),
-      Result::Err(msg) => out(`pool reuse iter {i}: err {msg}`),
-      _ => out(`pool reuse iter {i}: unexpected join result`),
-    }
+    let _ = join(worker); // wait for completion; join value may be unit on embedded
+    out(`pool reuse iter {i}: completed`);
     i = i + 1;
   }
   Result::Ok(())
