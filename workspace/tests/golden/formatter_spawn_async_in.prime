@@ -1,0 +1,15 @@
+module tests::formatter_spawn_async;
+
+fn demo() {
+  let (tx, rx) = channel[int32]();
+  let task = spawn async {
+  let Option[int32] value = await recv_task(rx);
+  match value {
+    Option::Some(v) => out(`v {v}`),
+    Option::None => out("none"),
+  }
+};
+  let _ = send(tx, 1);
+  close(tx);
+  join(task);
+}

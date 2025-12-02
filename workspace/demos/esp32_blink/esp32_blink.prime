@@ -48,12 +48,12 @@ fn main() {
 
   let (probe_tx, probe_rx) = channel[int32]();
   let probe = spawn async {
-  let Option[int32] received = await recv_task(probe_rx);
-  match received {
-    Option::Some(v) => out(`probe recv via spawn/join: {v}`),
-    Option::None => out("probe channel closed before recv_task"),
-  }
-};
+    let Option[int32] received = await recv_task(probe_rx);
+    match received {
+      Option::Some(v) => out(`probe recv via spawn/join: {v}`),
+      Option::None => out("probe channel closed before recv_task"),
+    }
+  };
   let _ = send(probe_tx, 99);
   close(probe_tx);
   join(probe);

@@ -687,6 +687,17 @@ fn emit_initializer_expression(out: &mut String, base_indent: usize, expr: &Expr
             out.push('}');
             true
         }
+        Expr::Spawn { expr, .. } => {
+            if let Expr::Async { block, .. } = expr.as_ref() {
+                out.push_str("spawn async {\n");
+                format_block(out, block, base_indent + 2);
+                write_indent(out, base_indent);
+                out.push('}');
+                true
+            } else {
+                false
+            }
+        }
         Expr::Match(match_expr) => {
             write_match_expression(out, match_expr, base_indent, false);
             true
@@ -1667,6 +1678,16 @@ mod tests {
         let input = fs::read_to_string("workspace/tests/golden/formatter_async_init_in.prime")
             .expect("fixture input");
         let output = fs::read_to_string("workspace/tests/golden/formatter_async_init_out.prime")
+            .expect("fixture out");
+        let formatted = format_fixture(&input);
+        assert_eq!(formatted, output);
+    }
+
+    #[test]
+    fn formatter_spawn_async_initializer() {
+        let input = fs::read_to_string("workspace/tests/golden/formatter_spawn_async_in.prime")
+            .expect("fixture input");
+        let output = fs::read_to_string("workspace/tests/golden/formatter_spawn_async_out.prime")
             .expect("fixture out");
         let formatted = format_fixture(&input);
         assert_eq!(formatted, output);
