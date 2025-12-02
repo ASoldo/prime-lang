@@ -37,8 +37,8 @@ Notes:
 
 ## Parity Checklist (run/build/embedded)
 
-- Control flow, pattern matching, generics/interfaces, macros, Option/Result + `try {}`/`?`, Drop + `defer`, mutable scalars (stack slots for ints/bools), and SSA-backed comparisons match across interpreter, host build, and Xtensa no_std.
-- Concurrency: channels + spawn/join behave the same in run/build; embedded uses the async/task runtime (spawn maps to tasks, not OS threads). Async/await (`sleep_task`/`recv_task`) works on Xtensa with the waiter queue + poll noted above.
+- Control flow, pattern matching, generics/interfaces, macros, Option/Result + `try {}`/`?`, Drop + `defer`, mutable scalars (stack slots for ints/bools), and SSA-backed comparisons match across interpreter, host build, and Xtensa no_std. Runtime-backed `Result` payloads unwrap correctly inside async blocks with `?`.
+- Concurrency: channels + spawn/join behave the same in run/build; embedded uses the async/task runtime (spawn maps to tasks, not OS threads). Async/await (`sleep_task`/`recv_task`) works on Xtensa with the waiter queue + poll noted above, and `spawn`/`join` parity is supported in embedded.
 - I/O: `out` is available everywhere; filesystem built-ins (`fs_exists`/`fs_read`/`fs_write`) are host-only. `delay_ms`/`now_ms` are bridged to ROM stubs on Xtensa; host uses std timers.
 - Platform hooks: `pin_mode`/`digital_write` are embedded-only. If you call them on host, the platform shim reports an error.
 - Manifests: set `no_std = true` on embedded modules (see `workspace/demos/esp32_blink/prime.toml` and `workspace/demos/bare_metal_embedded/prime.toml`). Provide toolchain/env overrides or rely on CLI autodetect under `~/.espressif`.
