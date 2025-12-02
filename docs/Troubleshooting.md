@@ -12,6 +12,7 @@ Quick tips to unblock common issues when hacking on prime-lang or the ESP32 demo
 - `windowed` warnings: suppressed via `-Aunstable-features`; safe to ignore with current esp-clang/xtensa setup.
 - Resets/boot spam: watchdogs are disabled once in the demo runtime. If you re-enable them, add feeds or widen timeouts; frequent resets print the bootloader header repeatedly.
 - Missing UART prints: `out(...)` on Xtensa supports strings/format strings/ints/bools only; each call prints with a newline. Ring-buffered storage prevents drops in tight loops.
+- Host vs no_std feature set: `fs_exists`/`fs_read`/`fs_write` are host-only. Embedded/no_std keeps `out`, channels, async timers, GPIO, mutable scalars, and now `spawn`/`join` (mapped to the task runtime, not OS threads); set `no_std = true` in the manifest (see `workspace/demos/esp32_blink/prime.toml` or `workspace/demos/bare_metal_embedded/prime.toml`).
 
 ## Logging & diagnostics
 - Add `PRIME_DEBUG_MEM=1` to print memory map/debug from the CLI when building embedded targets.

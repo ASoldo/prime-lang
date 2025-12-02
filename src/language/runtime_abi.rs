@@ -350,7 +350,7 @@ impl RuntimeAbi {
         let (prime_spawn, prime_spawn_ty) = declare_fn(
             module,
             "prime_spawn",
-            status_type,
+            handle_type,
             &mut [thread_fn_type, handle_type, channel_out_type],
         );
         let (prime_join, prime_join_ty) = declare_fn(

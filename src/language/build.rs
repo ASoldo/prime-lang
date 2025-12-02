@@ -185,6 +185,7 @@ pub struct BuildSnapshot {
     pub next_channel_id: u64,
     pub cleanup_stack: Vec<Vec<BuildCleanup>>,
     pub clock_ms: i128,
+    pub embedded: bool,
 }
 
 #[allow(dead_code)]
@@ -280,6 +281,7 @@ pub struct BuildInterpreter {
     cleanup_stack: Vec<Vec<BuildCleanup>>,
     suppress_drop_schedule: bool,
     clock_ms: i128,
+    embedded: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -356,11 +358,32 @@ pub(crate) struct BuildChannelState {
     pub closed: bool,
 }
 
-fn require_std_builtins(name: &str) -> Result<(), String> {
-    if cfg!(feature = "std-builtins") {
-        Ok(())
-    } else {
-        Err(std_disabled_message(name))
+impl BuildInterpreter {
+    fn require_std_or_embedded(&self, name: &str) -> Result<(), String> {
+        if cfg!(feature = "std-builtins") {
+            return Ok(());
+        }
+        let embedded_allowed = self.embedded
+            && matches!(
+                name,
+                "spawn"
+                    | "join"
+                    | "channel"
+                    | "send"
+                    | "recv"
+                    | "recv_timeout"
+                    | "recv_task"
+                    | "close"
+                    | "sleep"
+                    | "sleep_ms"
+                    | "sleep_task"
+                    | "now_ms"
+            );
+        if embedded_allowed {
+            Ok(())
+        } else {
+            Err(std_disabled_message(name))
+        }
     }
 }
 
@@ -512,6 +535,7 @@ impl BuildInterpreter {
             },
             suppress_drop_schedule: false,
             clock_ms: snapshot.clock_ms,
+            embedded: snapshot.embedded,
         }
     }
 
@@ -897,7 +921,7 @@ impl BuildInterpreter {
                 other => Err(format!("`await` expects a Task, found {}", other.kind())),
             },
             Expr::Spawn { expr, .. } => {
-                require_std_builtins("spawn")?;
+                self.require_std_or_embedded("spawn")?;
                 let child = self.clone_for_spawn();
                 let expr_clone = expr.clone();
                 let handle = thread::spawn(move || {
@@ -2629,7 +2653,7 @@ impl BuildInterpreter {
                 Ok(BuildValue::Slice(values))
             }
             "fs_exists" => {
-                require_std_builtins("fs_exists")?;
+                self.require_std_or_embedded("fs_exists")?;
                 if args.len() != 1 {
                     return Err("fs_exists expects 1 argument".into());
                 }
@@ -2641,7 +2665,7 @@ impl BuildInterpreter {
                 Ok(BuildValue::Bool(exists))
             }
             "fs_read" => {
-                require_std_builtins("fs_read")?;
+                self.require_std_or_embedded("fs_read")?;
                 if args.len() != 1 {
                     return Err("fs_read expects 1 argument".into());
                 }
@@ -2658,7 +2682,7 @@ impl BuildInterpreter {
                 }
             }
             "fs_write" => {
-                require_std_builtins("fs_write")?;
+                self.require_std_or_embedded("fs_write")?;
                 if args.len() != 2 {
                     return Err("fs_write expects 2 arguments".into());
                 }
@@ -2688,7 +2712,7 @@ impl BuildInterpreter {
                 }
             }
             "now_ms" => {
-                require_std_builtins("now_ms")?;
+                self.require_std_or_embedded("now_ms")?;
                 if !args.is_empty() {
                     return Err("now_ms expects no arguments".into());
                 }
@@ -2733,7 +2757,7 @@ impl BuildInterpreter {
                 Ok(casted)
             }
             "channel" => {
-                require_std_builtins("channel")?;
+                self.require_std_or_embedded("channel")?;
                 if !args.is_empty() {
                     return Err("channel expects no arguments".into());
                 }
@@ -2753,7 +2777,7 @@ impl BuildInterpreter {
                 ]))
             }
             "send" => {
-                require_std_builtins("send")?;
+                self.require_std_or_embedded("send")?;
                 if args.len() != 2 {
                     return Err("send expects 2 arguments".into());
                 }
@@ -2779,7 +2803,7 @@ impl BuildInterpreter {
                 }
             }
             "recv" => {
-                require_std_builtins("recv")?;
+                self.require_std_or_embedded("recv")?;
                 if args.len() != 1 {
                     return Err("recv expects 1 argument".into());
                 }
@@ -2798,7 +2822,7 @@ impl BuildInterpreter {
                 }
             }
             "recv_timeout" => {
-                require_std_builtins("recv_timeout")?;
+                self.require_std_or_embedded("recv_timeout")?;
                 if args.len() != 2 {
                     return Err("recv_timeout expects 2 arguments".into());
                 }
@@ -2829,7 +2853,7 @@ impl BuildInterpreter {
                 }
             }
             "close" => {
-                require_std_builtins("close")?;
+                self.require_std_or_embedded("close")?;
                 if args.len() != 1 {
                     return Err("close expects 1 argument".into());
                 }
@@ -2852,7 +2876,7 @@ impl BuildInterpreter {
                 Ok(BuildValue::Unit)
             }
             "join" => {
-                require_std_builtins("join")?;
+                self.require_std_or_embedded("join")?;
                 if args.len() != 1 {
                     return Err("join expects 1 argument".into());
                 }
@@ -2895,7 +2919,7 @@ impl BuildInterpreter {
                 Err(msg)
             }
             "sleep" => {
-                require_std_builtins("sleep")?;
+                self.require_std_or_embedded("sleep")?;
                 if args.len() != 1 {
                     return Err("sleep expects 1 argument".into());
                 }
@@ -2915,14 +2939,14 @@ impl BuildInterpreter {
                 Ok(BuildValue::Unit)
             }
             "sleep_ms" => {
-                require_std_builtins("sleep_ms")?;
+                self.require_std_or_embedded("sleep_ms")?;
                 if args.len() != 1 {
                     return Err("sleep_ms expects 1 argument".into());
                 }
                 self.eval_builtin_or_deferred("sleep", receiver, type_args, args)
             }
             "sleep_task" => {
-                require_std_builtins("sleep_task")?;
+                self.require_std_or_embedded("sleep_task")?;
                 if args.len() != 1 {
                     return Err("sleep_task expects 1 argument".into());
                 }
@@ -2944,7 +2968,7 @@ impl BuildInterpreter {
                 })))
             }
             "recv_task" => {
-                require_std_builtins("recv_task")?;
+                self.require_std_or_embedded("recv_task")?;
                 if args.len() != 1 {
                     return Err("recv_task expects 1 argument".into());
                 }
@@ -3134,6 +3158,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         }
     }
 
@@ -3301,6 +3326,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let block = Block {
             statements: vec![Statement::Assign(AssignStmt {
@@ -3872,6 +3898,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter
@@ -3917,6 +3944,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let first = interpreter.eval_expr(&Expr::Reference {
@@ -3972,6 +4000,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         interpreter
@@ -4028,6 +4057,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         interpreter
@@ -4054,7 +4084,8 @@ mod tests {
     #[cfg(not(feature = "std-builtins"))]
     #[test]
     fn std_disabled_build_builtins_are_blocked() {
-        let err = require_std_builtins("spawn").unwrap_err();
+        let interp = BuildInterpreter::new(empty_snapshot());
+        let err = interp.require_std_or_embedded("spawn").unwrap_err();
         assert!(
             err.contains("std-builtins feature disabled"),
             "expected std-disabled message, got {err}"
@@ -4087,6 +4118,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let captures = Arc::new(RwLock::new(vec![CapturedVar {
@@ -4140,6 +4172,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let closure = interpreter
@@ -4199,6 +4232,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {
@@ -4252,6 +4286,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {
@@ -4300,6 +4335,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let loop_block = Block {
@@ -4344,6 +4380,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let captured = BuildCaptured {
@@ -4405,6 +4442,7 @@ mod tests {
                 type_name: "Snap".into(),
             })]],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         interpreter.pop_scope().expect("pop scope runs drops");
@@ -4437,6 +4475,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {
@@ -4503,6 +4542,7 @@ mod tests {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let mut interpreter = BuildInterpreter::new(snapshot);
         let block = Block {

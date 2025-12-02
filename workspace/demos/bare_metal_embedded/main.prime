@@ -1,5 +1,7 @@
 module demos::bare_metal_embedded;
 
+import core::types;
+
 fn main() {
   out("bare metal demo starting");
 
@@ -15,6 +17,19 @@ fn main() {
   let int32 threshold = 3;
   let []int32 filtered = filter_above(readings, threshold);
   out(`filtered count = {filtered.len()}`);
+
+  let (tx, rx) = channel[int32]();
+  let worker = spawn async {
+    let Option[int32] received = await recv_task(rx);
+    match received {
+      Option::Some(v) => v,
+      Option::None => -1,
+    }
+  };
+  let _ = send(tx, total);
+  close(tx);
+  let int32 joined = join(worker);
+  out(`spawn/join recv_task result = {joined}`);
 }
 
 fn sum(values: []int32) -> int32 {

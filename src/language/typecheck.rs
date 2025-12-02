@@ -1882,7 +1882,7 @@ impl Checker {
                 ty
             }
             Expr::Spawn { expr, span } => {
-                if self.current_no_std {
+                if self.current_no_std && !self.target.is_embedded() {
                     self.errors.push(
                         TypeError::new(
                             &module.path,
@@ -4469,7 +4469,9 @@ impl Checker {
         self.target.is_embedded()
             && matches!(
                 name,
-                "channel"
+                "spawn"
+                    | "join"
+                    | "channel"
                     | "send"
                     | "recv"
                     | "recv_timeout"

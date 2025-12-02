@@ -6109,6 +6109,43 @@ impl Compiler {
                     .and_then(|(lhs, rhs)| if lhs == rhs { Some(lhs) } else { None });
                 Ok(self.evaluated(Value::Bool(BoolValue::new(phi, constant))))
             }
+            (Value::Enum(a), Value::Enum(b)) => {
+                if a.enum_name != b.enum_name {
+                    return Err(format!(
+                        "Dynamic if expression not supported for branch values {} and {}",
+                        self.describe_value(&Value::Enum(a)),
+                        self.describe_value(&Value::Enum(b))
+                    ));
+                }
+                if self.runtime_handles_enabled() {
+                    let a_handle = self.build_runtime_handle(Value::Enum(a.clone()))?;
+                    let b_handle = self.build_runtime_handle(Value::Enum(b.clone()))?;
+                    let phi = unsafe {
+                        LLVMBuildPhi(
+                            self.builder,
+                            self.runtime_abi.handle_type,
+                            CString::new("if_enum_phi").unwrap().as_ptr(),
+                        )
+                    };
+                    let mut vals = [a_handle, b_handle];
+                    let mut blocks = [then_block, else_block];
+                    unsafe {
+                        LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);
+                    }
+                    self.pending_runtime = Some(phi);
+                    return Ok(self.evaluated(Value::Enum(EnumValue {
+                        enum_name: a.enum_name.clone(),
+                        variant: "<runtime>".into(),
+                        values: Vec::new(),
+                        variant_index: a.variant_index,
+                    })));
+                }
+                Err(format!(
+                    "Dynamic if expression not supported for branch values {} and {}",
+                    self.describe_value(&Value::Enum(a)),
+                    self.describe_value(&Value::Enum(b))
+                ))
+            }
             (Value::Reference(a), Value::Reference(b)) => {
                 if let (Some(ha), Some(hb)) = (a.handle, b.handle) {
                     let ty = unsafe { LLVMTypeOf(ha) };
@@ -10284,6 +10321,7 @@ impl Compiler {
             next_channel_id: capture_ctx.next_channel_id,
             cleanup_stack,
             clock_ms: capture_ctx.clock_ms,
+            embedded: self.target.is_embedded(),
         })
     }
 
@@ -11534,6 +11572,7 @@ fn main() {
             next_channel_id: 0,
             cleanup_stack: vec![Vec::new()],
             clock_ms: 0,
+            embedded: false,
         };
         let handle = thread::spawn(move || {
             let interpreter = BuildInterpreter::new(snapshot);

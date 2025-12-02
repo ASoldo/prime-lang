@@ -49,6 +49,13 @@ the emitted binary uses real OS threads. Async/await + channels automatically at
 runtime handles when async appears, so `recv_task`/`sleep_task` block correctly in
 build mode, the host binary, and the ESP32 runtime (no stubs or hangs).
 
+### Execution Parity (run vs build vs embedded no_std)
+
+- **Core semantics (run/build)**: control flow (`if`/`match`/loops), `return`/`break`/`continue`, pattern matching across tuples/maps/structs/slices, generics/interfaces, macros, Option/Result with `try {}`/`?`, Drop + `defer`, mutable scalars (stack slots kept for ints/bools so loop mutations print correctly), channels + spawn/join, async/await (`sleep_task`/`recv_task`), and SSA-backed booleans/ints all mirror between interpreter and host builds.
+- **Embedded/no_std (ESP32 Xtensa)**: `out` (strings + format strings + ints/bools), channels, async (`sleep_task`/`recv_task`), `spawn`/`join` (task runtime, not OS threads), GPIO (`pin_mode`/`digital_write`), `delay_ms`/`now_ms`, mutable scalars (stack slots), Option/Result + `?`, pattern matching, and macro-expanded code work the same as host. Panic unwinds are host-only; embedded panics abort/loop.
+- **Host-only**: filesystem built-ins (`fs_exists`/`fs_read`/`fs_write`) and direct OS threads; embedded `spawn`/`join` run on the task runtime instead of OS threads, and other std-dependent hooks stay disabled (you’ll get clear errors when they’re unavailable).
+- **Manifests**: set `no_std = true` per module in `prime.toml` for embedded targets. `workspace/demos/esp32_blink/prime.toml` and `workspace/demos/bare_metal_embedded/prime.toml` show the expected flags and toolchain entries; CLI also auto-detects esp-clang/Xtensa under `~/.espressif` when not provided.
+
 ### Example Programs
 
 - `workspace/app/main.prime` – Feature tour: modules, structs/enums, interfaces, ownership, and UI-ish printing.
@@ -82,6 +89,7 @@ Validated outputs (fresh run, current syntax; files live under `workspace/demos/
 - `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
 - `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
 - `fs_demo.prime` / `time_demo.prime` / `iter_demo.prime` — minimal built-in samples for file I/O, timers, and iterator helpers.
+- `workspace/demos/bare_metal_embedded` — smallest `no_std` sample (sums/filters on-device) showing manifest flags and host/embedded parity without GPIO.
 - `workspace/demos/esp32_blink` — ESP32 Xtensa no_std blink demo with async/await and calibrated delay; manifest includes toolchains and flash settings. Build uses
   `llc -relocation-model=static -mtriple=xtensa-esp32-elf -mcpu=esp32 -mattr=+windowed`
   and links `libruntime_abi.a` (Xtensa) plus libc/libgcc before flashing via
