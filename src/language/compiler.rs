@@ -5871,6 +5871,9 @@ impl Compiler {
             "digital_write" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_digital_write(values)))
             }
+            "reset_reason" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_reset_reason(values)))
+            }
             "ptr" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_ptr(values, false)))
             }
@@ -9656,6 +9659,21 @@ impl Compiler {
             "digital_write",
         );
         Ok(Value::Unit)
+    }
+
+    fn builtin_reset_reason(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        if !args.is_empty() {
+            return Err("reset_reason expects no arguments".into());
+        }
+        self.ensure_embedded_target("reset_reason")?;
+        let mut call_args = [];
+        let llvm = self.call_runtime(
+            self.runtime_abi.prime_reset_reason,
+            self.runtime_abi.prime_reset_reason_ty,
+            &mut call_args,
+            "reset_reason",
+        );
+        Ok(Value::Int(IntValue::new(llvm, None)))
     }
 
     fn builtin_assert(&mut self, mut args: Vec<Value>) -> Result<Value, String> {

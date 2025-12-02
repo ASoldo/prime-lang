@@ -3234,6 +3234,16 @@ impl Checker {
                 }
                 Some(TypeExpr::Named("int64".into(), Vec::new()))
             }
+            "reset_reason" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`reset_reason` expects 0 arguments",
+                    ));
+                }
+                Some(TypeExpr::Named("int32".into(), Vec::new()))
+            }
             "fs_exists" => {
                 if args.len() != 1 {
                     self.errors.push(TypeError::new(
@@ -4481,11 +4491,12 @@ impl Checker {
                     | "sleep_ms"
                     | "sleep_task"
                     | "now_ms"
+                    | "reset_reason"
             )
     }
 
     fn is_embedded_builtin(&self, name: &str) -> bool {
-        matches!(name, "pin_mode" | "digital_write" | "delay_ms")
+        matches!(name, "pin_mode" | "digital_write" | "delay_ms" | "reset_reason")
     }
 
     fn is_builtin_name(&self, name: &str) -> bool {

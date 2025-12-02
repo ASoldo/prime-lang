@@ -129,6 +129,8 @@ pub struct RuntimeAbi {
     pub prime_digital_write_ty: LLVMTypeRef,
     pub prime_now_ms: LLVMValueRef,
     pub prime_now_ms_ty: LLVMTypeRef,
+    pub prime_reset_reason: LLVMValueRef,
+    pub prime_reset_reason_ty: LLVMTypeRef,
 }
 
 impl RuntimeAbi {
@@ -303,6 +305,12 @@ impl RuntimeAbi {
             handle_type,
             &mut [handle_type, usize_type],
         );
+        let (_prime_reset_reason, _prime_reset_reason_ty) = declare_fn(
+            module,
+            "prime_reset_reason_raw",
+            LLVMInt32TypeInContext(context),
+            &mut [],
+        );
         let (prime_reference_new, prime_reference_new_ty) = declare_fn(
             module,
             "prime_reference_new",
@@ -438,6 +446,8 @@ impl RuntimeAbi {
             ],
         );
         let (prime_now_ms, prime_now_ms_ty) = declare_fn(module, "prime_now_ms", int_type, &mut []);
+        let (_prime_reset_reason, _prime_reset_reason_ty) =
+            declare_fn(module, "prime_reset_reason", LLVMInt32TypeInContext(context), &mut []);
 
         Self {
             handle_type,
@@ -555,6 +565,8 @@ impl RuntimeAbi {
             prime_digital_write_ty,
             prime_now_ms,
             prime_now_ms_ty,
+            prime_reset_reason: _prime_reset_reason,
+            prime_reset_reason_ty: _prime_reset_reason_ty,
         }
     }
 
@@ -675,6 +687,8 @@ impl RuntimeAbi {
             prime_digital_write_ty: std::ptr::null_mut(),
             prime_now_ms: std::ptr::null_mut(),
             prime_now_ms_ty: std::ptr::null_mut(),
+            prime_reset_reason: std::ptr::null_mut(),
+            prime_reset_reason_ty: std::ptr::null_mut(),
         }
     }
 }

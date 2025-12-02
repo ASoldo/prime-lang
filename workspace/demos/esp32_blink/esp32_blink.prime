@@ -45,6 +45,7 @@ fn main() {
   pin_mode(led, 1);
   out(`This is our second text {my_var}`);
   out("starting async blink demo on esp32 (no_std)");
+  out(`reset reason code: {reset_reason()}`);
 
   let (probe_tx, probe_rx) = channel[int32]();
   let probe = spawn async {
@@ -86,6 +87,9 @@ fn main() {
       led_on = false;
       out(`async blink: LED OFF (count {counter}, led_on {led_on})`);
       delay_ms(1000);
+      if counter % 128 == 0 {
+        out(`reset reason code (cached): {reset_reason()}`);
+      }
       counter = counter + 1;
     }
     Result::Ok(())

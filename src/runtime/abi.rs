@@ -1770,6 +1770,8 @@ mod embedded {
     #[allow(dead_code)]
     static WATCHDOGS_DISABLED: AtomicBool = AtomicBool::new(false);
     #[cfg(target_arch = "xtensa")]
+    static RESET_REASON: AtomicU32 = AtomicU32::new(0);
+    #[cfg(target_arch = "xtensa")]
     extern "C" {
         fn rtc_get_reset_reason(cpu: i32) -> u32;
     }
@@ -1809,6 +1811,7 @@ mod embedded {
         unsafe {
             // CPU 0 reset reason (matches IDF's esp_reset_reason()).
             let reason = rtc_get_reset_reason(0);
+            RESET_REASON.store(reason, Ordering::Relaxed);
             ets_printf(b"[rt] reset_reason=%u\n\0".as_ptr(), reason);
         }
         // Keep placeholder for optional boot banner; intentionally disabled.
@@ -1818,6 +1821,40 @@ mod embedded {
                 ets_printf(b"hello esp32 world\n\0".as_ptr());
             }
         }
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    #[unsafe(export_name = "prime_reset_reason_raw")]
+    pub unsafe extern "C" fn prime_reset_reason() -> i32 {
+        RESET_REASON.load(Ordering::Relaxed) as i32
+    }
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    #[unsafe(export_name = "prime_reset_reason")]
+    pub unsafe extern "C" fn prime_reset_reason_alias() -> i32 {
+        prime_reset_reason()
+    }
+
+    #[cfg(any(
+        not(target_arch = "xtensa"),
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_reset_reason_raw")]
+    pub unsafe extern "C" fn prime_reset_reason_host() -> i32 {
+        0
+    }
+    #[cfg(any(
+        not(target_arch = "xtensa"),
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_reset_reason")]
+    pub unsafe extern "C" fn prime_reset_reason_host_alias() -> i32 {
+        0
     }
 
     // Register offsets for classic ESP32 (Xtensa). Kept tiny so we don't pull in IDF.
