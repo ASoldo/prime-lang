@@ -52,7 +52,7 @@ build mode, the host binary, and the ESP32 runtime (no stubs or hangs).
 ### Execution Parity (run vs build vs embedded no_std)
 
 - **Core semantics (run/build)**: control flow (`if`/`match`/loops), `return`/`break`/`continue`, pattern matching across tuples/maps/structs/slices, generics/interfaces, macros, Option/Result with `try {}`/`?`, Drop + `defer`, mutable scalars (stack slots kept for ints/bools so loop mutations print correctly), channels + spawn/join, async/await (`sleep_task`/`recv_task`), and SSA-backed booleans/ints all mirror between interpreter and host builds.
-- **Embedded/no_std (ESP32 Xtensa)**: `out` (strings + format strings + ints/bools), channels, async (`sleep_task`/`recv_task`), `spawn`/`join` (task runtime, not OS threads), GPIO (`pin_mode`/`digital_write`), `delay_ms`/`now_ms`, mutable scalars (stack slots), Option/Result + `?`, pattern matching, and macro-expanded code work the same as host. Panic unwinds are host-only; embedded panics abort/loop.
+- **Embedded/no_std (ESP32 Xtensa)**: `out` (strings + format strings + ints/bools), channels, async (`sleep_task`/`recv_task`), `spawn`/`join` (task runtime, not OS threads), GPIO (`pin_mode`/`digital_write`), `delay_ms`/`now_ms`, mutable scalars (stack slots), Option/Result + `?`, pattern matching, and macro-expanded code work the same as host. Panic unwinds are host-only; embedded panics abort/loop. The ESP32 demo also exercises channel/task pool recycling and async Result propagation so build/run/embedded stay aligned.
 - **Host-only**: filesystem built-ins (`fs_exists`/`fs_read`/`fs_write`) and direct OS threads; embedded `spawn`/`join` run on the task runtime instead of OS threads, and other std-dependent hooks stay disabled (you’ll get clear errors when they’re unavailable).
 - **Manifests**: set `no_std = true` per module in `prime.toml` for embedded targets. `workspace/demos/esp32_blink/prime.toml` and `workspace/demos/bare_metal_embedded/prime.toml` show the expected flags and toolchain entries; CLI also auto-detects esp-clang/Xtensa under `~/.espressif` when not provided.
 
@@ -90,7 +90,7 @@ Validated outputs (fresh run, current syntax; files live under `workspace/demos/
 - `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
 - `fs_demo.prime` / `time_demo.prime` / `iter_demo.prime` — minimal built-in samples for file I/O, timers, and iterator helpers.
 - `workspace/demos/bare_metal_embedded` — smallest `no_std` sample (sums/filters on-device) showing manifest flags plus channels + async `recv_task` + `Result` parity without GPIO.
-- `workspace/demos/esp32_blink` — ESP32 Xtensa no_std blink demo with async/await and calibrated delay; manifest includes toolchains and flash settings. Build uses
+- `workspace/demos/esp32_blink` — ESP32 Xtensa no_std blink demo with async/await, spawn/join, channel reuse probe, and calibrated delay; manifest includes toolchains and flash settings. Build uses
   `llc -relocation-model=static -mtriple=xtensa-esp32-elf -mcpu=esp32 -mattr=+windowed`
   and links `libruntime_abi.a` (Xtensa) plus libc/libgcc before flashing via
   `esptool elf2image` (falls back to objcopy when elf2image is unavailable).
@@ -168,7 +168,7 @@ fresh. Highlights:
 | `prime-lang sync [path]` | Resolve dependencies and write `prime.lock`; pair with `--frozen` on run/build to require the lock |
 | `prime-lang expand <file> [--offset N | --line L --column C] [--print-expanded]` | Show macro expansion trace at a cursor (line/column or byte offset). With a position, prints only the expanded items from that macro; without a position or with `--print-expanded`, prints the fully expanded module. |
 | `in[T](prompt, ...) -> Result[T, string]` | Built-in input helper. Reads a line from stdin, parses to `T`, and returns `Ok(value)`/`Err(message)`. Formatting rules mirror `out`; type arguments are required. |
-| Concurrency | `spawn expr` → `JoinHandle[T]`; `channel[T]()` → `(Sender[T], Receiver[T])`; `send` returns `Result[(), string]`; `recv` yields `Option[T]` (run uses real threads; build evaluates deterministically with the same blocking semantics) |
+| Concurrency | `spawn expr` → `JoinHandle[T]`; `channel[T]()` → `(Sender[T], Receiver[T])`; `send` returns `Result[(), string]`; `recv` yields `Option[T]` (run uses real threads; build evaluates deterministically with the same blocking semantics; embedded maps spawn/join to the task runtime for parity) |
 
 Input prompts accept format strings, so you can interpolate context into the prompt itself:
 
@@ -347,6 +347,8 @@ How to build/flash (after installing ESP-IDF tools):
 1. Optional but recommended: `source ~/esp/esp-idf/export.sh` to set IDF_PATH and python deps.
 2. Run the demo: `prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink`
    - The runtime prints your `out(...)` lines on UART (115200) with newlines per call (`hello ... {my_var}`, loop state toggles, etc.), and the on-board blue LED (GPIO2, active-low) blinks.
+   - External button input: wire GPIO18 -> momentary switch -> GND (active-low) for in-loop logging; BOOT/EN buttons are reserved by auto-boot/reset on many boards.
+   - Concurrency parity: the demo runs async `recv_task`, `spawn`/`join`, and a small channel/task pool reuse probe so embedded output matches run/build semantics.
    - The demo disables hardware watchdogs once on boot to keep the loop alive; re-enable or adjust if your project needs watchdog protection.
    - Flashing is on by default for the demo; disable with `--no-flash` or set `[build.flash].enabled = false`.
 3. If your board’s user LED sits on another pin (some use GPIO4/5), edit the `led` constant in `esp32_blink.prime`.

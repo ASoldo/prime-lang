@@ -88,7 +88,7 @@ struct Player {
         key: "embedded",
         title: "Embedded / ESP32 (Xtensa)",
         category: "Platforms",
-        summary: "Build and flash the bundled ESP32 blink demo using the ESP-IDF toolchains, ROM linker scripts, and manifest-provided environment overrides; async/await + channels use runtime handles in no_std.",
+        summary: "Build and flash the bundled ESP32 blink demo using the ESP-IDF toolchains, ROM linker scripts, and manifest-provided environment overrides; async/await + channels + spawn/join use runtime handles in no_std.",
         aliases: &["esp32", "xtensa", "embedded", "bare-metal", "no_std"],
         sections: &[
             TopicSection {
@@ -165,7 +165,7 @@ address = "0x10000""#,
   close(tx);
   await task;
 }"#,
-                explanation: "`out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (constants), and bools are rendered; each `out` ends with a newline so successive calls don’t run together. Async/await + channels attach runtime handles automatically, so `recv_task`/`sleep_task` block through the Xtensa runtime. Use these to trace startup and loop activity alongside LED toggles.",
+                explanation: "`out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (constants), and bools are rendered; each `out` ends with a newline so successive calls don’t run together. Async/await + channels attach runtime handles automatically, so `recv_task`/`sleep_task` block through the Xtensa runtime; `spawn`/`join` also map to the task runtime for parity with build/run. Use these to trace startup and loop activity alongside LED toggles. The demo uses GPIO2 for LED and an external GPIO18->GND button for input logging; BOOT/EN are left for the auto-boot/reset circuit.",
             },
         ],
     },
