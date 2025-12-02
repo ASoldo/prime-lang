@@ -655,9 +655,9 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_enum_new")]
     pub unsafe extern "C" fn prime_enum_new(
-        _tag: u32,
         _values_ptr: *const PrimeHandle,
         _values_len: usize,
+        _tag: u32,
     ) -> PrimeHandle {
         let payload = if !_values_ptr.is_null() && _values_len > 0 {
             *_values_ptr
@@ -904,9 +904,9 @@ mod embedded {
         match payload {
             Some(value) => {
                 let mut buf = [value];
-                unsafe { prime_enum_new(0, buf.as_mut_ptr(), 1) }
+                unsafe { prime_enum_new(buf.as_mut_ptr(), 1, 0) }
             }
-            None => unsafe { prime_enum_new(1, core::ptr::null(), 0) },
+            None => unsafe { prime_enum_new(core::ptr::null(), 0, 1) },
         }
     }
 
@@ -2626,9 +2626,9 @@ mod host {
 
     #[unsafe(export_name = "prime_enum_new")]
     pub unsafe extern "C" fn prime_enum_new(
-        tag: u32,
         values_ptr: *const PrimeHandle,
         values_len: usize,
+        tag: u32,
     ) -> PrimeHandle {
         let mut values = Vec::with_capacity(values_len);
         if !values_ptr.is_null() {

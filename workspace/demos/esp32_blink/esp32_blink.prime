@@ -23,17 +23,17 @@ fn channel_demo() {
   close(rx);
 }
 
-fn ensure_pin(pin: int32) -> int32 {
+fn ensure_pin(pin: int32) -> Result[int32, string] {
   if pin < 0 {
-    out("invalid pin; defaulting to 0");
-    0
+    Result::Err("pin must be >= 0")
   } else {
-    pin
+    Result::Ok(pin)
   }
 }
 
-fn drive_led(led: int32, level: int32) {
+fn drive_led(led: int32, level: int32) -> Result[(), string] {
   digital_write(led, level);
+  Result::Ok(())
 }
 
 fn main() {
@@ -61,7 +61,7 @@ fn main() {
   let blinker = async {
     let mut int32 counter = 0;
     let mut bool led_on = false;
-    let int32 checked_led = ensure_pin(led);
+    let int32 checked_led = ensure_pin(led)?;
     pin_mode(checked_led, 1);
     loop {
       let int32 on_level = if led_active_low {
@@ -69,7 +69,7 @@ fn main() {
       } else {
         1
       };
-      drive_led(checked_led, on_level);
+      drive_led(checked_led, on_level)?;
       led_on = true;
       out(`async blink: LED ON (count {counter}, led_on {led_on})`);
       delay_ms(1000);
@@ -82,12 +82,18 @@ fn main() {
       } else {
         0
       };
-      drive_led(checked_led, off_level);
+      drive_led(checked_led, off_level)?;
       led_on = false;
       out(`async blink: LED OFF (count {counter}, led_on {led_on})`);
       delay_ms(1000);
       counter = counter + 1;
     }
+    Result::Ok(())
   };
-  await blinker;
+  match await blinker {
+    Result::Ok(value) => {
+      out(`value is {value}`);
+    },
+    Result::Err(msg) => out(`blink task error: {msg}`),
+  }
 }

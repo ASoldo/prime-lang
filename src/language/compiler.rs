@@ -6619,21 +6619,23 @@ impl Compiler {
                             &mut get_args,
                             "try_enum_get",
                         );
-                        let payload = if enum_value.values.is_empty() {
+                        let payload = if enum_value.values.len() == 1 {
+                            enum_value.values.remove(0)
+                        } else if enum_value.values.is_empty() {
                             Value::Reference(ReferenceValue {
                                 cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                                 mutable: false,
                                 origin: None,
                                 handle: Some(payload_handle),
                             })
-                        } else if enum_value.values.len() == 1 {
-                            enum_value.values.remove(0)
                         } else {
                             Value::Tuple(enum_value.values)
                         };
-                        return Ok(EvalOutcome::Value(
-                            self.evaluated(payload).with_runtime(payload_handle),
-                        ));
+                        let mut evaluated = self.evaluated(payload);
+                        evaluated.runtime = Some(RuntimeValue {
+                            handle: payload_handle,
+                        });
+                        return Ok(EvalOutcome::Value(evaluated));
                     } else if tag_value == err_tag.variant_index {
                         return Ok(EvalOutcome::Flow(FlowSignal::Propagate(EvaluatedValue {
                             value: Value::Enum(EnumValue {
