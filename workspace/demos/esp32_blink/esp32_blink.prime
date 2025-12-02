@@ -10,6 +10,38 @@ pub enum Result[T, E] {
   Err(E),
 }
 
+fn print_reset_reason(prefix: string, code: int32) {
+  if code == 1 {
+    out(`${prefix}{code} (POWERON_RESET)`);
+  } else if code == 3 {
+    out(`${prefix}{code} (SW_RESET)`);
+  } else if code == 4 {
+    out(`${prefix}{code} (OWDT_RESET)`);
+  } else if code == 5 {
+    out(`${prefix}{code} (DEEPSLEEP_RESET)`);
+  } else if code == 6 {
+    out(`${prefix}{code} (SDIO_RESET)`);
+  } else if code == 7 {
+    out(`${prefix}{code} (TG0WDT_RESET)`);
+  } else if code == 8 {
+    out(`${prefix}{code} (TG1WDT_RESET)`);
+  } else if code == 9 {
+    out(`${prefix}{code} (RTCWDT_SYS_RESET)`);
+  } else if code == 10 {
+    out(`${prefix}{code} (RTCWDT_RTC_RESET)`);
+  } else if code == 11 {
+    out(`${prefix}{code} (RTCWDT_CPU_RESET)`);
+  } else if code == 12 {
+    out(`${prefix}{code} (BROWNOUT_RESET)`);
+  } else if code == 13 {
+    out(`${prefix}{code} (RTCWDT_RTC_BOOT)`);
+  } else if code == 14 {
+    out(`${prefix}{code} (RTCWDT_VDDSDIO_RESET)`);
+  } else {
+    out(`${prefix}{code} (UNKNOWN_RESET)`);
+  }
+}
+
 fn channel_demo() {
   out("channel demo: sending 42");
 
@@ -45,7 +77,8 @@ fn main() {
   pin_mode(led, 1);
   out(`This is our second text {my_var}`);
   out("starting async blink demo on esp32 (no_std)");
-  out(`reset reason code: {reset_reason()}`);
+  let int32 reason = reset_reason();
+  print_reset_reason("reset reason: ", reason);
 
   let (probe_tx, probe_rx) = channel[int32]();
   let probe = spawn async {
@@ -88,7 +121,8 @@ fn main() {
       out(`async blink: LED OFF (count {counter}, led_on {led_on})`);
       delay_ms(1000);
       if counter % 128 == 0 {
-        out(`reset reason code (cached): {reset_reason()}`);
+        let int32 cached = reset_reason();
+        print_reset_reason("reset reason (cached): ", cached);
       }
       counter = counter + 1;
     }
