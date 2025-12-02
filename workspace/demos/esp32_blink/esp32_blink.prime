@@ -68,18 +68,40 @@ fn drive_led(led: int32, level: int32) -> Result[(), string] {
   Result::Ok(())
 }
 
+fn pool_reuse_sanity(iterations: int32) -> Result[(), string] {
+  let mut int32 i = 0;
+  while i < iterations {
+    let (tx, rx) = channel[int32]();
+    let worker = spawn async {
+      let Option[int32] received = await recv_task(rx);
+      match received {
+        Option::Some(v) => Result::Ok(v + 10),
+        Option::None => Result::Err("channel closed"),
+      }
+    };
+    let _ = send(tx, i);
+    close(tx);
+    match join(worker) {
+      Result::Ok(v) => out(`pool reuse iter {i}: joined {v}`),
+      Result::Err(msg) => out(`pool reuse iter {i}: err {msg}`),
+      _ => out(`pool reuse iter {i}: unexpected join result`),
+    }
+    i = i + 1;
+  }
+  Result::Ok(())
+}
+
 fn main() {
   let int32 my_var = 5;
   out(`hello from esp32 blink demo and value is {my_var}`);
 
   let int32 led = 2;
-  // Use an external momentary switch: wire GPIO18 to GND (active-low).
-  // Adjust this pin if you pick another GPIO.
   let int32 button = 18;
   let bool button_active_low = true;
   let bool led_active_low = false;
   pin_mode(led, 1);
   pin_mode(button, 0);
+
   let int32 initial_button = digital_read(button);
   out(`button GPIO{button} initial read (raw {initial_button}, active_low {button_active_low})`);
   out("wire button: GPIO18 -> momentary switch -> GND (active-low)");
@@ -89,39 +111,41 @@ fn main() {
   let int32 reason = reset_reason();
   print_reset_reason("reset reason: ", reason);
 
-  // Watch the BOOT button (GPIO0) in the background and log presses without
-  // touching the EN/reset button.
   let _boot_logger = spawn async {
     let mut bool last_pressed = false;
     let mut int32 debounce = 0;
     let mut int32 heartbeat = 0;
     loop {
       let int32 raw = digital_read(button);
-      let bool pressed = if button_active_low { raw == 0 } else { raw != 0 };
+      let bool pressed = if button_active_low {
+        raw == 0
+      } else {
+        raw != 0
+      };
       let bool high = !pressed;
       if debounce > 0 {
         debounce = debounce - 1;
       }
       if last_pressed != pressed && debounce == 0 {
         if pressed {
-          out("boot button pressed (GPIO0)");
+          out(`button pressed (GPIO{button})`);
         } else {
-          out("boot button released (GPIO0)");
+          out(`button released (GPIO{button})`);
         }
-        out(`boot button raw={raw} pressed={pressed}`);
+        out(`button raw={raw} pressed={pressed}`);
+
         let int32 cached = reset_reason();
         print_reset_reason("reset reason (button): ", cached);
         debounce = 3;
       }
       last_pressed = pressed;
       if heartbeat % 8 == 0 {
-        out(`boot button heartbeat: raw={raw} pressed={pressed}`);
+        out(`button heartbeat: raw={raw} pressed={pressed}`);
       }
       heartbeat = heartbeat + 1;
       delay_ms(25);
     }
   };
-  // Short-lived probe: print raw reads for a few seconds to see if GPIO0 toggles at all.
   let _boot_probe = spawn async {
     let mut int32 i = 0;
     let mut int32 last = -99;
@@ -141,7 +165,6 @@ fn main() {
       delay_ms(100);
     }
   };
-
   let (probe_tx, probe_rx) = channel[int32]();
   let probe = spawn async {
     let Option[int32] received = await recv_task(probe_rx);
@@ -172,9 +195,16 @@ fn main() {
       if counter % 32 == 0 {
         channel_demo();
       }
+      if counter % 24 == 0 {
+        let _ = pool_reuse_sanity(1);
+      }
       if counter % 4 == 0 {
         let int32 btn_raw = digital_read(button);
-        let bool btn_pressed = if button_active_low { btn_raw == 0 } else { btn_raw != 0 };
+        let bool btn_pressed = if button_active_low {
+          btn_raw == 0
+        } else {
+          btn_raw != 0
+        };
         out(`boot button sample in main loop: raw={btn_raw} pressed={btn_pressed}`);
       }
 
@@ -191,6 +221,8 @@ fn main() {
         let int32 cached = reset_reason();
         print_reset_reason("reset reason (cached): ", cached);
       }
+
+      let _ = pool_reuse_sanity(3);
       counter = counter + 1;
     }
     Result::Ok(())
@@ -200,5 +232,6 @@ fn main() {
       out(`value is {value}`);
     },
     Result::Err(msg) => out(`blink task error: {msg}`),
+    _ => out("blink task returned unknown result"),
   }
 }

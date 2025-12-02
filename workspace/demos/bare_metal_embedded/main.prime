@@ -30,6 +30,11 @@ fn main() {
   close(tx);
   let int32 joined = join(worker);
   out(`spawn/join recv_task result = {joined}`);
+
+  match parity_probe() {
+    Result::Ok(v) => out(`parity probe ok: {v}`),
+    Result::Err(msg) => out(`parity probe err: {msg}`),
+  }
 }
 
 fn sum(values: []int32) -> int32 {
@@ -48,4 +53,18 @@ fn filter_above(values: []int32, threshold: int32) -> []int32 {
     }
   }
   result
+}
+
+fn parity_probe() -> Result[int32, string] {
+  let (tx, rx) = channel[int32]();
+  let worker = spawn async {
+    let Option[int32] received = await recv_task(rx);
+    match received {
+      Option::Some(v) => Result::Ok(v * 2),
+      Option::None => Result::Err("empty channel"),
+    }
+  };
+  let _ = send(tx, 7);
+  close(tx);
+  join(worker)
 }

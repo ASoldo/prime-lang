@@ -89,7 +89,7 @@ Validated outputs (fresh run, current syntax; files live under `workspace/demos/
 - `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
 - `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
 - `fs_demo.prime` / `time_demo.prime` / `iter_demo.prime` — minimal built-in samples for file I/O, timers, and iterator helpers.
-- `workspace/demos/bare_metal_embedded` — smallest `no_std` sample (sums/filters on-device) showing manifest flags and host/embedded parity without GPIO.
+- `workspace/demos/bare_metal_embedded` — smallest `no_std` sample (sums/filters on-device) showing manifest flags plus channels + async `recv_task` + `Result` parity without GPIO.
 - `workspace/demos/esp32_blink` — ESP32 Xtensa no_std blink demo with async/await and calibrated delay; manifest includes toolchains and flash settings. Build uses
   `llc -relocation-model=static -mtriple=xtensa-esp32-elf -mcpu=esp32 -mattr=+windowed`
   and links `libruntime_abi.a` (Xtensa) plus libc/libgcc before flashing via

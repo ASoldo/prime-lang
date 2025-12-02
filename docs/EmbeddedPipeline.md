@@ -42,3 +42,4 @@ Notes:
 - I/O: `out` is available everywhere; filesystem built-ins (`fs_exists`/`fs_read`/`fs_write`) are host-only. `delay_ms`/`now_ms` are bridged to ROM stubs on Xtensa; host uses std timers.
 - Platform hooks: `pin_mode`/`digital_write` are embedded-only. If you call them on host, the platform shim reports an error.
 - Manifests: set `no_std = true` on embedded modules (see `workspace/demos/esp32_blink/prime.toml` and `workspace/demos/bare_metal_embedded/prime.toml`). Provide toolchain/env overrides or rely on CLI autodetect under `~/.espressif`.
+- No_std parity fixture: `workspace/demos/bare_metal_embedded/main.prime` mirrors host concurrency with channels + async `recv_task` + `Result`/`?` so build/run/embedded outputs align.
