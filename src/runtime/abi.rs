@@ -1769,6 +1769,10 @@ mod embedded {
     static LOG_ONCE: AtomicBool = AtomicBool::new(false);
     #[allow(dead_code)]
     static WATCHDOGS_DISABLED: AtomicBool = AtomicBool::new(false);
+    #[cfg(target_arch = "xtensa")]
+    extern "C" {
+        fn rtc_get_reset_reason(cpu: i32) -> u32;
+    }
 
     #[inline]
     #[allow(dead_code)]
@@ -1801,6 +1805,12 @@ mod embedded {
             return;
         }
         disable_watchdogs_once();
+        #[cfg(target_arch = "xtensa")]
+        unsafe {
+            // CPU 0 reset reason (matches IDF's esp_reset_reason()).
+            let reason = rtc_get_reset_reason(0);
+            ets_printf(b"[rt] reset_reason=%u\n\0".as_ptr(), reason);
+        }
         // Keep placeholder for optional boot banner; intentionally disabled.
         #[cfg(target_arch = "xtensa")]
         if false {
