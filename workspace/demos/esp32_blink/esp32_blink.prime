@@ -73,16 +73,74 @@ fn main() {
   out(`hello from esp32 blink demo and value is {my_var}`);
 
   let int32 led = 2;
-  let int32 button = 0; // Set to your user button GPIO (BOOT is GPIO0 on many boards).
+  // Use an external momentary switch: wire GPIO18 to GND (active-low).
+  // Adjust this pin if you pick another GPIO.
+  let int32 button = 18;
   let bool button_active_low = true;
   let bool led_active_low = false;
   pin_mode(led, 1);
   pin_mode(button, 0);
+  let int32 initial_button = digital_read(button);
+  out(`button GPIO{button} initial read (raw {initial_button}, active_low {button_active_low})`);
+  out("wire button: GPIO18 -> momentary switch -> GND (active-low)");
   out(`This is our second text {my_var}`);
   out("starting async blink demo on esp32 (no_std)");
 
   let int32 reason = reset_reason();
   print_reset_reason("reset reason: ", reason);
+
+  // Watch the BOOT button (GPIO0) in the background and log presses without
+  // touching the EN/reset button.
+  let _boot_logger = spawn async {
+    let mut bool last_pressed = false;
+    let mut int32 debounce = 0;
+    let mut int32 heartbeat = 0;
+    loop {
+      let int32 raw = digital_read(button);
+      let bool pressed = if button_active_low { raw == 0 } else { raw != 0 };
+      let bool high = !pressed;
+      if debounce > 0 {
+        debounce = debounce - 1;
+      }
+      if last_pressed != pressed && debounce == 0 {
+        if pressed {
+          out("boot button pressed (GPIO0)");
+        } else {
+          out("boot button released (GPIO0)");
+        }
+        out(`boot button raw={raw} pressed={pressed}`);
+        let int32 cached = reset_reason();
+        print_reset_reason("reset reason (button): ", cached);
+        debounce = 3;
+      }
+      last_pressed = pressed;
+      if heartbeat % 8 == 0 {
+        out(`boot button heartbeat: raw={raw} pressed={pressed}`);
+      }
+      heartbeat = heartbeat + 1;
+      delay_ms(25);
+    }
+  };
+  // Short-lived probe: print raw reads for a few seconds to see if GPIO0 toggles at all.
+  let _boot_probe = spawn async {
+    let mut int32 i = 0;
+    let mut int32 last = -99;
+    loop {
+      let int32 raw = digital_read(button);
+      if raw != last {
+        out(`boot probe raw change: {raw}`);
+        last = raw;
+      }
+      if i % 10 == 0 {
+        out(`boot probe sample {i}: raw={raw}`);
+      }
+      i = i + 1;
+      if i > 50 {
+        break;
+      }
+      delay_ms(100);
+    }
+  };
 
   let (probe_tx, probe_rx) = channel[int32]();
   let probe = spawn async {
@@ -99,9 +157,6 @@ fn main() {
   let blinker = async {
     let mut int32 counter = 0;
     let mut bool led_on = false;
-    let mut bool last_button_high = true;
-    let mut bool last_logged_press = false;
-    let mut int32 button_cooldown = 0;
     let int32 checked_led = ensure_pin(led)?;
     pin_mode(checked_led, 1);
     loop {
@@ -110,25 +165,17 @@ fn main() {
       } else {
         1
       };
-      // Check button before toggling.
-      let int32 btn0 = digital_read(button);
-      let bool btn0_pressed = if button_active_low { btn0 == 0 } else { btn0 != 0 };
-      let bool btn0_high = !btn0_pressed;
-      if last_button_high && !btn0_high && button_cooldown == 0 {
-        let int32 cached = reset_reason();
-        print_reset_reason("reset reason (button): ", cached);
-        button_cooldown = 16; // avoid spamming while held
-        last_logged_press = true;
-      } else if !btn0_pressed {
-        last_logged_press = false;
-      }
-      last_button_high = btn0_high;
       drive_led(checked_led, on_level)?;
       led_on = true;
       out(`async blink: LED ON (count {counter}, led_on {led_on})`);
       delay_ms(1000);
       if counter % 32 == 0 {
         channel_demo();
+      }
+      if counter % 4 == 0 {
+        let int32 btn_raw = digital_read(button);
+        let bool btn_pressed = if button_active_low { btn_raw == 0 } else { btn_raw != 0 };
+        out(`boot button sample in main loop: raw={btn_raw} pressed={btn_pressed}`);
       }
 
       let int32 off_level = if led_active_low {
@@ -144,23 +191,6 @@ fn main() {
         let int32 cached = reset_reason();
         print_reset_reason("reset reason (cached): ", cached);
       }
-
-      // Check button again after delays to catch short presses.
-      let int32 btn = digital_read(button);
-      let bool button_pressed = if button_active_low { btn == 0 } else { btn != 0 };
-      if button_cooldown == 0 && button_pressed && !last_logged_press {
-        let int32 cached = reset_reason();
-        print_reset_reason("reset reason (button): ", cached);
-        button_cooldown = 16;
-        last_logged_press = true;
-      }
-      if button_cooldown > 0 {
-        button_cooldown = button_cooldown - 1;
-      }
-      if !button_pressed {
-        last_logged_press = false;
-      }
-      last_button_high = !button_pressed;
       counter = counter + 1;
     }
     Result::Ok(())
