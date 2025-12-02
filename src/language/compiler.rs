@@ -5871,6 +5871,9 @@ impl Compiler {
             "digital_write" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_digital_write(values)))
             }
+            "digital_read" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_digital_read(values)))
+            }
             "reset_reason" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_reset_reason(values)))
             }
@@ -9659,6 +9662,30 @@ impl Compiler {
             "digital_write",
         );
         Ok(Value::Unit)
+    }
+
+    fn builtin_digital_read(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("digital_read expects 1 argument (pin)".into());
+        }
+        self.ensure_embedded_target("digital_read")?;
+        let pin = self.expect_int(args.pop().unwrap())?;
+        let pin_cast = unsafe {
+            LLVMBuildIntCast(
+                self.builder,
+                pin.llvm(),
+                self.i32_type,
+                CString::new("digital_read_pin").unwrap().as_ptr(),
+            )
+        };
+        let mut call_args = [pin_cast];
+        let llvm = self.call_runtime(
+            self.runtime_abi.prime_digital_read,
+            self.runtime_abi.prime_digital_read_ty,
+            &mut call_args,
+            "digital_read",
+        );
+        Ok(Value::Int(IntValue::new(llvm, None)))
     }
 
     fn builtin_reset_reason(&mut self, args: Vec<Value>) -> Result<Value, String> {

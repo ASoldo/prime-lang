@@ -3244,6 +3244,25 @@ impl Checker {
                 }
                 Some(TypeExpr::Named("int32".into(), Vec::new()))
             }
+            "digital_read" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`digital_read` expects 1 argument (pin)",
+                    ));
+                }
+                if let Some(pin) = args.get(0) {
+                    self.check_expression(
+                        module,
+                        pin,
+                        Some(&TypeExpr::Named("int32".into(), Vec::new())),
+                        returns,
+                        env,
+                    );
+                }
+                Some(TypeExpr::Named("int32".into(), Vec::new()))
+            }
             "fs_exists" => {
                 if args.len() != 1 {
                     self.errors.push(TypeError::new(
@@ -4491,12 +4510,16 @@ impl Checker {
                     | "sleep_ms"
                     | "sleep_task"
                     | "now_ms"
+                    | "digital_read"
                     | "reset_reason"
             )
     }
 
     fn is_embedded_builtin(&self, name: &str) -> bool {
-        matches!(name, "pin_mode" | "digital_write" | "delay_ms" | "reset_reason")
+        matches!(
+            name,
+            "pin_mode" | "digital_write" | "digital_read" | "delay_ms" | "reset_reason"
+        )
     }
 
     fn is_builtin_name(&self, name: &str) -> bool {

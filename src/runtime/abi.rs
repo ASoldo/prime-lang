@@ -1866,11 +1866,17 @@ mod embedded {
     const GPIO_OUT_W1TC_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x000c) as *mut u32;
     #[cfg(target_arch = "xtensa")]
     const GPIO_ENABLE_W1TS_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x0024) as *mut u32;
+    #[cfg(target_arch = "xtensa")]
+    const GPIO_ENABLE_W1TC_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x0028) as *mut u32;
+    #[cfg(target_arch = "xtensa")]
+    const GPIO_IN_REG: *const u32 = (DR_REG_GPIO_BASE + 0x0038) as *const u32;
 
     #[cfg(target_arch = "xtensa")]
     const DR_REG_IO_MUX_BASE: u32 = 0x3ff49000;
+    // IO mux registers for common pins.
     #[cfg(target_arch = "xtensa")]
-    // IO mux registers for common LED pins (2, 4, 5).
+    const IO_MUX_GPIO0_REG: *mut u32 = (DR_REG_IO_MUX_BASE + 0x44) as *mut u32;
+    #[cfg(target_arch = "xtensa")]
     const IO_MUX_GPIO2_REG: *mut u32 = (DR_REG_IO_MUX_BASE + 0x40) as *mut u32;
     #[cfg(target_arch = "xtensa")]
     const IO_MUX_GPIO4_REG: *mut u32 = (DR_REG_IO_MUX_BASE + 0x48) as *mut u32;
@@ -1946,8 +1952,8 @@ mod embedded {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_pin_mode(pin: i32, mode: i32) -> PrimeStatus {
         log_hello_once();
-        // Mode 1 -> output (matches demo usage).
-        if mode != 1 {
+        // Mode 1 -> output, Mode 0 -> input.
+        if mode != 0 && mode != 1 {
             return PrimeStatus::Invalid;
         }
         if pin < 0 || pin > 33 {
@@ -1955,9 +1961,22 @@ mod embedded {
         }
         route_gpio(pin);
 
-        // Enable output driver for the pin.
         let mask = 1u32 << (pin as u32);
-        core::ptr::write_volatile(GPIO_ENABLE_W1TS_REG, mask);
+        if mode == 1 {
+            // Enable output driver for the pin.
+            core::ptr::write_volatile(GPIO_ENABLE_W1TS_REG, mask);
+        } else {
+            // Disable output driver (input only).
+            core::ptr::write_volatile(GPIO_ENABLE_W1TC_REG, mask);
+            // Enable pull-up, disable pull-down for supported pins so buttons can be read without external resistors.
+            if let Some(reg_ptr) = mux_reg(pin) {
+                let mut val = core::ptr::read_volatile(reg_ptr);
+                // Clear pull-down (bit 6), set pull-up (bit 7).
+                val &= !(1 << 6);
+                val |= 1 << 7;
+                core::ptr::write_volatile(reg_ptr, val);
+            }
+        }
         PrimeStatus::Ok
     }
 
@@ -1977,16 +1996,50 @@ mod embedded {
         PrimeStatus::Ok
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_digital_read")]
+    pub unsafe extern "C" fn prime_digital_read(pin: i32) -> i32 {
+        if pin < 0 || pin > 39 {
+            return -1;
+        }
+        route_gpio(pin);
+        let mask = 1u32 << (pin as u32);
+        let value = core::ptr::read_volatile(GPIO_IN_REG);
+        if (value & mask) != 0 {
+            1
+        } else {
+            0
+        }
+    }
+
+    #[cfg(all(
+        not(target_arch = "xtensa"),
+        not(all(target_arch = "riscv32", target_os = "none")),
+    ))]
+    #[unsafe(export_name = "prime_digital_read")]
+    pub unsafe extern "C" fn prime_digital_read_host(_pin: i32) -> i32 {
+        0
+    }
+
     #[cfg(target_arch = "xtensa")]
     #[inline]
-    fn route_gpio(pin: i32) {
-        let reg = match pin {
+    fn mux_reg(pin: i32) -> Option<*mut u32> {
+        match pin {
+            0 => Some(IO_MUX_GPIO0_REG),
             2 => Some(IO_MUX_GPIO2_REG),
             4 => Some(IO_MUX_GPIO4_REG),
             5 => Some(IO_MUX_GPIO5_REG),
             _ => None,
-        };
-        if let Some(reg_ptr) = reg {
+        }
+    }
+
+    #[cfg(target_arch = "xtensa")]
+    #[inline]
+    fn route_gpio(pin: i32) {
+        if let Some(reg_ptr) = mux_reg(pin) {
             let mut val = unsafe { core::ptr::read_volatile(reg_ptr) };
             val &= !MCU_SEL_MASK;
             val |= FUNC_GPIO << 12;

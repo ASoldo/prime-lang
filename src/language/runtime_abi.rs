@@ -127,6 +127,8 @@ pub struct RuntimeAbi {
     pub prime_pin_mode_ty: LLVMTypeRef,
     pub prime_digital_write: LLVMValueRef,
     pub prime_digital_write_ty: LLVMTypeRef,
+    pub prime_digital_read: LLVMValueRef,
+    pub prime_digital_read_ty: LLVMTypeRef,
     pub prime_now_ms: LLVMValueRef,
     pub prime_now_ms_ty: LLVMTypeRef,
     pub prime_reset_reason: LLVMValueRef,
@@ -445,6 +447,12 @@ impl RuntimeAbi {
                 LLVMInt32TypeInContext(context),
             ],
         );
+        let (prime_digital_read, prime_digital_read_ty) = declare_fn(
+            module,
+            "prime_digital_read",
+            LLVMInt32TypeInContext(context),
+            &mut [LLVMInt32TypeInContext(context)],
+        );
         let (prime_now_ms, prime_now_ms_ty) = declare_fn(module, "prime_now_ms", int_type, &mut []);
         let (_prime_reset_reason, _prime_reset_reason_ty) =
             declare_fn(module, "prime_reset_reason", LLVMInt32TypeInContext(context), &mut []);
@@ -563,6 +571,8 @@ impl RuntimeAbi {
             prime_pin_mode_ty,
             prime_digital_write,
             prime_digital_write_ty,
+            prime_digital_read,
+            prime_digital_read_ty,
             prime_now_ms,
             prime_now_ms_ty,
             prime_reset_reason: _prime_reset_reason,
@@ -685,6 +695,8 @@ impl RuntimeAbi {
             prime_pin_mode_ty: std::ptr::null_mut(),
             prime_digital_write: std::ptr::null_mut(),
             prime_digital_write_ty: std::ptr::null_mut(),
+            prime_digital_read: std::ptr::null_mut(),
+            prime_digital_read_ty: std::ptr::null_mut(),
             prime_now_ms: std::ptr::null_mut(),
             prime_now_ms_ty: std::ptr::null_mut(),
             prime_reset_reason: std::ptr::null_mut(),

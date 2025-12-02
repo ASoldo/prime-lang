@@ -73,10 +73,14 @@ fn main() {
   out(`hello from esp32 blink demo and value is {my_var}`);
 
   let int32 led = 2;
+  let int32 button = 0; // Set to your user button GPIO (BOOT is GPIO0 on many boards).
+  let bool button_active_low = true;
   let bool led_active_low = false;
   pin_mode(led, 1);
+  pin_mode(button, 0);
   out(`This is our second text {my_var}`);
   out("starting async blink demo on esp32 (no_std)");
+
   let int32 reason = reset_reason();
   print_reset_reason("reset reason: ", reason);
 
@@ -95,6 +99,9 @@ fn main() {
   let blinker = async {
     let mut int32 counter = 0;
     let mut bool led_on = false;
+    let mut bool last_button_high = true;
+    let mut bool last_logged_press = false;
+    let mut int32 button_cooldown = 0;
     let int32 checked_led = ensure_pin(led)?;
     pin_mode(checked_led, 1);
     loop {
@@ -103,6 +110,19 @@ fn main() {
       } else {
         1
       };
+      // Check button before toggling.
+      let int32 btn0 = digital_read(button);
+      let bool btn0_pressed = if button_active_low { btn0 == 0 } else { btn0 != 0 };
+      let bool btn0_high = !btn0_pressed;
+      if last_button_high && !btn0_high && button_cooldown == 0 {
+        let int32 cached = reset_reason();
+        print_reset_reason("reset reason (button): ", cached);
+        button_cooldown = 16; // avoid spamming while held
+        last_logged_press = true;
+      } else if !btn0_pressed {
+        last_logged_press = false;
+      }
+      last_button_high = btn0_high;
       drive_led(checked_led, on_level)?;
       led_on = true;
       out(`async blink: LED ON (count {counter}, led_on {led_on})`);
@@ -124,6 +144,23 @@ fn main() {
         let int32 cached = reset_reason();
         print_reset_reason("reset reason (cached): ", cached);
       }
+
+      // Check button again after delays to catch short presses.
+      let int32 btn = digital_read(button);
+      let bool button_pressed = if button_active_low { btn == 0 } else { btn != 0 };
+      if button_cooldown == 0 && button_pressed && !last_logged_press {
+        let int32 cached = reset_reason();
+        print_reset_reason("reset reason (button): ", cached);
+        button_cooldown = 16;
+        last_logged_press = true;
+      }
+      if button_cooldown > 0 {
+        button_cooldown = button_cooldown - 1;
+      }
+      if !button_pressed {
+        last_logged_press = false;
+      }
+      last_button_high = !button_pressed;
       counter = counter + 1;
     }
     Result::Ok(())
