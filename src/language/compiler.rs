@@ -2316,7 +2316,33 @@ impl Compiler {
             // Embedded runtime: render scalars into strings via runtime helpers.
             match &owned {
                 Value::Reference(reference) => {
-                    // Print the current pointed-to value.
+                    if let Some(handle) = reference.handle {
+                        // Best-effort print via runtime handle (common for Option/Result payloads).
+                        self.ensure_runtime_symbols();
+                        let mut as_int_args = [handle];
+                        let int_val = self.call_runtime(
+                            self.runtime_abi.prime_value_as_int,
+                            self.runtime_abi.prime_value_as_int_ty,
+                            &mut as_int_args,
+                            "ref_value_as_int",
+                        );
+                        let mut to_string_args = [int_val];
+                        let string_handle = self.call_runtime(
+                            self.runtime_abi.prime_int_to_string,
+                            self.runtime_abi.prime_int_to_string_ty,
+                            &mut to_string_args,
+                            "ref_int_to_string",
+                        );
+                        let mut print_args = [string_handle];
+                        self.call_runtime(
+                            self.runtime_abi.prime_print,
+                            self.runtime_abi.prime_print_ty,
+                            &mut print_args,
+                            "prime_print_ref",
+                        );
+                        return Ok(());
+                    }
+                    // Print the current pointed-to value (non-runtime).
                     let inner = reference.cell.lock().unwrap().clone();
                     return self.print_value(inner);
                 }
