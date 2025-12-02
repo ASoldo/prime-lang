@@ -306,9 +306,7 @@ fn async_demo_matches_golden_output() {
         "async demo failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let stdout = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert_eq!(
         stdout,
         expected.trim(),

@@ -141,6 +141,44 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
+    const PRIME_INT_SLOTS: usize = 16;
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    #[derive(Copy, Clone)]
+    #[repr(C)]
+    struct PrimeInt {
+        value: i128,
+    }
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    static mut INT_HANDLES: [MaybeUninit<PrimeInt>; PRIME_INT_SLOTS] =
+        [const { MaybeUninit::uninit() }; PRIME_INT_SLOTS];
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    static INT_HANDLE_NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn alloc_int(value: i128) -> PrimeHandle {
+        let slot = INT_HANDLE_NEXT.fetch_add(1, Ordering::Relaxed) % PRIME_INT_SLOTS;
+        unsafe {
+            INT_HANDLES[slot].as_mut_ptr().write(PrimeInt { value });
+            PrimeHandle(INT_HANDLES.as_mut_ptr().add(slot) as *mut c_void)
+        }
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     const PRIME_TASK_SLOTS: usize = parse_usize_env(option_env!("PRIME_RT_TASK_SLOTS"), 8, 1);
     #[cfg(any(
         target_arch = "xtensa",
@@ -157,14 +195,16 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    const PRIME_CHANNEL_WAITERS: usize =
-        parse_usize_env(option_env!("PRIME_RT_CHANNEL_WAITERS"), PRIME_TASK_SLOTS * 2, 1);
+    const PRIME_CHANNEL_WAITERS: usize = parse_usize_env(
+        option_env!("PRIME_RT_CHANNEL_WAITERS"),
+        PRIME_TASK_SLOTS * 2,
+        1,
+    );
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    const PRIME_RECV_POLL_MS: u32 =
-        parse_u32_env(option_env!("PRIME_RT_RECV_POLL_MS"), 1, 1);
+    const PRIME_RECV_POLL_MS: u32 = parse_u32_env(option_env!("PRIME_RT_RECV_POLL_MS"), 1, 1);
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -387,12 +427,10 @@ mod embedded {
             return None;
         }
         let ptr = handle.0 as *const TaskSlot;
-        task_slots()
-            .iter()
-            .find(|slot| {
-                // Reject stale handles for recycled slots.
-                slot.used.load(Ordering::SeqCst) && *slot as *const TaskSlot == ptr
-            })
+        task_slots().iter().find(|slot| {
+            // Reject stale handles for recycled slots.
+            slot.used.load(Ordering::SeqCst) && *slot as *const TaskSlot == ptr
+        })
     }
 
     #[cfg(any(
@@ -436,12 +474,10 @@ mod embedded {
             return None;
         }
         let ptr = handle.0 as *const ChannelSlot;
-        channel_slots()
-            .iter()
-            .find(|slot| {
-                // Guard against stale handles after a slot is recycled.
-                slot.used.load(Ordering::SeqCst) && *slot as *const ChannelSlot == ptr
-            })
+        channel_slots().iter().find(|slot| {
+            // Guard against stale handles after a slot is recycled.
+            slot.used.load(Ordering::SeqCst) && *slot as *const ChannelSlot == ptr
+        })
     }
 
     #[cfg(any(
@@ -570,7 +606,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_int_new")]
     pub unsafe extern "C" fn prime_int_new(_value: i128) -> PrimeHandle {
-        PrimeHandle::null()
+        alloc_int(_value)
     }
 
     #[cfg(any(
@@ -1180,7 +1216,12 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_value_as_int")]
     pub unsafe extern "C" fn prime_value_as_int(_handle: PrimeHandle) -> i128 {
-        0
+        if _handle.0.is_null() {
+            return 0;
+        }
+        let int_ptr = _handle.0 as *const PrimeInt;
+        // Safety: handles are produced by alloc_int and point into INT_HANDLES backing storage.
+        unsafe { (*int_ptr).value }
     }
 
     #[cfg(any(
@@ -1808,8 +1849,7 @@ mod embedded {
         let off = STR_STORAGE_OFF.load(Ordering::Relaxed) as u32;
         unsafe {
             ets_printf(
-                b"[rt] pc=%u sc=%u ec=%u ca=%u cf=%u ta=%u tf=%u sw=%u shw=%u off=%u\n\0"
-                    .as_ptr(),
+                b"[rt] pc=%u sc=%u ec=%u ca=%u cf=%u ta=%u tf=%u sw=%u shw=%u off=%u\n\0".as_ptr(),
                 pc,
                 sc,
                 ec,

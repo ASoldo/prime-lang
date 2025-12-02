@@ -1613,10 +1613,8 @@ fn main() {
             Some(2)
         );
 
-        let outer_offset = src
-            .find("add(1, add(2, 3)")
-            .expect("outer call offset")
-            + "add(1, add(2, 3)".len();
+        let outer_offset =
+            src.find("add(1, add(2, 3)").expect("outer call offset") + "add(1, add(2, 3)".len();
         let outer_ctx = call_context(src, outer_offset).expect("call context for outer call");
         assert_eq!(outer_ctx.name, "add");
         assert_eq!(outer_ctx.arg_index, 1);

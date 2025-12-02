@@ -500,9 +500,7 @@ fn compile_runtime_abi_with_cargo(
     options: &BuildOptions,
 ) -> Result<PathBuf, String> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let triple = target
-        .triple()
-        .unwrap_or("x86_64-unknown-linux-gnu");
+    let triple = target.triple().unwrap_or("x86_64-unknown-linux-gnu");
     let cargo_dir = runtime_dir.join("cargo");
     fs::create_dir_all(&cargo_dir)
         .map_err(|err| format!("failed to create runtime cargo dir: {err}"))?;
@@ -1023,8 +1021,16 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
     } else {
         let llc_path = env::var("PRIME_LLC")
             .ok()
-            .or_else(|| env::var("LLVM_SYS_211_PREFIX").ok().map(|p| format!("{p}/bin/llc")))
-            .or_else(|| env::var("LLVM_SYS_201_PREFIX").ok().map(|p| format!("{p}/bin/llc")));
+            .or_else(|| {
+                env::var("LLVM_SYS_211_PREFIX")
+                    .ok()
+                    .map(|p| format!("{p}/bin/llc"))
+            })
+            .or_else(|| {
+                env::var("LLVM_SYS_201_PREFIX")
+                    .ok()
+                    .map(|p| format!("{p}/bin/llc"))
+            });
         Command::new(llc_path.unwrap_or_else(|| "llc".to_string()))
     };
     // Xtensa toolchains typically build static images; PIC relocations are not supported.
@@ -1315,9 +1321,7 @@ fn link_esp32(
     bin_path: &Path,
     build_options: &BuildOptions,
 ) -> Result<(), String> {
-    if build_options.target.is_esp32_xtensa_espidf()
-        && env::var("IDF_PATH").is_err()
-    {
+    if build_options.target.is_esp32_xtensa_espidf() && env::var("IDF_PATH").is_err() {
         return Err("ESP-IDF builds require IDF_PATH to point at your ESP-IDF checkout (see docs/esp32_toolchain_template.toml)".to_string());
     }
     let cc_default = if build_options.target.is_esp32_xtensa()

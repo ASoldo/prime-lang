@@ -8,11 +8,9 @@ use crate::language::{
     types::{Mutability, TypeExpr},
 };
 use std::collections::HashSet;
-use tower_lsp_server::lsp_types::{
-    Hover, HoverContents, MarkupContent, MarkupKind,
-};
 #[cfg(test)]
 use tower_lsp_server::lsp_types::MarkedString;
+use tower_lsp_server::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 
 use super::{
     analysis::{DeclInfo, DeclKind, find_local_decl},
@@ -1415,8 +1413,8 @@ fn main() {
 }
 "#;
         let tokens = lex(text).expect("lex tokens");
-        let module =
-            parse_module("demo::member", PathBuf::from("member.prime"), text).expect("parse module");
+        let module = parse_module("demo::member", PathBuf::from("member.prime"), text)
+            .expect("parse module");
         let structs = collect_struct_info(&[module.clone()]);
         let vars = collect_var_infos(text, &tokens);
         let usage = tokens

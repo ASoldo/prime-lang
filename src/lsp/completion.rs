@@ -1322,7 +1322,6 @@ pub fn general_completion_items(
         .collect()
 }
 
-
 fn import_module_from_snapshot<'a>(
     all_modules: &'a [Module],
     import: &Import,

@@ -25,25 +25,25 @@ use crate::{
 use llvm_sys::{
     LLVMLinkage, LLVMTypeKind,
     core::{
-        LLVMAddCase, LLVMAddFunction, LLVMAddIncoming, LLVMAppendBasicBlockInContext, LLVMArrayType2,
-        LLVMBuildAdd, LLVMBuildAlloca, LLVMBuildAnd, LLVMBuildArrayMalloc, LLVMBuildBitCast, LLVMBuildBr,
-        LLVMBuildCall2, LLVMBuildCondBr, LLVMBuildExtractValue, LLVMBuildFAdd, LLVMBuildFCmp,
-        LLVMBuildFDiv, LLVMBuildFMul, LLVMBuildFRem, LLVMBuildFSub, LLVMBuildGlobalString,
-        LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildIntCast, LLVMBuildLoad2, LLVMBuildMul,
-        LLVMBuildNot, LLVMBuildOr, LLVMBuildPhi, LLVMBuildRet, LLVMBuildRetVoid, LLVMBuildSDiv,
-        LLVMBuildSExt, LLVMBuildSIToFP, LLVMBuildSRem, LLVMBuildStore, LLVMBuildStructGEP2,
-        LLVMBuildSub, LLVMBuildSwitch, LLVMConstInt, LLVMConstIntGetZExtValue, LLVMConstNull,
-        LLVMConstPointerNull, LLVMConstReal, LLVMContextCreate, LLVMContextDispose,
-        LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage, LLVMDisposeModule,
-        LLVMDoubleTypeInContext, LLVMFloatTypeInContext, LLVMFunctionType, LLVMGetBasicBlockParent,
-        LLVMGetElementType, LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetGlobalParent,
-        LLVMGetInsertBlock, LLVMGetIntTypeWidth, LLVMGetLastInstruction, LLVMGetModuleContext,
-        LLVMGetParam, LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext,
-        LLVMInt32TypeInContext, LLVMIntTypeInContext, LLVMIsAConstantInt, LLVMIsAFunction,
-        LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilder,
-        LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMPrintModuleToFile, LLVMSetLinkage,
-        LLVMSetTarget, LLVMStructCreateNamed, LLVMStructSetBody, LLVMStructTypeInContext,
-        LLVMTypeOf, LLVMVoidTypeInContext,
+        LLVMAddCase, LLVMAddFunction, LLVMAddIncoming, LLVMAppendBasicBlockInContext,
+        LLVMArrayType2, LLVMBuildAdd, LLVMBuildAlloca, LLVMBuildAnd, LLVMBuildArrayMalloc,
+        LLVMBuildBitCast, LLVMBuildBr, LLVMBuildCall2, LLVMBuildCondBr, LLVMBuildExtractValue,
+        LLVMBuildFAdd, LLVMBuildFCmp, LLVMBuildFDiv, LLVMBuildFMul, LLVMBuildFRem, LLVMBuildFSub,
+        LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildIntCast,
+        LLVMBuildLoad2, LLVMBuildMul, LLVMBuildNot, LLVMBuildOr, LLVMBuildPhi, LLVMBuildRet,
+        LLVMBuildRetVoid, LLVMBuildSDiv, LLVMBuildSExt, LLVMBuildSIToFP, LLVMBuildSRem,
+        LLVMBuildStore, LLVMBuildStructGEP2, LLVMBuildSub, LLVMBuildSwitch, LLVMConstInt,
+        LLVMConstIntGetZExtValue, LLVMConstNull, LLVMConstPointerNull, LLVMConstReal,
+        LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
+        LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext, LLVMFloatTypeInContext,
+        LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetElementType, LLVMGetFirstBasicBlock,
+        LLVMGetFirstInstruction, LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetIntTypeWidth,
+        LLVMGetLastInstruction, LLVMGetModuleContext, LLVMGetParam, LLVMGetReturnType,
+        LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext, LLVMIntTypeInContext,
+        LLVMIsAConstantInt, LLVMIsAFunction, LLVMModuleCreateWithNameInContext, LLVMPointerType,
+        LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore,
+        LLVMPrintModuleToFile, LLVMSetLinkage, LLVMSetTarget, LLVMStructCreateNamed,
+        LLVMStructSetBody, LLVMStructTypeInContext, LLVMTypeOf, LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -2351,8 +2351,8 @@ impl Compiler {
                     // Optional diagnostic for tracking stale handles in embedded format prints.
                     if env::var_os("PRIME_DEBUG_EMBED_INT").is_some() {
                         self.emit_embedded_labeled_print("ssa=", handle);
-                        if let Some(rt_handle) = runtime_handle
-                            .or_else(|| self.maybe_attach_runtime_handle(&mut value))
+                        if let Some(rt_handle) =
+                            runtime_handle.or_else(|| self.maybe_attach_runtime_handle(&mut value))
                         {
                             let mut val_args = [rt_handle];
                             let rt_int = self.call_runtime(
@@ -2404,8 +2404,8 @@ impl Compiler {
                 _ => {}
             }
         }
-        if let Some(handle) = runtime_handle
-            .or_else(|| self.maybe_attach_runtime_handle(&mut value))
+        if let Some(handle) =
+            runtime_handle.or_else(|| self.maybe_attach_runtime_handle(&mut value))
         {
             self.emit_runtime_print(handle);
             return Ok(());
@@ -4769,7 +4769,7 @@ impl Compiler {
                             BlockEval::Flow(FlowSignal::Break) => break,
                             BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
                             BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                return Ok(Some(flow))
+                                return Ok(Some(flow));
                             }
                         }
                     } else {
@@ -4912,10 +4912,10 @@ impl Compiler {
                                 BlockEval::Flow(FlowSignal::Continue) => continue,
                                 BlockEval::Flow(FlowSignal::Break) => break,
                                 BlockEval::Flow(flow @ FlowSignal::Return(_)) => {
-                                    return Ok(Some(flow))
+                                    return Ok(Some(flow));
                                 }
                                 BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                    return Ok(Some(flow))
+                                    return Ok(Some(flow));
                                 }
                             }
                         }
@@ -5050,18 +5050,12 @@ impl Compiler {
             Expr::Literal(Literal::Int(value, _)) => Ok(EvalOutcome::Value(
                 self.evaluated(Value::Int(self.const_int_value(*value as i128))),
             )),
-            Expr::Literal(Literal::Bool(value, _)) => Ok(EvalOutcome::Value(
-                self.evaluated(Value::Bool(BoolValue::new(
-                    unsafe {
-                        LLVMConstInt(
-                            self.runtime_abi.bool_type,
-                            *value as u64,
-                            0,
-                        )
-                    },
+            Expr::Literal(Literal::Bool(value, _)) => Ok(EvalOutcome::Value(self.evaluated(
+                Value::Bool(BoolValue::new(
+                    unsafe { LLVMConstInt(self.runtime_abi.bool_type, *value as u64, 0) },
                     Some(*value),
-                ))),
-            )),
+                )),
+            ))),
             Expr::Literal(Literal::Float(value, _)) => Ok(EvalOutcome::Value(
                 self.evaluated(Value::Float(self.const_float_value(*value))),
             )),
@@ -5989,12 +5983,9 @@ impl Compiler {
 
                         LLVMPositionBuilderAtEnd(self.builder, merge_block);
                         if let (Some(then_val), Some(else_val)) = (then_value, else_value) {
-                            return Ok(EvalOutcome::Value(self.merge_if_values(
-                                then_val,
-                                then_block,
-                                else_val,
-                                else_block,
-                            )?));
+                            return Ok(EvalOutcome::Value(
+                                self.merge_if_values(then_val, then_block, else_val, else_block)?,
+                            ));
                         }
                     }
                     Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
@@ -6044,16 +6035,31 @@ impl Compiler {
         else_val: EvaluatedValue,
         else_block: LLVMBasicBlockRef,
     ) -> Result<EvaluatedValue, String> {
-        match (then_val.into_value(), else_val.into_value()) {
+        let merge_block = unsafe { LLVMGetInsertBlock(self.builder) };
+        let builder = self.builder;
+        let build_phi = |ty: LLVMTypeRef, name: &str| unsafe {
+            let first_instr = LLVMGetFirstInstruction(merge_block);
+            if !first_instr.is_null() {
+                LLVMPositionBuilderBefore(builder, first_instr);
+            } else {
+                LLVMPositionBuilderAtEnd(builder, merge_block);
+            }
+            let phi = LLVMBuildPhi(builder, ty, CString::new(name).unwrap().as_ptr());
+            LLVMPositionBuilderAtEnd(builder, merge_block);
+            phi
+        };
+        let EvaluatedValue {
+            value: then_value,
+            runtime: then_runtime,
+        } = then_val;
+        let EvaluatedValue {
+            value: else_value,
+            runtime: else_runtime,
+        } = else_val;
+        match (then_value, else_value) {
             (Value::Int(a), Value::Int(b)) => {
                 let ty = unsafe { LLVMTypeOf(a.llvm()) };
-                let phi = unsafe {
-                    LLVMBuildPhi(
-                        self.builder,
-                        ty,
-                        CString::new("if_int_phi").unwrap().as_ptr(),
-                    )
-                };
+                let phi = build_phi(ty, "if_int_phi");
                 let mut vals = [a.llvm(), b.llvm()];
                 let mut blocks = [then_block, else_block];
                 unsafe {
@@ -6067,37 +6073,24 @@ impl Compiler {
             }
             (Value::Float(a), Value::Float(b)) => {
                 let ty = unsafe { LLVMTypeOf(a.llvm()) };
-                let phi = unsafe {
-                    LLVMBuildPhi(
-                        self.builder,
-                        ty,
-                        CString::new("if_float_phi").unwrap().as_ptr(),
-                    )
-                };
+                let phi = build_phi(ty, "if_float_phi");
                 let mut vals = [a.llvm(), b.llvm()];
                 let mut blocks = [then_block, else_block];
                 unsafe {
                     LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);
                 }
-                let constant = a
-                    .constant()
-                    .zip(b.constant())
-                    .and_then(|(lhs, rhs)| if (lhs - rhs).abs() < f64::EPSILON {
+                let constant = a.constant().zip(b.constant()).and_then(|(lhs, rhs)| {
+                    if (lhs - rhs).abs() < f64::EPSILON {
                         Some(lhs)
                     } else {
                         None
-                    });
+                    }
+                });
                 Ok(self.evaluated(Value::Float(FloatValue::new(phi, constant))))
             }
             (Value::Bool(a), Value::Bool(b)) => {
                 let ty = unsafe { LLVMTypeOf(a.llvm()) };
-                let phi = unsafe {
-                    LLVMBuildPhi(
-                        self.builder,
-                        ty,
-                        CString::new("if_bool_phi").unwrap().as_ptr(),
-                    )
-                };
+                let phi = build_phi(ty, "if_bool_phi");
                 let mut vals = [a.llvm(), b.llvm()];
                 let mut blocks = [then_block, else_block];
                 unsafe {
@@ -6118,15 +6111,41 @@ impl Compiler {
                     ));
                 }
                 if self.runtime_handles_enabled() {
-                    let a_handle = self.build_runtime_handle(Value::Enum(a.clone()))?;
-                    let b_handle = self.build_runtime_handle(Value::Enum(b.clone()))?;
-                    let phi = unsafe {
-                        LLVMBuildPhi(
-                            self.builder,
-                            self.runtime_abi.handle_type,
-                            CString::new("if_enum_phi").unwrap().as_ptr(),
-                        )
-                    };
+                    let a_handle = then_runtime
+                        .map(|rt| rt.handle)
+                        .or_else(|| unsafe {
+                            let terminator = LLVMGetLastInstruction(then_block);
+                            if terminator.is_null() {
+                                LLVMPositionBuilderAtEnd(builder, then_block);
+                            } else {
+                                LLVMPositionBuilderBefore(builder, terminator);
+                            }
+                            let handle = self.build_runtime_handle(Value::Enum(a.clone())).ok();
+                            LLVMPositionBuilderAtEnd(builder, merge_block);
+                            handle
+                        })
+                        .ok_or_else(|| {
+                            "Dynamic if expression not supported for enum without runtime handle"
+                                .to_string()
+                        })?;
+                    let b_handle = else_runtime
+                        .map(|rt| rt.handle)
+                        .or_else(|| unsafe {
+                            let terminator = LLVMGetLastInstruction(else_block);
+                            if terminator.is_null() {
+                                LLVMPositionBuilderAtEnd(builder, else_block);
+                            } else {
+                                LLVMPositionBuilderBefore(builder, terminator);
+                            }
+                            let handle = self.build_runtime_handle(Value::Enum(b.clone())).ok();
+                            LLVMPositionBuilderAtEnd(builder, merge_block);
+                            handle
+                        })
+                        .ok_or_else(|| {
+                            "Dynamic if expression not supported for enum without runtime handle"
+                                .to_string()
+                        })?;
+                    let phi = build_phi(self.runtime_abi.handle_type, "if_enum_phi");
                     let mut vals = [a_handle, b_handle];
                     let mut blocks = [then_block, else_block];
                     unsafe {
@@ -6149,13 +6168,7 @@ impl Compiler {
             (Value::Reference(a), Value::Reference(b)) => {
                 if let (Some(ha), Some(hb)) = (a.handle, b.handle) {
                     let ty = unsafe { LLVMTypeOf(ha) };
-                    let phi = unsafe {
-                        LLVMBuildPhi(
-                            self.builder,
-                            ty,
-                            CString::new("if_ref_phi").unwrap().as_ptr(),
-                        )
-                    };
+                    let phi = build_phi(ty, "if_ref_phi");
                     let mut vals = [ha, hb];
                     let mut blocks = [then_block, else_block];
                     unsafe {
@@ -6523,10 +6536,120 @@ impl Compiler {
         value: EvaluatedValue,
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         let EvaluatedValue { value, runtime } = value;
+        let trace_try = env::var_os("PRIME_DEBUG_TRACE").is_some();
+        if trace_try {
+            eprintln!(
+                "[prime-debug] try operator input {}",
+                self.describe_value(&value)
+            );
+        }
         match value {
-            Value::Enum(enum_value) => {
+            Value::Enum(mut enum_value) => {
+                if trace_try {
+                    eprintln!(
+                        "[prime-debug] try operator enum name={} variant={} idx={} runtime_handle={:?} values_len={} module={}",
+                        enum_value.enum_name,
+                        enum_value.variant,
+                        enum_value.variant_index,
+                        runtime.map(|rt| rt.handle),
+                        enum_value.values.len(),
+                        self.module_stack.last().cloned().unwrap_or_default()
+                    );
+                }
                 if enum_value.enum_name != "Result" {
                     return Err("? operator expects Result value in build mode".into());
+                }
+                if let Some(runtime_value) = runtime {
+                    self.ensure_runtime_symbols();
+                    if trace_try {
+                        let handle_const = unsafe { !LLVMIsAConstantInt(runtime_value.handle).is_null() };
+                        eprintln!(
+                            "[prime-debug] try operator runtime handle const={} raw={:?}",
+                            handle_const, runtime_value.handle
+                        );
+                    }
+                    let ok_tag = self
+                        .enum_variants
+                        .get("Ok")
+                        .cloned()
+                        .ok_or_else(|| "? operator expects Result value in build mode".to_string())?;
+                    let err_tag = self
+                        .enum_variants
+                        .get("Err")
+                        .cloned()
+                        .ok_or_else(|| "? operator expects Result value in build mode".to_string())?;
+                    let mut tag_args = [runtime_value.handle];
+                    let tag = self.call_runtime(
+                        self.runtime_abi.prime_enum_tag,
+                        self.runtime_abi.prime_enum_tag_ty,
+                        &mut tag_args,
+                        "try_enum_tag",
+                    );
+                    let tag_value = unsafe {
+                        if LLVMIsAConstantInt(tag).is_null() {
+                            None
+                        } else {
+                            Some(LLVMConstIntGetZExtValue(tag) as u32)
+                        }
+                    }
+                    .or_else(|| match enum_value.variant.as_str() {
+                        "Ok" => Some(ok_tag.variant_index),
+                        "Err" => Some(err_tag.variant_index),
+                        _ => None,
+                    })
+                    .unwrap_or(ok_tag.variant_index);
+                    if trace_try {
+                        let is_const = unsafe { !LLVMIsAConstantInt(tag).is_null() };
+                        eprintln!(
+                            "[prime-debug] try operator runtime tag const={} raw_handle={:?} resolved_tag={}",
+                            is_const, tag, tag_value
+                        );
+                    }
+                    if tag_value == ok_tag.variant_index {
+                        if ok_tag.fields == 0 {
+                            return Ok(EvalOutcome::Value(self.evaluated(Value::Unit)));
+                        }
+                        let mut get_args = [
+                            runtime_value.handle,
+                            unsafe { LLVMConstInt(self.runtime_abi.usize_type, 0, 0) },
+                        ];
+                        let payload_handle = self.call_runtime(
+                            self.runtime_abi.prime_enum_get,
+                            self.runtime_abi.prime_enum_get_ty,
+                            &mut get_args,
+                            "try_enum_get",
+                        );
+                        let payload = if enum_value.values.is_empty() {
+                            Value::Reference(ReferenceValue {
+                                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                                mutable: false,
+                                origin: None,
+                                handle: Some(payload_handle),
+                            })
+                        } else if enum_value.values.len() == 1 {
+                            enum_value.values.remove(0)
+                        } else {
+                            Value::Tuple(enum_value.values)
+                        };
+                        return Ok(EvalOutcome::Value(
+                            self.evaluated(payload).with_runtime(payload_handle),
+                        ));
+                    } else if tag_value == err_tag.variant_index {
+                        return Ok(EvalOutcome::Flow(FlowSignal::Propagate(EvaluatedValue {
+                            value: Value::Enum(EnumValue {
+                                enum_name: "Result".into(),
+                                variant: "Err".into(),
+                                values: Vec::new(),
+                                variant_index: err_tag.variant_index,
+                            }),
+                            runtime: Some(runtime_value),
+                        })));
+                    } else {
+                        if env::var_os("PRIME_DEBUG_TRACE").is_some() {
+                            eprintln!("[prime-debug] try operator saw unexpected Result tag {tag_value}");
+                        }
+                        return Err("? operator expects Result value in build mode".into());
+                    }
                 }
                 match enum_value.variant.as_str() {
                     "Ok" => {
@@ -6920,7 +7043,9 @@ impl Compiler {
         let rhs_llvm = self.bool_llvm_value(&rhs);
         let name = CString::new("bool_bin").unwrap();
         let llvm = match op {
-            BinaryOp::And => unsafe { LLVMBuildAnd(self.builder, lhs_llvm, rhs_llvm, name.as_ptr()) },
+            BinaryOp::And => unsafe {
+                LLVMBuildAnd(self.builder, lhs_llvm, rhs_llvm, name.as_ptr())
+            },
             BinaryOp::Or => unsafe { LLVMBuildOr(self.builder, lhs_llvm, rhs_llvm, name.as_ptr()) },
             BinaryOp::Eq => unsafe {
                 LLVMBuildICmp(
@@ -6943,7 +7068,7 @@ impl Compiler {
             _ => {
                 return Err(format!(
                     "Operation `{op:?}` not supported in build mode for booleans"
-                ))
+                ));
             }
         };
         Ok(Value::Bool(BoolValue::new(llvm, None)))
@@ -7084,7 +7209,11 @@ impl Compiler {
         };
         if matches!(
             op,
-            BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq | BinaryOp::Eq
+            BinaryOp::Lt
+                | BinaryOp::LtEq
+                | BinaryOp::Gt
+                | BinaryOp::GtEq
+                | BinaryOp::Eq
                 | BinaryOp::NotEq
         ) {
             Ok(Value::Bool(BoolValue::new(llvm, None)))
@@ -7196,7 +7325,11 @@ impl Compiler {
         };
         if matches!(
             op,
-            BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq | BinaryOp::Eq
+            BinaryOp::Lt
+                | BinaryOp::LtEq
+                | BinaryOp::Gt
+                | BinaryOp::GtEq
+                | BinaryOp::Eq
                 | BinaryOp::NotEq
         ) {
             Ok(Value::Bool(BoolValue::new(llvm, None)))
@@ -7258,10 +7391,7 @@ impl Compiler {
             }
             other => {
                 if env::var_os("PRIME_DEBUG_EXPECT_INT").is_some() {
-                    eprintln!(
-                        "[prime-debug] expect_int saw {}",
-                        describe_value(&other)
-                    );
+                    eprintln!("[prime-debug] expect_int saw {}", describe_value(&other));
                 }
                 Err(format!(
                     "Expected integer value in build mode, got {}",
@@ -8619,11 +8749,7 @@ impl Compiler {
                 )
             };
             unsafe {
-                LLVMBuildStore(
-                    self.builder,
-                    self.null_handle_ptr(),
-                    slot,
-                );
+                LLVMBuildStore(self.builder, self.null_handle_ptr(), slot);
             }
             let mut call_args = [handle, idx_arg, slot];
             let status = self.call_runtime(
@@ -8643,8 +8769,7 @@ impl Compiler {
             if unsafe { LLVMIsAConstantInt(status).is_null() } {
                 return self.instantiate_enum_variant("None", Vec::new());
             }
-            let ok_const =
-                unsafe { LLVMConstIntGetZExtValue(status) == PrimeStatus::Ok as u64 };
+            let ok_const = unsafe { LLVMConstIntGetZExtValue(status) == PrimeStatus::Ok as u64 };
             if !ok_const {
                 return self.instantiate_enum_variant("None", Vec::new());
             }
@@ -9681,10 +9806,10 @@ impl Compiler {
         let mut call_args = [handle];
         self.call_runtime(
             self.runtime_abi.prime_print,
-                self.runtime_abi.prime_print_ty,
-                &mut call_args,
-                "debug_show",
-            );
+            self.runtime_abi.prime_print_ty,
+            &mut call_args,
+            "debug_show",
+        );
         Ok(Value::Unit)
     }
 
@@ -10211,9 +10336,8 @@ impl Compiler {
                     if let Some(constant) = float_value.constant() {
                         return Ok(self.const_bool_value(constant != 0.0));
                     }
-                    let zero = unsafe {
-                        LLVMConstReal(LLVMTypeOf(float_value.llvm()), 0.0f64 as f64)
-                    };
+                    let zero =
+                        unsafe { LLVMConstReal(LLVMTypeOf(float_value.llvm()), 0.0f64 as f64) };
                     let llvm = unsafe {
                         LLVMBuildFCmp(
                             self.builder,
@@ -10510,9 +10634,9 @@ impl Compiler {
                                 slot,
                                 CString::new(format!("{name}_load")).unwrap().as_ptr(),
                             );
-                            return Some(self.evaluated(Value::Int(IntValue::new(
-                                loaded, constant,
-                            ))));
+                            return Some(
+                                self.evaluated(Value::Int(IntValue::new(loaded, constant))),
+                            );
                         }
                     }
                 }

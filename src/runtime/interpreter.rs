@@ -1961,10 +1961,7 @@ impl Interpreter {
         self.expect_arity("sleep_task", &args, 1)?;
         let millis = self.expect_i32_value("sleep_task", args.remove(0))?;
         if std::env::var_os("PRIME_DEBUG_ASYNC").is_some() {
-            eprintln!(
-                "[prime-debug] interpreter sleep_task({}) requested",
-                millis
-            );
+            eprintln!("[prime-debug] interpreter sleep_task({}) requested", millis);
         }
         let task = self.async_runtime.sleep_task(millis as i64);
         Ok(vec![Value::Task(Box::new(task))])

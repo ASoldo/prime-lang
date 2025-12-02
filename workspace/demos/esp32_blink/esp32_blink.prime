@@ -88,12 +88,6 @@ fn main() {
       delay_ms(1000);
       counter = counter + 1;
     }
-    Result::Ok(())
   };
-  match await blinker {
-    Result::Ok(value) => {
-      out(`value is {value}`);
-    },
-    Result::Err(msg) => out(`blink task error: {msg}`),
-  }
+  await blinker;
 }

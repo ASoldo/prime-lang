@@ -152,10 +152,8 @@ impl BuildOptions {
                 .or(runtime_defaults.channel_slots),
             channel_capacity: parse_usize_env("PRIME_RT_CHANNEL_CAP")
                 .or(runtime_defaults.channel_capacity),
-            task_slots: parse_usize_env("PRIME_RT_TASK_SLOTS")
-                .or(runtime_defaults.task_slots),
-            recv_poll_ms: parse_u32_env("PRIME_RT_RECV_POLL_MS")
-                .or(runtime_defaults.recv_poll_ms),
+            task_slots: parse_usize_env("PRIME_RT_TASK_SLOTS").or(runtime_defaults.task_slots),
+            recv_poll_ms: parse_u32_env("PRIME_RT_RECV_POLL_MS").or(runtime_defaults.recv_poll_ms),
         };
         Self {
             target,

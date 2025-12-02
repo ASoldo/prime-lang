@@ -14,8 +14,7 @@ fn debug_enabled() -> bool {
 }
 
 #[derive(Clone, Default)]
-pub struct AsyncRuntime {
-}
+pub struct AsyncRuntime {}
 
 impl AsyncRuntime {
     pub fn new() -> Self {
@@ -60,7 +59,7 @@ impl AsyncRuntime {
             }
             thread::sleep(duration);
             if debug_enabled() {
-            eprintln!("[prime-debug] async_runtime sleep_task finished sleep");
+                eprintln!("[prime-debug] async_runtime sleep_task finished sleep");
             }
             Ok(Value::Unit)
         })
@@ -88,10 +87,7 @@ impl AsyncRuntime {
 
     /// Register a timer wakeup for the current task (stubbed for now).
     #[allow(dead_code)]
-    pub fn sleep_until(
-        &self,
-        state: Arc<(Mutex<TaskState>, std::sync::Condvar)>,
-    ) {
+    pub fn sleep_until(&self, state: Arc<(Mutex<TaskState>, std::sync::Condvar)>) {
         if debug_enabled() {
             eprintln!(
                 "[prime-debug] async_runtime sleep_until stubbed for {:?}",
