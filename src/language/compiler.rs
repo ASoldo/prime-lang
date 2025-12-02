@@ -6621,21 +6621,18 @@ impl Compiler {
                         );
                         let payload = if enum_value.values.len() == 1 {
                             enum_value.values.remove(0)
-                        } else if enum_value.values.is_empty() {
-                            Value::Reference(ReferenceValue {
-                                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
-                                mutable: false,
-                                origin: None,
-                                handle: Some(payload_handle),
-                            })
                         } else {
-                            Value::Tuple(enum_value.values)
+                            // Materialize a concrete payload value; for the blink path this is an int pin.
+                            let mut as_int_args = [payload_handle];
+                            let llvm = self.call_runtime(
+                                self.runtime_abi.prime_value_as_int,
+                                self.runtime_abi.prime_value_as_int_ty,
+                                &mut as_int_args,
+                                "try_enum_payload_as_int",
+                            );
+                            Value::Int(IntValue::new(llvm, None))
                         };
-                        let mut evaluated = self.evaluated(payload);
-                        evaluated.runtime = Some(RuntimeValue {
-                            handle: payload_handle,
-                        });
-                        return Ok(EvalOutcome::Value(evaluated));
+                        return Ok(EvalOutcome::Value(self.evaluated(payload)));
                     } else if tag_value == err_tag.variant_index {
                         return Ok(EvalOutcome::Flow(FlowSignal::Propagate(EvaluatedValue {
                             value: Value::Enum(EnumValue {
