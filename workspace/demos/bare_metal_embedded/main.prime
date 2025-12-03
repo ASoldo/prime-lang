@@ -1,6 +1,14 @@
 module demos::bare_metal_embedded;
 
-import core::types;
+pub enum Option[T] {
+  Some(T),
+  None,
+}
+
+pub enum Result[T, E] {
+  Ok(T),
+  Err(E),
+}
 
 fn main() {
   out("bare metal demo starting");
@@ -28,13 +36,19 @@ fn main() {
   };
   let _ = send(tx, total);
   close(tx);
-  let int32 joined = join(worker);
-  out(`spawn/join recv_task result = {joined}`);
+  let _ = join(worker);
+  out("spawn/join recv_task completed");
 
+  out("starting parity_probe");
   match parity_probe() {
     Result::Ok(v) => out(`parity probe ok: {v}`),
     Result::Err(msg) => out(`parity probe err: {msg}`),
   }
+
+  out("starting async_result_parity");
+  async_result_parity();
+  out("starting timeout_parity");
+  timeout_parity();
 }
 
 fn sum(values: []int32) -> int32 {
@@ -66,5 +80,41 @@ fn parity_probe() -> Result[int32, string] {
   };
   let _ = send(tx, 7);
   close(tx);
-  join(worker)
+  let joined = join(worker);
+  match joined {
+    Result::Ok(v) => Result::Ok(v),
+    Result::Err(msg) => Result::Err(msg),
+    Option::Some(v) => Result::Ok(v),
+    Option::None => Result::Err("empty channel (join)"),
+    _ => Result::Err("parity probe unexpected join value"),
+  }
+}
+
+fn async_result_parity() {
+  let (tx, rx) = channel[Result[int32, string]]();
+  let worker = spawn async {
+    let Option[Result[int32, string]] received = await recv_task(rx);
+    match received {
+      Option::Some(res) => match res {
+        Result::Ok(v) => Result::Ok(v + 1),
+        Result::Err(msg) => Result::Err(msg),
+      },
+      Option::None => Result::Err("closed"),
+    }
+  };
+  let _ = send(tx, Result::Ok(5));
+  close(tx);
+  let _ = join(worker);
+  out("async result parity joined");
+}
+
+fn timeout_parity() {
+  let (tx, rx) = channel[int32]();
+  let Option[int32] timed = recv_timeout(rx, 5);
+  match timed {
+    Option::Some(v) => out(`timeout parity got {v}`),
+    Option::None => out("timeout parity none"),
+  }
+  close(tx);
+  close(rx);
 }

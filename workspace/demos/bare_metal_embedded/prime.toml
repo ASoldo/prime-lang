@@ -9,3 +9,38 @@ name = "demos::bare_metal_embedded"
 path = "main.prime"
 visibility = "pub"
 no_std = true
+
+[build]
+target = "xtensa-esp32-espidf"
+platform = "esp32"
+
+[build.runtime]
+channel_slots = 8
+channel_capacity = 8
+task_slots = 8
+recv_poll_ms = 2
+
+[build.toolchain]
+  cc = "xtensa-esp32-elf-gcc"
+  ar = "xtensa-esp32-elf-ar"
+  objcopy = "xtensa-esp32-elf-objcopy"
+  esptool = "esptool"
+
+  ld_script = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
+
+  ld_flags = """-Wl,--gc-sections \
+  -T/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/memory.ld \
+  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.ld \
+  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.api.ld \
+  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld"""
+
+[build.toolchain.env]
+RUSTUP_TOOLCHAIN = "esp"
+CARGO_TARGET_DIR = "/home/rootster/.cache/prime-xtensa"
+LLVM_SYS_201_PREFIX = "/home/rootster/.espressif/tools/esp-clang/esp-clang"
+LD_LIBRARY_PATH = "/usr/lib64:/usr/lib:/lib:/home/rootster/.espressif/tools/esp-clang/esp-clang/lib"
+PATH = "/home/rootster/.espressif/tools/esp-clang/esp-clang/bin:/home/rootster/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-elf/bin:$PATH"
+CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER = "xtensa-esp32-elf-gcc"
+
+[build.flash]
+enabled = false

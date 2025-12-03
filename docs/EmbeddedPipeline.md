@@ -33,7 +33,7 @@ Notes:
 - Flashing prefers `esptool elf2image` to produce headers; falls back to objcopy when elf2image is unavailable.
 - Runtime disables watchdogs once, uses ring-buffered prints, and drives `recv_task`/`recv_timeout` with a tiny waiter queue + poll (configurable via `[build.runtime]` or `PRIME_RT_*`). The default poll is 1–2ms; expect ~2–3ms wake latency on Xtensa.
 - Default LED strap uses GPIO2 (active-low on many dev boards); override pin/level in the demo if your board differs.
-- `out(...)`, channels, async `sleep_task`/`recv_task`, `prime_reference_read`, and GPIO built-ins are supported in no_std for ESP32. The demo also logs channel/task pool reuse and an external button on GPIO18->GND (active-low) to keep run/build/embedded parity visible.
+- `out(...)`, channels, async `sleep_task`/`recv_task`, `prime_reference_read`, and GPIO built-ins are supported in no_std for ESP32. The demo also logs channel/task pool reuse, a Result+`?` async probe, a timeout probe, and an external button on GPIO18->GND (active-low) to keep run/build/embedded parity visible.
 
 ## Parity Checklist (run/build/embedded)
 

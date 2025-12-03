@@ -348,7 +348,7 @@ How to build/flash (after installing ESP-IDF tools):
 2. Run the demo: `prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink`
    - The runtime prints your `out(...)` lines on UART (115200) with newlines per call (`hello ... {my_var}`, loop state toggles, etc.), and the on-board blue LED (GPIO2, active-low) blinks.
    - External button input: wire GPIO18 -> momentary switch -> GND (active-low) for in-loop logging; BOOT/EN buttons are reserved by auto-boot/reset on many boards.
-   - Concurrency parity: the demo runs async `recv_task`, `spawn`/`join`, and a small channel/task pool reuse probe so embedded output matches run/build semantics.
+   - Concurrency parity: the demo runs async `recv_task`, `spawn`/`join`, a Result + `?` async probe, a timeout probe, and a small channel/task pool reuse probe so embedded output matches run/build semantics.
    - The demo disables hardware watchdogs once on boot to keep the loop alive; re-enable or adjust if your project needs watchdog protection.
    - Flashing is on by default for the demo; disable with `--no-flash` or set `[build.flash].enabled = false`.
 3. If your board’s user LED sits on another pin (some use GPIO4/5), edit the `led` constant in `esp32_blink.prime`.

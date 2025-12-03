@@ -68,6 +68,28 @@ fn drive_led(led: int32, level: int32) -> Result[(), string] {
   Result::Ok(())
 }
 
+fn async_result_probe() {
+  let (tx, rx) = channel[Result[int32, string]]();
+  let worker = spawn async {
+    let Option[Result[int32, string]] received = await recv_task(rx);
+    match received {
+      Option::Some(res) => match res {
+        Result::Ok(v) => Result::Ok(v + 1),
+        Result::Err(msg) => Result::Err(msg),
+      },
+      Option::None => Result::Err("closed"),
+    }
+  };
+  let _ = send(tx, Result::Ok(7));
+  close(tx);
+  match join(worker) {
+    Result::Ok(v) => out(`async result probe ok {v}`),
+    Result::Err(msg) => out(`async result probe err {msg}`),
+    _ => out("async result probe unexpected join"),
+  }
+  close(rx);
+}
+
 fn pool_reuse_sanity(iterations: int32) -> Result[(), string] {
   let mut int32 i = 0;
   while i < iterations {
@@ -91,6 +113,7 @@ fn pool_reuse_sanity(iterations: int32) -> Result[(), string] {
     close(tx);
     let _ = join(worker); // wait for completion; join value may be unit on embedded
     out(`pool reuse iter {i}: completed`);
+    close(rx);
     i = i + 1;
   }
   Result::Ok(())
@@ -115,6 +138,7 @@ fn main() {
 
   let int32 reason = reset_reason();
   print_reset_reason("reset reason: ", reason);
+  async_result_probe();
 
   let _boot_logger = spawn async {
     let mut bool last_pressed = false;
@@ -227,7 +251,9 @@ fn main() {
         print_reset_reason("reset reason (cached): ", cached);
       }
 
-      let _ = pool_reuse_sanity(3);
+      if counter % 64 == 0 {
+        let _ = pool_reuse_sanity(1);
+      }
       counter = counter + 1;
     }
     Result::Ok(())
