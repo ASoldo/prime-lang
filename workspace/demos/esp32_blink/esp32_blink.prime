@@ -168,7 +168,7 @@ fn main() {
         debounce = 3;
       }
       last_pressed = pressed;
-      if heartbeat % 8 == 0 {
+      if heartbeat % 40 == 0 {
         out(`button heartbeat: raw={raw} pressed={pressed}`);
       }
       heartbeat = heartbeat + 1;
@@ -205,6 +205,7 @@ fn main() {
   let _ = send(probe_tx, 99);
   close(probe_tx);
   join(probe);
+  let _ = pool_reuse_sanity(1);
 
   let blinker = async {
     let mut int32 counter = 0;
@@ -221,13 +222,10 @@ fn main() {
       led_on = true;
       out(`async blink: LED ON (count {counter}, led_on {led_on})`);
       delay_ms(1000);
-      if counter % 32 == 0 {
+      if counter % 128 == 0 {
         channel_demo();
       }
-      if counter % 24 == 0 {
-        let _ = pool_reuse_sanity(1);
-      }
-      if counter % 4 == 0 {
+      if counter % 32 == 0 {
         let int32 btn_raw = digital_read(button);
         let bool btn_pressed = if button_active_low {
           btn_raw == 0
@@ -246,13 +244,9 @@ fn main() {
       led_on = false;
       out(`async blink: LED OFF (count {counter}, led_on {led_on})`);
       delay_ms(1000);
-      if counter % 128 == 0 {
+      if counter % 256 == 0 {
         let int32 cached = reset_reason();
         print_reset_reason("reset reason (cached): ", cached);
-      }
-
-      if counter % 64 == 0 {
-        let _ = pool_reuse_sanity(1);
       }
       counter = counter + 1;
     }
