@@ -74,9 +74,9 @@ fn async_result_probe() {
     let Option[Result[int32, string]] received = await recv_task(rx);
     match received {
       Option::Some(res) => match res {
-        Result::Ok(v) => Result::Ok(v + 1),
-        Result::Err(msg) => Result::Err(msg),
-      },
+  Result::Ok(v) => Result::Ok(v + 1),
+  Result::Err(msg) => Result::Err(msg),
+},
       Option::None => Result::Err("closed"),
     }
   };
@@ -94,6 +94,7 @@ fn pool_reuse_sanity(iterations: int32) -> Result[(), string] {
   let mut int32 i = 0;
   while i < iterations {
     out(`pool reuse iter {i}: start`);
+
     let (tx, rx) = channel[int32]();
     let worker = spawn async {
       let Option[int32] received = await recv_task(rx);
@@ -109,9 +110,11 @@ fn pool_reuse_sanity(iterations: int32) -> Result[(), string] {
       }
     };
     out(`pool reuse iter {i}: sending value`);
+
     let _ = send(tx, i);
     close(tx);
-    let _ = join(worker); // wait for completion; join value may be unit on embedded
+
+    let _ = join(worker);
     out(`pool reuse iter {i}: completed`);
     close(rx);
     i = i + 1;
@@ -151,7 +154,6 @@ fn main() {
       } else {
         raw != 0
       };
-      let bool high = !pressed;
       if debounce > 0 {
         debounce = debounce - 1;
       }
@@ -205,8 +207,8 @@ fn main() {
   let _ = send(probe_tx, 99);
   close(probe_tx);
   join(probe);
-  let _ = pool_reuse_sanity(1);
 
+  let _ = pool_reuse_sanity(1);
   let blinker = async {
     let mut int32 counter = 0;
     let mut bool led_on = false;

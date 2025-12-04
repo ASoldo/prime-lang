@@ -541,7 +541,9 @@ crate-type = ["staticlib"]
         if !new_flags.is_empty() {
             new_flags.push(' ');
         }
-        new_flags.push_str("-Aunstable-features -C target-feature=+windowed");
+        // Suppress the expected warning about the unstable `windowed` target feature; we need it
+        // for Xtensa and it is benign for our frozen toolchain.
+        new_flags.push_str("-Zunstable-options -Aunstable-features -Awarnings -C target-feature=+windowed");
         cmd.env("RUSTFLAGS", new_flags);
     }
     cmd.arg("build")

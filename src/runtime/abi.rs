@@ -386,9 +386,8 @@ mod embedded {
             {
                 ENUM_COUNT.fetch_add(1, Ordering::Relaxed);
             }
-            return PrimeHandle(handle_ptr as *mut core::ffi::c_void);
+            PrimeHandle(handle_ptr as *mut core::ffi::c_void)
         }
-        PrimeHandle::null()
     }
 
     #[cfg(any(
