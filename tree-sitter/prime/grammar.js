@@ -38,6 +38,8 @@ module.exports = grammar({
     [$.type_path, $.enum_pattern, $.type_expression],
     [$.type_path, $.expression],
     [$.expression, $.struct_literal],
+    [$.expression, $.macro_argument],
+    [$.macro_var, $.macro_argument],
     [$.module_path],
     [$.type_path, $.type_expression],
     [$.type_expression, $.generic_type],
@@ -232,8 +234,16 @@ module.exports = grammar({
     ),
 
     macro_parameter: $ => seq(
-      field('name', $.identifier),
-      optional(seq(':', field('type', $.type_expression)))
+      field('name', choice('@sep', $.identifier)),
+      optional(seq(':', field('type', choice(
+        $.type_expression,
+        'tokens',
+        'block',
+        'pattern',
+        'repeat+',
+        'repeat*',
+        'repeat'
+      ))))
     ),
 
     return_type: $ => seq(
@@ -252,7 +262,16 @@ module.exports = grammar({
 
     block: $ => seq(
       '{',
-      repeat($.statement),
+      repeat(choice(
+        $.statement,
+        $.function_definition,
+        $.macro_definition,
+        $.struct_definition,
+        $.enum_definition,
+        $.interface_definition,
+        $.impl_definition,
+        $.const_definition
+      )),
       optional(field('tail', $.expression)),
       '}'
     ),
@@ -340,6 +359,7 @@ module.exports = grammar({
       $.if_expression,
       $.closure_expression,
       $.macro_call_expression,
+      $.macro_var,
       $.range_expression,
       $.simple_field_expression,
       $.simple_method_call,
@@ -516,8 +536,38 @@ module.exports = grammar({
       seq(
         '~',
         field('name', $.identifier),
-        field('arguments', $.argument_list)
+        field('arguments', $.macro_argument_list)
       )
+    ),
+
+    macro_var: $ => seq('@', $.identifier),
+
+    macro_argument_list: $ => seq(
+      '(',
+      optional(seq(
+        $.macro_argument,
+        repeat(seq(optional(','), $.macro_argument)),
+        optional(',')
+      )),
+      ')'
+    ),
+
+    macro_argument: $ => choice(
+      seq(
+        '@',
+        field('name', $.identifier),
+        '=',
+        field('value', choice(
+          $.block,
+          $.macro_var,
+          '|',
+          ',',
+          ';',
+          $.expression
+        ))
+      ),
+      seq('@', field('name', $.identifier)),
+      $.expression,
     ),
 
     argument_list: $ => seq('(', commaSep($.expression), ')'),

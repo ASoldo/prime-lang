@@ -193,6 +193,7 @@ return {
     (macro_call_expression
       name: (identifier) @function.macro
       (#set! "priority" 200))
+    (macro_var) @variable
 
     (struct_definition name: (type_identifier) @type)
     (enum_definition name: (type_identifier) @type)
