@@ -1,4 +1,5 @@
 test tests::parity;
+
 import core::types;
 
 pub enum IntResult {
@@ -16,13 +17,14 @@ fn async_try_parity() -> bool {
           IntResult::Ok(v) => IntResult::Ok(v + 2),
           IntResult::Err(msg) => IntResult::Err(msg),
         }
-      }
+      },
       Option::None => IntResult::Err("empty"),
     };
     output
   };
   let _ = send(tx, IntResult::Ok(7));
   close(tx);
+
   let joined = await join(worker);
   match joined {
     IntResult::Ok(v) => v == 9,
@@ -38,6 +40,7 @@ fn timeout_parity() -> bool {
   };
   let _ = send(tx, 11);
   close(tx);
+
   let Option[int32] joined = await join(worker);
   match joined {
     Option::Some(v) => v == 11,
