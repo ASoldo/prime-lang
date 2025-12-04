@@ -186,6 +186,13 @@ return {
       function: (field_expression field: (identifier) @function.call))
     (call_expression
       arguments: (argument_list (identifier) @variable))
+    (macro_call_expression
+      "~" @keyword
+      name: (identifier) @function.macro
+      (#set! "priority" 200))
+    (macro_call_expression
+      name: (identifier) @function.macro
+      (#set! "priority" 200))
 
     (struct_definition name: (type_identifier) @type)
     (enum_definition name: (type_identifier) @type)

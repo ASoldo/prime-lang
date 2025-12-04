@@ -483,8 +483,25 @@
             {
               "type": "SYMBOL",
               "name": "const_definition"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "macro_call_item"
             }
           ]
+        }
+      ]
+    },
+    "macro_call_item": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "macro_call_expression"
+        },
+        {
+          "type": "STRING",
+          "value": ";"
         }
       ]
     },

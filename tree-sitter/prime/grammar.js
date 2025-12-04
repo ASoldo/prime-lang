@@ -102,8 +102,15 @@ module.exports = grammar({
         $.enum_definition,
         $.interface_definition,
         $.impl_definition,
-        $.const_definition
+        $.const_definition,
+        $.macro_call_item
       )
+    ),
+
+    // Top-level macro invocations (e.g., ~add_item();)
+    macro_call_item: $ => seq(
+      $.macro_call_expression,
+      ';'
     ),
 
     macro_definition: $ => seq(
