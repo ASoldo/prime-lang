@@ -31,6 +31,7 @@ members = [
   "workspace/demos/drop_demo",
   "workspace/demos/no_std_parity",
   "workspace/demos/bare_metal_embedded",
+  "workspace/tests/parity",
   "workspace/tests/build_input_demo",
   "workspace/tests/basic",
   "workspace/tests/types_numeric",

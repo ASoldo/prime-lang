@@ -1,0 +1,51 @@
+test tests::parity;
+import core::types;
+
+pub enum IntResult {
+  Ok(int32),
+  Err(string),
+}
+
+fn async_try_parity() -> bool {
+  let (tx, rx) = channel[IntResult]();
+  let worker = spawn async {
+    let Option[IntResult] received = await recv_task(rx);
+    let IntResult output = match received {
+      Option::Some(val) => {
+        match val {
+          IntResult::Ok(v) => IntResult::Ok(v + 2),
+          IntResult::Err(msg) => IntResult::Err(msg),
+        }
+      }
+      Option::None => IntResult::Err("empty"),
+    };
+    output
+  };
+  let _ = send(tx, IntResult::Ok(7));
+  close(tx);
+  let joined = await join(worker);
+  match joined {
+    IntResult::Ok(v) => v == 9,
+    IntResult::Err(_) => false,
+  }
+}
+
+fn timeout_parity() -> bool {
+  let (tx, rx) = channel[int32]();
+  let worker = spawn async {
+    let Option[int32] received = await recv_task(rx);
+    received
+  };
+  let _ = send(tx, 11);
+  close(tx);
+  let Option[int32] joined = await join(worker);
+  match joined {
+    Option::Some(v) => v == 11,
+    Option::None => false,
+  }
+}
+
+fn main() {
+  assert(async_try_parity());
+  assert(timeout_parity());
+}

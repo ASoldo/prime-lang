@@ -6406,7 +6406,28 @@ impl Compiler {
             }
             self.exit_scope()?;
         }
-        Err("No match arm matched in build mode".into())
+        let detail = match target.value() {
+            Value::Enum(e) => {
+                let has_handle = target.runtime_handle().is_some();
+                format!(
+                    "enum {}::{} (runtime_handle={})",
+                    e.enum_name, e.variant, has_handle
+                )
+            }
+            Value::Reference(r) => {
+                let inner = r.cell.lock().ok().map(|v| self.describe_value(v.value()).to_string());
+                format!(
+                    "reference (handle={}, inner={})",
+                    r.handle.is_some(),
+                    inner.unwrap_or_else(|| "unknown".into())
+                )
+            }
+            other => self.describe_value(other).to_string(),
+        };
+        Err(format!(
+            "No match arm matched in build mode (value: {}, span {}..{})",
+            detail, match_expr.span.start, match_expr.span.end
+        ))
     }
 
     fn emit_runtime_enum_match(

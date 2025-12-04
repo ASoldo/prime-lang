@@ -32,28 +32,28 @@ fn async_result_parity() {
   };
   let _ = send(tx, 5);
   close(tx);
-  let _ = join(worker);
+  let Task[int32] task = join(worker);
+  let int32 value = await task;
+  let _ = value;
   out("async result parity joined");
 }
 
 fn async_try_parity() {
-  let (tx, rx) = channel[Result[int32, string]]();
+  let (tx, rx) = channel[int32]();
   let worker = spawn async {
-    let Option[Result[int32, string]] received = await recv_task(rx);
+    let Option[int32] received = await recv_task(rx);
     match received {
-      Option::Some(Result::Ok(v)) => Result::Ok(v + 2),
-      Option::Some(Result::Err(msg)) => Result::Err(msg),
+      Option::Some(v) => Result::Ok(v),
       Option::None => Result::Err("empty"),
     }
   };
-  let _ = send(tx, Result::Ok(7));
+  let _ = send(tx, 7);
   close(tx);
-  let joined = join(worker);
+  let task = join(worker);
+  let joined = await task;
   match joined {
     Result::Ok(v) => out(`async try parity ok {v}`),
     Result::Err(msg) => out(`async try parity err {msg}`),
-    Option::Some(v) => out(`async try parity some {v}`),
-    Option::None => out("async try parity none"),
     _ => out("async try parity other"),
   }
 }
@@ -62,18 +62,16 @@ fn timeout_parity() {
   let (tx, rx) = channel[int32]();
   let worker = spawn async {
     let Option[int32] received = await recv_task(rx);
-    match received {
-      Option::Some(v) => v,
-      Option::None => -1,
-    }
+    received
   };
   let _ = send(tx, 11);
   close(tx);
-  let joined = join(worker);
+  let task = join(worker);
+  let Option[int32] joined = await task;
   match joined {
-    Option::Some(v) => out(`timeout parity join some {v}`),
-    Option::None => out("timeout parity join none"),
-    _ => out("timeout parity join other"),
+    Option::Some(v) => out(`timeout parity join {v}`),
+    Option::None => out("timeout parity none"),
+    _ => out("timeout parity other"),
   }
 }
 
