@@ -2606,7 +2606,13 @@ impl Compiler {
                 self.emit_printf_call("%.*s", &mut args);
                 Ok(())
             }
-            Value::Task(_) => Err("Cannot print task value in build mode".into()),
+            Value::Task(_) => {
+                // Task handles don’t have a printable payload in build mode; emit a placeholder.
+                let (ptr, len) = self.build_runtime_bytes("<task>", "print_task")?;
+                let mut args = [ptr, len];
+                self.emit_printf_call("%.*s", &mut args);
+                Ok(())
+            }
             Value::Moved => Err("Cannot print moved value in build mode".into()),
         }
     }

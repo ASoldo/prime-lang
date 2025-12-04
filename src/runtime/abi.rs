@@ -1373,6 +1373,49 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none"),
     ))]
+    #[unsafe(export_name = "prime_join")]
+    pub unsafe extern "C" fn prime_join(
+        _task: PrimeHandle,
+        result_out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if result_out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let Some(slot) = task_from_handle(_task) else {
+            return PrimeStatus::Invalid;
+        };
+        loop {
+            if slot.done.load(Ordering::SeqCst) {
+                let value = unsafe { *slot.result.get() };
+                unsafe { result_out.write(value) };
+                slot.used.store(false, Ordering::SeqCst);
+                slot.done.store(false, Ordering::SeqCst);
+                unsafe {
+                    *slot.result.get() = PrimeHandle::null();
+                    *slot.deadline_ms.get() = 0;
+                }
+                #[cfg(target_arch = "xtensa")]
+                {
+                    TASK_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
+                return PrimeStatus::Ok;
+            }
+            let _ = poll_channel_waiters();
+            let deadline = unsafe { *slot.deadline_ms.get() };
+            if deadline > 0 {
+                let now = unsafe { prime_now_ms() };
+                if now >= deadline {
+                    slot.done.store(true, Ordering::SeqCst);
+                }
+            }
+            prime_delay_ms(recv_poll_ms());
+        }
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_task_wake")]
     pub unsafe extern "C" fn prime_task_wake(
         _task: PrimeHandle,
