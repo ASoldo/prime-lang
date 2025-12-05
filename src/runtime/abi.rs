@@ -2114,6 +2114,9 @@ mod embedded {
     pub unsafe extern "C" fn call_user_start_cpu0() -> ! {
         zero_bss();
         init_data();
+        // Disable RTC and timer-group watchdogs as early as possible so application code
+        // doesn't reboot unexpectedly during init or long polls.
+        disable_watchdogs_once();
         main();
         loop {
             core::hint::spin_loop();
