@@ -1,6 +1,5 @@
 module demos::no_std_parity;
 
-// Local enums so we don't depend on std libs in no_std.
 pub enum Option[T] {
   Some(T),
   None,
@@ -11,13 +10,12 @@ pub enum Result[T, E] {
   Err(E),
 }
 
-// Simple defer test (no heap).
 fn defer_probe() {
   let mut int32 guard = 0;
   defer {
-    guard = guard + 1;
-    out(`defer ran guard={guard}`);
-  };
+  guard = guard + 1;
+  out(`defer ran guard={guard}`);
+};
   out(`defer probe start guard={guard}`);
 }
 
@@ -32,6 +30,7 @@ fn async_result_parity() {
   };
   let _ = send(tx, 5);
   close(tx);
+
   let Task[int32] task = join(worker);
   let int32 value = await task;
   let _ = value;
@@ -49,6 +48,7 @@ fn async_try_parity() {
   };
   let _ = send(tx, 7);
   close(tx);
+
   let task = join(worker);
   let joined = await task;
   match joined {
@@ -66,6 +66,7 @@ fn timeout_parity() {
   };
   let _ = send(tx, 11);
   close(tx);
+
   let task = join(worker);
   let Option[int32] joined = await task;
   match joined {

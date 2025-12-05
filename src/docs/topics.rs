@@ -410,7 +410,8 @@ for value in scores.map_values() { out(value); }"#,
 - demos/patterns/pattern_demo.prime – matches/destructuring over tuples, maps, structs, slices
 - demos/error_handling/error_handling_demo.prime – Result, try { }, and ? propagation
 - demos/lab_demo/lab_demo.prime – range loops, map destructuring, mutable refs, generic interface
-- demos/pointer_demo/pointer_demo.prime – raw pointers derived from references plus stored ranges"#,
+- demos/pointer_demo/pointer_demo.prime – raw pointers derived from references plus stored ranges
+- demos/no_std_parity/main.prime – host-run parity fixture that targets embedded/no_std for async/Result/timeouts"#,
                 explanation: "Each entry is runnable via `prime-lang run <file>` and mapped in the manifest under `demos::...`. They demonstrate the syntax shown throughout the README so `prime-lang docs` can quote real code.",
             },
             TopicSection {
@@ -818,6 +819,14 @@ parser_config.prime = {
 }
 vim.treesitter.language.register("prime", "prime")"#,
                 explanation: "Add the `prime_lang_treesitter` parser so syntax highlighting, locals view, and outline panes work even before the LSP attaches. The README shows a Lazy spec that enables highlighting globally and registers the filetype mapping for *.prime files.",
+            },
+            TopicSection {
+                title: "Completion coverage for demos",
+                snippet: r#"recv_task(rx)
+recv_timeout(rx, 5)
+sleep_task(10)
+fs_write("demo.txt", "hello")"#,
+                explanation: "Completions surface the built-ins used across the bundled demos: channels (`send`/`recv`/`recv_task`/`recv_timeout`/`sleep_task`/`join`), heap (`box_*`/`map_*`/`slice_*`), input/output (`in`/`out`), timers (`sleep_ms`/`now_ms`), and filesystem helpers (`fs_*`). Module targets from the manifest drive embedded hints: GPIO/delay/reset suggestions appear for `no_std` targets, while host-only `fs_*` completions stay hidden on embedded files.",
             },
             TopicSection {
                 title: "Prime icon plugin",

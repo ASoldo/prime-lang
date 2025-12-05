@@ -112,7 +112,9 @@ fn builtin_completion_items(prefix: Option<&str>, target: &BuildTarget) -> Vec<C
                 "digital_write",
                 "fn digital_write(pin: int32, level: int32) -> ()",
             ),
+            ("digital_read", "fn digital_read(pin: int32) -> int32"),
             ("delay_ms", "fn delay_ms(ms: int32) -> ()"),
+            ("reset_reason", "fn reset_reason() -> int32"),
         ];
         for (name, detail) in candidates {
             if let Some(pref) = prefix {
@@ -1314,7 +1316,12 @@ pub fn general_completion_items(
         }
     }
 
-    items.extend(keyword_completion_items(prefix, macro_ctx, inside_function));
+    items.extend(keyword_completion_items(
+        prefix,
+        macro_ctx,
+        inside_function,
+        Some(target),
+    ));
 
     items
         .into_iter()
@@ -1391,6 +1398,7 @@ pub fn keyword_completion_items(
     prefix: Option<&str>,
     macro_ctx: bool,
     inside_function: bool,
+    target: Option<&BuildTarget>,
 ) -> Vec<CompletionItem> {
     const KEYWORDS: &[&str] = &[
         "fn",
@@ -1406,7 +1414,9 @@ pub fn keyword_completion_items(
         "if",
         "else",
         "for",
+        "in",
         "while",
+        "loop",
         "return",
         "defer",
         "import",
@@ -1417,6 +1427,12 @@ pub fn keyword_completion_items(
         "break",
         "continue",
         "prelude",
+        "pub",
+        "async",
+        "await",
+        "spawn",
+        "try",
+        "move",
     ];
     let mut items: Vec<CompletionItem> = KEYWORDS
         .iter()
@@ -1435,16 +1451,31 @@ pub fn keyword_completion_items(
 
     const BUILTIN_FUNCS: &[(&str, &str)] = &[
         ("in", "Built-in input helper (returns Result[T, string])"),
-        ("assert", "Built-in test helper"),
-        ("expect", "Built-in test helper"),
         ("out", "Built-in output helper"),
+        ("assert", "Built-in test helper"),
+        ("assert_eq", "Built-in test helper"),
+        ("expect", "Built-in test helper"),
+        ("panic", "Built-in panic helper (no unwinding; aborts)"),
         ("channel", "Built-in concurrency helper"),
         ("send", "Built-in concurrency helper"),
         ("recv", "Built-in concurrency helper"),
+        (
+            "recv_timeout",
+            "Built-in concurrency helper (millis timeout)",
+        ),
+        ("recv_task", "Async channel recv (returns Task[Option[T]])"),
         ("close", "Built-in concurrency helper"),
         ("join", "Built-in concurrency helper"),
+        ("sleep", "Built-in timer helper (millis)"),
+        ("sleep_ms", "Built-in timer helper (alias for sleep)"),
+        ("sleep_task", "Async timer helper (returns Task[()])"),
+        ("now_ms", "Built-in clock helper (int64 millis)"),
+        ("fs_exists", "Built-in file helper"),
+        ("fs_read", "Built-in file helper"),
+        ("fs_write", "Built-in file helper"),
         ("ptr", "Built-in pointer helper"),
         ("ptr_mut", "Built-in pointer helper"),
+        ("cast", "Built-in cast helper"),
         ("box_new", "Built-in heap helper"),
         ("box_get", "Built-in heap helper"),
         ("box_set", "Built-in heap helper"),
@@ -1453,9 +1484,15 @@ pub fn keyword_completion_items(
         ("slice_push", "Built-in slice helper"),
         ("slice_len", "Built-in slice helper"),
         ("slice_get", "Built-in slice helper"),
+        ("len", "Built-in len helper"),
+        ("iter", "Iterator helper for slices/maps"),
+        ("next", "Iterator helper"),
         ("map_new", "Built-in map helper"),
         ("map_insert", "Built-in map helper"),
         ("map_get", "Built-in map helper"),
+        ("map_keys", "Built-in map helper (string keys)"),
+        ("map_values", "Built-in map helper"),
+        ("debug_show", "Built-in debug helper"),
         ("str_len", "Built-in string helper"),
         ("str_contains", "Built-in string helper"),
         ("str_trim", "Built-in string helper"),
@@ -1464,10 +1501,12 @@ pub fn keyword_completion_items(
         ("max", "Built-in math helper"),
         ("abs", "Built-in math helper"),
     ];
-    for (label, detail) in BUILTIN_FUNCS
-        .iter()
-        .filter(|(name, _)| prefix_matches(name, prefix))
-    {
+    let embedded_target = target.map(|t| t.is_embedded()).unwrap_or(false);
+    const EMBEDDED_HOST_ONLY: &[&str] = &["fs_exists", "fs_read", "fs_write"];
+    for (label, detail) in BUILTIN_FUNCS.iter().filter(|(name, _)| {
+        prefix_matches(name, prefix)
+            && !(embedded_target && EMBEDDED_HOST_ONLY.iter().any(|host_only| host_only == name))
+    }) {
         items.push(CompletionItem {
             label: (*label).to_string(),
             kind: Some(CompletionItemKind::FUNCTION),

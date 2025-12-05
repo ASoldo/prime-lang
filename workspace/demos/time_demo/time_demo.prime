@@ -6,6 +6,7 @@ fn main() {
   let int64 start = now_ms();
   out(`start ms: {start}`);
   sleep_ms(5);
+
   let int64 end = now_ms();
   out(`end ms: {end}`);
   out(`delta >= 0 ? {end - start >= 0}`);

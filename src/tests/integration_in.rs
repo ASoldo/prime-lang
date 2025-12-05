@@ -315,6 +315,39 @@ fn async_demo_matches_golden_output() {
 }
 
 #[test]
+fn no_std_parity_demo_runs_under_host() {
+    let output = Command::new(bin_path())
+        .current_dir(root())
+        .args(["run", "workspace/demos/no_std_parity/main.prime"])
+        .output()
+        .expect("run no_std parity demo");
+    assert!(
+        output.status.success(),
+        "no_std parity demo failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let expected_lines = [
+        "no_std parity demo start",
+        "defer probe start guard=0",
+        "defer ran guard=1",
+        "async result parity joined",
+        "async try parity ok 7",
+        "match some 3",
+        "timeout parity join 11",
+        "no_std parity demo done",
+    ];
+    let mut cursor = 0;
+    for line in expected_lines {
+        let Some(pos) = stdout[cursor..].find(line) else {
+            panic!("missing `{line}` in no_std parity output:\n{stdout}");
+        };
+        cursor += pos + line.len();
+    }
+}
+
+#[test]
 fn git_dependency_is_loaded_via_manifest() {
     let workspace = tempdir().expect("workspace tempdir");
     let workspace_root = workspace.path().to_path_buf();

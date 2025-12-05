@@ -11,7 +11,7 @@ struct Drone {
   tag: string;
 }
 
-interface Nameable[T] {
+pub interface Nameable[T] {
   fn label(self: T) -> string;
   fn pair(self: T, other: T) -> string;
 }
@@ -59,10 +59,12 @@ fn main() {
   let string hero_pair = hero.pair(hero_partner);
   out(`-- announcement -- {hero_label}`);
   out(`paired with {hero_pair}`);
+
   let string scout_label = scout.label();
   let string scout_pair = scout.pair(scout_partner);
   out(`-- announcement -- {scout_label}`);
   out(`paired with {scout_pair}`);
+
   let pair = duplicate[string]("Prime Hero");
   out(`duplicated label: {pair}`);
 }

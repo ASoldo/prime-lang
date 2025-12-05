@@ -1271,7 +1271,8 @@ impl LanguageServer for Backend {
             );
             Ok(Some(CompletionResponse::Array(general_items)))
         } else {
-            let keywords = keyword_completion_items(prefix_ref, false, false);
+            let keywords =
+                keyword_completion_items(prefix_ref, false, false, Some(&build_options.target));
             if keywords.is_empty() {
                 Ok(None)
             } else {

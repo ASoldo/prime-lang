@@ -19,6 +19,7 @@ fn nested_borrow_release() {
     *scoped = *scoped - 2;
     out(`scoped adjustment {}`, *scoped);
   }
+
   let &mut int32 after_scope = &mut gauge;
   *after_scope = *after_scope + 1;
   out(`gauge stabilized at {gauge}`);

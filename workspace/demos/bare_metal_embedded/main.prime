@@ -36,15 +36,14 @@ fn main() {
   };
   let _ = send(tx, total);
   close(tx);
+
   let _ = join(worker);
   out("spawn/join recv_task completed");
-
   out("starting parity_probe");
   match parity_probe() {
     Result::Ok(v) => out(`parity probe ok: {v}`),
     Result::Err(msg) => out(`parity probe err: {msg}`),
   }
-
   out("starting async_result_parity");
   async_result_parity();
   out("starting timeout_parity");
@@ -80,6 +79,7 @@ fn parity_probe() -> Result[int32, string] {
   };
   let _ = send(tx, 7);
   close(tx);
+
   let joined = join(worker);
   match joined {
     Result::Ok(v) => Result::Ok(v),
@@ -96,14 +96,15 @@ fn async_result_parity() {
     let Option[Result[int32, string]] received = await recv_task(rx);
     match received {
       Option::Some(res) => match res {
-        Result::Ok(v) => Result::Ok(v + 1),
-        Result::Err(msg) => Result::Err(msg),
-      },
+  Result::Ok(v) => Result::Ok(v + 1),
+  Result::Err(msg) => Result::Err(msg),
+},
       Option::None => Result::Err("closed"),
     }
   };
   let _ = send(tx, Result::Ok(5));
   close(tx);
+
   let _ = join(worker);
   out("async result parity joined");
 }

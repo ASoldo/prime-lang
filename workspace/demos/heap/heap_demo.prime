@@ -6,6 +6,7 @@ fn main() {
   let Box[int32] counter = box_new(0);
   bump_counter(&counter, 5);
   out(`box counter -> {}`, counter.box_get());
+
   let mut []string explorers = [
     "Prime Hero",
     "Sparrow",
@@ -20,6 +21,7 @@ fn main() {
     Some(name) => out(`first explorer {name}`),
     None => out("n/a"),
   }
+
   let Map[string, int32] rewards = #{
     "Ridge scouting": 250,
     "Harbor sweep": 175,

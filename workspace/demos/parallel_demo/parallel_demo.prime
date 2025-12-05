@@ -55,16 +55,19 @@ fn main() {
     }
   }
   close(rx);
+
   let Result[(), string] result_left = join(handle_left);
   if let Err(message) = &result_left {
     out(`left worker failed: {message}`);
     return;
   }
+
   let Result[(), string] result_right = join(handle_right);
   if let Err(message) = &result_right {
     out(`right worker failed: {message}`);
     return;
   }
+
   let bool left_ok = match result_left {
     Ok(_) => true,
     Err(message) => {

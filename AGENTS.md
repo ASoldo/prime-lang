@@ -1,4 +1,4 @@
 - No unwinding/exception model—Result/? is the path; embedded panics abort.
-  - Limited standard library/FFI story; interacting with C/OS or richer collections is still thin.
-  - Async lacks cancellation/timeouts built-in; everything is manual (poll + recv_timeout).
-  - Tooling/tests: we should add a host parity test for the new no_std probes to lock in behavior.
+- Limited standard library/FFI story; interacting with C/OS or richer collections is still thin.
+- Async lacks cancellation/timeouts built-in; everything is manual (poll + recv_timeout).
+- Tooling/tests: we should add a host parity test for the new no_std probes to lock in behavior.

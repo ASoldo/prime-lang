@@ -454,8 +454,12 @@ impl RuntimeAbi {
             &mut [LLVMInt32TypeInContext(context)],
         );
         let (prime_now_ms, prime_now_ms_ty) = declare_fn(module, "prime_now_ms", int_type, &mut []);
-        let (_prime_reset_reason, _prime_reset_reason_ty) =
-            declare_fn(module, "prime_reset_reason", LLVMInt32TypeInContext(context), &mut []);
+        let (_prime_reset_reason, _prime_reset_reason_ty) = declare_fn(
+            module,
+            "prime_reset_reason",
+            LLVMInt32TypeInContext(context),
+            &mut [],
+        );
 
         Self {
             handle_type,

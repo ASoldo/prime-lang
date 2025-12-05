@@ -8,3 +8,7 @@ version = "0.1.0"
 name = "pkg::app"
 path = "pkg_app.prime"
 visibility = "pub"
+
+[libraries]
+pkg_lib = { name = "pkg::lib", path = "../lib/pkg_lib.prime", visibility = "pub" }
+

@@ -89,6 +89,7 @@ Validated outputs (fresh run, current syntax; files live under `workspace/demos/
 - `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
 - `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
 - `fs_demo.prime` / `time_demo.prime` / `iter_demo.prime` — minimal built-in samples for file I/O, timers, and iterator helpers.
+- `workspace/demos/no_std_parity/main.prime` — host-run parity fixture for embedded async/Result/timeouts (channels, `recv_task`/`recv_timeout`, defers) so `no_std` behavior stays locked while developing on a desktop.
 - `workspace/demos/bare_metal_embedded` — smallest `no_std` sample (sums/filters on-device) showing manifest flags plus channels + async `recv_task` + `Result` parity without GPIO.
 - `workspace/demos/esp32_blink` — ESP32 Xtensa no_std blink demo with async/await, spawn/join, channel reuse probe, and calibrated delay; manifest includes toolchains and flash settings. Build uses
   `llc -relocation-model=static -mtriple=xtensa-esp32-elf -mcpu=esp32 -mattr=+windowed`
@@ -831,7 +832,7 @@ VS Code, Helix, and any other LSP client can plug in. Capabilities include:
 
 - diagnostics with ranges, severity, and warnings for unused bindings
 - hover, and signature help
-- structured completions (locals, structs, enums, constants, keywords, macro param kinds like `tokens`/`repeat`/`block` plus hygiene escape `@`)
+- structured completions (locals, structs, enums, constants, keywords, macro param kinds like `tokens`/`repeat`/`block` plus hygiene escape `@`), plus built-ins used by the demos: heap helpers, `in`/`out`, channels (`recv_task`/`recv_timeout`/`sleep_task`/`join`), timers (`sleep_ms`/`now_ms`), filesystem (`fs_*`), map helpers (`map_keys`/`map_values`), and embedded-only GPIO/delay/reset suggestions when editing `no_std` targets
 - `textDocument/formatting` via the built-in formatter
 - document symbols
 - method completions include interface impls, so `hero.label()` (from

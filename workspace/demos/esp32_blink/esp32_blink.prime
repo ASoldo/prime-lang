@@ -28,15 +28,19 @@ fn print_reset_reason(prefix: string, code: int32) {
   } else if code == 9 {
     out(`${prefix}{code} (RTCWDT_SYS_RESET)`);
   } else if code == 10 {
-    out(`${prefix}{code} (RTCWDT_RTC_RESET)`);
+    out(`${prefix}{code} (INTRUSION_RESET)`);
   } else if code == 11 {
-    out(`${prefix}{code} (RTCWDT_CPU_RESET)`);
+    out(`${prefix}{code} (TGWDT_CPU_RESET)`);
   } else if code == 12 {
-    out(`${prefix}{code} (BROWNOUT_RESET)`);
+    out(`${prefix}{code} (SW_CPU_RESET)`);
   } else if code == 13 {
-    out(`${prefix}{code} (RTCWDT_RTC_BOOT)`);
+    out(`${prefix}{code} (RTCWDT_CPU_RESET)`);
   } else if code == 14 {
-    out(`${prefix}{code} (RTCWDT_VDDSDIO_RESET)`);
+    out(`${prefix}{code} (EXT_CPU_RESET)`);
+  } else if code == 15 {
+    out(`${prefix}{code} (BROWNOUT_RESET)`);
+  } else if code == 16 {
+    out(`${prefix}{code} (RTCWDT_RTC_RESET)`);
   } else {
     out(`${prefix}{code} (UNKNOWN_RESET)`);
   }
@@ -159,11 +163,8 @@ fn main() {
       }
       if last_pressed != pressed && debounce == 0 {
         if pressed {
-          out(`button pressed (GPIO{button})`);
         } else {
-          out(`button released (GPIO{button})`);
         }
-        out(`button raw={raw} pressed={pressed}`);
 
         let int32 cached = reset_reason();
         print_reset_reason("reset reason (button): ", cached);
@@ -171,7 +172,6 @@ fn main() {
       }
       last_pressed = pressed;
       if heartbeat % 40 == 0 {
-        out(`button heartbeat: raw={raw} pressed={pressed}`);
       }
       heartbeat = heartbeat + 1;
       delay_ms(25);
@@ -183,11 +183,9 @@ fn main() {
     loop {
       let int32 raw = digital_read(button);
       if raw != last {
-        out(`boot probe raw change: {raw}`);
         last = raw;
       }
       if i % 10 == 0 {
-        out(`boot probe sample {i}: raw={raw}`);
       }
       i = i + 1;
       if i > 50 {
@@ -222,7 +220,6 @@ fn main() {
       };
       drive_led(checked_led, on_level)?;
       led_on = true;
-      out(`async blink: LED ON (count {counter}, led_on {led_on})`);
       delay_ms(1000);
       if counter % 128 == 0 {
         channel_demo();
@@ -234,7 +231,6 @@ fn main() {
         } else {
           btn_raw != 0
         };
-        out(`boot button sample in main loop: raw={btn_raw} pressed={btn_pressed}`);
       }
 
       let int32 off_level = if led_active_low {
@@ -244,7 +240,6 @@ fn main() {
       };
       drive_led(checked_led, off_level)?;
       led_on = false;
-      out(`async blink: LED OFF (count {counter}, led_on {led_on})`);
       delay_ms(1000);
       if counter % 256 == 0 {
         let int32 cached = reset_reason();
@@ -256,9 +251,7 @@ fn main() {
   };
   match await blinker {
     Result::Ok(value) => {
-      out(`value is {value}`);
     },
     Result::Err(msg) => out(`blink task error: {msg}`),
-    _ => out("blink task returned unknown result"),
   }
 }

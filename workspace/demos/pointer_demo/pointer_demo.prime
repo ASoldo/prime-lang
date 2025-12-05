@@ -41,9 +41,11 @@ fn range_sample() -> Range[int32] {
 fn main() {
   let mut Player hero = spawn_player("Pointer Hero", Vec2{ 0.0, 0.0 }, 50);
   out(`initial hp {hero.hp}`);
+
   let int32 boosted = heal_with_pointer(&mut hero, 12);
   out(`boosted hp {boosted}`);
   out(`frozen hp {freeze_hp(&hero)}`);
+
   let Range[int32] span = range_sample();
   out(`range stored: {span}`);
 }

@@ -2050,11 +2050,7 @@ mod embedded {
         route_gpio(pin);
         let mask = 1u32 << (pin as u32);
         let value = core::ptr::read_volatile(GPIO_IN_REG);
-        if (value & mask) != 0 {
-            1
-        } else {
-            0
-        }
+        if (value & mask) != 0 { 1 } else { 0 }
     }
 
     #[cfg(all(

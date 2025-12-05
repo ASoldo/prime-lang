@@ -10,11 +10,9 @@ fn main() {
     Result::Err(msg) => {
       out(`write failed: {msg}`);
       return;
-    }
+    },
   }
-
   out(`exists? {fs_exists(path)}`);
-
   match fs_read(path) {
     Result::Ok(text) => out(`read: {text}`),
     Result::Err(msg) => out(`read failed: {msg}`),

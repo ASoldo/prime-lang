@@ -57,6 +57,7 @@ fn loop_merging() -> int32 {
     let &mut int32 alias = &mut total;
     *alias = *alias + count;
   }
+
   let []int32 entries = [
     3,
     4,
@@ -79,6 +80,7 @@ fn nested_scope_and_return(flag: bool) -> int32 {
     *alias = *alias + 1;
     depth
   }
+
   let &mut int32 final_ref = &mut depth;
   *final_ref = *final_ref + 2;
   depth
@@ -89,6 +91,7 @@ fn mutable_destructuring_examples() {
   let mut (left, right) = pair;
   left = left + right;
   out(`tuple left {left} right {right} total {}`, left);
+
   let Map[string, int32] points = #{
     "hp": 20,
     "mp": 15,
@@ -96,6 +99,7 @@ fn mutable_destructuring_examples() {
   let mut #{ "hp": hp, "mp": mp } = points;
   hp = hp + mp;
   out(`points hp {hp} mp {mp}`);
+
   let Refill refill = Refill{
     amount: 30,
   };
@@ -115,6 +119,7 @@ fn borrow_through_block() {
     *block_ref = *block_ref + 3;
     out(`block boosted to {}`, *block_ref);
   }
+
   let &mut int32 after_block = &mut gauge;
   *after_block = *after_block - 2;
   out(`after block gauge {gauge}`);
@@ -129,6 +134,7 @@ fn main() {
   out(`nested_scope_and_return(false) => {}`, nested_scope_and_return(false));
   mutable_destructuring_examples();
   borrow_through_block();
+
   let int32 my_var = 5;
   out(`hello {my_var}`);
 }

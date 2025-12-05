@@ -34,6 +34,7 @@ Notes:
 - Runtime disables watchdogs once, uses ring-buffered prints, and drives `recv_task`/`recv_timeout` with a tiny waiter queue + poll (configurable via `[build.runtime]` or `PRIME_RT_*`). The default poll is 1–2ms; expect ~2–3ms wake latency on Xtensa.
 - Default LED strap uses GPIO2 (active-low on many dev boards); override pin/level in the demo if your board differs.
 - `out(...)`, channels, async `sleep_task`/`recv_task`, `prime_reference_read`, and GPIO built-ins are supported in no_std for ESP32. The demo also logs channel/task pool reuse, a Result+`?` async probe, a timeout probe, and an external button on GPIO18->GND (active-low) to keep run/build/embedded parity visible.
+- The host-only parity probe `workspace/demos/no_std_parity/main.prime` exercises the same async/result/timeout paths without needing the Xtensa toolchain, so CI can lock behavior before flashing hardware.
 
 ## Parity Checklist (run/build/embedded)
 
@@ -42,4 +43,4 @@ Notes:
 - I/O: `out` is available everywhere; filesystem built-ins (`fs_exists`/`fs_read`/`fs_write`) are host-only. `delay_ms`/`now_ms` are bridged to ROM stubs on Xtensa; host uses std timers.
 - Platform hooks: `pin_mode`/`digital_write` are embedded-only. If you call them on host, the platform shim reports an error.
 - Manifests: set `no_std = true` on embedded modules (see `workspace/demos/esp32_blink/prime.toml` and `workspace/demos/bare_metal_embedded/prime.toml`). Provide toolchain/env overrides or rely on CLI autodetect under `~/.espressif`.
-- No_std parity fixture: `workspace/demos/bare_metal_embedded/main.prime` mirrors host concurrency with channels + async `recv_task` + `Result`/`?` so build/run/embedded outputs align.
+- No_std parity fixtures: `workspace/demos/no_std_parity/main.prime` runs on host with an embedded target selected from the manifest to verify async/Result/timeout behavior, and `workspace/demos/bare_metal_embedded/main.prime` mirrors host concurrency with channels + async `recv_task` + `Result`/`?` so build/run/embedded outputs align once flashed.

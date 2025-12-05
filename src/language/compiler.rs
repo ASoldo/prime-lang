@@ -6415,7 +6415,11 @@ impl Compiler {
                 )
             }
             Value::Reference(r) => {
-                let inner = r.cell.lock().ok().map(|v| self.describe_value(v.value()).to_string());
+                let inner = r
+                    .cell
+                    .lock()
+                    .ok()
+                    .map(|v| self.describe_value(v.value()).to_string());
                 format!(
                     "reference (handle={}, inner={})",
                     r.handle.is_some(),
@@ -6621,22 +6625,19 @@ impl Compiler {
                 if let Some(runtime_value) = runtime {
                     self.ensure_runtime_symbols();
                     if trace_try {
-                        let handle_const = unsafe { !LLVMIsAConstantInt(runtime_value.handle).is_null() };
+                        let handle_const =
+                            unsafe { !LLVMIsAConstantInt(runtime_value.handle).is_null() };
                         eprintln!(
                             "[prime-debug] try operator runtime handle const={} raw={:?}",
                             handle_const, runtime_value.handle
                         );
                     }
-                    let ok_tag = self
-                        .enum_variants
-                        .get("Ok")
-                        .cloned()
-                        .ok_or_else(|| "? operator expects Result value in build mode".to_string())?;
-                    let err_tag = self
-                        .enum_variants
-                        .get("Err")
-                        .cloned()
-                        .ok_or_else(|| "? operator expects Result value in build mode".to_string())?;
+                    let ok_tag = self.enum_variants.get("Ok").cloned().ok_or_else(|| {
+                        "? operator expects Result value in build mode".to_string()
+                    })?;
+                    let err_tag = self.enum_variants.get("Err").cloned().ok_or_else(|| {
+                        "? operator expects Result value in build mode".to_string()
+                    })?;
                     let mut tag_args = [runtime_value.handle];
                     let tag = self.call_runtime(
                         self.runtime_abi.prime_enum_tag,
@@ -6668,10 +6669,9 @@ impl Compiler {
                         if ok_tag.fields == 0 {
                             return Ok(EvalOutcome::Value(self.evaluated(Value::Unit)));
                         }
-                        let mut get_args = [
-                            runtime_value.handle,
-                            unsafe { LLVMConstInt(self.runtime_abi.usize_type, 0, 0) },
-                        ];
+                        let mut get_args = [runtime_value.handle, unsafe {
+                            LLVMConstInt(self.runtime_abi.usize_type, 0, 0)
+                        }];
                         let payload_handle = self.call_runtime(
                             self.runtime_abi.prime_enum_get,
                             self.runtime_abi.prime_enum_get_ty,
@@ -6704,7 +6704,9 @@ impl Compiler {
                         })));
                     } else {
                         if env::var_os("PRIME_DEBUG_TRACE").is_some() {
-                            eprintln!("[prime-debug] try operator saw unexpected Result tag {tag_value}");
+                            eprintln!(
+                                "[prime-debug] try operator saw unexpected Result tag {tag_value}"
+                            );
                         }
                         return Err("? operator expects Result value in build mode".into());
                     }
