@@ -1,5 +1,12 @@
 library pkg::lib;
 
+export prelude {
+  Banner,
+  banner,
+  promote,
+  describe,
+};
+
 pub struct Banner {
   message: string;
   highlighted: bool;
@@ -14,8 +21,8 @@ pub fn banner(message: string) -> Banner {
 
 pub fn promote(label: string, highlight: bool) -> Banner {
   Banner{
-    label,
-    highlight,
+    message: label,
+    highlighted: highlight,
   }
 }
 
