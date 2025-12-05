@@ -563,6 +563,7 @@ module.exports = grammar({
           '|',
           ',',
           ';',
+          token(/[^)\s]/), // generic single-char separator
           $.expression
         ))
       ),

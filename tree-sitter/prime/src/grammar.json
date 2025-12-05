@@ -3274,6 +3274,13 @@
                     "value": ";"
                   },
                   {
+                    "type": "TOKEN",
+                    "content": {
+                      "type": "PATTERN",
+                      "value": "[^)\\s]"
+                    }
+                  },
+                  {
                     "type": "SYMBOL",
                     "name": "expression"
                   }
