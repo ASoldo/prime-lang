@@ -4,6 +4,77 @@ return {
 		"neovim/nvim-lspconfig",
 		ft = { "prime" },
 		config = function()
+			local function prime_expand_popup()
+				if vim.bo.filetype ~= "prime" then
+					vim.notify("Prime expand: buffer is not a .prime file", vim.log.levels.WARN)
+					return
+				end
+				local file = vim.api.nvim_buf_get_name(0)
+				if file == "" then
+					vim.notify("Prime expand: save the file first", vim.log.levels.WARN)
+					return
+				end
+				local cursor = vim.api.nvim_win_get_cursor(0)
+				local line = cursor[1]
+				local col = cursor[2] + 1
+
+				local cmd = {
+					"prime-lang",
+					"expand",
+					file,
+					"--line",
+					tostring(line),
+					"--column",
+					tostring(col),
+					"--print-expanded",
+				}
+				local output = vim.fn.systemlist(cmd)
+				if vim.v.shell_error ~= 0 then
+					vim.notify(
+						"Prime expand failed: " .. table.concat(output, "\n"),
+						vim.log.levels.ERROR
+					)
+					return
+				end
+				local lines = #output > 0 and output or { "No expansion output" }
+				local buf = vim.api.nvim_create_buf(false, true)
+				if not buf or buf == 0 then
+					vim.notify("Prime expand: failed to create buffer", vim.log.levels.ERROR)
+					return
+				end
+				vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+				vim.bo[buf].filetype = "prime"
+				vim.bo[buf].buftype = "nofile"
+				vim.bo[buf].bufhidden = "wipe"
+				vim.bo[buf].modifiable = false
+				vim.bo[buf].swapfile = false
+				local width = math.floor(vim.o.columns * 0.6)
+				local height = math.floor(vim.o.lines * 0.6)
+				local row = math.floor((vim.o.lines - height) / 2 - 1)
+				local col_off = math.floor((vim.o.columns - width) / 2)
+				local win = vim.api.nvim_open_win(buf, true, {
+					relative = "editor",
+					style = "minimal",
+					border = "rounded",
+					width = width,
+					height = height,
+					row = math.max(row, 0),
+					col = math.max(col_off, 0),
+					title = string.format(
+						" Macro expansion: %s:%d:%d ",
+						vim.fn.fnamemodify(file, ":t"),
+						line,
+						col
+					),
+				})
+				vim.wo[win].wrap = false
+				vim.keymap.set("n", "q", function()
+					if vim.api.nvim_win_is_valid(win) then
+						vim.api.nvim_win_close(win, true)
+					end
+				end, { buffer = buf, nowait = true, silent = true, desc = "Close macro expand popup" })
+			end
+
 			vim.filetype.add({
 				extension = { prime = "prime" },
 			})
@@ -40,6 +111,7 @@ return {
 					map("<leader>lr", vim.lsp.buf.rename, "Rename symbol (Prime)")
 					map("<leader>la", vim.lsp.buf.code_action, " Code Action (Prime)")
 					map("<leader>lw", vim.lsp.buf.workspace_symbol, " Workspace Symbols (Prime)")
+					map("<leader>lx", prime_expand_popup, "Expand macro at cursor (Prime)")
 					if client.server_capabilities.documentFormattingProvider then
 						vim.api.nvim_create_autocmd("BufWritePre", {
 							buffer = bufnr,
