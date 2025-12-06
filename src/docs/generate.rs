@@ -526,9 +526,14 @@ function renderContent() {
   const width = Math.max(800, contentEl.clientWidth ? contentEl.clientWidth - 40 : 900);
   canvas.width = width;
   canvas.height = 240;
+  canvas.dataset.title = m.name;
   graphCard.appendChild(canvas);
   contentEl.appendChild(graphCard);
-  drawGraph(canvas, m);
+  const ctx = canvas.getContext('2d');
+  let layout = computeLayout(canvas, m, ctx);
+  drawGraph(ctx, layout);
+  wireHover(canvas, layout);
+  wireClicks(canvas, layout);
   if (m.doc) {
     const doc = document.createElement('div');
     doc.className = 'doc';
@@ -582,15 +587,12 @@ const colors = {
   default: "#8c93a5",
 };
 
-function drawGraph(canvas, module) {
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width;
+function computeLayout(canvas, module, ctx) {
   const padding = 32;
   const nodeH = 28;
   const hGap = 18;
   const vGap = 36;
-
-  const imports = (module.imports || []).map((name, idx) => ({ name, kind: "import", signature: name, key: `import:${name}` }));
+  const imports = (module.imports || []).map((name) => ({ name, kind: "import", signature: name, key: `import:${name}` }));
   const consts = module.items.filter(it => it.kind === "const").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
   const interfaces = module.items.filter(it => it.kind === "interface").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
   const structs = module.items.filter(it => it.kind === "struct").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
@@ -605,67 +607,172 @@ function drawGraph(canvas, module) {
     [...fns, ...macros],
   ];
 
-  const rowsPerLayer = layers.map(layer => Math.ceil(Math.sqrt(layer.length || 1)));
-  const maxNodes = Math.max(...layers.map(l => l.length), 1);
-  const neededHeight = padding * 2 + layers.reduce((acc, layer, i) => {
-    const rows = Math.ceil(layer.length / (rowsPerLayer[i] || 1));
-    return acc + Math.max(1, rows) * (nodeH + hGap) + vGap;
-  }, 0);
-  if (canvas.height < neededHeight) canvas.height = neededHeight;
+  const layerCols = layers.map((layer, idx) => {
+    if (idx === layers.length - 1) {
+      return Math.max(1, Math.min(3, Math.ceil(layer.length / 6)));
+    }
+    if (idx === 2) { // impl layer
+      return Math.min(2, Math.max(1, Math.ceil(layer.length / 2)));
+    }
+    return Math.max(1, Math.ceil(Math.sqrt(layer.length || 1)));
+  });
 
-  ctx.clearRect(0,0,w,canvas.height);
-  ctx.font = "13px 'JetBrains Mono', monospace";
-  ctx.fillStyle = "#e8ecf2";
-  ctx.fillText(module.name, padding, padding - 8);
+  const neededHeight =
+    padding * 2 +
+    layers.reduce((acc, layer, i) => {
+      const cols = layerCols[i];
+      const rows = Math.max(1, Math.ceil((layer.length || 1) / cols));
+      return acc + rows * (nodeH + hGap) + vGap;
+    }, 0);
+  if (canvas.height < neededHeight) {
+    canvas.height = neededHeight;
+  }
 
-  const nodePos = new Map();
-
+  const nodes = [];
   let yCursor = padding;
+  const width = canvas.width;
   layers.forEach((layer, idx) => {
-    const cols = Math.max(1, rowsPerLayer[idx]);
-    const colWidth = (w - padding * 2) / cols;
+    const cols = layerCols[idx];
+    const colWidth = (width - padding * 2) / cols;
     layer.forEach((it, iidx) => {
       const col = iidx % cols;
       const row = Math.floor(iidx / cols);
       const x = padding + col * colWidth + colWidth * 0.1;
       const y = yCursor + row * (nodeH + hGap);
-      const width = colWidth * 0.8;
-      const color = colors[it.kind] || colors.default;
-      ctx.fillStyle = color;
-      ctx.strokeStyle = "#252a38";
-      ctx.lineWidth = 1;
-      ctx.fillRect(x, y, width, nodeH);
-      ctx.strokeRect(x, y, width, nodeH);
-      ctx.fillStyle = "#0c0f16";
-      const label = trimText(ctx, `${it.kind} ${it.name}`, width - 10);
-      ctx.fillText(label, x + 6, y + nodeH - 8);
-      nodePos.set(it.key, { x: x + width / 2, y: y + nodeH / 2 });
+      const boxW = colWidth * 0.8;
+      const label = trimText(ctx, `${it.kind} ${it.name}`, boxW - 10);
+      nodes.push({
+        key: it.key,
+        kind: it.kind,
+        name: it.name,
+        x,
+        y,
+        w: boxW,
+        h: nodeH,
+        label,
+      });
     });
-    const rows = Math.ceil(layer.length / cols);
-    yCursor += Math.max(1, rows) * (nodeH + hGap) + vGap;
+    const rows = Math.max(1, Math.ceil((layer.length || 1) / cols));
+    yCursor += rows * (nodeH + hGap) + vGap;
   });
 
-  // Draw edges using precomputed edges (impl -> target/interface)
-  ctx.strokeStyle = "rgba(140,147,165,0.5)";
-  ctx.lineWidth = 1.5;
-  (module.edges || []).forEach(edge => {
-    const from = nodePos.get(edge.from);
-    const to = nodePos.get(edge.to);
+  return { nodes, edges: module.edges || [] };
+}
+
+function drawGraph(ctx, layout, highlightNodes = new Set(), highlightEdges = new Set()) {
+  const canvas = ctx.canvas;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.font = "13px 'JetBrains Mono', monospace";
+  ctx.fillStyle = "#e8ecf2";
+  ctx.fillText(canvas.dataset.title || "", 32, 24);
+
+  const nodeLookup = new Map();
+  layout.nodes.forEach(n => nodeLookup.set(n.key, n));
+
+  // Edges
+  layout.edges.forEach(edge => {
+    const from = nodeLookup.get(edge.from);
+    const to = nodeLookup.get(edge.to);
     if (!from || !to) return;
+    const active = highlightEdges.has(edge) || (highlightNodes.size > 0 && highlightNodes.has(edge.from) && highlightNodes.has(edge.to));
+    ctx.strokeStyle = active ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.15)";
+    ctx.lineWidth = active ? 2 : 1;
     ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
+    ctx.moveTo(from.x + from.w / 2, from.y + from.h / 2);
+    ctx.lineTo(to.x + to.w / 2, to.y + to.h / 2);
     ctx.stroke();
-    const angle = Math.atan2(to.y - from.y, to.x - from.x);
-    const size = 6;
-    ctx.beginPath();
-    ctx.moveTo(to.x, to.y);
-    ctx.lineTo(to.x - size * Math.cos(angle - Math.PI / 6), to.y - size * Math.sin(angle - Math.PI / 6));
-    ctx.lineTo(to.x - size * Math.cos(angle + Math.PI / 6), to.y - size * Math.sin(angle + Math.PI / 6));
-    ctx.closePath();
-    ctx.fillStyle = "rgba(140,147,165,0.8)";
-    ctx.fill();
+    if (active) {
+      const angle = Math.atan2(to.y - from.y, to.x - from.x);
+      const size = 6;
+      const tx = to.x + to.w / 2;
+      const ty = to.y + to.h / 2;
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(tx - size * Math.cos(angle - Math.PI / 6), ty - size * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(tx - size * Math.cos(angle + Math.PI / 6), ty - size * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.fill();
+    }
   });
+
+  // Nodes
+  layout.nodes.forEach(node => {
+    const active = highlightNodes.size === 0 || highlightNodes.has(node.key);
+    ctx.globalAlpha = active ? 1 : 0.2;
+    const color = colors[node.kind] || colors.default;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = "#252a38";
+    ctx.lineWidth = active ? 1.2 : 1;
+    ctx.fillRect(node.x, node.y, node.w, node.h);
+    ctx.strokeRect(node.x, node.y, node.w, node.h);
+    ctx.fillStyle = active ? "#0c0f16" : "rgba(12,15,22,0.85)";
+    ctx.fillText(node.label, node.x + 6, node.y + node.h - 8);
+    ctx.globalAlpha = 1;
+  });
+}
+
+function wireHover(canvas, layout) {
+  const ctx = canvas.getContext('2d');
+  canvas.dataset.title = canvas.dataset.title || "";
+  drawGraph(ctx, layout);
+
+  canvas.onmousemove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    let hovered = null;
+    for (const node of layout.nodes) {
+      if (x >= node.x && x <= node.x + node.w && y >= node.y && y <= node.y + node.h) {
+        hovered = node.key;
+        break;
+      }
+    }
+    if (!hovered) {
+      drawGraph(ctx, layout);
+      return;
+    }
+    const related = new Set();
+    layout.edges.forEach(edge => {
+      if (edge.from === hovered || edge.to === hovered) {
+        related.add(edge.from);
+        related.add(edge.to);
+      }
+    });
+    related.add(hovered);
+    drawGraph(ctx, layout, related);
+  };
+  canvas.onmouseleave = () => {
+    drawGraph(ctx, layout);
+  };
+}
+
+function wireClicks(canvas, layout) {
+  canvas.onclick = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    let target = null;
+    for (const node of layout.nodes) {
+      if (x >= node.x && x <= node.x + node.w && y >= node.y && y <= node.y + node.h) {
+        target = node;
+        break;
+      }
+    }
+    if (!target) return;
+    const detailCards = Array.from(document.querySelectorAll('.content .card'));
+    const match = detailCards.find(card => {
+      const sig = card.querySelector('.sig')?.textContent || '';
+      return sig.includes(target.name);
+    });
+    if (match) {
+      match.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
 }
 
 function trimText(ctx, text, maxWidth) {
