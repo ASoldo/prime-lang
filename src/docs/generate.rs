@@ -434,6 +434,17 @@ body {
 .outline a { display: block; color: var(--muted); padding: 4px 6px; border-radius: 6px; text-decoration: none; transition: background 0.15s; }
 .outline a:hover { background: var(--panel-soft); color: var(--text); }
 .graph canvas { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.syntax-const { color: var(--const); }
+.syntax-struct { color: var(--struct); }
+.syntax-enum { color: var(--enum); }
+.syntax-interface { color: var(--interface); }
+.syntax-impl { color: var(--impl); }
+.syntax-fn { color: var(--fn); }
+.syntax-macro { color: var(--macro); }
+.syntax-import { color: var(--muted); }
+.syntax-ident { color: #9cdcff; }
+.syntax-key { color: #56c0ff; }
+.syntax-import { color: var(--muted); }
     </style>"#,
     );
     html.push_str("</head><body><div class=\"app\">");
@@ -497,8 +508,8 @@ function renderNav(filter='') {
       m.items.forEach((it, iidx) => {
         if (filter && !(it.name.toLowerCase().includes(filter) || it.kind.toLowerCase().includes(filter) || it.signature.toLowerCase().includes(filter))) return;
         const item = document.createElement('div');
-        item.className = 'item';
-        item.textContent = `${it.kind} ${it.name}`;
+        item.className = `item syntax-${it.kind}`;
+        item.innerHTML = `<span class="syntax-key">${it.kind}</span> <span class="syntax-ident">${it.name}</span>`;
         item.onclick = () => {
           activeModule = idx;
           renderContent();
@@ -543,6 +554,7 @@ function renderContent() {
   m.items.forEach((it, idx) => {
     const card = document.createElement('div');
     card.className = 'card';
+    card.dataset.key = `${it.kind}:${it.name}`;
     card.id = anchorId(activeModule, idx);
     const top = document.createElement('div');
     const chip = document.createElement('span');
@@ -551,7 +563,7 @@ function renderContent() {
     top.appendChild(chip);
     const sig = document.createElement('span');
     sig.className = 'sig';
-    sig.textContent = it.signature;
+    sig.innerHTML = `<span class="syntax-key">${it.kind}</span> <span class="syntax-ident">${it.name}</span>`;
     top.appendChild(sig);
     card.appendChild(top);
     if (it.doc) {
@@ -567,10 +579,20 @@ function renderContent() {
 function renderOutline() {
   outlineEl.innerHTML = '';
   const m = modules[activeModule] || modules[0];
+  (m.imports || []).forEach((name, idx) => {
+    const a = document.createElement('a');
+    a.href = "#";
+    a.innerHTML = `<span class="syntax-key">import</span> <span class="syntax-ident">${name}</span>`;
+    a.className = "outline-link syntax-import";
+    a.dataset.key = `import:${name}`;
+    outlineEl.appendChild(a);
+  });
   m.items.forEach((it, idx) => {
     const a = document.createElement('a');
     a.href = `#${anchorId(activeModule, idx)}`;
-    a.textContent = it.signature;
+    a.innerHTML = `<span class="syntax-key">${it.kind}</span> <span class="syntax-ident">${it.name}</span>`;
+    a.className = `outline-link syntax-${it.kind}`;
+    a.dataset.key = `${it.kind}:${it.name}`;
     outlineEl.appendChild(a);
   });
 }
@@ -640,8 +662,8 @@ function computeLayout(canvas, module, ctx) {
       const x = padding + col * colWidth + colWidth * 0.1;
       const y = yCursor + row * (nodeH + hGap);
       const boxW = colWidth * 0.8;
-      const label = trimText(ctx, `${it.kind} ${it.name}`, boxW - 10);
-      nodes.push({
+    const label = trimText(ctx, `${it.kind} ${it.name}`, boxW - 14);
+    nodes.push({
         key: it.key,
         kind: it.kind,
         name: it.name,
@@ -656,7 +678,7 @@ function computeLayout(canvas, module, ctx) {
     yCursor += rows * (nodeH + hGap) + vGap;
   });
 
-  return { nodes, edges: module.edges || [] };
+  return { nodes, edges: module.edges || [], layerCols };
 }
 
 function drawGraph(ctx, layout, highlightNodes = new Set(), highlightEdges = new Set()) {
@@ -701,13 +723,30 @@ function drawGraph(ctx, layout, highlightNodes = new Set(), highlightEdges = new
     const active = highlightNodes.size === 0 || highlightNodes.has(node.key);
     ctx.globalAlpha = active ? 1 : 0.2;
     const color = colors[node.kind] || colors.default;
-    ctx.fillStyle = color;
-    ctx.strokeStyle = "#252a38";
-    ctx.lineWidth = active ? 1.2 : 1;
-    ctx.fillRect(node.x, node.y, node.w, node.h);
-    ctx.strokeRect(node.x, node.y, node.w, node.h);
-    ctx.fillStyle = active ? "#0c0f16" : "rgba(12,15,22,0.85)";
-    ctx.fillText(node.label, node.x + 6, node.y + node.h - 8);
+    // transparent pill with crisp outline and fully rounded ends
+    ctx.fillStyle = active ? `${color}22` : "rgba(0,0,0,0)";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = active ? 2 : 1;
+    const r = node.h / 2;
+    ctx.beginPath();
+    ctx.moveTo(node.x + r, node.y);
+    ctx.lineTo(node.x + node.w - r, node.y);
+    ctx.arc(node.x + node.w - r, node.y + r, r, -Math.PI / 2, Math.PI / 2);
+    ctx.lineTo(node.x + r, node.y + node.h);
+    ctx.arc(node.x + r, node.y + r, r, Math.PI / 2, -Math.PI / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    // keyword + name colors
+    const keyColor = "#b983ff";
+    const nameColor = "#7dd3fc";
+    const keyText = node.kind;
+    const nameText = node.name;
+    ctx.fillStyle = active ? keyColor : "rgba(12,15,22,0.85)";
+    ctx.fillText(keyText, node.x + 6, node.y + node.h - 8);
+    const keyWidth = ctx.measureText(keyText + ' ').width;
+    ctx.fillStyle = active ? nameColor : "rgba(12,15,22,0.7)";
+    ctx.fillText(node.name, node.x + 6 + keyWidth, node.y + node.h - 8);
     ctx.globalAlpha = 1;
   });
 }
@@ -768,10 +807,7 @@ function wireClicks(canvas, layout) {
     }
     if (!target) return;
     const detailCards = Array.from(document.querySelectorAll('.content .card'));
-    const match = detailCards.find(card => {
-      const sig = card.querySelector('.sig')?.textContent || '';
-      return sig.includes(target.name);
-    });
+    const match = detailCards.find(card => card.dataset.key === target.key || card.querySelector('.sig')?.textContent?.includes(target.name));
     if (match) {
       match.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
@@ -781,14 +817,10 @@ function wireClicks(canvas, layout) {
 function highlightOutline(key) {
   const links = document.querySelectorAll('.outline a');
   links.forEach(link => {
-    const text = link.textContent || '';
-    if (key && text.includes(key.split(':').pop())) {
-      link.style.background = "rgba(99,164,255,0.15)";
-      link.style.color = "#e8ecf2";
-    } else {
-      link.style.background = "transparent";
-      link.style.color = "var(--muted)";
-    }
+    const matches = key && link.dataset.key === key;
+    link.style.background = matches ? "rgba(99,164,255,0.15)" : "transparent";
+    // keep syntax color from class; reset via inline color
+    link.style.color = matches ? "#e8ecf2" : "";
   });
 }
 
