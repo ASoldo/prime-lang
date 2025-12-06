@@ -363,7 +363,8 @@ body {
   border-radius: 999px;
   border: 1px solid var(--border);
   background: #f5f5f5;
-  color: #111;
+  color: #000 !important;
+  font-weight: 700;
   cursor: pointer;
   display: none;
 }
@@ -458,7 +459,7 @@ body {
   <div class="logo" style="font-weight:700;color:var(--accent);">Prime Docs</div>
   <div class="search">
     <input id="search" type="text" placeholder="Search modules, symbols...">
-    <button id="search-clear" class="clear" aria-label="Clear search" style="color:#000;">✕</button>
+    <button id="search-clear" class="clear" aria-label="Clear search">✕</button>
   </div>
 </div>
 <div class="main">
@@ -960,6 +961,7 @@ searchClear.addEventListener('click', ()=> {
   filterTerm = '';
   expanded.clear();
   renderAll('');
+  searchClear.classList.remove('visible');
 });
 searchEl.addEventListener('input', () => {
   if (searchEl.value) {
