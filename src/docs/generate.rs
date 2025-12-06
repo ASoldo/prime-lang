@@ -14,6 +14,8 @@ struct DocModule {
     name: String,
     doc: Option<String>,
     items: Vec<DocItem>,
+    imports: Vec<String>,
+    edges: Vec<DocEdge>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,6 +24,13 @@ struct DocItem {
     kind: String,
     signature: String,
     doc: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DocEdge {
+    from: String,
+    to: String,
+    kind: String,
 }
 
 fn item_to_doc(item: &Item) -> Option<DocItem> {
@@ -79,6 +88,41 @@ fn item_to_doc(item: &Item) -> Option<DocItem> {
     }
 }
 
+fn build_edges(items: &[Item], docs: &[DocItem]) -> Vec<DocEdge> {
+    let mut edges = Vec::new();
+    let mut name_to_kind = std::collections::HashMap::new();
+    for doc in docs {
+        name_to_kind.insert(doc.name.clone(), doc.kind.clone());
+    }
+
+    for item in items {
+        if let Item::Impl(def) = item {
+            let sig = if def.inherent {
+                format!("impl {}", def.target)
+            } else {
+                format!("impl {} for {}", def.interface, def.target)
+            };
+            let from = format!("impl:{}", sig);
+            let target = def.target.clone();
+            if name_to_kind.contains_key(&target) {
+                edges.push(DocEdge {
+                    from: from.clone(),
+                    to: format!("{}:{}", name_to_kind[&target], target),
+                    kind: "impl-target".into(),
+                });
+            }
+            if !def.interface.is_empty() && name_to_kind.contains_key(&def.interface) {
+                edges.push(DocEdge {
+                    from,
+                    to: format!("{}:{}", name_to_kind[&def.interface], def.interface),
+                    kind: "impl-interface".into(),
+                });
+            }
+        }
+    }
+    edges
+}
+
 fn collect_modules(manifests: &[PackageManifest]) -> Result<Vec<DocModule>, String> {
     let mut modules = Vec::new();
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
@@ -107,10 +151,19 @@ fn collect_modules(manifests: &[PackageManifest]) -> Result<Vec<DocModule>, Stri
                     .collect();
                 msgs.join("\n")
             })?;
+            let imports = parsed
+                .imports
+                .iter()
+                .map(|imp| imp.path.to_string())
+                .collect();
+            let items: Vec<DocItem> = parsed.items.iter().filter_map(item_to_doc).collect();
+            let edges = build_edges(&parsed.items, &items);
             modules.push(DocModule {
                 name: parsed.name.clone(),
                 doc: parsed.doc.clone(),
-                items: parsed.items.iter().filter_map(item_to_doc).collect(),
+                items,
+                imports,
+                edges,
             });
         }
 
@@ -141,10 +194,19 @@ fn collect_modules(manifests: &[PackageManifest]) -> Result<Vec<DocModule>, Stri
                         .collect();
                     msgs.join("\n")
                 })?;
+                let imports = parsed
+                    .imports
+                    .iter()
+                    .map(|imp| imp.path.to_string())
+                    .collect();
+                let items: Vec<DocItem> = parsed.items.iter().filter_map(item_to_doc).collect();
+                let edges = build_edges(&parsed.items, &items);
                 modules.push(DocModule {
                     name: parsed.name.clone(),
                     doc: parsed.doc.clone(),
-                    items: parsed.items.iter().filter_map(item_to_doc).collect(),
+                    items,
+                    imports,
+                    edges,
                 });
             }
         }
@@ -231,6 +293,13 @@ fn build_docs_html() -> Result<String, String> {
   --text: #e8ecf2;
   --muted: #8c93a5;
   --accent: #63a4ff;
+  --fn: #7dd3fc;
+  --macro: #f472b6;
+  --const: #c084fc;
+  --struct: #34d399;
+  --enum: #fb923c;
+  --interface: #facc15;
+  --impl: #a5b4fc;
   --border: #252a38;
   --code: #0c0f16;
   --shadow: 0 8px 20px rgba(0,0,0,0.35);
@@ -291,15 +360,15 @@ body {
   top: 8px;
   width: 26px;
   height: 26px;
-  border-radius: 6px;
+  border-radius: 999px;
   border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--muted);
+  background: #f5f5f5;
+  color: #111;
   cursor: pointer;
   display: none;
 }
 .search button.clear.visible { display: inline-flex; align-items: center; justify-content: center; }
-.search button.clear:hover { color: var(--text); border-color: var(--muted); }
+.search button.clear:hover { color: #000; border-color: #aaa; }
 .main {
   display: grid;
   grid-template-columns: 280px 1fr 220px;
@@ -330,8 +399,16 @@ body {
   padding: 6px 6px;
   border-radius: 6px;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .module button.active { background: var(--panel-soft); color: var(--accent); }
+.module .toggle {
+  width: 16px;
+  text-align: center;
+  color: var(--muted);
+}
 .item-list { margin-left: 8px; }
 .item { padding: 4px 6px; border-radius: 6px; cursor: pointer; color: var(--muted); }
 .item:hover { background: var(--panel-soft); color: var(--text); }
@@ -345,15 +422,23 @@ body {
   margin-bottom: 12px;
 }
 .chip { display: inline-block; padding: 2px 8px; background: var(--code); color: var(--accent); border-radius: 999px; font-size: 12px; margin-right: 6px; }
+.chip.fn { color: var(--fn); }
+.chip.macro { color: var(--macro); }
+.chip.const { color: var(--const); }
+.chip.struct { color: var(--struct); }
+.chip.enum { color: var(--enum); }
+.chip.interface { color: var(--interface); }
+.chip.impl { color: var(--impl); }
 .sig { color: var(--text); font-weight: 600; }
 .doc { color: var(--muted); white-space: pre-wrap; margin-top: 6px; }
 .outline a { display: block; color: var(--muted); padding: 4px 6px; border-radius: 6px; text-decoration: none; }
 .outline a:hover { background: var(--panel-soft); color: var(--text); }
+.graph canvas { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
     </style>"#,
     );
     html.push_str("</head><body><div class=\"app\">");
     html.push_str(
-        r#"<div class="topbar">
+        r##"<div class="topbar">
   <div class="logo" style="font-weight:700;color:var(--accent);">Prime Docs</div>
   <div class="search">
     <input id="search" type="text" placeholder="Search modules, symbols...">
@@ -387,9 +472,15 @@ function renderNav(filter='') {
     const wrap = document.createElement('div');
     wrap.className = 'module';
     const btn = document.createElement('button');
-    btn.textContent = m.name;
-    if (idx === activeModule) btn.classList.add('active');
     const isOpen = expanded.has(idx) || filter;
+    const toggle = document.createElement('span');
+    toggle.className = 'toggle';
+    toggle.textContent = isOpen ? '−' : '+';
+    const label = document.createElement('span');
+    label.textContent = m.name;
+    btn.appendChild(toggle);
+    btn.appendChild(label);
+    if (idx === activeModule) btn.classList.add('active');
     btn.onclick = () => {
       if (expanded.has(idx)) {
         expanded.delete(idx);
@@ -428,6 +519,16 @@ function renderContent() {
   const title = document.createElement('h2');
   title.textContent = m.name;
   contentEl.appendChild(title);
+  const graphCard = document.createElement('div');
+  graphCard.className = 'card graph';
+  const canvas = document.createElement('canvas');
+  canvas.id = 'graph-canvas';
+  const width = Math.max(800, contentEl.clientWidth ? contentEl.clientWidth - 40 : 900);
+  canvas.width = width;
+  canvas.height = 240;
+  graphCard.appendChild(canvas);
+  contentEl.appendChild(graphCard);
+  drawGraph(canvas, m);
   if (m.doc) {
     const doc = document.createElement('div');
     doc.className = 'doc';
@@ -440,7 +541,7 @@ function renderContent() {
     card.id = anchorId(activeModule, idx);
     const top = document.createElement('div');
     const chip = document.createElement('span');
-    chip.className = 'chip';
+    chip.className = `chip ${it.kind}`;
     chip.textContent = it.kind;
     top.appendChild(chip);
     const sig = document.createElement('span');
@@ -468,6 +569,113 @@ function renderOutline() {
     outlineEl.appendChild(a);
   });
 }
+
+const colors = {
+  import: "#94a3b8",
+  fn: "#7dd3fc",
+  macro: "#f472b6",
+  const: "#c084fc",
+  struct: "#34d399",
+  enum: "#fb923c",
+  interface: "#facc15",
+  impl: "#a5b4fc",
+  default: "#8c93a5",
+};
+
+function drawGraph(canvas, module) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const padding = 32;
+  const nodeH = 28;
+  const hGap = 18;
+  const vGap = 36;
+
+  const imports = (module.imports || []).map((name, idx) => ({ name, kind: "import", signature: name, key: `import:${name}` }));
+  const consts = module.items.filter(it => it.kind === "const").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
+  const interfaces = module.items.filter(it => it.kind === "interface").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
+  const structs = module.items.filter(it => it.kind === "struct").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
+  const impls = module.items.filter(it => it.kind === "impl").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
+  const fns = module.items.filter(it => it.kind === "fn").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
+  const macros = module.items.filter(it => it.kind === "macro").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
+
+  const layers = [
+    imports,
+    [...consts, ...interfaces, ...structs],
+    impls,
+    [...fns, ...macros],
+  ];
+
+  const rowsPerLayer = layers.map(layer => Math.ceil(Math.sqrt(layer.length || 1)));
+  const maxNodes = Math.max(...layers.map(l => l.length), 1);
+  const neededHeight = padding * 2 + layers.reduce((acc, layer, i) => {
+    const rows = Math.ceil(layer.length / (rowsPerLayer[i] || 1));
+    return acc + Math.max(1, rows) * (nodeH + hGap) + vGap;
+  }, 0);
+  if (canvas.height < neededHeight) canvas.height = neededHeight;
+
+  ctx.clearRect(0,0,w,canvas.height);
+  ctx.font = "13px 'JetBrains Mono', monospace";
+  ctx.fillStyle = "#e8ecf2";
+  ctx.fillText(module.name, padding, padding - 8);
+
+  const nodePos = new Map();
+
+  let yCursor = padding;
+  layers.forEach((layer, idx) => {
+    const cols = Math.max(1, rowsPerLayer[idx]);
+    const colWidth = (w - padding * 2) / cols;
+    layer.forEach((it, iidx) => {
+      const col = iidx % cols;
+      const row = Math.floor(iidx / cols);
+      const x = padding + col * colWidth + colWidth * 0.1;
+      const y = yCursor + row * (nodeH + hGap);
+      const width = colWidth * 0.8;
+      const color = colors[it.kind] || colors.default;
+      ctx.fillStyle = color;
+      ctx.strokeStyle = "#252a38";
+      ctx.lineWidth = 1;
+      ctx.fillRect(x, y, width, nodeH);
+      ctx.strokeRect(x, y, width, nodeH);
+      ctx.fillStyle = "#0c0f16";
+      const label = trimText(ctx, `${it.kind} ${it.name}`, width - 10);
+      ctx.fillText(label, x + 6, y + nodeH - 8);
+      nodePos.set(it.key, { x: x + width / 2, y: y + nodeH / 2 });
+    });
+    const rows = Math.ceil(layer.length / cols);
+    yCursor += Math.max(1, rows) * (nodeH + hGap) + vGap;
+  });
+
+  // Draw edges using precomputed edges (impl -> target/interface)
+  ctx.strokeStyle = "rgba(140,147,165,0.5)";
+  ctx.lineWidth = 1.5;
+  (module.edges || []).forEach(edge => {
+    const from = nodePos.get(edge.from);
+    const to = nodePos.get(edge.to);
+    if (!from || !to) return;
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+    const angle = Math.atan2(to.y - from.y, to.x - from.x);
+    const size = 6;
+    ctx.beginPath();
+    ctx.moveTo(to.x, to.y);
+    ctx.lineTo(to.x - size * Math.cos(angle - Math.PI / 6), to.y - size * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(to.x - size * Math.cos(angle + Math.PI / 6), to.y - size * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fillStyle = "rgba(140,147,165,0.8)";
+    ctx.fill();
+  });
+}
+
+function trimText(ctx, text, maxWidth) {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let trimmed = text;
+  while (trimmed.length > 3 && ctx.measureText(trimmed + '…').width > maxWidth) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed + '…';
+}
 function renderAll(filter='') {
   renderNav(filter);
   renderContent();
@@ -483,6 +691,7 @@ searchEl.addEventListener('keypress', (e) => {
 searchClear.addEventListener('click', ()=> {
   searchEl.value = '';
   filterTerm = '';
+  expanded.clear();
   renderAll('');
 });
 searchEl.addEventListener('input', () => {
@@ -494,7 +703,7 @@ searchEl.addEventListener('input', () => {
 });
 renderAll();
 </script>
-"#,
+"##,
     );
     let safe_data = data.replace("</script>", "<\\/script>");
     let final_html = html.replace("__DATA__", &safe_data);
