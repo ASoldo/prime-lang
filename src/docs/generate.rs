@@ -442,9 +442,8 @@ body {
 .syntax-fn { color: var(--fn); }
 .syntax-macro { color: var(--macro); }
 .syntax-import { color: var(--muted); }
-.syntax-ident { color: #9cdcff; }
-.syntax-key { color: #56c0ff; }
-.syntax-import { color: var(--muted); }
+.syntax-ident { color: #7dd3fc; }
+.syntax-key { color: #b983ff; }
     </style>"#,
     );
     html.push_str("</head><body><div class=\"app\">");
@@ -488,7 +487,7 @@ function renderNav(filter='') {
     toggle.className = 'toggle';
     toggle.textContent = isOpen ? '−' : '+';
     const label = document.createElement('span');
-    label.textContent = m.name;
+    label.innerHTML = formatName(m.name);
     btn.appendChild(toggle);
     btn.appendChild(label);
     if (idx === activeModule) btn.classList.add('active');
@@ -509,7 +508,7 @@ function renderNav(filter='') {
         if (filter && !(it.name.toLowerCase().includes(filter) || it.kind.toLowerCase().includes(filter) || it.signature.toLowerCase().includes(filter))) return;
         const item = document.createElement('div');
         item.className = `item syntax-${it.kind}`;
-        item.innerHTML = `<span class="syntax-key">${it.kind}</span> <span class="syntax-ident">${it.name}</span>`;
+        item.innerHTML = `<span class="syntax-key">${it.kind}</span> ${formatName(it.name)}`;
         item.onclick = () => {
           activeModule = idx;
           renderContent();
@@ -563,7 +562,7 @@ function renderContent() {
     top.appendChild(chip);
     const sig = document.createElement('span');
     sig.className = 'sig';
-    sig.innerHTML = `<span class="syntax-key">${it.kind}</span> <span class="syntax-ident">${it.name}</span>`;
+    sig.innerHTML = `<span class="syntax-key">${it.kind}</span> ${formatName(it.name)}`;
     top.appendChild(sig);
     card.appendChild(top);
     if (it.doc) {
@@ -582,15 +581,23 @@ function renderOutline() {
   (m.imports || []).forEach((name, idx) => {
     const a = document.createElement('a');
     a.href = "#";
-    a.innerHTML = `<span class="syntax-key">import</span> <span class="syntax-ident">${name}</span>`;
+    a.innerHTML = `<span class="syntax-key">import</span> ${formatName(name)}`;
     a.className = "outline-link syntax-import";
     a.dataset.key = `import:${name}`;
+    a.onclick = (e) => {
+      e.preventDefault();
+      const targetIdx = modules.findIndex(mod => mod.name === name);
+      if (targetIdx >= 0) {
+        activeModule = targetIdx;
+        renderAll(filterTerm);
+      }
+    };
     outlineEl.appendChild(a);
   });
   m.items.forEach((it, idx) => {
     const a = document.createElement('a');
     a.href = `#${anchorId(activeModule, idx)}`;
-    a.innerHTML = `<span class="syntax-key">${it.kind}</span> <span class="syntax-ident">${it.name}</span>`;
+    a.innerHTML = `<span class="syntax-key">${it.kind}</span> ${formatName(it.name)}`;
     a.className = `outline-link syntax-${it.kind}`;
     a.dataset.key = `${it.kind}:${it.name}`;
     outlineEl.appendChild(a);
@@ -608,6 +615,13 @@ const colors = {
   impl: "#a5b4fc",
   default: "#8c93a5",
 };
+
+function formatName(name) {
+  return name
+    .split("::")
+    .map(part => `<span class="syntax-ident">${part}</span>`)
+    .join(`<span class="syntax-key">::</span>`);
+}
 
 function computeLayout(canvas, module, ctx) {
   const padding = 32;
@@ -810,6 +824,16 @@ function wireClicks(canvas, layout) {
     const match = detailCards.find(card => card.dataset.key === target.key || card.querySelector('.sig')?.textContent?.includes(target.name));
     if (match) {
       match.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    // If import, try to scroll to matching outline/link
+    if (target.key.startsWith("import:")) {
+      const importName = target.key.split(":")[1];
+      const link = Array.from(document.querySelectorAll('.outline a')).find(a => (a.dataset.key || '') === target.key);
+      if (link) {
+        link.click();
+        link.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     }
   };
 }
