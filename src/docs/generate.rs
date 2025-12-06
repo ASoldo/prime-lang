@@ -706,39 +706,55 @@ function drawGraph(ctx, layout, highlightNodes = new Set(), highlightEdges = new
   layout.nodes.forEach(n => nodeLookup.set(n.key, n));
 
   // Edges
+  const degrees = new Map();
+  layout.nodes.forEach(n => degrees.set(n.key, { in: 0, out: 0 }));
+  layout.edges.forEach(edge => {
+    const dFrom = degrees.get(edge.from);
+    const dTo = degrees.get(edge.to);
+    if (dFrom) dFrom.out += 1;
+    if (dTo) dTo.in += 1;
+  });
+  function anchor(node, side) {
+    const d = degrees.get(node.key) || { in: 0, out: 0 };
+    const base = 5;
+    const r = base + Math.min(4, side === "left" ? d.in : d.out);
+    const cx = side === "left" ? node.x + r + 4 : node.x + node.w - r - 4;
+    const cy = node.y + node.h / 2;
+    return { cx, cy, r };
+  }
+
   layout.edges.forEach(edge => {
     const from = nodeLookup.get(edge.from);
     const to = nodeLookup.get(edge.to);
     if (!from || !to) return;
     const active = highlightEdges.has(edge) || (highlightNodes.size > 0 && highlightNodes.has(edge.from) && highlightNodes.has(edge.to));
-    ctx.strokeStyle = active ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.15)";
+    const alpha = active ? 0.9 : 0.2;
+    const { cx: fx, cy: fy, r: fr } = anchor(from, "right");
+    const { cx: tx, cy: ty, r: tr } = anchor(to, "left");
+    ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
     ctx.lineWidth = active ? 2 : 1;
+    ctx.lineCap = "round";
     ctx.beginPath();
-    ctx.moveTo(from.x + from.w / 2, from.y + from.h / 2);
-    ctx.lineTo(to.x + to.w / 2, to.y + to.h / 2);
+    ctx.moveTo(fx, fy);
+    ctx.lineTo(tx, ty);
     ctx.stroke();
-    if (active) {
-      const angle = Math.atan2(to.y - from.y, to.x - from.x);
-      const size = 6;
-      const tx = to.x + to.w / 2;
-      const ty = to.y + to.h / 2;
-      ctx.beginPath();
-      ctx.moveTo(tx, ty);
-      ctx.lineTo(tx - size * Math.cos(angle - Math.PI / 6), ty - size * Math.sin(angle - Math.PI / 6));
-      ctx.lineTo(tx - size * Math.cos(angle + Math.PI / 6), ty - size * Math.sin(angle + Math.PI / 6));
-      ctx.closePath();
-      ctx.fillStyle = "rgba(255,255,255,0.85)";
-      ctx.fill();
-    }
+    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.beginPath();
+    ctx.arc(fx, fy, fr * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(tx, ty, tr * 0.5, 0, Math.PI * 2);
+    ctx.fill();
   });
 
   // Nodes
   layout.nodes.forEach(node => {
     const active = highlightNodes.size === 0 || highlightNodes.has(node.key);
-    ctx.globalAlpha = active ? 1 : 0.2;
     const color = colors[node.kind] || colors.default;
-    // transparent pill with crisp outline and fully rounded ends
-    ctx.fillStyle = active ? `${color}22` : "rgba(0,0,0,0)";
+    const alpha = active ? 1 : 0.25;
+    ctx.globalAlpha = alpha;
+    // pill
+    ctx.fillStyle = `${color}20`;
     ctx.strokeStyle = color;
     ctx.lineWidth = active ? 2 : 1;
     const r = node.h / 2;
@@ -751,17 +767,28 @@ function drawGraph(ctx, layout, highlightNodes = new Set(), highlightEdges = new
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-    // keyword + name colors
+    // connectors
+    const { cx: lx, cy: ly, r: lr } = anchor(node, "left");
+    const { cx: rx, cy: ry, r: rr } = anchor(node, "right");
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(lx, ly, lr, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(rx, ry, rr, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    // keyword + name centered
+    ctx.textBaseline = "middle";
     const keyColor = "#b983ff";
     const nameColor = "#7dd3fc";
     const keyText = node.kind;
     const nameText = node.name;
-    ctx.fillStyle = active ? keyColor : "rgba(12,15,22,0.85)";
-    ctx.fillText(keyText, node.x + 6, node.y + node.h - 8);
-    const keyWidth = ctx.measureText(keyText + ' ').width;
-    ctx.fillStyle = active ? nameColor : "rgba(12,15,22,0.7)";
-    ctx.fillText(node.name, node.x + 6 + keyWidth, node.y + node.h - 8);
-    ctx.globalAlpha = 1;
+    const space = ctx.measureText(' ').width;
+    const keyWidth = ctx.measureText(keyText).width;
+    const nameWidth = ctx.measureText(nameText).width;
+    const total = keyWidth + space + nameWidth;
+    const startX = node.x + node.w / 2 - total / 2;
+    ctx.fillStyle = active ? keyColor : "rgba(185,131,255,0.55)";
+    ctx.fillText(keyText, startX, node.y + node.h / 2);
+    ctx.fillStyle = active ? nameColor : "rgba(125,211,252,0.55)";
+    ctx.fillText(nameText, startX + keyWidth + space, node.y + node.h / 2);
   });
 }
 
