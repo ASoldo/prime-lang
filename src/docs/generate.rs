@@ -732,6 +732,7 @@ function wireHover(canvas, layout) {
     }
     if (!hovered) {
       drawGraph(ctx, layout);
+      highlightOutline(null);
       return;
     }
     const related = new Set();
