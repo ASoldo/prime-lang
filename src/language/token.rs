@@ -14,6 +14,8 @@ pub enum TokenKind {
     String(String),
     Rune(char),
     TemplateString(String),
+    DocComment { text: String, module: bool },
+    Comment(String),
 
     Fn,
     Let,

@@ -155,6 +155,7 @@ fn shift_statement_spans(stmt: &mut Statement, delta: isize) {
         Statement::Expr(expr) => {
             shift_expr_spans(&mut expr.expr, delta);
         }
+        Statement::Comment { span, .. } => shift_span(span, delta),
         Statement::MacroSemi(expr) => shift_expr_spans(&mut expr.node, delta),
         Statement::Return(ret) => {
             for value in &mut ret.values {
@@ -427,12 +428,14 @@ impl Parser {
     }
 
     fn parse(mut self) -> Result<Module, SyntaxErrors> {
+        let module_doc = self.consume_doc_comments();
         let mut imports = Vec::new();
         let mut items = Vec::new();
         let mut declared_name = None;
         let mut declared_span = None;
         let mut redundant_module_spans = Vec::new();
         let mut prelude = Vec::new();
+        let mut pending_doc: Option<String> = None;
         if matches!(
             self.peek_kind(),
             Some(TokenKind::ModuleKw | TokenKind::LibraryKw | TokenKind::TestKw)
@@ -450,6 +453,22 @@ impl Parser {
 
         while !self.is_eof() {
             if self.matches(TokenKind::Semi) {
+                continue;
+            }
+
+            if matches!(self.peek_kind(), Some(TokenKind::DocComment { .. })) {
+                pending_doc = self.consume_doc_comments();
+                continue;
+            }
+
+            if matches!(self.peek_kind(), Some(TokenKind::Comment(_))) {
+                let tok = self.advance().clone();
+                if let TokenKind::Comment(text) = tok.kind {
+                    items.push(Item::Comment {
+                        text,
+                        span: tok.span,
+                    });
+                }
                 continue;
             }
 
@@ -490,21 +509,24 @@ impl Parser {
                     Ok(import) => imports.push(import),
                     Err(err) => self.report(err),
                 }
+                pending_doc = None;
                 continue;
             }
 
             if self.check(TokenKind::Import) {
-                match self.parse_import_with_visibility(Visibility::Private) {
-                    Ok(import) => imports.push(import),
-                    Err(err) => self.report(err),
+                    match self.parse_import_with_visibility(Visibility::Private) {
+                        Ok(import) => imports.push(import),
+                        Err(err) => self.report(err),
+                    }
+                    pending_doc = None;
+                    continue;
                 }
-                continue;
-            }
 
-            if self.check(TokenKind::Export) {
-                match self.parse_prelude_clause() {
+                if self.check(TokenKind::Export) {
+                    match self.parse_prelude_clause() {
                     Ok(selectors) => {
                         prelude.extend(selectors);
+                        pending_doc = None;
                         continue;
                     }
                     Err(err) => {
@@ -515,7 +537,7 @@ impl Parser {
                 }
             }
 
-            match self.parse_item() {
+            match self.parse_item(pending_doc.take()) {
                 Ok(item) => items.push(item),
                 Err(err) => {
                     self.report(err);
@@ -529,6 +551,7 @@ impl Parser {
                 name: self.module_name,
                 kind: self.kind,
                 path: self.path,
+                doc: module_doc,
                 no_std: false,
                 declared_name,
                 declared_span,
@@ -565,6 +588,19 @@ impl Parser {
         self.expect(TokenKind::Semi)?;
         let end = self.last_span_end(start);
         Ok((path.to_string(), Span::new(start, end), kind))
+    }
+
+    fn consume_doc_comments(&mut self) -> Option<String> {
+        let mut lines = Vec::new();
+        while let Some(TokenKind::DocComment { text, .. }) = self.peek_kind() {
+            self.advance();
+            lines.push(text);
+        }
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
     }
 
     fn parse_import_with_visibility(
@@ -706,7 +742,7 @@ impl Parser {
         Ok(Span::new(start, end))
     }
 
-    fn parse_item(&mut self) -> Result<Item, SyntaxError> {
+    fn parse_item(&mut self, doc: Option<String>) -> Result<Item, SyntaxError> {
         if self.matches(TokenKind::Tilde) {
             return self.parse_item_macro_invocation();
         }
@@ -727,28 +763,28 @@ impl Parser {
             }
         }
         if self.matches(TokenKind::Struct) {
-            return self.parse_struct(visibility).map(Item::Struct);
+            return self.parse_struct(visibility, doc).map(Item::Struct);
         }
         if self.matches(TokenKind::Enum) {
-            return self.parse_enum(visibility).map(Item::Enum);
+            return self.parse_enum(visibility, doc).map(Item::Enum);
         }
         if self.matches(TokenKind::Interface) {
-            return self.parse_interface(visibility).map(Item::Interface);
+            return self.parse_interface(visibility, doc).map(Item::Interface);
         }
         if self.matches(TokenKind::Impl) {
             if visibility == Visibility::Public {
                 return Err(self.error_here("`pub` is not allowed before `impl`"));
             }
-            return self.parse_impl().map(Item::Impl);
+            return self.parse_impl(doc).map(Item::Impl);
         }
         if self.matches(TokenKind::Macro) {
-            return self.parse_macro(visibility).map(Item::Macro);
+            return self.parse_macro(visibility, doc).map(Item::Macro);
         }
         if self.matches(TokenKind::Fn) {
-            return self.parse_function(visibility).map(Item::Function);
+            return self.parse_function(visibility, doc).map(Item::Function);
         }
         if self.matches(TokenKind::Const) {
-            return self.parse_const(visibility).map(Item::Const);
+            return self.parse_const(visibility, doc).map(Item::Const);
         }
         if visibility == Visibility::Public {
             return Err(self.error_here("Expected declaration after `pub`"));
@@ -756,7 +792,11 @@ impl Parser {
         Err(self.error_here("Expected declaration"))
     }
 
-    fn parse_struct(&mut self, visibility: Visibility) -> Result<StructDef, SyntaxError> {
+    fn parse_struct(
+        &mut self,
+        visibility: Visibility,
+        doc: Option<String>,
+    ) -> Result<StructDef, SyntaxError> {
         let name = self.expect_identifier("Expected struct name")?;
         let type_params = self.parse_type_params()?;
         let start = name.span.start;
@@ -802,10 +842,15 @@ impl Parser {
             fields,
             span: Span::new(start, end),
             visibility,
+            doc,
         })
     }
 
-    fn parse_enum(&mut self, visibility: Visibility) -> Result<EnumDef, SyntaxError> {
+    fn parse_enum(
+        &mut self,
+        visibility: Visibility,
+        doc: Option<String>,
+    ) -> Result<EnumDef, SyntaxError> {
         let name = self.expect_identifier("Expected enum name")?;
         let type_params = self.parse_type_params()?;
         let start = name.span.start;
@@ -835,6 +880,7 @@ impl Parser {
                 name: variant_name.name,
                 fields,
                 span: variant_name.span,
+                doc: None,
             });
             self.consume_optional(TokenKind::Comma);
         }
@@ -846,10 +892,15 @@ impl Parser {
             variants,
             span: Span::new(start, end),
             visibility,
+            doc,
         })
     }
 
-    fn parse_interface(&mut self, visibility: Visibility) -> Result<InterfaceDef, SyntaxError> {
+    fn parse_interface(
+        &mut self,
+        visibility: Visibility,
+        doc: Option<String>,
+    ) -> Result<InterfaceDef, SyntaxError> {
         let name = self.expect_identifier("Expected interface name")?;
         let type_params = self.parse_type_params()?;
         let start = name.span.start;
@@ -899,6 +950,7 @@ impl Parser {
                     method_name.span.start,
                     self.last_span_end(method_name.span.start),
                 ),
+                doc: None,
             });
         }
         let end = self.expect(TokenKind::RBrace)?.span.end;
@@ -908,10 +960,11 @@ impl Parser {
             methods,
             span: Span::new(start, end),
             visibility,
+            doc,
         })
     }
 
-    fn parse_impl(&mut self) -> Result<ImplBlock, SyntaxError> {
+    fn parse_impl(&mut self, doc: Option<String>) -> Result<ImplBlock, SyntaxError> {
         let interface_ident = self.expect_identifier("Expected interface or type name")?;
         let mut type_args = self.parse_type_args()?;
         let (interface, target, inherent) = if self.matches(TokenKind::For) {
@@ -932,16 +985,19 @@ impl Parser {
             if self.matches(TokenKind::Semi) {
                 continue;
             }
+            let fn_doc = self.consume_doc_comments();
             self.expect(TokenKind::Fn)?;
-            methods.push(self.parse_function(Visibility::Private)?);
+            methods.push(self.parse_function(Visibility::Private, fn_doc)?);
         }
-        self.expect(TokenKind::RBrace)?;
+        let end = self.expect(TokenKind::RBrace)?.span.end;
         Ok(ImplBlock {
             interface,
             type_args,
             target,
             methods,
             inherent,
+            span: Span::new(interface_ident.span.start, end),
+            doc,
         })
     }
 
@@ -964,7 +1020,11 @@ impl Parser {
         Ok(params)
     }
 
-    fn parse_function(&mut self, visibility: Visibility) -> Result<FunctionDef, SyntaxError> {
+    fn parse_function(
+        &mut self,
+        visibility: Visibility,
+        doc: Option<String>,
+    ) -> Result<FunctionDef, SyntaxError> {
         let name = self.expect_identifier("Expected function name")?;
         let type_params = self.parse_type_params()?;
         self.expect(TokenKind::LParen)?;
@@ -1027,10 +1087,15 @@ impl Parser {
             body,
             span,
             visibility,
+            doc,
         })
     }
 
-    fn parse_macro(&mut self, visibility: Visibility) -> Result<MacroDef, SyntaxError> {
+    fn parse_macro(
+        &mut self,
+        visibility: Visibility,
+        doc: Option<String>,
+    ) -> Result<MacroDef, SyntaxError> {
         let start = self
             .previous_span()
             .map(|s| s.start)
@@ -1077,6 +1142,7 @@ impl Parser {
             body,
             span: Span::new(start, end),
             visibility,
+            doc,
         })
     }
 
@@ -1132,7 +1198,7 @@ impl Parser {
             if self.matches(TokenKind::Semi) {
                 continue;
             }
-            match self.parse_item() {
+            match self.parse_item(None) {
                 Ok(item) => items.push(item),
                 Err(err) => {
                     self.report(err);
@@ -1431,7 +1497,11 @@ impl Parser {
         }
     }
 
-    fn parse_const(&mut self, visibility: Visibility) -> Result<ConstDef, SyntaxError> {
+    fn parse_const(
+        &mut self,
+        visibility: Visibility,
+        doc: Option<String>,
+    ) -> Result<ConstDef, SyntaxError> {
         let start = self
             .previous_span()
             .map(|s| s.start)
@@ -1452,6 +1522,7 @@ impl Parser {
             value,
             span: Span::new(start, end),
             visibility,
+            doc,
         })
     }
 
@@ -1535,6 +1606,11 @@ impl Parser {
             if self.matches(TokenKind::Semi) {
                 continue;
             }
+            if let Some(TokenKind::Comment(text)) = self.peek_kind() {
+                let span = self.advance().span;
+                statements.push(Statement::Comment { text, span });
+                continue;
+            }
             match self.parse_statement(true) {
                 Ok(StatementOrTail::Statement(stmt)) => statements.push(stmt),
                 Ok(StatementOrTail::Tail(expr)) => {
@@ -1556,6 +1632,13 @@ impl Parser {
     }
 
     fn parse_statement(&mut self, allow_tail: bool) -> Result<StatementOrTail, SyntaxError> {
+        if let Some(TokenKind::Comment(text)) = self.peek_kind() {
+            let span = self.advance().span;
+            return Ok(StatementOrTail::Statement(Statement::Comment {
+                text,
+                span,
+            }));
+        }
         if self.matches(TokenKind::Let) {
             let start = self
                 .previous_span()

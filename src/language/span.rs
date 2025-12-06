@@ -39,6 +39,11 @@ impl fmt::Display for Span {
     }
 }
 
+#[allow(dead_code)]
+pub fn spans_overlap(a: Span, b: Span) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
 /// Convenience wrapper for attaching spans to syntax nodes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spanned<T> {

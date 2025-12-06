@@ -213,6 +213,22 @@ enum Commands {
         query: Vec<String>,
         #[arg(long, default_value_t = false, help = "List available topics")]
         list: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Generate docs as HTML from source comments"
+        )]
+        generate: bool,
+        #[arg(long, default_value_t = false, help = "Serve generated docs over HTTP")]
+        serve: bool,
+        #[arg(long, value_name = "PORT", default_value_t = 7878, help = "Port for --serve")]
+        port: u16,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Optional output file for generated docs"
+        )]
+        out: Option<PathBuf>,
     },
     /// Expand macros for a file (optionally at a cursor offset)
     Expand {
@@ -384,8 +400,25 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Docs { query, list } => {
-            if list {
+        Commands::Docs {
+            query,
+            list,
+            generate,
+            serve,
+            port,
+            out,
+        } => {
+            if serve {
+                if let Err(err) = docs::serve_docs(port) {
+                    eprintln!("docs serve failed: {err}");
+                    std::process::exit(1);
+                }
+            } else if generate {
+                if let Err(err) = docs::generate_docs(out) {
+                    eprintln!("docs generate failed: {err}");
+                    std::process::exit(1);
+                }
+            } else if list {
                 docs::print_topic_list();
             } else if let Err(err) = docs::print_topics(&query) {
                 eprintln!("{err}");
@@ -1511,34 +1544,37 @@ fn expand_entry(
                 let formatted = if print_expanded || !has_position {
                     format_module(module)
                 } else {
-                    let mut focused_items: Vec<Item> = module
-                        .items
-                        .iter()
-                        .filter(|item| {
-                            let span = item_span(item);
-                            span.start <= resolved_offset && span.end >= resolved_offset
-                        })
-                        .cloned()
-                        .collect();
-                    if focused_items.is_empty() {
-                        if let Some(names) = macro_names.as_ref() {
-                            if let Some(origins) = expanded.item_origins.get(&canonical) {
-                                let by_origin: Vec<Item> = module
-                                    .items
-                                    .iter()
-                                    .zip(origins.iter())
-                                    .filter(|(_, origin)| {
-                                        origin
-                                            .as_ref()
-                                            .map(|o| names.iter().any(|n| n == o))
-                                            .unwrap_or(false)
-                                    })
-                                    .map(|(item, _)| item.clone())
-                                    .collect();
-                                focused_items.extend(by_origin);
+                    let mut focused_items: Vec<Item> = Vec::new();
+
+                    // Prefer items whose expansion origin matches the *innermost* macro at the cursor.
+                    if let Some(names) = macro_names.as_ref() {
+                        if let Some(origins) = expanded.item_origins.get(&canonical) {
+                            for (item, origin) in module.items.iter().zip(origins.iter()) {
+                                if origin
+                                    .as_ref()
+                                    .map(|o| names.iter().any(|n| n == o))
+                                    .unwrap_or(false)
+                                {
+                                    focused_items.push(item.clone());
+                                }
                             }
                         }
                     }
+
+                    // If no origin-based match, fall back to the item covering the cursor span.
+                    if focused_items.is_empty() {
+                        focused_items.extend(
+                            module
+                                .items
+                                .iter()
+                                .filter(|item| {
+                                    let span = item_span(item);
+                                    span.start <= resolved_offset && span.end >= resolved_offset
+                                })
+                                .cloned(),
+                        );
+                    }
+
                     if focused_items.is_empty() {
                         format_module(module)
                     } else {
@@ -1631,6 +1667,7 @@ fn item_span(item: &Item) -> Span {
         Item::Macro(def) => def.span,
         Item::Const(def) => def.span,
         Item::MacroInvocation(inv) => inv.span,
+        Item::Comment { span, .. } => *span,
     }
 }
 

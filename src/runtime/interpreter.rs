@@ -218,7 +218,8 @@ impl Interpreter {
                     | Item::MacroInvocation(_)
                     | Item::Impl(_)
                     | Item::Function(_)
-                    | Item::Const(_) => {}
+                    | Item::Const(_)
+                    | Item::Comment { .. } => {}
                 }
             }
         }
@@ -240,7 +241,8 @@ impl Interpreter {
                     | Item::Enum(_)
                     | Item::Interface(_)
                     | Item::Macro(_)
-                    | Item::MacroInvocation(_) => {}
+                    | Item::MacroInvocation(_)
+                    | Item::Comment { .. } => {}
                 }
             }
         }
@@ -2453,6 +2455,7 @@ impl Interpreter {
                 self.env.defer(stmt.expr.clone());
                 Ok(None)
             }
+            Statement::Comment { .. } => Ok(None),
             Statement::Block(block) => match self.eval_block(block)? {
                 BlockEval::Value(_) => Ok(None),
                 BlockEval::Flow(flow) => Ok(Some(flow)),

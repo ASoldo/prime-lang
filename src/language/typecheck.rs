@@ -332,6 +332,7 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
             }
             Item::Macro(_) => {}
             Item::MacroInvocation(_) => {}
+            Item::Comment { .. } => {}
             Item::Impl(block) => {
                 for method in &block.methods {
                     let mut method_def = method.clone();
@@ -1599,6 +1600,7 @@ impl Checker {
                 self.check_expression(module, &defer_stmt.expr, None, returns, env);
             }
             Statement::Break | Statement::Continue => {}
+            Statement::Comment { .. } => {}
             Statement::Block(block) => {
                 self.check_block(module, block, returns, env);
             }
@@ -6050,6 +6052,7 @@ fn stmt_span(statement: &Statement) -> Span {
         Statement::For(stmt) => stmt.span,
         Statement::Defer(_) => Span::new(0, 0),
         Statement::Break | Statement::Continue => Span::new(0, 0),
+        Statement::Comment { span, .. } => *span,
         Statement::Block(block) => block.span,
     }
 }

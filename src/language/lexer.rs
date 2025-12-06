@@ -40,8 +40,8 @@ impl<'a> Lexer<'a> {
     fn run(mut self) -> Result<Vec<Token>, Vec<LexError>> {
         while let Some(ch) = self.current {
             match ch {
-                '/' if self.peek() == Some('/') => self.eat_line_comment(),
-                '/' if self.peek() == Some('*') => self.eat_block_comment(),
+                '/' if self.peek() == Some('/') => self.lex_line_or_doc_comment(),
+                '/' if self.peek() == Some('*') => self.lex_block_or_doc_comment(),
                 ch if ch.is_whitespace() => {
                     self.bump();
                 }
@@ -88,26 +88,64 @@ impl<'a> Lexer<'a> {
         });
     }
 
-    fn eat_line_comment(&mut self) {
-        self.bump();
-        self.bump();
+    fn lex_line_or_doc_comment(&mut self) {
+        let start = self.offset;
+        self.bump(); // first '/'
+        self.bump(); // second '/'
+
+        let marker = self.current;
+        let is_doc = matches!(marker, Some('/') | Some('!'));
+        let module = matches!(marker, Some('!'));
+        if is_doc {
+            // consume the doc marker ('/' or '!')
+            self.bump();
+        }
+
+        let mut text = String::new();
         while let Some(ch) = self.current {
             if ch == '\n' {
                 break;
             }
+            text.push(ch);
             self.bump();
         }
+        let kind = if is_doc {
+            TokenKind::DocComment {
+                text: text.trim_start_matches([' ', '\t']).to_string(),
+                module,
+            }
+        } else {
+            TokenKind::Comment(text)
+        };
+        self.push_token(kind, start, self.offset);
     }
 
-    fn eat_block_comment(&mut self) {
-        self.bump();
-        self.bump();
+    fn lex_block_or_doc_comment(&mut self) {
+        let start = self.offset;
+        self.bump(); // '/'
+        self.bump(); // '*'
+        let is_doc = matches!(self.current, Some('*') | Some('!'));
+        let module = matches!(self.current, Some('!'));
+        if is_doc {
+            self.bump(); // consume third char
+        }
+        let mut text = String::new();
         while let Some(ch) = self.current {
             if ch == '*' && self.peek() == Some('/') {
                 self.bump();
                 self.bump();
+                let kind = if is_doc {
+                    TokenKind::DocComment {
+                        text: text.trim().to_string(),
+                        module,
+                    }
+                } else {
+                    TokenKind::Comment(text)
+                };
+                self.push_token(kind, start, self.offset);
                 return;
             }
+            text.push(ch);
             self.bump();
         }
         self.error(self.offset, self.offset, "Unterminated block comment");

@@ -236,6 +236,7 @@ fn collect_decl_from_block(block: &Block, module: &Module, decls: &mut Vec<DeclI
             }
             Statement::Defer(defer_stmt) => collect_decl_from_expr(&defer_stmt.expr, module, decls),
             Statement::Block(inner) => collect_decl_from_block(inner, module, decls),
+            Statement::Comment { .. } => {}
             Statement::Break | Statement::Continue => {}
         }
     }
@@ -832,6 +833,7 @@ fn collect_macro_used_in_statement(
         }
         Statement::Defer(defer_stmt) => collect_macro_expr_idents(&defer_stmt.expr, params, used),
         Statement::Block(block) => collect_macro_used_in_block(block, params, used),
+        Statement::Comment { .. } => {}
         Statement::Break | Statement::Continue => {}
     }
 }
@@ -1082,6 +1084,7 @@ fn collect_used_in_statement(statement: &Statement, used: &mut HashSet<String>) 
         }
         Statement::Defer(defer_stmt) => collect_expr_idents(&defer_stmt.expr, used),
         Statement::Block(block) => collect_used_in_block(block, used),
+        Statement::Comment { .. } => {}
         Statement::Break | Statement::Continue => {}
     }
 }
@@ -1245,6 +1248,7 @@ fn collect_spans_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {
         Item::MacroInvocation(inv) => collect_spans_in_macro_invocation(inv, name, spans),
         Item::Macro(def) => collect_spans_in_macro(def, name, spans),
         Item::Struct(_) | Item::Enum(_) | Item::Interface(_) => {}
+        Item::Comment { .. } => {}
     }
 }
 
@@ -1323,6 +1327,7 @@ fn collect_spans_in_statement(stmt: &Statement, name: &str, spans: &mut Vec<Span
         Statement::Defer(defer_stmt) => collect_spans_in_expr(&defer_stmt.expr, name, spans),
         Statement::Block(block) => collect_spans_in_block(block, name, spans),
         Statement::MacroSemi(expr) => collect_spans_in_expr(&expr.node, name, spans),
+        Statement::Comment { .. } => {}
         Statement::Break | Statement::Continue => {}
     }
 }
@@ -1622,6 +1627,7 @@ fn find_in_statement(stmt: &Statement, offset: usize) -> Option<(String, Span)> 
         }
         Statement::Defer(defer_stmt) => find_in_expr(&defer_stmt.expr, offset),
         Statement::Block(block) => find_in_block(block, offset),
+        Statement::Comment { .. } => None,
         Statement::Break | Statement::Continue => None,
     }
 }

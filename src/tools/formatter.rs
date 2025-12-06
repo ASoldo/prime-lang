@@ -5,6 +5,9 @@ use crate::language::{
 };
 pub fn format_module(module: &Module) -> String {
     let mut out = String::new();
+    if let Some(doc) = &module.doc {
+        write_doc_comment(&mut out, doc, true, 0);
+    }
     if let Some(name) = module.declared_name.as_ref() {
         let header = match module.kind {
             ModuleKind::Module => "module",
@@ -50,6 +53,9 @@ pub fn format_module(module: &Module) -> String {
             Item::Macro(def) => format_macro(&mut out, def),
             Item::Const(def) => format_const(&mut out, def),
             Item::MacroInvocation(inv) => format_macro_invocation(&mut out, inv),
+            Item::Comment { text, .. } => {
+                write_comment_lines(&mut out, 0, text);
+            }
         }
     }
 
@@ -103,6 +109,9 @@ fn write_visibility(out: &mut String, visibility: Visibility) {
 fn format_struct(out: &mut String, def: &StructDef) {
     let params = format_type_params(&def.type_params);
     write_visibility(out, def.visibility);
+    if let Some(doc) = &def.doc {
+        write_doc_comment(out, doc, false, 0);
+    }
     out.push_str(&format!("struct {}{} {{\n", def.name, params));
     for field in &def.fields {
         if field.embedded {
@@ -121,6 +130,9 @@ fn format_struct(out: &mut String, def: &StructDef) {
 fn format_enum(out: &mut String, def: &EnumDef) {
     let params = format_type_params(&def.type_params);
     write_visibility(out, def.visibility);
+    if let Some(doc) = &def.doc {
+        write_doc_comment(out, doc, false, 0);
+    }
     out.push_str(&format!("enum {}{} {{\n", def.name, params));
     for variant in &def.variants {
         if variant.fields.is_empty() {
@@ -140,6 +152,9 @@ fn format_enum(out: &mut String, def: &EnumDef) {
 fn format_interface(out: &mut String, def: &InterfaceDef) {
     let params = format_type_params(&def.type_params);
     write_visibility(out, def.visibility);
+    if let Some(doc) = &def.doc {
+        write_doc_comment(out, doc, false, 0);
+    }
     out.push_str(&format!("interface {}{} {{\n", def.name, params));
     for method in &def.methods {
         out.push_str("  fn ");
@@ -172,6 +187,9 @@ fn format_interface(out: &mut String, def: &InterfaceDef) {
 }
 
 fn format_impl(out: &mut String, block: &ImplBlock) {
+    if let Some(doc) = &block.doc {
+        write_doc_comment(out, doc, false, 0);
+    }
     if block.inherent {
         out.push_str(&format!("impl {} {{\n", block.target));
     } else {
@@ -182,6 +200,9 @@ fn format_impl(out: &mut String, block: &ImplBlock) {
         ));
     }
     for (idx, method) in block.methods.iter().enumerate() {
+        if let Some(doc) = &method.doc {
+            write_doc_comment(out, doc, false, 2);
+        }
         format_function_with_indent(out, method, 2);
         if idx + 1 < block.methods.len() {
             out.push('\n');
@@ -193,6 +214,9 @@ fn format_impl(out: &mut String, block: &ImplBlock) {
 fn format_function(out: &mut String, def: &FunctionDef) {
     let params = format_type_params(&def.type_params);
     write_visibility(out, def.visibility);
+    if let Some(doc) = &def.doc {
+        write_doc_comment(out, doc, false, 0);
+    }
     out.push_str(&format!("fn {}{}(", def.name, params));
     for (idx, param) in def.params.iter().enumerate() {
         if idx > 0 {
@@ -229,6 +253,9 @@ fn format_function(out: &mut String, def: &FunctionDef) {
 
 fn format_macro(out: &mut String, def: &MacroDef) {
     write_visibility(out, def.visibility);
+    if let Some(doc) = &def.doc {
+        write_doc_comment(out, doc, false, 0);
+    }
     out.push_str(&format!("macro {}(", def.name));
     for (idx, param) in def.params.iter().enumerate() {
         if idx > 0 {
@@ -303,6 +330,9 @@ fn format_macro_items(out: &mut String, items: &[Item]) {
             Item::Macro(def) => format_macro(&mut buf, def),
             Item::Const(def) => format_const(&mut buf, def),
             Item::MacroInvocation(inv) => format_macro_invocation(&mut buf, inv),
+            Item::Comment { text, .. } => {
+                write_comment_lines(&mut buf, 0, text);
+            }
         }
         push_indented(out, &buf, 2);
     }
@@ -436,6 +466,9 @@ fn format_call_type_args(args: &[TypeExpr]) -> String {
 
 fn format_const(out: &mut String, def: &ConstDef) {
     write_visibility(out, def.visibility);
+    if let Some(doc) = &def.doc {
+        write_doc_comment(out, doc, false, 0);
+    }
     out.push_str("const ");
     out.push_str(&def.name);
     if let Some(ty) = &def.ty {
@@ -473,6 +506,27 @@ fn format_block(out: &mut String, block: &Block, indent: usize) {
     }
 }
 
+fn write_comment_lines(out: &mut String, indent: usize, text: &str) {
+    for line in text.lines() {
+        write_indent(out, indent);
+        out.push_str("//");
+        if line.is_empty() {
+            out.push('\n');
+        } else if line.starts_with(' ') {
+            out.push_str(line);
+            out.push('\n');
+        } else {
+            out.push(' ');
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+    }
+    if text.is_empty() {
+        write_indent(out, indent);
+        out.push_str("//\n");
+    }
+}
+
 fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> bool {
     match statement {
         Statement::Let(stmt) => format_let_statement(out, stmt, indent),
@@ -480,6 +534,10 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
         Statement::MacroSemi(expr) => {
             write_indent(out, indent);
             out.push_str(&format!("{};\n", format_expr(&expr.node)));
+            false
+        }
+        Statement::Comment { text, .. } => {
+            write_comment_lines(out, indent, text);
             false
         }
         Statement::Expr(expr) => {
@@ -753,6 +811,19 @@ fn format_while_statement(out: &mut String, stmt: &WhileStmt, indent: usize) {
     format_block(out, &stmt.body, indent + 2);
     write_indent(out, indent);
     out.push_str("}\n");
+}
+
+fn write_doc_comment(out: &mut String, doc: &str, _module: bool, indent: usize) {
+    let prefix = " ".repeat(indent);
+    for line in doc.lines() {
+        out.push_str(&prefix);
+        out.push_str("///");
+        if !line.is_empty() {
+            out.push(' ');
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
 }
 
 fn format_for_statement(out: &mut String, stmt: &ForStmt, indent: usize) {
@@ -1699,6 +1770,16 @@ mod tests {
             .expect("fixture input");
         let output = fs::read_to_string("workspace/tests/golden/formatter_multiline_let_out.prime")
             .expect("fixture out");
+        let formatted = format_fixture(&input);
+        assert_eq!(formatted, output);
+    }
+
+    #[test]
+    fn formatter_preserves_comments() {
+        let input =
+            fs::read_to_string("workspace/tests/golden/formatter_comments_in.prime").expect("fixture input");
+        let output =
+            fs::read_to_string("workspace/tests/golden/formatter_comments_out.prime").expect("fixture out");
         let formatted = format_fixture(&input);
         assert_eq!(formatted, output);
     }

@@ -199,7 +199,7 @@ fn validate_no_duplicate_items(items: &[(Item, Option<String>)]) -> Vec<SyntaxEr
                 "const",
                 origin.clone(),
             ),
-            Item::Impl(_) | Item::MacroInvocation(_) => {}
+            Item::Impl(_) | Item::MacroInvocation(_) | Item::Comment { .. } => {}
         }
     }
     errors
@@ -401,6 +401,29 @@ impl ExpansionTraces {
         let entry = best.or_else(|| entries.iter().find(|e| spans_overlap(e.span, span)))?;
         Some(entry.frames.iter().map(|f| f.name.clone()).collect())
     }
+
+    #[allow(dead_code)]
+    pub fn macro_span_for(&self, path: &Path, span: Span) -> Option<Span> {
+        let entries = self.entries.get(path)?;
+        let mut best: Option<&TraceEntry> = None;
+        for entry in entries {
+            if entry.span.start <= span.start && entry.span.end >= span.end {
+                let is_narrower = best
+                    .map(|best| {
+                        let current_len = entry.span.len();
+                        let best_len = best.span.len();
+                        current_len < best_len
+                            || (current_len == best_len && entry.span.end < best.span.end)
+                    })
+                    .unwrap_or(true);
+                if is_narrower {
+                    best = Some(entry);
+                }
+            }
+        }
+        let entry = best.or_else(|| entries.iter().find(|e| spans_overlap(e.span, span)))?;
+        Some(entry.span)
+    }
 }
 
 impl<'a> Expander<'a> {
@@ -444,6 +467,7 @@ impl<'a> Expander<'a> {
                 name: module.name.clone(),
                 kind: module.kind,
                 path: module.path.clone(),
+                doc: module.doc.clone(),
                 no_std: module.no_std,
                 declared_name: module.declared_name.clone(),
                 declared_span: module.declared_span,
@@ -484,6 +508,7 @@ impl<'a> Expander<'a> {
                 let expanded = self.expand_item_macro(invocation, errors);
                 out.extend(expanded);
             }
+            Item::Comment { .. } => out.push((item.clone(), origin)),
         }
     }
 
@@ -753,6 +778,7 @@ impl<'a> Expander<'a> {
             Statement::Block(block) => {
                 Statement::Block(Box::new(self.expand_block(block, _scope_span, errors)))
             }
+            Statement::Comment { .. } => stmt.clone(),
             Statement::Break | Statement::Continue => stmt.clone(),
         }
     }
@@ -1453,6 +1479,7 @@ fn substitute_statement(stmt: Statement, subst: &Substitution) -> Statement {
             expr: substitute_expr(defer_stmt.expr, subst),
         }),
         Statement::Block(block) => Statement::Block(Box::new(substitute_block(*block, subst))),
+        Statement::Comment { .. } => stmt,
         Statement::Break | Statement::Continue => stmt,
     }
 }
@@ -1695,6 +1722,7 @@ fn collect_bindings_statement(stmt: &Statement) -> HashSet<String> {
             }
         }
         Statement::Block(block) => set.extend(collect_bindings_block(block)),
+        Statement::Comment { .. } => {}
         Statement::Break | Statement::Continue => {}
     }
     set
@@ -2192,6 +2220,7 @@ fn rename_statement(stmt: Statement, map: &HashMap<String, String>) -> Statement
             expr: rename_expr(defer_stmt.expr, map),
         }),
         Statement::Block(block) => Statement::Block(Box::new(rename_block(*block, map))),
+        Statement::Comment { .. } => stmt,
         Statement::Break | Statement::Continue => stmt,
     }
 }
@@ -2329,6 +2358,7 @@ fn collect_bindings_item(item: &Item) -> HashSet<String> {
             }
         }
         Item::Struct(_) | Item::Enum(_) | Item::Interface(_) | Item::Macro(_) => {}
+        Item::Comment { .. } => {}
     }
     set
 }

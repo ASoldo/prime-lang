@@ -566,6 +566,7 @@ fn hover_for_imported_symbol(
                 Item::Macro(def) => (&def.name, def.visibility == Visibility::Public),
                 Item::Const(def) => (&def.name, def.visibility == Visibility::Public),
                 Item::Impl(_) | Item::MacroInvocation(_) => continue,
+                Item::Comment { .. } => continue,
             };
             if let Some(allow) = &allowed {
                 if !allow.contains(label) {
@@ -898,6 +899,11 @@ fn format_decl_kind(kind: DeclKind) -> &'static str {
 }
 
 fn format_struct_hover(def: &StructDef) -> String {
+    let mut out = String::new();
+    if let Some(doc) = &def.doc {
+        out.push_str(doc);
+        out.push_str("\n\n");
+    }
     let mut body = String::new();
     body.push_str(&format!(
         "struct {}{}",
@@ -917,10 +923,16 @@ fn format_struct_hover(def: &StructDef) -> String {
         }
     }
     body.push('}');
-    code_block("prime", &body)
+    out.push_str(&code_block("prime", &body));
+    out
 }
 
 fn format_enum_hover(def: &EnumDef) -> String {
+    let mut out = String::new();
+    if let Some(doc) = &def.doc {
+        out.push_str(doc);
+        out.push_str("\n\n");
+    }
     let mut body = String::new();
     body.push_str(&format!(
         "enum {}{}",
@@ -932,10 +944,16 @@ fn format_enum_hover(def: &EnumDef) -> String {
         body.push_str(&format!("  {},\n", format_enum_variant_signature(variant)));
     }
     body.push('}');
-    code_block("prime", &body)
+    out.push_str(&code_block("prime", &body));
+    out
 }
 
 fn format_interface_hover(def: &InterfaceDef) -> String {
+    let mut out = String::new();
+    if let Some(doc) = &def.doc {
+        out.push_str(doc);
+        out.push_str("\n\n");
+    }
     let mut body = String::new();
     body.push_str(&format!(
         "interface {}{}",
@@ -950,7 +968,8 @@ fn format_interface_hover(def: &InterfaceDef) -> String {
         ));
     }
     body.push('}');
-    code_block("prime", &body)
+    out.push_str(&code_block("prime", &body));
+    out
 }
 
 fn format_enum_variant_signature(variant: &EnumVariant) -> String {
@@ -971,16 +990,22 @@ fn format_const_snippet(text: &str, def: &ConstDef) -> String {
     let snippet = extract_text(text, def.span.start, def.span.end)
         .trim()
         .to_string();
+    let mut content = String::new();
+    if let Some(doc) = &def.doc {
+        content.push_str(doc);
+        content.push_str("\n\n");
+    }
     if snippet.is_empty() {
         let mut fallback = format!("const {}", def.name);
         if let Some(ty) = &def.ty {
             fallback.push_str(": ");
             fallback.push_str(&format_type_expr(&ty.ty));
         }
-        fallback
+        content.push_str(&fallback);
     } else {
-        snippet
+        content.push_str(&snippet);
     }
+    content
 }
 
 fn format_macro_signature(def: &MacroDef) -> String {
@@ -1003,12 +1028,24 @@ fn format_macro_signature(def: &MacroDef) -> String {
 
 fn format_macro_signature_block(def: &MacroDef) -> String {
     let signature = format_macro_signature(def);
-    code_block("prime", &signature)
+    if let Some(doc) = &def.doc {
+        let mut content = String::new();
+        content.push_str(doc);
+        content.push_str("\n\n");
+        content.push_str(&code_block("prime", &signature));
+        content
+    } else {
+        code_block("prime", &signature)
+    }
 }
 
 fn format_function_hover(def: &FunctionDef) -> String {
     let signature = format_function_signature(def);
     let mut content = String::new();
+    if let Some(doc) = &def.doc {
+        content.push_str(&doc);
+        content.push_str("\n\n");
+    }
     content.push_str(&code_block("prime", &format!("{signature} {{}}")));
     content.push_str("\n\n```md\n");
     content.push_str("Params: ");
@@ -1054,6 +1091,10 @@ fn format_macro_hover(text: &str, def: &MacroDef) -> String {
     if snippet.is_empty() {
         content.push_str(&format_macro_signature_block(def));
     } else {
+        if let Some(doc) = &def.doc {
+            content.push_str(doc);
+            content.push_str("\n\n");
+        }
         content.push_str(&code_block("prime", &snippet));
     }
     content.push_str("\n\n```md\nKind: macro\n");

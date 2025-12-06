@@ -317,7 +317,7 @@ pub fn module_selector_items_from_modules(
                 Some(format_macro_detail(def)),
                 def.visibility,
             ),
-            Item::Impl(_) | Item::MacroInvocation(_) => {}
+            Item::Impl(_) | Item::MacroInvocation(_) | Item::Comment { .. } => {}
         }
     }
 
@@ -1229,6 +1229,7 @@ pub fn general_completion_items(
             }
             Item::Impl(_) => {}
             Item::MacroInvocation(_) => {}
+            Item::Comment { .. } => {}
         }
     }
 
@@ -1293,6 +1294,7 @@ pub fn general_completion_items(
                             && macro_visible_to_requester(def, imported, module),
                     ),
                     Item::Impl(_) | Item::MacroInvocation(_) => continue,
+                    Item::Comment { .. } => continue,
                 };
 
                 if !public {

@@ -10,6 +10,10 @@ pub macro dbg(value: int32) -> int32 {
   value
 }
 
+/// `hello`
+/// [hello]
+/// *hello*
+/// `<div>`[Hello]`</div>`
 macro vec2(x: int32, y: int32) -> Vec2 {
   Vec2{
     x,

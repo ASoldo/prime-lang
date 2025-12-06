@@ -1,0 +1,10 @@
+module tests::comments;
+
+fn main() {
+  // leading
+    // indented
+  /* block
+     still */
+  let int32 x = 1;
+  if x>0 { out(x); }
+}

@@ -4,7 +4,7 @@ return {
 		"neovim/nvim-lspconfig",
 		ft = { "prime" },
 		config = function()
-			local function prime_expand_popup()
+			local function prime_expand_popup(full)
 				if vim.bo.filetype ~= "prime" then
 					vim.notify("Prime expand: buffer is not a .prime file", vim.log.levels.WARN)
 					return
@@ -18,16 +18,10 @@ return {
 				local line = cursor[1]
 				local col = cursor[2] + 1
 
-				local cmd = {
-					"prime-lang",
-					"expand",
-					file,
-					"--line",
-					tostring(line),
-					"--column",
-					tostring(col),
-					"--print-expanded",
-				}
+				local cmd = { "prime-lang", "expand", file, "--line", tostring(line), "--column", tostring(col) }
+				if full then
+					table.insert(cmd, "--print-expanded")
+				end
 				local output = vim.fn.systemlist(cmd)
 				if vim.v.shell_error ~= 0 then
 					vim.notify(
@@ -52,6 +46,7 @@ return {
 				local height = math.floor(vim.o.lines * 0.6)
 				local row = math.floor((vim.o.lines - height) / 2 - 1)
 				local col_off = math.floor((vim.o.columns - width) / 2)
+				local title_prefix = full and " Macro module expansion: " or " Macro expansion: "
 				local win = vim.api.nvim_open_win(buf, true, {
 					relative = "editor",
 					style = "minimal",
@@ -61,7 +56,8 @@ return {
 					row = math.max(row, 0),
 					col = math.max(col_off, 0),
 					title = string.format(
-						" Macro expansion: %s:%d:%d ",
+						"%s%s:%d:%d ",
+						title_prefix,
 						vim.fn.fnamemodify(file, ":t"),
 						line,
 						col
@@ -77,6 +73,14 @@ return {
 
 			vim.filetype.add({
 				extension = { prime = "prime" },
+			})
+			vim.api.nvim_create_autocmd("FileType", {
+				pattern = "prime",
+				callback = function()
+					vim.bo.commentstring = "// %s"
+					vim.wo.foldmethod = "expr"
+					vim.wo.foldexpr = "v:lua.vim.treesitter.foldexpr()"
+				end,
 			})
 
 			local lspconfig = require("lspconfig")
@@ -111,7 +115,12 @@ return {
 					map("<leader>lr", vim.lsp.buf.rename, "Rename symbol (Prime)")
 					map("<leader>la", vim.lsp.buf.code_action, " Code Action (Prime)")
 					map("<leader>lw", vim.lsp.buf.workspace_symbol, " Workspace Symbols (Prime)")
-					map("<leader>lx", prime_expand_popup, "Expand macro at cursor (Prime)")
+					map("<leader>lx", function()
+						prime_expand_popup(false)
+					end, "Expand macro at cursor (Prime)")
+					map("<leader>lX", function()
+						prime_expand_popup(true)
+					end, "Expand full module expansion (Prime)")
 					if client.server_capabilities.documentFormattingProvider then
 						vim.api.nvim_create_autocmd("BufWritePre", {
 							buffer = bufnr,

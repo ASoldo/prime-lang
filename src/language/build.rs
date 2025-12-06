@@ -1006,6 +1006,7 @@ impl BuildInterpreter {
                 self.eval_assign(assign)?;
                 Ok(Flow::Value(BuildValue::Unit))
             }
+            Statement::Comment { .. } => Ok(Flow::Value(BuildValue::Unit)),
             Statement::Expr(expr_stmt) => Ok(Flow::Value(self.eval_expr_mut(&expr_stmt.expr)?)),
             Statement::MacroSemi(expr) => {
                 let _ = self.eval_expr_mut(&expr.node)?;
@@ -3204,6 +3205,7 @@ mod tests {
             body,
             span: s,
             visibility: Visibility::Private,
+            doc: None,
         };
         let key = BuildFunctionKey {
             name: "drop".into(),

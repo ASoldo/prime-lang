@@ -23,6 +23,7 @@ pub struct Module {
     pub name: String,
     pub kind: ModuleKind,
     pub path: PathBuf,
+    pub doc: Option<String>,
     pub no_std: bool,
     pub declared_name: Option<String>,
     pub declared_span: Option<Span>,
@@ -103,6 +104,7 @@ pub enum Item {
     Macro(MacroDef),
     Const(ConstDef),
     MacroInvocation(MacroInvocation),
+    Comment { text: String, span: Span },
 }
 
 #[derive(Clone, Debug)]
@@ -112,6 +114,7 @@ pub struct StructDef {
     pub fields: Vec<StructField>,
     pub span: Span,
     pub visibility: Visibility,
+    pub doc: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +132,7 @@ pub struct EnumDef {
     pub variants: Vec<EnumVariant>,
     pub span: Span,
     pub visibility: Visibility,
+    pub doc: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -136,6 +140,8 @@ pub struct EnumVariant {
     pub name: String,
     pub fields: Vec<TypeAnnotation>,
     pub span: Span,
+    #[allow(dead_code)]
+    pub doc: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -145,6 +151,7 @@ pub struct InterfaceDef {
     pub methods: Vec<InterfaceMethod>,
     pub span: Span,
     pub visibility: Visibility,
+    pub doc: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -153,6 +160,8 @@ pub struct InterfaceMethod {
     pub params: Vec<FunctionParam>,
     pub returns: Vec<TypeAnnotation>,
     pub span: Span,
+    #[allow(dead_code)]
+    pub doc: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -162,6 +171,9 @@ pub struct ImplBlock {
     pub target: String,
     pub methods: Vec<FunctionDef>,
     pub inherent: bool,
+    #[allow(dead_code)]
+    pub span: Span,
+    pub doc: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +185,7 @@ pub struct MacroDef {
     pub body: MacroBody,
     pub span: Span,
     pub visibility: Visibility,
+    pub doc: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -229,6 +242,7 @@ pub struct FunctionDef {
     pub body: FunctionBody,
     pub span: Span,
     pub visibility: Visibility,
+    pub doc: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -274,6 +288,7 @@ pub struct ConstDef {
     pub value: Expr,
     pub span: Span,
     pub visibility: Visibility,
+    pub doc: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -289,6 +304,7 @@ pub enum Statement {
     Assign(AssignStmt),
     Expr(ExprStmt),
     Return(ReturnStmt),
+    Comment { text: String, span: Span },
     MacroSemi(Spanned<Expr>),
     While(WhileStmt),
     Loop(LoopStmt),

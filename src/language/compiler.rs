@@ -2076,7 +2076,8 @@ impl Compiler {
                     | Item::MacroInvocation(_)
                     | Item::Impl(_)
                     | Item::Function(_)
-                    | Item::Const(_) => {}
+                    | Item::Const(_)
+                    | Item::Comment { .. } => {}
                 }
             }
         }
@@ -2101,7 +2102,8 @@ impl Compiler {
                     | Item::Enum(_)
                     | Item::Interface(_)
                     | Item::Macro(_)
-                    | Item::MacroInvocation(_) => {}
+                    | Item::MacroInvocation(_)
+                    | Item::Comment { .. } => {}
                 }
             }
         }
@@ -4495,6 +4497,7 @@ impl Compiler {
                     self.collect_free_in_expr(&defer_stmt.expr, locals, free)
                 }
                 Statement::Break | Statement::Continue | Statement::MacroSemi(_) => {}
+                Statement::Comment { .. } => {}
             }
         }
         if let Some(tail) = &block.tail {
@@ -4687,6 +4690,7 @@ impl Compiler {
                 }
             },
             Statement::MacroSemi(_) => {}
+            Statement::Comment { .. } => {}
             Statement::Expr(expr_stmt) => {
                 if let Some(flow) = self.eval_expression_statement(&expr_stmt.expr)? {
                     return Ok(Some(flow));
@@ -10331,6 +10335,7 @@ impl Compiler {
                     Statement::Defer(_) => "defer",
                     Statement::MacroSemi(_) => "macro",
                     Statement::Block(_) => "block",
+                    Statement::Comment { .. } => "comment",
                 };
                 eprintln!("[prime-debug] stmt {kind}");
             }
