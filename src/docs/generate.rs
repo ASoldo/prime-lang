@@ -434,6 +434,12 @@ body {
 .outline a { display: block; color: var(--muted); padding: 4px 6px; border-radius: 6px; text-decoration: none; transition: background 0.15s; }
 .outline a:hover { background: var(--panel-soft); color: var(--text); }
 .graph canvas { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+/* Dark scrollbars */
+.scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.scroll::-webkit-scrollbar-track { background: #0f172a; border-radius: 10px; }
+.scroll::-webkit-scrollbar-thumb { background: #3b4258; border-radius: 10px; border: 2px solid #0f172a; }
+.scroll::-webkit-scrollbar-corner { background: #0f172a; }
+
 .syntax-const { color: var(--const); }
 .syntax-struct { color: var(--struct); }
 .syntax-enum { color: var(--enum); }
@@ -452,7 +458,7 @@ body {
   <div class="logo" style="font-weight:700;color:var(--accent);">Prime Docs</div>
   <div class="search">
     <input id="search" type="text" placeholder="Search modules, symbols...">
-    <button id="search-clear" class="clear" aria-label="Clear search">✕</button>
+    <button id="search-clear" class="clear" aria-label="Clear search" style="color:#000;">✕</button>
   </div>
 </div>
 <div class="main">
@@ -472,6 +478,13 @@ const searchClear = document.getElementById('search-clear');
 let activeModule = 0;
 let filterTerm = '';
 let expanded = new Set();
+let suppressPush = false;
+
+function pushState(moduleIdx, anchor) {
+  if (suppressPush) return;
+  const hash = `#${modules[moduleIdx].name}${anchor ? `:${anchor}` : ''}`;
+  history.pushState({ module: moduleIdx, anchor }, "", hash);
+}
 
 function renderNav(filter='') {
   filterTerm = filter;
@@ -497,8 +510,7 @@ function renderNav(filter='') {
       } else {
         expanded.add(idx);
       }
-      activeModule = idx;
-      renderAll(filterTerm);
+      selectModule(idx);
     };
     wrap.appendChild(btn);
     const list = document.createElement('div');
@@ -508,12 +520,9 @@ function renderNav(filter='') {
         if (filter && !(it.name.toLowerCase().includes(filter) || it.kind.toLowerCase().includes(filter) || it.signature.toLowerCase().includes(filter))) return;
         const item = document.createElement('div');
         item.className = `item syntax-${it.kind}`;
-        item.innerHTML = `<span class="syntax-key">${it.kind}</span> ${formatName(it.name)}`;
+        item.innerHTML = renderSig(it.kind, it.name);
         item.onclick = () => {
-          activeModule = idx;
-          renderContent();
-          const anchor = document.getElementById(anchorId(idx, iidx));
-          if (anchor) anchor.scrollIntoView({behavior:'smooth', block:'start'});
+          selectModule(idx, anchorId(idx, iidx));
         };
         list.appendChild(item);
       });
@@ -575,6 +584,17 @@ function renderContent() {
   });
   renderOutline();
 }
+function selectModule(idx, anchor) {
+  activeModule = idx;
+  renderAll(filterTerm);
+  const targetAnchor = anchor ? document.getElementById(anchor) : null;
+  if (targetAnchor) {
+    targetAnchor.scrollIntoView({behavior:'smooth', block:'start'});
+  } else {
+    contentEl.scrollTop = 0;
+  }
+  pushState(idx, anchor || null);
+}
 function renderOutline() {
   outlineEl.innerHTML = '';
   const m = modules[activeModule] || modules[0];
@@ -588,8 +608,7 @@ function renderOutline() {
       e.preventDefault();
       const targetIdx = modules.findIndex(mod => mod.name === name);
       if (targetIdx >= 0) {
-        activeModule = targetIdx;
-        renderAll(filterTerm);
+        selectModule(targetIdx);
       }
     };
     outlineEl.appendChild(a);
@@ -597,9 +616,13 @@ function renderOutline() {
   m.items.forEach((it, idx) => {
     const a = document.createElement('a');
     a.href = `#${anchorId(activeModule, idx)}`;
-    a.innerHTML = `<span class="syntax-key">${it.kind}</span> ${formatName(it.name)}`;
+    a.innerHTML = renderSig(it.kind, it.name);
     a.className = `outline-link syntax-${it.kind}`;
     a.dataset.key = `${it.kind}:${it.name}`;
+    a.onclick = (e) => {
+      e.preventDefault();
+      selectModule(activeModule, anchorId(activeModule, idx));
+    };
     outlineEl.appendChild(a);
   });
 }
@@ -621,6 +644,25 @@ function formatName(name) {
     .split("::")
     .map(part => `<span class="syntax-ident">${part}</span>`)
     .join(`<span class="syntax-key">::</span>`);
+}
+
+function renderSig(kind, name) {
+  if (kind === "impl") {
+    const clean = name.replace(/^impl\s+/, "").trim();
+    const m = /^(.+)\s+for\s+(.+)$/.exec(clean);
+    if (m) {
+      return `<span class="syntax-key">impl</span> ${formatName(m[1].trim())} <span class="syntax-key">for</span> ${formatName(m[2].trim())}`;
+    }
+    return `<span class="syntax-key">impl</span> ${formatName(clean)}`;
+  }
+  return `<span class="syntax-key">${kind}</span> ${formatName(name)}`;
+}
+
+function displayName(kind, name) {
+  if (kind === "impl") {
+    return name.replace(/^impl\s+/, "").trim();
+  }
+  return name;
 }
 
 function computeLayout(canvas, module, ctx) {
@@ -676,11 +718,12 @@ function computeLayout(canvas, module, ctx) {
       const x = padding + col * colWidth + colWidth * 0.1;
       const y = yCursor + row * (nodeH + hGap);
       const boxW = colWidth * 0.8;
-    const label = trimText(ctx, `${it.kind} ${it.name}`, boxW - 14);
-    nodes.push({
+      const display = displayName(it.kind, it.name);
+      const label = trimText(ctx, `${it.kind} ${display}`, boxW - 14);
+      nodes.push({
         key: it.key,
         kind: it.kind,
-        name: it.name,
+        name: display,
         x,
         y,
         w: boxW,
@@ -792,8 +835,20 @@ function drawGraph(ctx, layout, highlightNodes = new Set(), highlightEdges = new
     const startX = node.x + node.w / 2 - total / 2;
     ctx.fillStyle = active ? keyColor : "rgba(185,131,255,0.55)";
     ctx.fillText(keyText, startX, node.y + node.h / 2);
-    ctx.fillStyle = active ? nameColor : "rgba(125,211,252,0.55)";
-    ctx.fillText(nameText, startX + keyWidth + space, node.y + node.h / 2);
+    if (node.kind === "impl" && nameText.includes(" for ")) {
+      const [lhs, rhs] = nameText.split(/\s+for\s+/);
+      const lhsWidth = ctx.measureText(lhs).width;
+      const forWidth = ctx.measureText('for').width;
+      ctx.fillStyle = active ? nameColor : "rgba(125,211,252,0.55)";
+      ctx.fillText(lhs, startX + keyWidth + space, node.y + node.h / 2);
+      ctx.fillStyle = active ? keyColor : "rgba(185,131,255,0.55)";
+      ctx.fillText('for', startX + keyWidth + space + lhsWidth + space, node.y + node.h / 2);
+      ctx.fillStyle = active ? nameColor : "rgba(125,211,252,0.55)";
+      ctx.fillText(rhs, startX + keyWidth + space + lhsWidth + space + forWidth + space, node.y + node.h / 2);
+    } else {
+      ctx.fillStyle = active ? nameColor : "rgba(125,211,252,0.55)";
+      ctx.fillText(nameText, startX + keyWidth + space, node.y + node.h / 2);
+    }
   });
 }
 
@@ -913,7 +968,39 @@ searchEl.addEventListener('input', () => {
     searchClear.classList.remove('visible');
   }
 });
-renderAll();
+function applyState(state) {
+  suppressPush = true;
+  activeModule = state.module || 0;
+  renderAll(filterTerm);
+  if (state.anchor) {
+    const el = document.getElementById(state.anchor);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  suppressPush = false;
+}
+function stateFromHash() {
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (!h) return null;
+  const sep = h.lastIndexOf(':');
+  let name = h;
+  let anchor = null;
+  if (sep !== -1) {
+    name = h.slice(0, sep);
+    anchor = h.slice(sep + 1);
+  }
+  const idx = modules.findIndex(m => m.name === name);
+  if (idx >= 0) return { module: idx, anchor: anchor || null };
+  return null;
+}
+window.addEventListener('popstate', (e) => {
+  const st = e.state;
+  if (st) {
+    applyState(st);
+  }
+});
+const initial = history.state || stateFromHash() || { module: 0, anchor: null };
+applyState(initial);
+pushState(initial.module, initial.anchor);
 </script>
 "##,
     );
