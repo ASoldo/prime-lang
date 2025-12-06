@@ -162,7 +162,7 @@ fresh. Highlights:
 | `prime-lang new [path] [--bin|--lib|--wrk]` | Scaffold a package or a workspace (with a single member) using `manifest_version = "3"` |
 | `prime-lang add [-p pkg] <module> [--path file.prime] [--test|--library] [--git URL|--dep-path DIR] [--features a,b]` | Append a module/test/library or register a dependency (git/path) in a package manifest (workspace-safe with `-p`) |
 | `prime-lang test [target,...]` | Run test modules (header `test ...;`) by name or file; discovers tests when no target is provided |
-| `prime-lang docs [--list|--query ...]` | Print the curated reference topics described below |
+| `prime-lang docs [--list|--query ...|--generate [--out file]|--serve [--port 7878]]` | Print curated topics, emit workspace docs as HTML, or serve them locally |
 | `prime-lang install --git URL [--name tool]` | Clone a tool into `.prime/tools` and record it in the registry |
 | `prime-lang update [--name tool]` | Update installed tools by refetching their git sources |
 | `prime-lang uninstall <tool>` | Remove a tool checkout and prune it from the registry |
@@ -243,6 +243,20 @@ When no input env is provided, `prime-lang test` auto-seeds the above defaults t
 All snippets are drawn directly from the compiling demo files (`demos/*.prime`)
 or the real workspace manifest, so you always see runnable examples. The CLI
 exits with an error code and a hint if a query doesn’t map to any topic.
+
+### Workspace HTML docs (comments → web app)
+
+- Item docs use `///` directly above a declaration; module/file docs use `//!` at
+  the top of the file. Regular `//` comments are preserved by the formatter but
+  aren’t included in rendered docs.
+- `prime-lang docs --generate --out docs.html` renders the workspace described
+  by `prime.toml` into a single-page HTML app with search, collapsible
+  workspace/outline, clickable import jumps, hoverable graph, and doc blocks
+  sourced from your `///`/`//!` comments. Without `--out`, HTML is printed to
+  stdout for piping.
+- `prime-lang docs --serve --port 7878` serves the same app over HTTP
+  (`http://127.0.0.1:7878` by default). Use the browser UI to search, click
+  imports to hop across modules, and inspect relationships in the canvas graph.
 
 ### `prime.toml` manifest
 

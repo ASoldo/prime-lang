@@ -137,6 +137,6 @@ Defaults: if env vars are absent, the CLI auto-detects esp-clang/xtensa toolchai
 - Interpreter: `src/runtime/interpreter.rs`
 - Embedded ABI: `src/runtime/abi.rs` (Xtensa `no_std`, GPIO, prints, watchdog handling)
 - CLI/wrappers: `src/main.rs` (subcommands, runtime build/link), `src/project/*` (manifests)
-- Docs: `src/docs/topics.rs` (CLI `prime-lang docs`)
+- Docs: `src/docs/topics.rs` (CLI `prime-lang docs` topics) and `src/docs/generate.rs` (HTML generator/HTTP server driven by `prime.toml`)
 
 Feel free to expand these diagrams as the architecture evolves.
