@@ -242,6 +242,19 @@ body {
   color: var(--text);
   font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
 }
+*::-webkit-scrollbar {
+  width: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
 .app {
   display: grid;
   grid-template-rows: auto 1fr;
@@ -272,6 +285,21 @@ body {
   color: var(--text);
   font-size: 14px;
 }
+.search button.clear {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  display: none;
+}
+.search button.clear.visible { display: inline-flex; align-items: center; justify-content: center; }
+.search button.clear:hover { color: var(--text); border-color: var(--muted); }
 .main {
   display: grid;
   grid-template-columns: 280px 1fr 220px;
@@ -327,7 +355,10 @@ body {
     html.push_str(
         r#"<div class="topbar">
   <div class="logo" style="font-weight:700;color:var(--accent);">Prime Docs</div>
-  <div class="search"><input id="search" type="text" placeholder="Search modules, symbols..."></div>
+  <div class="search">
+    <input id="search" type="text" placeholder="Search modules, symbols...">
+    <button id="search-clear" class="clear" aria-label="Clear search">✕</button>
+  </div>
 </div>
 <div class="main">
   <div class="panel tree"><div class="scroll"><h3>Workspace</h3><div id="nav"></div></div></div>
@@ -342,35 +373,51 @@ const navEl = document.getElementById('nav');
 const contentEl = document.getElementById('content');
 const outlineEl = document.getElementById('outline');
 const searchEl = document.getElementById('search');
+const searchClear = document.getElementById('search-clear');
 let activeModule = 0;
+let filterTerm = '';
+let expanded = new Set();
+
 function renderNav(filter='') {
+  filterTerm = filter;
   navEl.innerHTML = '';
   modules.forEach((m, idx) => {
-    const matches = !filter || m.name.toLowerCase().includes(filter) || m.items.some(it => it.name.toLowerCase().includes(filter));
+    const matches = !filter || m.name.toLowerCase().includes(filter) || m.items.some(it => it.name.toLowerCase().includes(filter) || it.signature.toLowerCase().includes(filter));
     if (!matches) return;
     const wrap = document.createElement('div');
     wrap.className = 'module';
     const btn = document.createElement('button');
     btn.textContent = m.name;
     if (idx === activeModule) btn.classList.add('active');
-    btn.onclick = () => { activeModule = idx; renderAll(); };
+    const isOpen = expanded.has(idx) || filter;
+    btn.onclick = () => {
+      if (expanded.has(idx)) {
+        expanded.delete(idx);
+      } else {
+        expanded.add(idx);
+      }
+      activeModule = idx;
+      renderAll(filterTerm);
+    };
     wrap.appendChild(btn);
     const list = document.createElement('div');
     list.className = 'item-list';
-    m.items.forEach((it, iidx) => {
-      if (filter && !(it.name.toLowerCase().includes(filter) || it.kind.toLowerCase().includes(filter))) return;
-      const item = document.createElement('div');
-      item.className = 'item';
-      item.textContent = `${it.kind} ${it.name}`;
-      item.onclick = () => {
-        activeModule = idx;
-        renderContent();
-        const anchor = document.getElementById(anchorId(idx, iidx));
-        if (anchor) anchor.scrollIntoView({behavior:'smooth', block:'start'});
-      };
-      list.appendChild(item);
-    });
-    wrap.appendChild(list);
+    if (isOpen) {
+      m.items.forEach((it, iidx) => {
+        if (filter && !(it.name.toLowerCase().includes(filter) || it.kind.toLowerCase().includes(filter) || it.signature.toLowerCase().includes(filter))) return;
+        const item = document.createElement('div');
+        item.className = 'item';
+        item.textContent = `${it.kind} ${it.name}`;
+        item.onclick = () => {
+          activeModule = idx;
+          renderContent();
+          const anchor = document.getElementById(anchorId(idx, iidx));
+          if (anchor) anchor.scrollIntoView({behavior:'smooth', block:'start'});
+        };
+        list.appendChild(item);
+      });
+      wrap.appendChild(list);
+    }
     navEl.appendChild(wrap);
   });
 }
@@ -427,6 +474,23 @@ function renderAll(filter='') {
 }
 searchEl.addEventListener('input', (e)=> {
   renderNav(e.target.value.toLowerCase());
+});
+searchEl.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') {
+    renderAll(e.target.value.toLowerCase());
+  }
+});
+searchClear.addEventListener('click', ()=> {
+  searchEl.value = '';
+  filterTerm = '';
+  renderAll('');
+});
+searchEl.addEventListener('input', () => {
+  if (searchEl.value) {
+    searchClear.classList.add('visible');
+  } else {
+    searchClear.classList.remove('visible');
+  }
 });
 renderAll();
 </script>
