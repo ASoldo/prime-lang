@@ -431,7 +431,7 @@ body {
 .chip.impl { color: var(--impl); }
 .sig { color: var(--text); font-weight: 600; }
 .doc { color: var(--muted); white-space: pre-wrap; margin-top: 6px; }
-.outline a { display: block; color: var(--muted); padding: 4px 6px; border-radius: 6px; text-decoration: none; }
+.outline a { display: block; color: var(--muted); padding: 4px 6px; border-radius: 6px; text-decoration: none; transition: background 0.15s; }
 .outline a:hover { background: var(--panel-soft); color: var(--text); }
 .graph canvas { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
     </style>"#,
@@ -743,9 +743,11 @@ function wireHover(canvas, layout) {
     });
     related.add(hovered);
     drawGraph(ctx, layout, related);
+    highlightOutline(hovered);
   };
   canvas.onmouseleave = () => {
     drawGraph(ctx, layout);
+    highlightOutline(null);
   };
 }
 
@@ -773,6 +775,20 @@ function wireClicks(canvas, layout) {
       match.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   };
+}
+
+function highlightOutline(key) {
+  const links = document.querySelectorAll('.outline a');
+  links.forEach(link => {
+    const text = link.textContent || '';
+    if (key && text.includes(key.split(':').pop())) {
+      link.style.background = "rgba(99,164,255,0.15)";
+      link.style.color = "#e8ecf2";
+    } else {
+      link.style.background = "transparent";
+      link.style.color = "var(--muted)";
+    }
+  });
 }
 
 function trimText(ctx, text, maxWidth) {
