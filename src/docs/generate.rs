@@ -770,9 +770,14 @@ function drawGraph(ctx, layout, highlightNodes = new Set(), highlightEdges = new
     // connectors
     const { cx: lx, cy: ly, r: lr } = anchor(node, "left");
     const { cx: rx, cy: ry, r: rr } = anchor(node, "right");
+    const deg = degrees.get(node.key) || { in: 0, out: 0 };
     ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(lx, ly, lr, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(rx, ry, rr, 0, Math.PI * 2); ctx.fill();
+    if (deg.in > 0) {
+      ctx.beginPath(); ctx.arc(lx, ly, lr, 0, Math.PI * 2); ctx.fill();
+    }
+    if (deg.out > 0) {
+      ctx.beginPath(); ctx.arc(rx, ry, rr, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.globalAlpha = 1;
     // keyword + name centered
     ctx.textBaseline = "middle";
