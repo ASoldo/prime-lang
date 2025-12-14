@@ -9,8 +9,8 @@ use crate::language::{
 };
 use std::collections::HashSet;
 #[cfg(test)]
-use tower_lsp_server::lsp_types::MarkedString;
-use tower_lsp_server::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
+use tower_lsp_server::ls_types::MarkedString;
+use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 
 use super::{
     analysis::{DeclInfo, DeclKind, find_local_decl},
@@ -1279,7 +1279,7 @@ mod tests {
     use crate::language::{lexer::lex, parser::parse_module};
     use crate::lsp::completion::collect_struct_info;
     use std::path::PathBuf;
-    use tower_lsp_server::lsp_types::HoverContents;
+    use tower_lsp_server::ls_types::HoverContents;
 
     #[test]
     fn collects_var_infos_with_types_and_values() {
@@ -1311,7 +1311,7 @@ fn main() {
         let tokens = lex(text).expect("lex tokens");
         let module =
             parse_module("demo::main", PathBuf::from("demo.prime"), text).expect("parse module");
-        let structs = collect_struct_info(&[module.clone()]);
+        let structs = collect_struct_info(std::slice::from_ref(&module));
         let player_usage = tokens
             .iter()
             .filter(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "Player"))
@@ -1323,7 +1323,7 @@ fn main() {
             &[],
             Some(&module),
             Some(&structs),
-            Some(&[module.clone()]),
+            Some(std::slice::from_ref(&module)),
         )
         .expect("hover result");
         match hover.contents {
@@ -1378,7 +1378,7 @@ fn main() {
             &[],
             Some(&module),
             None,
-            Some(&[module.clone()]),
+            Some(std::slice::from_ref(&module)),
         )
         .expect("hover result for left");
         match hover.contents {
@@ -1414,7 +1414,7 @@ fn main() {
         let tokens = lex(text).expect("lex tokens");
         let module =
             parse_module("demo::lab", PathBuf::from("lab.prime"), text).expect("parse module");
-        let structs = collect_struct_info(&[module.clone()]);
+        let structs = collect_struct_info(std::slice::from_ref(&module));
         let token = tokens
             .iter()
             .filter(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "sample"))
@@ -1426,7 +1426,7 @@ fn main() {
             &[],
             Some(&module),
             Some(&structs),
-            Some(&[module.clone()]),
+            Some(std::slice::from_ref(&module)),
         )
         .expect("hover result for sample");
         match hover.contents {
@@ -1456,7 +1456,7 @@ fn main() {
         let tokens = lex(text).expect("lex tokens");
         let module = parse_module("demo::member", PathBuf::from("member.prime"), text)
             .expect("parse module");
-        let structs = collect_struct_info(&[module.clone()]);
+        let structs = collect_struct_info(std::slice::from_ref(&module));
         let vars = collect_var_infos(text, &tokens);
         let usage = tokens
             .iter()
@@ -1472,7 +1472,7 @@ fn main() {
             &vars,
             Some(&module),
             Some(&structs),
-            Some(&[module.clone()]),
+            Some(std::slice::from_ref(&module)),
         )
         .expect("hover result for member access");
 

@@ -46,11 +46,11 @@ use std::{
 };
 use tokio::sync::RwLock;
 use tower_lsp_server::jsonrpc::Result as RpcResult;
-use tower_lsp_server::lsp_types::request::{
+use tower_lsp_server::ls_types::request::{
     GotoDeclarationParams, GotoDeclarationResponse, GotoImplementationParams,
     GotoTypeDefinitionParams,
 };
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams,
     Command, CompletionOptions, CompletionParams, CompletionResponse, DeclarationCapability,
@@ -63,9 +63,10 @@ use tower_lsp_server::lsp_types::{
     PrepareRenameResponse, Range, ReferenceParams, RenameParams, ServerCapabilities, SignatureHelp,
     SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    TypeDefinitionProviderCapability, Uri, WorkspaceEdit, WorkspaceSymbol, WorkspaceSymbolParams,
+    TypeDefinitionProviderCapability, Uri, WorkspaceEdit, WorkspaceSymbolParams,
+    WorkspaceSymbolResponse,
 };
-use tower_lsp_server::{Client, LanguageServer, UriExt};
+use tower_lsp_server::{Client, LanguageServer};
 
 #[derive(Default)]
 struct Documents {
@@ -1371,7 +1372,7 @@ impl LanguageServer for Backend {
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
-    ) -> RpcResult<Option<OneOf<Vec<SymbolInformation>, Vec<WorkspaceSymbol>>>> {
+    ) -> RpcResult<Option<WorkspaceSymbolResponse>> {
         self.preload_workspace().await;
         let entries = self.symbols.search(&params.query).await;
         if entries.is_empty() {
@@ -1395,7 +1396,7 @@ impl LanguageServer for Backend {
         if symbols.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(OneOf::Left(symbols)))
+            Ok(Some(WorkspaceSymbolResponse::Flat(symbols)))
         }
     }
 

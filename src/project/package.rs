@@ -42,6 +42,27 @@ pub enum PackageError {
     },
 }
 
+impl std::fmt::Display for PackageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PackageError::Io { path, error } => write!(f, "{}: {}", path.display(), error),
+            PackageError::Syntax(errors) => write!(f, "syntax errors in {} file(s)", errors.len()),
+            PackageError::Manifest { path, message } => {
+                write!(f, "manifest error at {}: {}", path.display(), message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for PackageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            PackageError::Io { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}
+
 pub fn load_package(entry_path: &Path) -> Result<Package, PackageError> {
     let canonical_entry = canonicalize(entry_path).map_err(|error| PackageError::Io {
         path: entry_path.to_path_buf(),
@@ -346,27 +367,5 @@ pub fn find_manifest(start: &Path) -> Option<PathBuf> {
 }
 
 pub fn manifest_error_message(err: ManifestError) -> String {
-    match err {
-        ManifestError::Io { path, error } => format!("{}: {}", path.display(), error),
-        ManifestError::Parse { path, message } => format!("{}: {}", path.display(), message),
-        ManifestError::ModulePath {
-            module,
-            path,
-            error,
-        } => {
-            format!(
-                "module `{}` path error at {}: {}",
-                module,
-                path.display(),
-                error
-            )
-        }
-        ManifestError::InvalidModule { module, message } => {
-            if let Some(name) = module {
-                format!("invalid module `{}`: {}", name, message)
-            } else {
-                message
-            }
-        }
-    }
+    err.to_string()
 }

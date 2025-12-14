@@ -215,9 +215,12 @@ pub struct BuildFunctionKey {
     pub receiver: Option<String>,
 }
 
+type BuildEvaluationThread = thread::JoinHandle<Result<BuildEvaluation, String>>;
+type BuildPendingJoin = Arc<Mutex<Option<BuildEvaluationThread>>>;
+
 #[derive(Clone, Debug)]
 pub enum BuildJoinState {
-    Pending(Arc<Mutex<Option<thread::JoinHandle<Result<BuildEvaluation, String>>>>>),
+    Pending(BuildPendingJoin),
     Ready(Box<BuildEvaluation>),
 }
 
@@ -232,7 +235,7 @@ pub struct BuildTask {
 }
 
 impl BuildJoinHandle {
-    fn new(handle: thread::JoinHandle<Result<BuildEvaluation, String>>) -> Self {
+    fn new(handle: BuildEvaluationThread) -> Self {
         Self {
             state: BuildJoinState::Pending(Arc::new(Mutex::new(Some(handle)))),
         }
@@ -511,10 +514,10 @@ impl BuildInterpreter {
         let scope_frames = snapshot.scopes.len().max(1);
         let mut drop_impls = HashMap::new();
         for (key, func) in &snapshot.functions {
-            if func.def.name == "drop" {
-                if let Some(receiver) = key.receiver.clone() {
-                    drop_impls.insert(receiver, key.clone());
-                }
+            if func.def.name == "drop"
+                && let Some(receiver) = key.receiver.clone()
+            {
+                drop_impls.insert(receiver, key.clone());
             }
         }
         Self {
@@ -801,7 +804,7 @@ impl BuildInterpreter {
             } => {
                 let l = self.eval_expr_mut(left)?;
                 let r = self.eval_expr_mut(right)?;
-                self.eval_binary(*op, l, r)
+                Self::eval_binary(*op, l, r)
             }
             Expr::Unary { op, expr, .. } => {
                 let value = self.eval_expr_mut(expr)?;
@@ -1300,7 +1303,7 @@ impl BuildInterpreter {
                             ));
                         }
                         let mut guard = cell.lock().unwrap();
-                        self.assign_index_into_value(&mut *guard, index_value, value)
+                        self.assign_index_into_value(&mut guard, index_value, value)
                     }
                     Expr::Deref { expr, .. } => match self.eval_expr_mut(expr)? {
                         BuildValue::Reference(reference) => {
@@ -1308,7 +1311,7 @@ impl BuildInterpreter {
                                 return Err("Cannot assign through immutable reference".into());
                             }
                             let mut guard = reference.cell.lock().unwrap();
-                            self.assign_index_into_value(&mut *guard, index_value, value)
+                            self.assign_index_into_value(&mut guard, index_value, value)
                         }
                         other => Err(format!(
                             "Cannot assign through non-reference value `{}`",
@@ -1603,14 +1606,14 @@ impl BuildInterpreter {
                 Ok(BuildValue::Unit)
             }
             Expr::Identifier(Identifier { name, .. }) => {
-                if let Ok(value) = self.load_identifier(name) {
-                    if let Some(closure) = self.extract_closure(value.clone()) {
-                        let mut evaluated_args = Vec::with_capacity(args.len());
-                        for arg in args {
-                            evaluated_args.push(self.eval_expr_mut(arg)?);
-                        }
-                        return self.call_closure_value(closure, evaluated_args);
+                if let Ok(value) = self.load_identifier(name)
+                    && let Some(closure) = Self::extract_closure(value)
+                {
+                    let mut evaluated_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        evaluated_args.push(self.eval_expr_mut(arg)?);
                     }
+                    return self.call_closure_value(closure, evaluated_args);
                 }
                 self.eval_builtin_or_deferred(name, None, type_args, args)
             }
@@ -1620,7 +1623,7 @@ impl BuildInterpreter {
             }
             _ => {
                 let callee_value = self.eval_expr_mut(callee)?;
-                if let Some(closure) = self.extract_closure(callee_value) {
+                if let Some(closure) = Self::extract_closure(callee_value) {
                     let mut evaluated_args = Vec::with_capacity(args.len());
                     for arg in args {
                         evaluated_args.push(self.eval_expr_mut(arg)?);
@@ -1651,12 +1654,12 @@ impl BuildInterpreter {
         Err("match expression had no matching arm in build spawn".into())
     }
 
-    fn extract_closure(&self, value: BuildValue) -> Option<BuildClosure> {
+    fn extract_closure(value: BuildValue) -> Option<BuildClosure> {
         match value {
             BuildValue::Closure(closure) => Some(closure),
             BuildValue::Reference(reference) => {
                 let guard = reference.cell.lock().ok()?;
-                self.extract_closure(guard.clone())
+                Self::extract_closure(guard.clone())
             }
             _ => None,
         }
@@ -1788,7 +1791,6 @@ impl BuildInterpreter {
     }
 
     fn eval_binary(
-        &self,
         op: BinaryOp,
         left: BuildValue,
         right: BuildValue,
@@ -1815,10 +1817,10 @@ impl BuildInterpreter {
                 Ok(value)
             }
             (BuildValue::Int(l), BuildValue::Float(r)) => {
-                self.eval_binary(op, BuildValue::Float(l as f64), BuildValue::Float(r))
+                Self::eval_binary(op, BuildValue::Float(l as f64), BuildValue::Float(r))
             }
             (BuildValue::Float(l), BuildValue::Int(r)) => {
-                self.eval_binary(op, BuildValue::Float(l), BuildValue::Float(r as f64))
+                Self::eval_binary(op, BuildValue::Float(l), BuildValue::Float(r as f64))
             }
             (BuildValue::Float(l), BuildValue::Float(r)) => {
                 let value = match op {
@@ -1860,7 +1862,7 @@ impl BuildInterpreter {
             }
             (l, r) => {
                 if op == BinaryOp::Eq || op == BinaryOp::NotEq {
-                    let eq = self.values_equal(&l, &r)?;
+                    let eq = Self::values_equal(&l, &r)?;
                     return Ok(BuildValue::Bool(if op == BinaryOp::Eq { eq } else { !eq }));
                 }
                 Err(format!(
@@ -1886,7 +1888,7 @@ impl BuildInterpreter {
         }
     }
 
-    fn values_equal(&self, left: &BuildValue, right: &BuildValue) -> Result<bool, String> {
+    fn values_equal(left: &BuildValue, right: &BuildValue) -> Result<bool, String> {
         Ok(match (left, right) {
             (BuildValue::Unit, BuildValue::Unit) => true,
             (BuildValue::Bool(l), BuildValue::Bool(r)) => l == r,
@@ -1906,16 +1908,26 @@ impl BuildInterpreter {
                 },
             ) => ls == rs && le == re && li == ri,
             (BuildValue::Tuple(l), BuildValue::Tuple(r)) => {
-                l.len() == r.len()
-                    && l.iter()
-                        .zip(r.iter())
-                        .all(|(a, b)| self.values_equal(a, b).unwrap_or(false))
+                if l.len() != r.len() {
+                    return Ok(false);
+                }
+                for (a, b) in l.iter().zip(r.iter()) {
+                    if !Self::values_equal(a, b)? {
+                        return Ok(false);
+                    }
+                }
+                true
             }
             (BuildValue::Slice(l), BuildValue::Slice(r)) => {
-                l.len() == r.len()
-                    && l.iter()
-                        .zip(r.iter())
-                        .all(|(a, b)| self.values_equal(a, b).unwrap_or(false))
+                if l.len() != r.len() {
+                    return Ok(false);
+                }
+                for (a, b) in l.iter().zip(r.iter()) {
+                    if !Self::values_equal(a, b)? {
+                        return Ok(false);
+                    }
+                }
+                true
             }
             (
                 BuildValue::Struct {
@@ -1927,21 +1939,32 @@ impl BuildInterpreter {
                     fields: rf,
                 },
             ) => {
-                ln == rn
-                    && lf.len() == rf.len()
-                    && lf.iter().all(|(k, v)| {
-                        rf.get(k)
-                            .map(|other| self.values_equal(v, other).unwrap_or(false))
-                            .unwrap_or(false)
-                    })
+                if ln != rn || lf.len() != rf.len() {
+                    return Ok(false);
+                }
+                for (k, v) in lf.iter() {
+                    let Some(other) = rf.get(k) else {
+                        return Ok(false);
+                    };
+                    if !Self::values_equal(v, other)? {
+                        return Ok(false);
+                    }
+                }
+                true
             }
             (BuildValue::Map(lm), BuildValue::Map(rm)) => {
-                lm.len() == rm.len()
-                    && lm.iter().all(|(k, v)| {
-                        rm.get(k)
-                            .map(|other| self.values_equal(v, other).unwrap_or(false))
-                            .unwrap_or(false)
-                    })
+                if lm.len() != rm.len() {
+                    return Ok(false);
+                }
+                for (k, v) in lm.iter() {
+                    let Some(other) = rm.get(k) else {
+                        return Ok(false);
+                    };
+                    if !Self::values_equal(v, other)? {
+                        return Ok(false);
+                    }
+                }
+                true
             }
             (
                 BuildValue::Enum {
@@ -1957,19 +1980,28 @@ impl BuildInterpreter {
                     variant_index: r_idx,
                 },
             ) => {
-                le == re
-                    && lv == rv
-                    && l_idx == r_idx
-                    && lv_vals.len() == rv_vals.len()
-                    && lv_vals
-                        .iter()
-                        .zip(rv_vals.iter())
-                        .all(|(a, b)| self.values_equal(a, b).unwrap_or(false))
+                if le != re || lv != rv || l_idx != r_idx || lv_vals.len() != rv_vals.len() {
+                    return Ok(false);
+                }
+                for (a, b) in lv_vals.iter().zip(rv_vals.iter()) {
+                    if !Self::values_equal(a, b)? {
+                        return Ok(false);
+                    }
+                }
+                true
             }
             (BuildValue::Reference(lref), BuildValue::Reference(rref)) => {
-                let l = lref.cell.lock().unwrap().clone();
-                let r = rref.cell.lock().unwrap().clone();
-                self.values_equal(&l, &r)?
+                let l = lref
+                    .cell
+                    .lock()
+                    .map_err(|_| "failed to lock left reference".to_string())?
+                    .clone();
+                let r = rref
+                    .cell
+                    .lock()
+                    .map_err(|_| "failed to lock right reference".to_string())?
+                    .clone();
+                Self::values_equal(&l, &r)?
             }
             _ => false,
         })
@@ -1994,7 +2026,7 @@ impl BuildInterpreter {
             .find_binding_mut(name)
             .map(|binding| binding.origin)
             .unwrap_or_else(|| Span::new(0, 0));
-        if self.active_mut_borrows.get(name).is_some() {
+        if self.active_mut_borrows.contains_key(name) {
             return Err(self.format_borrow_conflict(
                 name,
                 origin_span,
@@ -2040,7 +2072,7 @@ impl BuildInterpreter {
         borrower: &str,
         span: Span,
     ) -> Result<(), String> {
-        if self.active_mut_borrows.get(name).is_some() {
+        if self.active_mut_borrows.contains_key(name) {
             let origin_span = self
                 .find_binding_mut(name)
                 .map(|binding| binding.origin)
@@ -2235,10 +2267,10 @@ impl BuildInterpreter {
                     ..
                 } = value
                 {
-                    if let Some(expected) = enum_name {
-                        if &value_enum != expected {
-                            return Ok(false);
-                        }
+                    if let Some(expected) = enum_name
+                        && &value_enum != expected
+                    {
+                        return Ok(false);
                     }
                     if &value_variant != variant {
                         return Ok(false);
@@ -2267,10 +2299,10 @@ impl BuildInterpreter {
                     fields: mut values,
                 } = value
                 {
-                    if let Some(expected) = struct_name {
-                        if &name != expected {
-                            return Ok(false);
-                        }
+                    if let Some(expected) = struct_name
+                        && &name != expected
+                    {
+                        return Ok(false);
                     }
                     if !*has_spread && fields.len() != values.len() {
                         return Ok(false);
@@ -2346,16 +2378,19 @@ impl BuildInterpreter {
     }
 
     fn schedule_drop_for_value(&mut self, name: &str, value: &BuildValue) {
-        if let Some(type_name) = self.drop_type_for_value(value) {
-            if self.drop_impls.contains_key(&type_name) {
-                if let Some(frame) = self.cleanup_stack.last_mut() {
-                    frame.push(BuildCleanup::Drop(BuildDropRecord {
-                        binding: name.to_string(),
-                        type_name,
-                    }));
-                }
-            }
+        let Some(type_name) = self.drop_type_for_value(value) else {
+            return;
+        };
+        if !self.drop_impls.contains_key(&type_name) {
+            return;
         }
+        let Some(frame) = self.cleanup_stack.last_mut() else {
+            return;
+        };
+        frame.push(BuildCleanup::Drop(BuildDropRecord {
+            binding: name.to_string(),
+            type_name,
+        }));
     }
 
     fn drop_type_for_value(&self, value: &BuildValue) -> Option<String> {
@@ -2414,18 +2449,18 @@ impl BuildInterpreter {
         }
     }
 
-    fn expect_string_value(&self, value: BuildValue, context: &str) -> Result<String, String> {
+    fn expect_string_value(value: BuildValue, context: &str) -> Result<String, String> {
         match value {
             BuildValue::String(s) => Ok(s),
             BuildValue::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone();
-                self.expect_string_value(inner, context)
+                Self::expect_string_value(inner, context)
             }
             other => Err(format!("{context} expects string, found {}", other.kind())),
         }
     }
 
-    fn iter_items_from_value(&self, value: BuildValue) -> Result<Vec<BuildValue>, String> {
+    fn iter_items_from_value(value: BuildValue) -> Result<Vec<BuildValue>, String> {
         match value {
             BuildValue::Slice(items) => Ok(items),
             BuildValue::Map(entries) => {
@@ -2442,7 +2477,7 @@ impl BuildInterpreter {
             }
             BuildValue::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone();
-                self.iter_items_from_value(inner)
+                Self::iter_items_from_value(inner)
             }
             other => Err(format!("iter not supported for {}", other.kind())),
         }
@@ -2516,14 +2551,14 @@ impl BuildInterpreter {
                     if !args.is_empty() {
                         return Err("iter expects no arguments after receiver".into());
                     }
-                    let items = self.iter_items_from_value(recv)?;
+                    let items = Self::iter_items_from_value(recv)?;
                     return Ok(BuildValue::Iterator(BuildIterator::from_items(items)));
                 }
                 if args.len() != 1 {
                     return Err("iter expects 1 argument".into());
                 }
                 let target = self.eval_expr_mut(&args[0])?;
-                let items = self.iter_items_from_value(target)?;
+                let items = Self::iter_items_from_value(target)?;
                 Ok(BuildValue::Iterator(BuildIterator::from_items(items)))
             }
             "len" => {
@@ -2659,7 +2694,7 @@ impl BuildInterpreter {
                     return Err("fs_exists expects 1 argument".into());
                 }
                 let path_value = self.eval_expr_mut(&args[0])?;
-                let path = self.expect_string_value(path_value, "fs_exists")?;
+                let path = Self::expect_string_value(path_value, "fs_exists")?;
                 let exists = std::path::Path::new(&path).exists();
                 self.effects
                     .push(BuildEffect::FsExists { path: path.clone(), exists });
@@ -2671,7 +2706,7 @@ impl BuildInterpreter {
                     return Err("fs_read expects 1 argument".into());
                 }
                 let path_value = self.eval_expr_mut(&args[0])?;
-                let path = self.expect_string_value(path_value, "fs_read")?;
+                let path = Self::expect_string_value(path_value, "fs_read")?;
                 let result = std::fs::read_to_string(&path).map_err(|err| err.to_string());
                 self.effects.push(BuildEffect::FsRead {
                     path: path.clone(),
@@ -2688,9 +2723,9 @@ impl BuildInterpreter {
                     return Err("fs_write expects 2 arguments".into());
                 }
                 let path_value = self.eval_expr_mut(&args[0])?;
-                let path = self.expect_string_value(path_value, "fs_write")?;
+                let path = Self::expect_string_value(path_value, "fs_write")?;
                 let contents_value = self.eval_expr_mut(&args[1])?;
-                let contents = self.expect_string_value(contents_value, "fs_write")?;
+                let contents = Self::expect_string_value(contents_value, "fs_write")?;
                 let result = std::fs::write(&path, contents.clone()).map_err(|err| err.to_string());
                 self.effects.push(BuildEffect::FsWrite {
                     path: path.clone(),

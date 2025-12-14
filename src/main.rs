@@ -221,7 +221,12 @@ enum Commands {
         generate: bool,
         #[arg(long, default_value_t = false, help = "Serve generated docs over HTTP")]
         serve: bool,
-        #[arg(long, value_name = "PORT", default_value_t = 7878, help = "Port for --serve")]
+        #[arg(
+            long,
+            value_name = "PORT",
+            default_value_t = 7878,
+            help = "Port for --serve"
+        )]
         port: u16,
         #[arg(
             long,

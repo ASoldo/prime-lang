@@ -3,6 +3,7 @@ use crate::language::{
     token::Token,
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -33,17 +34,12 @@ pub struct Module {
     pub items: Vec<Item>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Visibility {
     Public,
     Package,
+    #[default]
     Private,
-}
-
-impl Default for Visibility {
-    fn default() -> Self {
-        Visibility::Private
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -77,10 +73,6 @@ impl Import {
 }
 
 impl ImportPath {
-    pub fn to_string(&self) -> String {
-        self.segments.join("::")
-    }
-
     pub fn to_relative_path(&self) -> PathBuf {
         let mut buf = PathBuf::new();
         for segment in &self.segments {
@@ -91,6 +83,18 @@ impl ImportPath {
 
     pub fn is_empty(&self) -> bool {
         self.segments.is_empty()
+    }
+}
+
+impl fmt::Display for ImportPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (idx, segment) in self.segments.iter().enumerate() {
+            if idx > 0 {
+                f.write_str("::")?;
+            }
+            f.write_str(segment)?;
+        }
+        Ok(())
     }
 }
 

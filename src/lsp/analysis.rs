@@ -10,7 +10,7 @@ use crate::language::{
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
 use std::collections::HashSet;
-use tower_lsp_server::lsp_types::{Diagnostic, DiagnosticSeverity};
+use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity};
 
 use super::text::{collect_identifier_spans_in_scope, span_to_range};
 

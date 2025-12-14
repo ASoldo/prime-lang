@@ -112,6 +112,44 @@ pub enum ManifestError {
     },
 }
 
+impl std::fmt::Display for ManifestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ManifestError::Io { path, error } => write!(f, "{}: {}", path.display(), error),
+            ManifestError::Parse { path, message } => write!(f, "{}: {}", path.display(), message),
+            ManifestError::ModulePath {
+                module,
+                path,
+                error,
+            } => write!(
+                f,
+                "module `{}` path error at {}: {}",
+                module,
+                path.display(),
+                error
+            ),
+            ManifestError::InvalidModule { module, message } => {
+                if let Some(name) = module {
+                    write!(f, "invalid module `{}`: {}", name, message)
+                } else {
+                    f.write_str(message)
+                }
+            }
+        }
+    }
+}
+
+impl std::error::Error for ManifestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ManifestError::Io { error, .. } | ManifestError::ModulePath { error, .. } => {
+                Some(error)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct RawModuleEntry {
     name: String,

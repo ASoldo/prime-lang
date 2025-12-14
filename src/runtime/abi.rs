@@ -2135,6 +2135,26 @@ mod embedded {
     }
 }
 
+#[cfg(all(test, not(target_arch = "xtensa")))]
+mod host_probe_tests {
+    #[test]
+    fn host_no_std_probe_symbols_are_stable() {
+        unsafe extern "C" {
+            fn prime_reset_reason_raw() -> i32;
+            fn prime_reset_reason() -> i32;
+            fn prime_digital_read(pin: i32) -> i32;
+        }
+
+        unsafe {
+            assert_eq!(prime_reset_reason_raw(), 0);
+            assert_eq!(prime_reset_reason(), 0);
+            assert_eq!(prime_digital_read(-1), 0);
+            assert_eq!(prime_digital_read(0), 0);
+            assert_eq!(prime_digital_read(39), 0);
+        }
+    }
+}
+
 #[cfg(any(
     target_arch = "xtensa",
     all(target_arch = "riscv32", target_os = "none"),

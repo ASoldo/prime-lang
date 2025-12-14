@@ -231,11 +231,13 @@ prime-lang build main.prime       # emit LLVM/native to ./.build.prime/output
                 explanation: "`main.prime` ships with the repo so you can verify interpretation and LLVM build-mode immediately. Build-mode mirrors interpreter semantics for control flow and `try { }` / `?`, and the native binary now exits with code 0 for CI scripts.",
             },
             TopicSection {
-                title: "List and query docs",
+                title: "Print / generate / serve docs",
                 snippet: r#"prime-lang docs
 prime-lang docs --list
-prime-lang docs --query for,match"#,
-                explanation: "`prime-lang docs` renders all topics, `--list` shows topic keys and aliases, and `--query` filters to specific topics. Unknown queries exit with an error plus a hint, matching the README guidance.",
+prime-lang docs --query for,match
+prime-lang docs --generate --out docs.html
+prime-lang docs --serve --port 7878"#,
+                explanation: "`prime-lang docs` renders the built-in reference topics, `--list` shows topic keys and aliases, and `--query` filters to specific topics. `--generate` produces a single-page HTML app from workspace doc comments (`///` and `//!`) and `--serve` hosts it locally over HTTP for browsing.",
             },
         ],
     },
@@ -273,11 +275,12 @@ $ prime-lang build main.prime --name demo
 $ prime-lang lint main.prime --watch
 $ prime-lang fmt main.prime --write
 $ prime-lang lsp
-$ prime-lang init adventure
+$ prime-lang new adventure --wrk
 $ prime-lang add demos.new --path demos/new_demo.prime
 $ prime-lang docs --query core-syntax
+$ prime-lang docs --serve --port 7878
 $ prime-lang expand tests/macros.prime --line 24 --column 7"#,
-                explanation: "Each subcommand is wired up in `src/main.rs` via clap. `run` interprets a file after loading the manifest, `build` emits LLVM + native binaries, `lint`/`fmt` offer single-shot or watch modes, `lsp` serves editors, `init` scaffolds a workspace, `add` appends a manifest entry and stub file, `docs` prints these references, and `expand` shows macro expansions at a cursor (or dumps the whole expanded module).",
+                explanation: "Each subcommand is wired up in `src/main.rs` via clap. `run` interprets a file after loading the manifest, `build` emits LLVM + native binaries, `lint`/`fmt` offer single-shot or watch modes, `lsp` serves editors, `new` scaffolds a package/workspace, `add` appends a manifest entry and stub file, `docs` prints these references or serves the HTML docs app, and `expand` shows macro expansions at a cursor (or dumps the whole expanded module).",
             },
             TopicSection {
                 title: "Read user input with `in[T]`",

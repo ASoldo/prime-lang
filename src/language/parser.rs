@@ -514,16 +514,16 @@ impl Parser {
             }
 
             if self.check(TokenKind::Import) {
-                    match self.parse_import_with_visibility(Visibility::Private) {
-                        Ok(import) => imports.push(import),
-                        Err(err) => self.report(err),
-                    }
-                    pending_doc = None;
-                    continue;
+                match self.parse_import_with_visibility(Visibility::Private) {
+                    Ok(import) => imports.push(import),
+                    Err(err) => self.report(err),
                 }
+                pending_doc = None;
+                continue;
+            }
 
-                if self.check(TokenKind::Export) {
-                    match self.parse_prelude_clause() {
+            if self.check(TokenKind::Export) {
+                match self.parse_prelude_clause() {
                     Ok(selectors) => {
                         prelude.extend(selectors);
                         pending_doc = None;

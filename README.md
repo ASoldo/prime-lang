@@ -171,6 +171,8 @@ fresh. Highlights:
 | `in[T](prompt, ...) -> Result[T, string]` | Built-in input helper. Reads a line from stdin, parses to `T`, and returns `Ok(value)`/`Err(message)`. Formatting rules mirror `out`; type arguments are required. |
 | Concurrency | `spawn expr` → `JoinHandle[T]`; `channel[T]()` → `(Sender[T], Receiver[T])`; `send` returns `Result[(), string]`; `recv` yields `Option[T]` (run uses real threads; build evaluates deterministically with the same blocking semantics; embedded maps spawn/join to the task runtime for parity) |
 
+Dev workflow (build/test/lint + docs server): `docs/Development.md`.
+
 Input prompts accept format strings, so you can interpolate context into the prompt itself:
 
 ```prime

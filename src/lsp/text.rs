@@ -9,10 +9,7 @@ use std::{
     borrow::Cow,
     path::{Path, PathBuf},
 };
-use tower_lsp_server::{
-    UriExt,
-    lsp_types::{Position, Range, Uri},
-};
+use tower_lsp_server::ls_types::{Position, Range, Uri};
 
 pub fn token_at<'a>(tokens: &'a [Token], offset: usize) -> Option<&'a Token> {
     tokens

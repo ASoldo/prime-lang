@@ -26,12 +26,9 @@ use std::{
 use toml_edit::{
     DocumentMut, InlineTable, Item as TomlItem, Table as TomlTable, Value as TomlValue,
 };
-use tower_lsp_server::{
-    UriExt,
-    lsp_types::{
-        CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, DiagnosticSeverity,
-        NumberOrString, Position, Range, TextEdit, Uri, WorkspaceEdit,
-    },
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, DiagnosticSeverity,
+    NumberOrString, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use super::{
@@ -525,7 +522,7 @@ mod tests {
     use crate::project::diagnostics::CODE_MANIFEST_MISSING_MODULE;
     use std::fs;
     use tempfile::tempdir;
-    use tower_lsp_server::{UriExt, lsp_types::Uri};
+    use tower_lsp_server::ls_types::Uri;
 
     #[test]
     fn reports_syntax_errors_for_missing_semicolon() {

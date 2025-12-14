@@ -3936,6 +3936,40 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
     }
 }
 
+fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {
+    def.params
+        .first()
+        .and_then(|param| param.ty.as_ref())
+        .and_then(type_name_from_annotation)
+        .filter(|name| structs.contains_key(name))
+}
+
+fn type_name_from_annotation(annotation: &TypeAnnotation) -> Option<String> {
+    type_name_from_type_expr(&annotation.ty)
+}
+
+fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
+    match expr {
+        TypeExpr::Named(name, _) => Some(name.clone()),
+        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
+            type_name_from_type_expr(ty)
+        }
+        _ => None,
+    }
+}
+
+fn substitute_self_in_function(def: &mut FunctionDef, target: &str) {
+    let concrete = TypeExpr::Named(target.to_string(), Vec::new());
+    for param in &mut def.params {
+        if let Some(ty) = param.ty.as_mut() {
+            *ty = ty.replace_self(&concrete);
+        }
+    }
+    for ret in &mut def.returns {
+        *ret = ret.replace_self(&concrete);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4321,7 +4355,8 @@ fn broken() {
     }
 
     fn interpreter_from_entry(entry: &str) -> Interpreter {
-        let package = load_package(Path::new(entry)).expect(&format!("load package for {}", entry));
+        let package = load_package(Path::new(entry))
+            .unwrap_or_else(|err| panic!("load package for {entry}: {err:?}"));
         Interpreter::new(package)
     }
 
@@ -4375,38 +4410,5 @@ fn make_adder() -> int32 {
             }
             other => panic!("expected Unsupported, got {other:?}"),
         }
-    }
-}
-fn receiver_type_name(def: &FunctionDef, structs: &HashMap<String, StructEntry>) -> Option<String> {
-    def.params
-        .first()
-        .and_then(|param| param.ty.as_ref())
-        .and_then(type_name_from_annotation)
-        .filter(|name| structs.contains_key(name))
-}
-
-fn type_name_from_annotation(annotation: &TypeAnnotation) -> Option<String> {
-    type_name_from_type_expr(&annotation.ty)
-}
-
-fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
-    match expr {
-        TypeExpr::Named(name, _) => Some(name.clone()),
-        TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
-            type_name_from_type_expr(ty)
-        }
-        _ => None,
-    }
-}
-
-fn substitute_self_in_function(def: &mut FunctionDef, target: &str) {
-    let concrete = TypeExpr::Named(target.to_string(), Vec::new());
-    for param in &mut def.params {
-        if let Some(ty) = param.ty.as_mut() {
-            *ty = ty.replace_self(&concrete);
-        }
-    }
-    for ret in &mut def.returns {
-        *ret = ret.replace_self(&concrete);
     }
 }

@@ -231,32 +231,25 @@ fn build_docs_html() -> Result<String, String> {
     let mut manifests = Vec::new();
 
     // Load root manifest
-    let root_manifest = PackageManifest::load(&manifest_path).map_err(|err| {
-        format!(
-            "failed to load manifest {}: {:?}",
-            manifest_path.display(),
-            err
-        )
-    })?;
+    let root_manifest = PackageManifest::load(&manifest_path)
+        .map_err(|err| format!("failed to load manifest {}: {err}", manifest_path.display()))?;
 
     // Discover workspace members (if any)
     let mut workspace_members: Vec<PathBuf> = Vec::new();
-    if let Ok(text) = fs::read_to_string(&manifest_path) {
-        if let Ok(value) = text.parse::<Value>() {
-            if let Some(ws) = value.get("workspace").and_then(|v| v.as_table()) {
-                if let Some(members) = ws.get("members").and_then(|v| v.as_array()) {
-                    let root_dir = manifest_path
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|| PathBuf::from("."));
-                    for member in members {
-                        if let Some(path_str) = member.as_str() {
-                            let member_manifest = root_dir.join(path_str).join("prime.toml");
-                            if member_manifest.exists() {
-                                workspace_members.push(member_manifest);
-                            }
-                        }
-                    }
+    if let Ok(text) = fs::read_to_string(&manifest_path)
+        && let Ok(value) = text.parse::<Value>()
+        && let Some(ws) = value.get("workspace").and_then(|v| v.as_table())
+        && let Some(members) = ws.get("members").and_then(|v| v.as_array())
+    {
+        let root_dir = manifest_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        for member in members {
+            if let Some(path_str) = member.as_str() {
+                let member_manifest = root_dir.join(path_str).join("prime.toml");
+                if member_manifest.exists() {
+                    workspace_members.push(member_manifest);
                 }
             }
         }
@@ -269,13 +262,10 @@ fn build_docs_html() -> Result<String, String> {
         for path in workspace_members {
             match PackageManifest::load(&path) {
                 Ok(m) => manifests.push(m),
-                Err(err) => {
-                    eprintln!(
-                        "warning: failed to load workspace member manifest {}: {:?}",
-                        path.display(),
-                        err
-                    );
-                }
+                Err(err) => eprintln!(
+                    "warning: failed to load workspace member manifest {}: {err}",
+                    path.display()
+                ),
             }
         }
     }
@@ -1035,10 +1025,10 @@ fn collect_prime_files(root: &Path, out: &mut Vec<PathBuf>) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name == "target" || name == ".prime" || name.starts_with('.') {
-                        continue;
-                    }
+                if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && (name == "target" || name == ".prime" || name.starts_with('.'))
+                {
+                    continue;
                 }
                 collect_prime_files(&path, out);
             } else if path.extension().and_then(|e| e.to_str()) == Some("prime") {

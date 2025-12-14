@@ -11,7 +11,7 @@ use crate::{
     target::BuildTarget,
 };
 use std::collections::{HashMap, HashSet};
-use tower_lsp_server::lsp_types::{
+use tower_lsp_server::ls_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionTextEdit, Range, TextEdit,
 };
 
@@ -2010,7 +2010,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use tempfile::tempdir;
-    use tower_lsp_server::lsp_types::CompletionTriggerKind;
+    use tower_lsp_server::ls_types::CompletionTriggerKind;
 
     struct ManifestEntry<'a> {
         name: &'a str,
@@ -2129,8 +2129,8 @@ fn main() {
 "#;
         let module =
             parse_module("demo::lab", PathBuf::from("lab.prime"), source).expect("parse module");
-        let structs = collect_struct_info(&[module.clone()]);
-        let interfaces = collect_interface_info(&[module.clone()]);
+        let structs = collect_struct_info(std::slice::from_ref(&module));
+        let interfaces = collect_interface_info(std::slice::from_ref(&module));
         let offset = source
             .find("res.normalized")
             .map(|idx| idx + "res.".len())
