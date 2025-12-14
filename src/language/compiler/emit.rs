@@ -254,7 +254,10 @@ impl Compiler {
         }
     }
 
-    pub(super) fn emit_statement(&mut self, statement: &Statement) -> Result<Option<FlowSignal>, String> {
+    pub(super) fn emit_statement(
+        &mut self,
+        statement: &Statement,
+    ) -> Result<Option<FlowSignal>, String> {
         match statement {
             Statement::Let(stmt) => match &stmt.pattern {
                 Pattern::Identifier(name, _) => {
@@ -673,7 +676,10 @@ impl Compiler {
         Ok(None)
     }
 
-    pub(super) fn emit_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<EvaluatedValue>, String> {
+    pub(super) fn emit_expression(
+        &mut self,
+        expr: &Expr,
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Literal(Literal::Int(value, _)) => Ok(EvalOutcome::Value(
                 self.evaluated(Value::Int(self.const_int_value(*value))),
@@ -1198,7 +1204,10 @@ impl Compiler {
         }
     }
 
-    pub(super) fn emit_out_call(&mut self, args: &[Expr]) -> Result<EvalOutcome<EvaluatedValue>, String> {
+    pub(super) fn emit_out_call(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         if args.is_empty() {
             return Err("out() expects at least one argument".into());
         }
@@ -1934,7 +1943,10 @@ impl Compiler {
         ))
     }
 
-    pub(super) fn emit_move_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<EvaluatedValue>, String> {
+    pub(super) fn emit_move_expression(
+        &mut self,
+        expr: &Expr,
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Identifier(ident) => {
                 let (cell, _) = self
@@ -2594,7 +2606,12 @@ impl Compiler {
         }
     }
 
-    pub(super) fn eval_binary(&mut self, op: BinaryOp, left: Value, right: Value) -> Result<Value, String> {
+    pub(super) fn eval_binary(
+        &mut self,
+        op: BinaryOp,
+        left: Value,
+        right: Value,
+    ) -> Result<Value, String> {
         let lhs = Self::deref_if_reference(left);
         let rhs = Self::deref_if_reference(right);
         if let (Ok(a), Ok(b)) = (self.expect_int(lhs.clone()), self.expect_int(rhs.clone())) {
@@ -3084,7 +3101,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn bool_constant_or_llvm(&self, value: &BoolValue, ctx: &str) -> Result<bool, String> {
+    pub(super) fn bool_constant_or_llvm(
+        &self,
+        value: &BoolValue,
+        ctx: &str,
+    ) -> Result<bool, String> {
         if let Some(c) = value.constant() {
             return Ok(c);
         }
@@ -3262,7 +3283,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn int_to_usize(&mut self, value: &IntValue, ctx: &str) -> Result<LLVMValueRef, String> {
+    pub(super) fn int_to_usize(
+        &mut self,
+        value: &IntValue,
+        ctx: &str,
+    ) -> Result<LLVMValueRef, String> {
         unsafe {
             let current = LLVMTypeOf(value.llvm());
             if current == self.runtime_abi.usize_type {
@@ -3280,7 +3305,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn int_to_runtime_int(&mut self, value: &IntValue, ctx: &str) -> Result<LLVMValueRef, String> {
+    pub(super) fn int_to_runtime_int(
+        &mut self,
+        value: &IntValue,
+        ctx: &str,
+    ) -> Result<LLVMValueRef, String> {
         unsafe {
             let target = self.runtime_abi.int_type;
             if target.is_null() {
@@ -3414,7 +3443,11 @@ impl Compiler {
         }))))
     }
 
-    pub(super) fn instantiate_enum_variant(&self, variant: &str, values: Vec<Value>) -> Result<Value, String> {
+    pub(super) fn instantiate_enum_variant(
+        &self,
+        variant: &str,
+        values: Vec<Value>,
+    ) -> Result<Value, String> {
         let info = self
             .enum_variants
             .get(variant)
@@ -3436,7 +3469,10 @@ impl Compiler {
         }))
     }
 
-    pub(super) fn eval_expression_statement(&mut self, expr: &Expr) -> Result<Option<FlowSignal>, String> {
+    pub(super) fn eval_expression_statement(
+        &mut self,
+        expr: &Expr,
+    ) -> Result<Option<FlowSignal>, String> {
         match expr {
             Expr::Call {
                 callee,
@@ -3507,5 +3543,4 @@ impl Compiler {
             },
         }
     }
-
 }

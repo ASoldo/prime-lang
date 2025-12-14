@@ -1,8 +1,8 @@
 #![allow(clippy::collapsible_if)]
 
 use clap::{Parser, Subcommand, ValueEnum};
+use miette::NamedSource;
 use prime_lang::docs;
-use prime_lang::{language, lsp, project, tools};
 use prime_lang::language::{
     ast::{Item, ModuleKind},
     span::Span,
@@ -11,7 +11,6 @@ use prime_lang::language::{
     compiler::Compiler, macro_expander, parser::parse_module, typecheck,
     typecheck::TypecheckOptions,
 };
-use miette::NamedSource;
 use prime_lang::project::diagnostics::analyze_manifest_issues;
 use prime_lang::project::{
     FileErrors, PackageError, apply_manifest_header_with_manifest, canonicalize, find_manifest,
@@ -19,18 +18,7 @@ use prime_lang::project::{
     manifest::canonical_module_name, manifest::manifest_key_for, warn_manifest_drift,
 };
 use prime_lang::runtime::{Interpreter, platform};
-use std::{
-    env, fs, io,
-    path::{Component, Path, PathBuf},
-    process::Command,
-    sync::{Mutex, OnceLock},
-};
 use prime_lang::target::{BuildOptions, BuildTarget};
-use toml::Value;
-use toml_edit::{
-    self, Array, DocumentMut, InlineTable, Item as TomlItem, Table as TomlEditTable,
-    Value as TomlValue,
-};
 use prime_lang::tools::{
     diagnostics::{
         emit_manifest_issues, emit_syntax_errors, emit_type_errors, report_io_error,
@@ -38,6 +26,18 @@ use prime_lang::tools::{
     },
     formatter::format_module,
     lint::run_lint,
+};
+use prime_lang::{language, lsp, project, tools};
+use std::{
+    env, fs, io,
+    path::{Component, Path, PathBuf},
+    process::Command,
+    sync::{Mutex, OnceLock},
+};
+use toml::Value;
+use toml_edit::{
+    self, Array, DocumentMut, InlineTable, Item as TomlItem, Table as TomlEditTable,
+    Value as TomlValue,
 };
 
 #[derive(Debug, Parser)]
@@ -1813,7 +1813,11 @@ fn init_project(
             }
             init_project(
                 &member_dir,
-                if library { NewKind::Library } else { NewKind::Binary },
+                if library {
+                    NewKind::Library
+                } else {
+                    NewKind::Binary
+                },
                 warn_deprecated,
             )?;
             let member_rel = member_dir
@@ -1937,9 +1941,8 @@ fn add_module(
         None => default_module_path(&segments),
     };
     let manifest_path_string = manifest_path_string(&rel_path);
-    let manifest_current = PackageManifest::load(&manifest_path).map_err(|err| {
-        io::Error::other(format!("failed to load manifest: {err:?}"))
-    })?;
+    let manifest_current = PackageManifest::load(&manifest_path)
+        .map_err(|err| io::Error::other(format!("failed to load manifest: {err:?}")))?;
     let canonical = canonical_module_name(module_name);
     if manifest_current.module_path(&canonical).is_some() {
         return Err(io::Error::other("module already exists in manifest").into());
@@ -2013,10 +2016,10 @@ fn add_dependency_entry(
     match doc["manifest_version"].as_str() {
         Some("3") => {}
         _ => {
-            return Err(
-                io::Error::other("`prime add --git/--dep-path` requires manifest_version = \"3\"")
-                    .into(),
-            );
+            return Err(io::Error::other(
+                "`prime add --git/--dep-path` requires manifest_version = \"3\"",
+            )
+            .into());
         }
     }
     if !doc["package"].is_table() {

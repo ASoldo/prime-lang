@@ -485,7 +485,10 @@ impl Compiler {
         }
     }
 
-    pub(super) fn collect_iterable_values(&mut self, value: Value) -> Result<Vec<EvaluatedValue>, String> {
+    pub(super) fn collect_iterable_values(
+        &mut self,
+        value: Value,
+    ) -> Result<Vec<EvaluatedValue>, String> {
         match value {
             Value::Range(range) => {
                 let start_const = self.int_constant_or_llvm(&range.start, "Range start")?;

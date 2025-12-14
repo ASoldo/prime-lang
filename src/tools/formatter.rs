@@ -458,10 +458,7 @@ fn format_self_shorthand(ty: &TypeExpr) -> Option<String> {
 }
 
 fn format_call_type_args(args: &[TypeExpr]) -> String {
-    args.iter()
-        .map(format_type)
-        .collect::<Vec<_>>()
-        .join(", ")
+    args.iter().map(format_type).collect::<Vec<_>>().join(", ")
 }
 
 fn format_const(out: &mut String, def: &ConstDef) {
@@ -914,11 +911,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             args,
             ..
         } => {
-            let args = args
-                .iter()
-                .map(format_expr)
-                .collect::<Vec<_>>()
-                .join(", ");
+            let args = args.iter().map(format_expr).collect::<Vec<_>>().join(", ");
             let type_args_str = if type_args.is_empty() {
                 String::new()
             } else {

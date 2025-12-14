@@ -270,7 +270,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn value_from_llvm(&mut self, llvm: LLVMValueRef, ty: &TypeExpr) -> Result<Value, String> {
+    pub(super) fn value_from_llvm(
+        &mut self,
+        llvm: LLVMValueRef,
+        ty: &TypeExpr,
+    ) -> Result<Value, String> {
         match ty {
             TypeExpr::Reference { mutable, .. } => Ok(Value::Reference(ReferenceValue {
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
@@ -800,7 +804,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn allocate_closure_env(&mut self, env_type: LLVMTypeRef, key: usize) -> LLVMValueRef {
+    pub(super) fn allocate_closure_env(
+        &mut self,
+        env_type: LLVMTypeRef,
+        key: usize,
+    ) -> LLVMValueRef {
         // Allocate a slot in the entry block to hold the env pointer; fill it when building the closure.
         let current_block = unsafe { LLVMGetInsertBlock(self.builder) };
         let func = unsafe { LLVMGetBasicBlockParent(current_block) };
@@ -1075,5 +1083,4 @@ impl Compiler {
         );
         Ok(EvalOutcome::Value(self.evaluated(closure_value)))
     }
-
 }

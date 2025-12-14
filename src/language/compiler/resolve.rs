@@ -107,7 +107,11 @@ impl Compiler {
         self.run_function_with_values(func_entry, args)
     }
 
-    pub(super) fn register_function(&mut self, func: &FunctionDef, module: &str) -> Result<(), String> {
+    pub(super) fn register_function(
+        &mut self,
+        func: &FunctionDef,
+        module: &str,
+    ) -> Result<(), String> {
         let receiver = receiver_type_name(func, &self.structs);
         let key = FunctionKey {
             name: func.name.clone(),
@@ -152,7 +156,11 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn register_impl_block(&mut self, module: &str, block: &ImplBlock) -> Result<(), String> {
+    pub(super) fn register_impl_block(
+        &mut self,
+        module: &str,
+        block: &ImplBlock,
+    ) -> Result<(), String> {
         let is_drop_like = block.inherent || block.interface == "Drop";
         let target_is_struct = self.structs.contains_key(&block.target);
         let target_is_enum = self
@@ -371,7 +379,10 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn interface_name_from_type(&self, ty: &TypeExpr) -> Option<(String, Vec<TypeExpr>)> {
+    pub(super) fn interface_name_from_type(
+        &self,
+        ty: &TypeExpr,
+    ) -> Option<(String, Vec<TypeExpr>)> {
         match ty {
             TypeExpr::Named(name, args) => self
                 .interfaces
@@ -422,9 +433,7 @@ impl Compiler {
 
     pub(super) fn can_access(&self, owner: &str, visibility: Visibility) -> bool {
         matches!(visibility, Visibility::Public)
-            || self
-                .current_module()
-                .is_none_or(|current| current == owner)
+            || self.current_module().is_none_or(|current| current == owner)
     }
 
     pub(super) fn ensure_item_visible(
@@ -482,7 +491,11 @@ impl Compiler {
             }
         }
     }
-    pub(super) fn begin_mut_borrow_in_scope(&mut self, name: &str, scope_index: usize) -> Result<(), String> {
+    pub(super) fn begin_mut_borrow_in_scope(
+        &mut self,
+        name: &str,
+        scope_index: usize,
+    ) -> Result<(), String> {
         if self.active_mut_borrows.contains(name) {
             return Err(format!("`{}` is already mutably borrowed", name));
         }
@@ -589,5 +602,4 @@ impl Compiler {
             );
         }
     }
-
 }

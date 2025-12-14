@@ -199,15 +199,13 @@ impl Checker {
     ) -> Result<EnumVariantInfo, Box<TypeError>> {
         if let Some(name) = enum_name {
             let mut private = false;
-            let enum_info = self
-                .lookup_enum(env, name, &mut private)
-                .ok_or_else(|| {
-                    Box::new(if private {
-                        TypeError::new(&module.path, span, format!("enum `{}` is not public", name))
-                    } else {
-                        TypeError::new(&module.path, span, format!("Unknown enum `{}`", name))
-                    })
-                })?;
+            let enum_info = self.lookup_enum(env, name, &mut private).ok_or_else(|| {
+                Box::new(if private {
+                    TypeError::new(&module.path, span, format!("enum `{}` is not public", name))
+                } else {
+                    TypeError::new(&module.path, span, format!("Unknown enum `{}`", name))
+                })
+            })?;
             let variant_def =
                 find_variant(&enum_info.def, &enum_info.module, variant, module, span)?;
             Ok(EnumVariantInfo::from_def(
@@ -1775,7 +1773,9 @@ impl Checker {
                         param_types.push(TypeExpr::Unit);
                     }
                 }
-                let expected_ret = expected_fn.as_ref().and_then(|(_, returns)| returns.first());
+                let expected_ret = expected_fn
+                    .as_ref()
+                    .and_then(|(_, returns)| returns.first());
                 let body_ty = match body {
                     ClosureBody::Block(block) => self.check_block(module, block, returns, env),
                     ClosureBody::Expr(expr) => self.check_expression(

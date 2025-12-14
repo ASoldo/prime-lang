@@ -1561,10 +1561,7 @@ impl Compiler {
         }
     }
 
-    fn apply_build_effects(
-        &mut self,
-        effects: Vec<BuildEffect>,
-    ) -> Result<ChannelHandles, String> {
+    fn apply_build_effects(&mut self, effects: Vec<BuildEffect>) -> Result<ChannelHandles, String> {
         let mut channel_handles: ChannelHandles = HashMap::new();
         for effect in effects {
             match effect {
@@ -2223,7 +2220,6 @@ impl Compiler {
         }
         Ok(())
     }
-
 }
 
 impl Drop for Compiler {

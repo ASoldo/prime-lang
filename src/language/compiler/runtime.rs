@@ -1118,5 +1118,4 @@ impl Compiler {
             _ => None,
         }
     }
-
 }

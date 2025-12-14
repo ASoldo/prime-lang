@@ -1,7 +1,10 @@
 use super::*;
 
 impl Compiler {
-    pub(super) fn reference_handle(&mut self, reference: &ReferenceValue) -> Result<LLVMValueRef, String> {
+    pub(super) fn reference_handle(
+        &mut self,
+        reference: &ReferenceValue,
+    ) -> Result<LLVMValueRef, String> {
         if let Some(handle) = reference.handle {
             let mut args = [handle];
             return Ok(self.call_runtime(
@@ -76,7 +79,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn expect_slice_value(&mut self, value: Value, ctx: &str) -> Result<SliceValue, String> {
+    pub(super) fn expect_slice_value(
+        &mut self,
+        value: Value,
+        ctx: &str,
+    ) -> Result<SliceValue, String> {
         match value {
             Value::Slice(slice) => Ok(slice),
             Value::Reference(reference) => {
@@ -120,7 +127,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn expect_sender(&mut self, value: Value, ctx: &str) -> Result<ChannelSender, String> {
+    pub(super) fn expect_sender(
+        &mut self,
+        value: Value,
+        ctx: &str,
+    ) -> Result<ChannelSender, String> {
         match value {
             Value::Sender(tx) => Ok(tx),
             Value::Reference(reference) => {
@@ -142,7 +153,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn expect_receiver(&mut self, value: Value, ctx: &str) -> Result<ChannelReceiver, String> {
+    pub(super) fn expect_receiver(
+        &mut self,
+        value: Value,
+        ctx: &str,
+    ) -> Result<ChannelReceiver, String> {
         match value {
             Value::Receiver(rx) => Ok(rx),
             Value::Reference(reference) => {
@@ -1786,7 +1801,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn builtin_ptr(&mut self, mut args: Vec<Value>, mutable: bool) -> Result<Value, String> {
+    pub(super) fn builtin_ptr(
+        &mut self,
+        mut args: Vec<Value>,
+        mutable: bool,
+    ) -> Result<Value, String> {
         let name = if mutable { "ptr_mut" } else { "ptr" };
         if args.len() != 1 {
             return Err(format!("{name} expects 1 argument"));
@@ -1808,5 +1827,4 @@ impl Compiler {
             )),
         }
     }
-
 }

@@ -87,7 +87,10 @@ impl AsyncRuntime {
 
     /// Register a timer wakeup for the current task (stubbed for now).
     #[allow(dead_code)]
-    fn sleep_until(&self, state: Arc<(Mutex<crate::runtime::value::TaskState>, std::sync::Condvar)>) {
+    fn sleep_until(
+        &self,
+        state: Arc<(Mutex<crate::runtime::value::TaskState>, std::sync::Condvar)>,
+    ) {
         if debug_enabled() {
             eprintln!(
                 "[prime-debug] async_runtime sleep_until stubbed for {:?}",

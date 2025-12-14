@@ -264,8 +264,7 @@ impl Interpreter {
                     }
                 }
             };
-            self.env
-                .declare(&const_def.name, value, false)?;
+            self.env.declare(&const_def.name, value, false)?;
         }
         self.bootstrapped = true;
         Ok(())
@@ -806,13 +805,12 @@ impl Interpreter {
             })?;
         self.ensure_item_visible(&entry.module, entry.def.visibility, interface, "interface")?;
         let struct_name =
-            Self::value_struct_name(value)
-                .ok_or_else(|| RuntimeError::TypeMismatch {
-                    message: format!(
-                        "Interface `{}` expects struct implementing it, found incompatible value",
-                        interface
-                    ),
-                })?;
+            Self::value_struct_name(value).ok_or_else(|| RuntimeError::TypeMismatch {
+                message: format!(
+                    "Interface `{}` expects struct implementing it, found incompatible value",
+                    interface
+                ),
+            })?;
         let key = ImplKey {
             interface: interface.to_string(),
             type_args: type_args.iter().map(|ty| ty.canonical_name()).collect(),
@@ -836,9 +834,7 @@ impl Interpreter {
 
     fn can_access(&self, owner: &str, visibility: Visibility) -> bool {
         matches!(visibility, Visibility::Public)
-            || self
-                .current_module()
-                .is_none_or(|current| current == owner)
+            || self.current_module().is_none_or(|current| current == owner)
     }
 
     fn ensure_item_visible(

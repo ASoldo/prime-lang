@@ -12,8 +12,7 @@ use std::{
 };
 
 fn compile_source(source: &str) -> Result<(), String> {
-    let module =
-        parse_module("tests::build", PathBuf::from("test.prime"), source).expect("parse");
+    let module = parse_module("tests::build", PathBuf::from("test.prime"), source).expect("parse");
     let program = Program {
         modules: vec![module],
     };
@@ -549,8 +548,7 @@ fn build_spawn_channel_enums_roundtrip() {
     let channels = compiler
         .apply_build_effects(effects)
         .expect("channel effects apply");
-    let rx =
-        ChannelReceiver::new_with_state(channels.get(&7).cloned().expect("channel present"));
+    let rx = ChannelReceiver::new_with_state(channels.get(&7).cloned().expect("channel present"));
     match rx.recv() {
         Some(Value::Enum(enum_value)) => {
             assert_eq!(enum_value.enum_name, "Option");
@@ -663,8 +661,8 @@ fn build_spawn_join_applies_channel_effects_and_value() {
 }
 
 fn compile_entry(entry: &str) -> Result<(), String> {
-    let package = load_package(Path::new(entry))
-        .unwrap_or_else(|_| panic!("load package for {}", entry));
+    let package =
+        load_package(Path::new(entry)).unwrap_or_else(|_| panic!("load package for {}", entry));
     let mut compiler = Compiler::new();
     compiler.compile_program(&package.program)
 }
@@ -708,8 +706,7 @@ fn main() {
   out(alias);
 }
 "#;
-        compile_source(source)
-            .expect("handles should be emitted for slices, maps, and references");
+        compile_source(source).expect("handles should be emitted for slices, maps, and references");
     });
 }
 
