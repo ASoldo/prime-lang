@@ -1,4 +1,5 @@
 #![allow(unsafe_op_in_unsafe_fn)]
+#![allow(clippy::missing_safety_doc)]
 #![cfg_attr(
     any(
         target_arch = "xtensa",
@@ -1821,24 +1822,23 @@ mod embedded {
     #[inline]
     #[allow(dead_code)]
     fn disable_watchdogs_once() {
-        if WATCHDOGS_DISABLED.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        #[cfg(target_arch = "xtensa")]
-        unsafe {
-            const WDT_WKEY: u32 = 0x50d83aa1;
+        if !WATCHDOGS_DISABLED.swap(true, Ordering::Relaxed) {
+            #[cfg(target_arch = "xtensa")]
+            unsafe {
+                const WDT_WKEY: u32 = 0x50d83aa1;
 
-            // RTC WDT.
-            core::ptr::write_volatile(RTC_CNTL_WDTWPROTECT_REG, WDT_WKEY);
-            core::ptr::write_volatile(RTC_CNTL_WDTCONFIG0_REG, 0);
+                // RTC WDT.
+                core::ptr::write_volatile(RTC_CNTL_WDTWPROTECT_REG, WDT_WKEY);
+                core::ptr::write_volatile(RTC_CNTL_WDTCONFIG0_REG, 0);
 
-            // Timer Group 0 WDT.
-            core::ptr::write_volatile(TIMG0_WDTWPROTECT_REG, WDT_WKEY);
-            core::ptr::write_volatile(TIMG0_WDTCONFIG0_REG, 0);
+                // Timer Group 0 WDT.
+                core::ptr::write_volatile(TIMG0_WDTWPROTECT_REG, WDT_WKEY);
+                core::ptr::write_volatile(TIMG0_WDTCONFIG0_REG, 0);
 
-            // Timer Group 1 WDT.
-            core::ptr::write_volatile(TIMG1_WDTWPROTECT_REG, WDT_WKEY);
-            core::ptr::write_volatile(TIMG1_WDTCONFIG0_REG, 0);
+                // Timer Group 1 WDT.
+                core::ptr::write_volatile(TIMG1_WDTWPROTECT_REG, WDT_WKEY);
+                core::ptr::write_volatile(TIMG1_WDTCONFIG0_REG, 0);
+            }
         }
     }
 

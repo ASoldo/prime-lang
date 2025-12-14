@@ -134,10 +134,7 @@ impl ChannelReceiver {
             Duration::from_millis(millis as u64)
         };
         let guard = self.receiver.lock().ok()?;
-        match guard.recv_timeout(duration) {
-            Ok(v) => Some(v),
-            Err(_) => None,
-        }
+        guard.recv_timeout(duration).ok()
     }
 
     pub fn close(&self) {
@@ -191,13 +188,13 @@ pub(crate) struct TaskState {
 
 impl TaskValue {
     #[allow(dead_code)]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         TaskValue {
             state: Arc::new((Mutex::new(TaskState::default()), Condvar::new())),
         }
     }
 
-    pub fn new_pair() -> (TaskValue, Arc<(Mutex<TaskState>, Condvar)>) {
+    pub(crate) fn new_pair() -> (TaskValue, Arc<(Mutex<TaskState>, Condvar)>) {
         let state = Arc::new((Mutex::new(TaskState::default()), Condvar::new()));
         (
             TaskValue {
@@ -208,16 +205,19 @@ impl TaskValue {
     }
 
     #[allow(dead_code)]
-    pub fn with_state(state: Arc<(Mutex<TaskState>, Condvar)>) -> Self {
+    pub(crate) fn with_state(state: Arc<(Mutex<TaskState>, Condvar)>) -> Self {
         TaskValue { state }
     }
 
     #[allow(dead_code)]
-    pub fn finish(&self, result: RuntimeResult<Value>) {
+    pub(crate) fn finish(&self, result: RuntimeResult<Value>) {
         Self::store_result(&self.state, result);
     }
 
-    pub fn store_result(state: &Arc<(Mutex<TaskState>, Condvar)>, result: RuntimeResult<Value>) {
+    pub(crate) fn store_result(
+        state: &Arc<(Mutex<TaskState>, Condvar)>,
+        result: RuntimeResult<Value>,
+    ) {
         let (lock, cvar) = &**state;
         let mut guard = lock.lock().unwrap();
         guard.result = Some(result);
@@ -244,13 +244,13 @@ impl TaskValue {
     }
 
     #[allow(dead_code)]
-    pub fn is_finished(&self) -> bool {
+    pub(crate) fn is_finished(&self) -> bool {
         let (lock, _) = &*self.state;
         lock.lock().map(|g| g.finished).unwrap_or(false)
     }
 
     #[allow(dead_code)]
-    pub fn state(&self) -> Arc<(Mutex<TaskState>, Condvar)> {
+    pub(crate) fn state(&self) -> Arc<(Mutex<TaskState>, Condvar)> {
         self.state.clone()
     }
 }
@@ -466,6 +466,12 @@ pub struct SliceValue {
     pub items: Arc<Mutex<Vec<Value>>>,
 }
 
+impl Default for SliceValue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SliceValue {
     pub fn new() -> Self {
         Self {
@@ -487,6 +493,10 @@ impl SliceValue {
         self.items.lock().unwrap().len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.items.lock().unwrap().is_empty()
+    }
+
     pub fn get(&self, index: usize) -> Option<Value> {
         self.items.lock().unwrap().get(index).cloned()
     }
@@ -505,6 +515,12 @@ impl SliceValue {
 #[derive(Clone, Debug)]
 pub struct MapValue {
     pub entries: Arc<Mutex<BTreeMap<String, Value>>>,
+}
+
+impl Default for MapValue {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -558,6 +574,10 @@ impl MapValue {
 
     pub fn len(&self) -> usize {
         self.entries.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.lock().unwrap().is_empty()
     }
 }
 

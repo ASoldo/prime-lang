@@ -222,7 +222,12 @@ impl PackageManifest {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let (modules, reverse, tests) = parse_modules(&value, &root)?;
+        let parsed = parse_modules(&value, &root)?;
+        let ParsedModules {
+            modules,
+            reverse,
+            tests,
+        } = parsed;
         let dependencies = parse_dependencies(&value, &root)?;
         let build = parse_build_settings(&value);
         let mut dependency_manifests = Vec::new();
@@ -404,17 +409,13 @@ impl PackageManifest {
     }
 }
 
-fn parse_modules(
-    value: &Value,
-    root: &Path,
-) -> Result<
-    (
-        HashMap<String, ModuleInfo>,
-        HashMap<PathBuf, String>,
-        HashMap<String, ModuleInfo>,
-    ),
-    ManifestError,
-> {
+struct ParsedModules {
+    modules: HashMap<String, ModuleInfo>,
+    reverse: HashMap<PathBuf, String>,
+    tests: HashMap<String, ModuleInfo>,
+}
+
+fn parse_modules(value: &Value, root: &Path) -> Result<ParsedModules, ManifestError> {
     let mut modules = HashMap::new();
     let mut reverse = HashMap::new();
     let mut tests = HashMap::new();
@@ -448,7 +449,11 @@ fn parse_modules(
         let raw = parse_raw_entry(entry, None, Some("test"))?;
         insert_entry(&mut tests, &mut reverse, root, raw, Some("test"), "test")?;
     }
-    Ok((modules, reverse, tests))
+    Ok(ParsedModules {
+        modules,
+        reverse,
+        tests,
+    })
 }
 
 fn parse_dependencies(value: &Value, root: &Path) -> Result<Vec<Dependency>, ManifestError> {
@@ -616,6 +621,7 @@ fn insert_entry(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_module_info(
     root: &Path,
     name: &str,

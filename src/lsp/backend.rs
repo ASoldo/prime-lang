@@ -472,7 +472,7 @@ impl Backend {
                 }
                 CODE_MANIFEST_MISSING_MODULE => {
                     if let Some(action) =
-                        manifest_entry_action(diagnostic).and_then(|entry| entry.to_code_action())
+                        manifest_entry_action(diagnostic).and_then(|entry| entry.into_code_action())
                     {
                         actions.push(action);
                     }

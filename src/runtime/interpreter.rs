@@ -265,8 +265,7 @@ impl Interpreter {
                 }
             };
             self.env
-                .declare(&const_def.name, value, false)
-                .map_err(|err| err)?;
+                .declare(&const_def.name, value, false)?;
         }
         self.bootstrapped = true;
         Ok(())
@@ -353,7 +352,7 @@ impl Interpreter {
             .enum_variants
             .values()
             .any(|info| info.enum_name == block.target);
-        if !target_is_struct && !(is_drop_like && target_is_enum) {
+        if !(target_is_struct || (is_drop_like && target_is_enum)) {
             return Err(RuntimeError::Panic {
                 message: format!("Unknown target type `{}`", block.target),
             });
@@ -807,7 +806,7 @@ impl Interpreter {
             })?;
         self.ensure_item_visible(&entry.module, entry.def.visibility, interface, "interface")?;
         let struct_name =
-            self.value_struct_name(value)
+            Self::value_struct_name(value)
                 .ok_or_else(|| RuntimeError::TypeMismatch {
                     message: format!(
                         "Interface `{}` expects struct implementing it, found incompatible value",
@@ -839,7 +838,7 @@ impl Interpreter {
         matches!(visibility, Visibility::Public)
             || self
                 .current_module()
-                .map_or(true, |current| current == owner)
+                .is_none_or(|current| current == owner)
     }
 
     fn ensure_item_visible(
@@ -859,7 +858,7 @@ impl Interpreter {
     }
 
     fn receiver_from_args(&self, args: &[Value]) -> Option<String> {
-        args.first().and_then(|value| self.value_struct_name(value))
+        args.first().and_then(Self::value_struct_name)
     }
 
     fn call_out(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
@@ -1270,12 +1269,12 @@ impl Interpreter {
         Ok(vec![Value::Boxed(BoxValue::new(value))])
     }
 
-    fn expect_box(&self, name: &str, value: Value) -> RuntimeResult<BoxValue> {
+    fn expect_box(name: &str, value: Value) -> RuntimeResult<BoxValue> {
         match value {
             Value::Boxed(b) => Ok(b),
             Value::Reference(reference) => {
                 let cloned = reference.cell.lock().unwrap().clone();
-                self.expect_box(name, cloned)
+                Self::expect_box(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects Box value"),
@@ -1285,13 +1284,13 @@ impl Interpreter {
 
     fn builtin_box_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("box_get", &args, 1)?;
-        let boxed = self.expect_box("box_get", args.remove(0))?;
+        let boxed = Self::expect_box("box_get", args.remove(0))?;
         Ok(vec![boxed.cell.lock().unwrap().clone()])
     }
 
     fn builtin_box_set(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("box_set", &args, 2)?;
-        let boxed = self.expect_box("box_set", args.remove(0))?;
+        let boxed = Self::expect_box("box_set", args.remove(0))?;
         let value = args.remove(0);
         boxed.replace(value);
         Ok(Vec::new())
@@ -1299,7 +1298,7 @@ impl Interpreter {
 
     fn builtin_box_take(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("box_take", &args, 1)?;
-        let boxed = self.expect_box("box_take", args.remove(0))?;
+        let boxed = Self::expect_box("box_take", args.remove(0))?;
         Ok(vec![boxed.take()])
     }
 
@@ -1309,12 +1308,12 @@ impl Interpreter {
         Ok(vec![Value::Slice(SliceValue::new())])
     }
 
-    fn expect_slice(&self, name: &str, value: Value) -> RuntimeResult<SliceValue> {
+    fn expect_slice(name: &str, value: Value) -> RuntimeResult<SliceValue> {
         match value {
             Value::Slice(slice) => Ok(slice),
             Value::Reference(reference) => {
                 let cloned = reference.cell.lock().unwrap().clone();
-                self.expect_slice(name, cloned)
+                Self::expect_slice(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects slice value"),
@@ -1331,7 +1330,7 @@ impl Interpreter {
                 received: args.len(),
             });
         }
-        let slice = self.expect_slice("slice_push", args.remove(0))?;
+        let slice = Self::expect_slice("slice_push", args.remove(0))?;
         let value = args.remove(0);
         slice.push(value);
         Ok(Vec::new())
@@ -1340,7 +1339,7 @@ impl Interpreter {
     fn builtin_slice_len(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.warn_deprecated("slice_len");
         self.expect_arity("slice_len", &args, 1)?;
-        let slice = self.expect_slice("slice_len", args.remove(0))?;
+        let slice = Self::expect_slice("slice_len", args.remove(0))?;
         let len = slice.len() as i128;
         Ok(vec![Value::Int(len)])
     }
@@ -1348,7 +1347,7 @@ impl Interpreter {
     fn builtin_slice_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.warn_deprecated("slice_get");
         self.expect_arity("slice_get", &args, 2)?;
-        let slice = self.expect_slice("slice_get", args.remove(0))?;
+        let slice = Self::expect_slice("slice_get", args.remove(0))?;
         let index = match args.remove(0) {
             Value::Int(i) => i,
             _ => {
@@ -1377,16 +1376,16 @@ impl Interpreter {
         Ok(vec![Value::Map(MapValue::new())])
     }
 
-    fn expect_map(&self, name: &str, value: Value) -> RuntimeResult<MapValue> {
+    fn expect_map(name: &str, value: Value) -> RuntimeResult<MapValue> {
         match value {
             Value::Map(map) => Ok(map),
             Value::Reference(reference) => {
                 let cloned = reference.cell.lock().unwrap().clone();
-                self.expect_map(name, cloned)
+                Self::expect_map(name, cloned)
             }
             Value::Pointer(pointer) => {
                 let cloned = pointer.cell.lock().unwrap().clone();
-                self.expect_map(name, cloned)
+                Self::expect_map(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects map value"),
@@ -1394,16 +1393,16 @@ impl Interpreter {
         }
     }
 
-    fn expect_iterator(&self, name: &str, value: Value) -> RuntimeResult<IteratorValue> {
+    fn expect_iterator(name: &str, value: Value) -> RuntimeResult<IteratorValue> {
         match value {
             Value::Iterator(iter) => Ok(iter),
             Value::Reference(reference) => {
                 let cloned = reference.cell.lock().unwrap().clone();
-                self.expect_iterator(name, cloned)
+                Self::expect_iterator(name, cloned)
             }
             Value::Pointer(pointer) => {
                 let cloned = pointer.cell.lock().unwrap().clone();
-                self.expect_iterator(name, cloned)
+                Self::expect_iterator(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects iterator"),
@@ -1451,12 +1450,12 @@ impl Interpreter {
         }
     }
 
-    fn expect_int_value(&self, name: &str, value: Value) -> RuntimeResult<i128> {
+    fn expect_int_value(name: &str, value: Value) -> RuntimeResult<i128> {
         match value {
             Value::Int(i) => Ok(i),
             Value::Reference(reference) => {
                 let cloned = reference.cell.lock().unwrap().clone();
-                self.expect_int_value(name, cloned)
+                Self::expect_int_value(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects integer value"),
@@ -1465,7 +1464,7 @@ impl Interpreter {
     }
 
     fn expect_i32_value(&self, name: &str, value: Value) -> RuntimeResult<i32> {
-        let raw = self.expect_int_value(name, value)?;
+        let raw = Self::expect_int_value(name, value)?;
         if raw < i32::MIN as i128 || raw > i32::MAX as i128 {
             return Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects 32-bit integer value"),
@@ -1496,22 +1495,21 @@ impl Interpreter {
         }
     }
 
-    fn expect_string_or_format(&self, name: &str, value: Value) -> RuntimeResult<String> {
+    fn expect_string_or_format(name: &str, value: Value) -> RuntimeResult<String> {
         match value {
             Value::String(s) => Ok(s),
             Value::FormatTemplate(template) => {
                 let mut buf = String::new();
                 for segment in template.segments {
-                    match segment {
-                        FormatRuntimeSegment::Literal(lit) => buf.push_str(&lit),
-                        _ => {}
+                    if let FormatRuntimeSegment::Literal(lit) = segment {
+                        buf.push_str(&lit);
                     }
                 }
                 Ok(buf)
             }
             Value::Reference(reference) => {
                 let cloned = reference.cell.lock().unwrap().clone();
-                self.expect_string_or_format(name, cloned)
+                Self::expect_string_or_format(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects string"),
@@ -1519,12 +1517,12 @@ impl Interpreter {
         }
     }
 
-    fn expect_bool(&self, name: &str, value: Value) -> RuntimeResult<bool> {
+    fn expect_bool(name: &str, value: Value) -> RuntimeResult<bool> {
         match value {
             Value::Bool(flag) => Ok(flag),
             Value::Reference(reference) => {
                 let cloned = reference.cell.lock().unwrap().clone();
-                self.expect_bool(name, cloned)
+                Self::expect_bool(name, cloned)
             }
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects bool"),
@@ -1535,7 +1533,7 @@ impl Interpreter {
     fn eval_index_value(&mut self, base: Value, index: Value) -> RuntimeResult<Value> {
         match base {
             Value::Slice(slice) => {
-                let idx = self.expect_int_value("index", index)?;
+                let idx = Self::expect_int_value("index", index)?;
                 if idx < 0 {
                     return self.instantiate_enum("Option", "None", Vec::new());
                 }
@@ -1568,7 +1566,7 @@ impl Interpreter {
     fn assign_index_value(&mut self, base: Value, index: Value, value: Value) -> RuntimeResult<()> {
         match base {
             Value::Slice(slice) => {
-                let idx = self.expect_int_value("index", index)?;
+                let idx = Self::expect_int_value("index", index)?;
                 if idx < 0 {
                     return Err(RuntimeError::Panic {
                         message: "slice index cannot be negative".into(),
@@ -1620,7 +1618,7 @@ impl Interpreter {
                 received: args.len(),
             });
         }
-        let map = self.expect_map("map_insert", args.remove(0))?;
+        let map = Self::expect_map("map_insert", args.remove(0))?;
         let key = self.expect_string("map_insert", args.remove(0))?;
         let value = args.remove(0);
         map.insert(key, value);
@@ -1630,7 +1628,7 @@ impl Interpreter {
     fn builtin_map_get(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.warn_deprecated("map_get");
         self.expect_arity("map_get", &args, 2)?;
-        let map = self.expect_map("map_get", args.remove(0))?;
+        let map = Self::expect_map("map_get", args.remove(0))?;
         let key = self.expect_string("map_get", args.remove(0))?;
         if let Some(value) = map.get(&key) {
             let some = self.instantiate_enum("Option", "Some", vec![value.clone()])?;
@@ -1643,7 +1641,7 @@ impl Interpreter {
 
     fn builtin_map_keys(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("map_keys", &args, 1)?;
-        let map = self.expect_map("map_keys", args.remove(0))?;
+        let map = Self::expect_map("map_keys", args.remove(0))?;
         let mut keys = Vec::new();
         for key in map.entries.lock().unwrap().keys() {
             keys.push(Value::String(key.clone()));
@@ -1653,7 +1651,7 @@ impl Interpreter {
 
     fn builtin_map_values(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("map_values", &args, 1)?;
-        let map = self.expect_map("map_values", args.remove(0))?;
+        let map = Self::expect_map("map_values", args.remove(0))?;
         let mut values = Vec::new();
         for value in map.entries.lock().unwrap().values() {
             values.push(value.clone());
@@ -1670,7 +1668,7 @@ impl Interpreter {
 
     fn builtin_iter_next(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("next", &args, 1)?;
-        let iter = self.expect_iterator("next", args.remove(0))?;
+        let iter = Self::expect_iterator("next", args.remove(0))?;
         match iter.next() {
             Some(value) => {
                 let some = self.instantiate_enum("Option", "Some", vec![value])?;
@@ -1701,7 +1699,7 @@ impl Interpreter {
 
     fn builtin_assert(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("assert", &args, 1)?;
-        let cond = self.expect_bool("assert", args.remove(0))?;
+        let cond = Self::expect_bool("assert", args.remove(0))?;
         if !cond {
             return Err(RuntimeError::Panic {
                 message: "assertion failed".into(),
@@ -1729,13 +1727,13 @@ impl Interpreter {
 
     fn builtin_panic(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("panic", &args, 1)?;
-        let message = self.expect_string_or_format("panic", args.remove(0))?;
+        let message = Self::expect_string_or_format("panic", args.remove(0))?;
         Err(RuntimeError::Panic { message })
     }
 
     fn builtin_expect(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("expect", &args, 2)?;
-        let cond = self.expect_bool("expect", args.remove(0))?;
+        let cond = Self::expect_bool("expect", args.remove(0))?;
         let msg = self.expect_string("expect", args.remove(0))?;
         if !cond {
             return Err(RuntimeError::Panic { message: msg });
@@ -1745,27 +1743,27 @@ impl Interpreter {
 
     fn builtin_str_len(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("str_len", &args, 1)?;
-        let s = self.expect_string_or_format("str_len", args.remove(0))?;
+        let s = Self::expect_string_or_format("str_len", args.remove(0))?;
         Ok(vec![Value::Int(s.len() as i128)])
     }
 
     fn builtin_str_contains(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("str_contains", &args, 2)?;
-        let haystack = self.expect_string_or_format("str_contains", args.remove(0))?;
-        let needle = self.expect_string_or_format("str_contains", args.remove(0))?;
+        let haystack = Self::expect_string_or_format("str_contains", args.remove(0))?;
+        let needle = Self::expect_string_or_format("str_contains", args.remove(0))?;
         Ok(vec![Value::Bool(haystack.contains(&needle))])
     }
 
     fn builtin_str_trim(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("str_trim", &args, 1)?;
-        let s = self.expect_string_or_format("str_trim", args.remove(0))?;
+        let s = Self::expect_string_or_format("str_trim", args.remove(0))?;
         Ok(vec![Value::String(s.trim().to_string())])
     }
 
     fn builtin_str_split(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("str_split", &args, 2)?;
-        let input = self.expect_string_or_format("str_split", args.remove(0))?;
-        let delim = self.expect_string_or_format("str_split", args.remove(0))?;
+        let input = Self::expect_string_or_format("str_split", args.remove(0))?;
+        let delim = Self::expect_string_or_format("str_split", args.remove(0))?;
         let mut items = Vec::new();
         for part in input.split(&delim) {
             items.push(Value::String(part.to_string()));
@@ -1898,7 +1896,7 @@ impl Interpreter {
             });
         }
         self.expect_arity("recv_timeout", &args, 2)?;
-        let millis = self.expect_int_value("recv_timeout", args.pop().unwrap())?;
+        let millis = Self::expect_int_value("recv_timeout", args.pop().unwrap())?;
         let receiver = self.expect_receiver("recv_timeout", args.remove(0))?;
         let result = receiver.recv_timeout(millis as i64);
         match result {
@@ -1980,14 +1978,14 @@ impl Interpreter {
     fn builtin_fs_exists(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         require_std_builtins("fs_exists")?;
         self.expect_arity("fs_exists", &args, 1)?;
-        let path = self.expect_string_or_format("fs_exists", args.remove(0))?;
+        let path = Self::expect_string_or_format("fs_exists", args.remove(0))?;
         Ok(vec![Value::Bool(platform().fs_exists(&path))])
     }
 
     fn builtin_fs_read(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         require_std_builtins("fs_read")?;
         self.expect_arity("fs_read", &args, 1)?;
-        let path = self.expect_string_or_format("fs_read", args.remove(0))?;
+        let path = Self::expect_string_or_format("fs_read", args.remove(0))?;
         match platform().fs_read(&path) {
             Ok(contents) => {
                 let ok = self.instantiate_enum("Result", "Ok", vec![Value::String(contents)])?;
@@ -2004,8 +2002,8 @@ impl Interpreter {
     fn builtin_fs_write(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         require_std_builtins("fs_write")?;
         self.expect_arity("fs_write", &args, 2)?;
-        let path = self.expect_string_or_format("fs_write", args.remove(0))?;
-        let contents = self.expect_string_or_format("fs_write", args.remove(0))?;
+        let path = Self::expect_string_or_format("fs_write", args.remove(0))?;
+        let contents = Self::expect_string_or_format("fs_write", args.remove(0))?;
         match platform().fs_write(&path, &contents) {
             Ok(()) => {
                 let ok = self.instantiate_enum("Result", "Ok", vec![Value::Unit])?;
@@ -2044,7 +2042,7 @@ impl Interpreter {
     fn builtin_sleep(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         require_std_builtins("sleep")?;
         self.expect_arity("sleep", &args, 1)?;
-        let millis = self.expect_int_value("sleep", args.remove(0))?;
+        let millis = Self::expect_int_value("sleep", args.remove(0))?;
         platform().sleep_ms(millis);
         Ok(vec![Value::Unit])
     }
@@ -2144,7 +2142,7 @@ impl Interpreter {
         let receiver = args.remove(0);
         match receiver {
             Value::Slice(slice) => {
-                let index = self.expect_int_value("get", args.remove(0))?;
+                let index = Self::expect_int_value("get", args.remove(0))?;
                 if index < 0 {
                     let none = self.instantiate_enum("Option", "None", Vec::new())?;
                     return Ok(vec![none]);
@@ -2182,7 +2180,7 @@ impl Interpreter {
 
     fn builtin_push(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("push", &args, 2)?;
-        let slice = self.expect_slice("push", args.remove(0))?;
+        let slice = Self::expect_slice("push", args.remove(0))?;
         let value = args.remove(0);
         slice.push(value);
         Ok(Vec::new())
@@ -2190,7 +2188,7 @@ impl Interpreter {
 
     fn builtin_insert(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         self.expect_arity("insert", &args, 3)?;
-        let map = self.expect_map("insert", args.remove(0))?;
+        let map = Self::expect_map("insert", args.remove(0))?;
         let key = self.expect_string("insert", args.remove(0))?;
         let value = args.remove(0);
         map.insert(key, value);
@@ -2576,12 +2574,12 @@ impl Interpreter {
         }
     }
 
-    fn value_struct_name(&self, value: &Value) -> Option<String> {
+    fn value_struct_name(value: &Value) -> Option<String> {
         match value {
             Value::Struct(instance) => Some(instance.name.clone()),
-            Value::Reference(reference) => self.value_struct_name(&reference.cell.lock().unwrap()),
-            Value::Pointer(pointer) => self.value_struct_name(&pointer.cell.lock().unwrap()),
-            Value::Boxed(inner) => self.value_struct_name(&inner.cell.lock().unwrap()),
+            Value::Reference(reference) => Self::value_struct_name(&reference.cell.lock().unwrap()),
+            Value::Pointer(pointer) => Self::value_struct_name(&pointer.cell.lock().unwrap()),
+            Value::Boxed(inner) => Self::value_struct_name(&inner.cell.lock().unwrap()),
             _ => None,
         }
     }
@@ -2684,11 +2682,9 @@ impl Interpreter {
                                 self.instantiate_enum(&enum_name, &variant_name, arg_values)?;
                             return Ok(EvalOutcome::Value(value));
                         }
-                        if let Some(value) = self.env.get(&ident.name) {
-                            if let Value::Closure(closure) = value {
-                                let value = self.call_closure_value(&closure, arg_values)?;
-                                return Ok(EvalOutcome::Value(value));
-                            }
+                        if let Some(Value::Closure(closure)) = self.env.get(&ident.name) {
+                            let value = self.call_closure_value(&closure, arg_values)?;
+                            return Ok(EvalOutcome::Value(value));
                         }
                         let results =
                             self.call_function(&ident.name, None, type_args, arg_values)?;
@@ -2721,7 +2717,7 @@ impl Interpreter {
                             EvalOutcome::Value(value) => value,
                             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                         };
-                        let receiver_type = self.value_struct_name(&receiver);
+                        let receiver_type = Self::value_struct_name(&receiver);
                         let mut method_args = arg_values.clone();
                         method_args.insert(0, receiver);
                         if let Some(result) = self.call_builtin_method(field, method_args.clone()) {
@@ -3448,7 +3444,7 @@ impl Interpreter {
     fn eval_binary(&self, op: BinaryOp, left: Value, right: Value) -> RuntimeResult<Value> {
         use BinaryOp::*;
         match op {
-            Add | Sub | Mul | Div | Rem => self.eval_numeric(op, left, right),
+            Add | Sub | Mul | Div | Rem => Self::eval_numeric(op, left, right),
             And => Ok(Value::Bool(left.as_bool() && right.as_bool())),
             Or => Ok(Value::Bool(left.as_bool() || right.as_bool())),
             BitAnd | BitOr | BitXor => self.eval_bitwise(op, left, right),
@@ -3461,7 +3457,7 @@ impl Interpreter {
         }
     }
 
-    fn eval_numeric(&self, op: BinaryOp, left: Value, right: Value) -> RuntimeResult<Value> {
+    fn eval_numeric(op: BinaryOp, left: Value, right: Value) -> RuntimeResult<Value> {
         match (left, right) {
             (Value::Int(a), Value::Int(b)) => match op {
                 BinaryOp::Add => Ok(Value::Int(a + b)),
@@ -3480,10 +3476,10 @@ impl Interpreter {
                 _ => unreachable!(),
             },
             (Value::Int(a), Value::Float(b)) => {
-                self.eval_numeric(op, Value::Float(a as f64), Value::Float(b))
+                Self::eval_numeric(op, Value::Float(a as f64), Value::Float(b))
             }
             (Value::Float(a), Value::Int(b)) => {
-                self.eval_numeric(op, Value::Float(a), Value::Float(b as f64))
+                Self::eval_numeric(op, Value::Float(a), Value::Float(b as f64))
             }
             _ => Err(RuntimeError::TypeMismatch {
                 message: "Numeric operation expects numbers".into(),
@@ -3719,7 +3715,7 @@ impl Interpreter {
                 self.collect_iterable_values(inner)
             }
             Value::Struct(_) => {
-                if let Some(struct_name) = self.value_struct_name(&value) {
+                if let Some(struct_name) = Self::value_struct_name(&value) {
                     let iter_outcome =
                         self.call_function("iter", Some(struct_name), &[], vec![value])?;
                     if iter_outcome.len() != 1 {
@@ -3833,7 +3829,7 @@ impl Interpreter {
     fn populate_test_inputs(queue: &mut VecDeque<String>, debug: bool, allow_default: bool) {
         if let Ok(raw) = env::var("PRIME_TEST_INPUTS") {
             if !raw.is_empty() {
-                for chunk in raw.split(|c| c == '|' || c == ',' || c == ';') {
+                for chunk in raw.split(['|', ',', ';']) {
                     let trimmed = chunk.trim().to_string();
                     if debug {
                         eprintln!("[prime-test-input:init] push '{trimmed}'");

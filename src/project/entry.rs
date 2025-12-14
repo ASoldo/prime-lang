@@ -160,7 +160,7 @@ pub fn load_package_with_manifest(
 
 fn default_module_path(name: &str, root: Option<&Path>) -> PathBuf {
     let mut path = PathBuf::new();
-    let segments = name.split(|c| c == ':' || c == '.');
+    let segments = name.split([':', '.']);
     for segment in segments {
         if !segment.is_empty() {
             path.push(segment);

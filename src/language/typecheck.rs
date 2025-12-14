@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use crate::language::{
     ast::*,
     enum_utils::find_variant,
@@ -8,7 +10,7 @@ use crate::language::{
 use crate::target::{BuildTarget, embedded_target_hint};
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 #[derive(Clone, Debug)]
@@ -22,10 +24,10 @@ pub struct TypeError {
 }
 
 impl TypeError {
-    pub fn new(path: &PathBuf, span: Span, message: impl Into<String>) -> Self {
+    pub fn new(path: &Path, span: Span, message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
-            path: path.clone(),
+            path: path.to_path_buf(),
             span,
             label: message.clone(),
             message,
@@ -71,6 +73,7 @@ impl Default for TypecheckOptions {
     }
 }
 
+#[derive(Default)]
 struct TypeRegistry {
     modules: HashMap<String, ModuleSymbols>,
     structs: HashMap<String, StructInfo>,
@@ -81,22 +84,6 @@ struct TypeRegistry {
     drop_impls: Vec<ImplCandidate>,
     errors: Vec<TypeError>,
     module_no_std: HashMap<String, bool>,
-}
-
-impl Default for TypeRegistry {
-    fn default() -> Self {
-        Self {
-            modules: HashMap::new(),
-            structs: HashMap::new(),
-            enums: HashMap::new(),
-            enum_variants: HashMap::new(),
-            impls: HashSet::new(),
-            pending_impls: Vec::new(),
-            drop_impls: Vec::new(),
-            errors: Vec::new(),
-            module_no_std: HashMap::new(),
-        }
-    }
 }
 
 impl TypeRegistry {
@@ -262,7 +249,7 @@ pub fn check_program_with_options(
         current_no_std: false,
         target: options.target.clone(),
     };
-    checker.errors.extend(checker.registry.errors.drain(..));
+    checker.errors.append(&mut checker.registry.errors);
     checker.validate_drop_impls();
     checker.validate_impls();
     checker.check_program(program);
@@ -438,16 +425,18 @@ impl Checker {
         enum_name: Option<&str>,
         variant: &str,
         span: Span,
-    ) -> Result<EnumVariantInfo, TypeError> {
+    ) -> Result<EnumVariantInfo, Box<TypeError>> {
         if let Some(name) = enum_name {
             let mut private = false;
-            let enum_info = self.lookup_enum(env, name, &mut private).ok_or_else(|| {
-                if private {
-                    TypeError::new(&module.path, span, format!("enum `{}` is not public", name))
-                } else {
-                    TypeError::new(&module.path, span, format!("Unknown enum `{}`", name))
-                }
-            })?;
+            let enum_info = self
+                .lookup_enum(env, name, &mut private)
+                .ok_or_else(|| {
+                    Box::new(if private {
+                        TypeError::new(&module.path, span, format!("enum `{}` is not public", name))
+                    } else {
+                        TypeError::new(&module.path, span, format!("Unknown enum `{}`", name))
+                    })
+                })?;
             let variant_def =
                 find_variant(&enum_info.def, &enum_info.module, variant, module, span)?;
             Ok(EnumVariantInfo::from_def(
@@ -458,11 +447,11 @@ impl Checker {
         } else if let Some(info) = self.registry.enum_variants.get(variant) {
             Ok(info.clone())
         } else {
-            Err(TypeError::new(
+            Err(Box::new(TypeError::new(
                 &module.path,
                 span,
                 format!("Unknown enum variant `{}`", variant),
-            ))
+            )))
         }
     }
 
@@ -678,7 +667,7 @@ impl Checker {
         &mut self,
         module_name: &str,
         name: &str,
-        path: &PathBuf,
+        path: &Path,
         span: Span,
     ) -> bool {
         let Some(symbols) = self.registry.module_symbols(module_name) else {
@@ -795,7 +784,7 @@ impl Checker {
 
     fn lookup_module_const_type(
         &mut self,
-        module_path: &PathBuf,
+        module_path: &Path,
         module_name: &str,
         name: &str,
         span: Span,
@@ -1264,7 +1253,7 @@ impl Checker {
                 self.check_block(module, block, &return_types, &mut env);
             }
             FunctionBody::Expr(expr) => {
-                let expected = return_types.get(0);
+                let expected = return_types.first();
                 let ty =
                     self.check_expression(module, &expr.node, expected, &return_types, &mut env);
                 if let Some(expected) = expected {
@@ -1728,7 +1717,7 @@ impl Checker {
                     match self.resolve_enum_literal(module, env, resolved_name, variant, *span) {
                         Ok(info) => info,
                         Err(err) => {
-                            self.errors.push(err);
+                            self.errors.push(*err);
                             return None;
                         }
                     };
@@ -1934,7 +1923,7 @@ impl Checker {
                 }
                 match awaited {
                     Some(TypeExpr::Named(name, args)) if name == "Task" => {
-                        if let Some(inner) = args.get(0) {
+                        if let Some(inner) = args.first() {
                             if matches!(
                                 inner,
                                 TypeExpr::Reference { .. } | TypeExpr::Pointer { .. }
@@ -2015,7 +2004,7 @@ impl Checker {
                         param_types.push(TypeExpr::Unit);
                     }
                 }
-                let expected_ret = expected_fn.as_ref().and_then(|(_, returns)| returns.get(0));
+                let expected_ret = expected_fn.as_ref().and_then(|(_, returns)| returns.first());
                 let body_ty = match body {
                     ClosureBody::Block(block) => self.check_block(module, block, returns, env),
                     ClosureBody::Expr(expr) => self.check_expression(
@@ -2075,7 +2064,7 @@ impl Checker {
                 }
                 if let Ok(mut guard) = captures.write() {
                     guard.clear();
-                    guard.extend(captured_vars.into_iter());
+                    guard.extend(captured_vars);
                 }
                 let returns_vec = if let Some(annotation) = ret {
                     vec![annotation.ty.clone()]
@@ -2263,16 +2252,9 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
-        let Some(mut inner_ty) = self.check_expression(module, base, None, returns, env) else {
-            return None;
-        };
-        loop {
-            match inner_ty {
-                TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
-                    inner_ty = *ty;
-                }
-                _ => break,
-            }
+        let mut inner_ty = self.check_expression(module, base, None, returns, env)?;
+        while let TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } = inner_ty {
+            inner_ty = *ty;
         }
         if let TypeExpr::Named(name, _) = &inner_ty {
             let mut private = false;
@@ -2498,10 +2480,7 @@ impl Checker {
                         }
                     }
                 }
-                let receiver = match self.check_expression(module, base, None, returns, env) {
-                    Some(ty) => ty,
-                    None => return None,
-                };
+                let receiver = self.check_expression(module, base, None, returns, env)?;
                 if let Some(name) = named_type_name(&receiver) {
                     if let Some(sig) = self.lookup_function(env, field, Some(name)) {
                         return self.check_method_call(
@@ -2696,7 +2675,7 @@ impl Checker {
                         "`debug_show` expects exactly 1 argument",
                     ));
                 }
-                if let Some(arg) = args.get(0) {
+                if let Some(arg) = args.first() {
                     self.check_expression(module, arg, None, returns, env);
                 }
                 Some(TypeExpr::Unit)
@@ -2720,7 +2699,7 @@ impl Checker {
                         "`in` expects at least 1 argument (a prompt, optionally with format placeholders)",
                     ));
                 }
-                if let Some(ty) = type_args.get(0) {
+                if let Some(ty) = type_args.first() {
                     if args.len() == 1 {
                         self.check_expression(module, &args[0], None, returns, env);
                     } else if let Expr::FormatString(literal) = &args[0] {
@@ -2885,7 +2864,7 @@ impl Checker {
                 let slice_ty = self.check_expression(module, &args[0], None, returns, env);
                 self.check_expression(module, &args[1], Some(&int_type()), returns, env);
                 self.expect_slice_type(module, span, slice_ty.as_ref())
-                    .map(|elem| make_option_type(elem))
+                    .map(make_option_type)
             }
             "slice_remove" => {
                 if args.len() != 2 {
@@ -2899,7 +2878,7 @@ impl Checker {
                 let slice_ty = self.check_expression(module, &args[0], None, returns, env);
                 self.check_expression(module, &args[1], Some(&int_type()), returns, env);
                 self.expect_slice_type(module, span, slice_ty.as_ref())
-                    .map(|elem| make_option_type(elem))
+                    .map(make_option_type)
             }
             "map_new" => {
                 if !args.is_empty() {
@@ -3029,7 +3008,7 @@ impl Checker {
                 }
             }
             "channel" => {
-                if args.len() != 0 {
+                if !args.is_empty() {
                     self.errors.push(TypeError::new(
                         &module.path,
                         span,
@@ -3254,7 +3233,7 @@ impl Checker {
                         "`digital_read` expects 1 argument (pin)",
                     ));
                 }
-                if let Some(pin) = args.get(0) {
+                if let Some(pin) = args.first() {
                     self.check_expression(
                         module,
                         pin,
@@ -3317,7 +3296,7 @@ impl Checker {
                         "`pin_mode` expects 2 arguments (pin, mode)",
                     ));
                 }
-                if let Some(pin) = args.get(0) {
+                if let Some(pin) = args.first() {
                     self.check_expression(
                         module,
                         pin,
@@ -3345,7 +3324,7 @@ impl Checker {
                         "`digital_write` expects 2 arguments (pin, level)",
                     ));
                 }
-                if let Some(pin) = args.get(0) {
+                if let Some(pin) = args.first() {
                     self.check_expression(
                         module,
                         pin,
@@ -3946,18 +3925,16 @@ impl Checker {
                 ),
             ));
         }
-        if let Some(expected) = expected {
-            if let TypeExpr::Named(name, _) = expected {
-                if name != &variant.enum_name {
-                    self.errors.push(TypeError::new(
-                        &module.path,
-                        span,
-                        format!(
-                            "`{}` variant belongs to `{}` but expression expected `{}`",
-                            variant.def.name, variant.enum_name, name
-                        ),
-                    ));
-                }
+        if let Some(TypeExpr::Named(name, _)) = expected {
+            if name != &variant.enum_name {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    format!(
+                        "`{}` variant belongs to `{}` but expression expected `{}`",
+                        variant.def.name, variant.enum_name, name
+                    ),
+                ));
             }
         }
         for (expr, field) in args.iter().zip(variant.def.fields.iter()) {
@@ -4449,7 +4426,7 @@ impl Checker {
     }
 
     fn collection_element_type(&self, ty: &TypeExpr, env: &FnEnv) -> Option<TypeExpr> {
-        if let Some(inner) = self.direct_collection_element_type(ty) {
+        if let Some(inner) = Self::direct_collection_element_type(ty) {
             return Some(inner);
         }
         if let Some(return_ty) = self.iter_method_return_type(ty, env) {
@@ -4458,7 +4435,7 @@ impl Checker {
         None
     }
 
-    fn direct_collection_element_type(&self, ty: &TypeExpr) -> Option<TypeExpr> {
+    fn direct_collection_element_type(ty: &TypeExpr) -> Option<TypeExpr> {
         match ty {
             TypeExpr::Slice(inner) => Some((**inner).clone()),
             TypeExpr::Named(name, args) if name == "Map" && args.len() == 2 => {
@@ -4468,16 +4445,14 @@ impl Checker {
                 Some(args[0].clone())
             }
             TypeExpr::Reference { ty: inner, .. } | TypeExpr::Pointer { ty: inner, .. } => {
-                self.direct_collection_element_type(inner.as_ref())
+                Self::direct_collection_element_type(inner.as_ref())
             }
             _ => None,
         }
     }
 
     fn iter_method_return_type(&self, receiver: &TypeExpr, env: &FnEnv) -> Option<TypeExpr> {
-        let Some(name) = named_type_name(receiver) else {
-            return None;
-        };
+        let name = named_type_name(receiver)?;
         let sig = self.lookup_function(env, "iter", Some(name))?;
         if sig.params.len() != 1 || sig.returns.len() != 1 {
             return None;
@@ -4696,8 +4671,7 @@ impl Checker {
                     ty: TypeExpr::Named("int32".into(), Vec::new()),
                     span,
                 };
-                let ret_ty = ret.ty.clone();
-                self.select_call_result(module, span, &[ret.clone()], Some(&ret_ty))
+                self.select_call_result(module, span, std::slice::from_ref(&ret), Some(&ret.ty))
             }
             "min" | "max" => {
                 self.ensure_arguments(module, span, args, 1);
@@ -4712,8 +4686,7 @@ impl Checker {
                     ty: TypeExpr::Named("int32".into(), Vec::new()),
                     span,
                 };
-                let ret_ty = ret.ty.clone();
-                self.select_call_result(module, span, &[ret.clone()], Some(&ret_ty))
+                self.select_call_result(module, span, std::slice::from_ref(&ret), Some(&ret.ty))
             }
             _ => None,
         }
@@ -4735,8 +4708,7 @@ impl Checker {
                     ty: TypeExpr::Named("float64".into(), Vec::new()),
                     span,
                 };
-                let ret_ty = ret.ty.clone();
-                self.select_call_result(module, span, &[ret.clone()], Some(&ret_ty))
+                self.select_call_result(module, span, std::slice::from_ref(&ret), Some(&ret.ty))
             }
             "min" | "max" => {
                 self.ensure_arguments(module, span, args, 1);
@@ -4751,8 +4723,7 @@ impl Checker {
                     ty: TypeExpr::Named("float64".into(), Vec::new()),
                     span,
                 };
-                let ret_ty = ret.ty.clone();
-                self.select_call_result(module, span, &[ret.clone()], Some(&ret_ty))
+                self.select_call_result(module, span, std::slice::from_ref(&ret), Some(&ret.ty))
             }
             _ => None,
         }
@@ -4921,10 +4892,7 @@ impl Checker {
             return None;
         }
 
-        let Some(kind) = self.unify_numeric_kinds(module, span, left, right, left_kind, right_kind)
-        else {
-            return None;
-        };
+        let kind = self.unify_numeric_kinds(module, span, left, right, left_kind, right_kind)?;
         Some(numeric_type_from_kind(kind))
     }
 
@@ -5843,7 +5811,7 @@ impl FnEnv {
 fn instantiate_function(
     sig: &FunctionSignature,
     type_args: &[TypeExpr],
-    path: &PathBuf,
+    path: &Path,
     span: Span,
     errors: &mut Vec<TypeError>,
 ) -> FunctionSignature {
@@ -6281,7 +6249,7 @@ fn reference_may_dangle(expr: &Expr) -> bool {
     }
 }
 
-fn strip_refs_and_pointers<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
+fn strip_refs_and_pointers(ty: &TypeExpr) -> &TypeExpr {
     match ty {
         TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => {
             strip_refs_and_pointers(ty)
@@ -6290,14 +6258,14 @@ fn strip_refs_and_pointers<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
     }
 }
 
-fn strip_references<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
+fn strip_references(ty: &TypeExpr) -> &TypeExpr {
     match ty {
         TypeExpr::Reference { ty, .. } => strip_references(ty),
         _ => ty,
     }
 }
 
-fn named_type_name<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
+fn named_type_name(ty: &TypeExpr) -> Option<&str> {
     match ty {
         TypeExpr::Named(name, _) => Some(name),
         TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => named_type_name(ty),

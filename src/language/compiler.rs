@@ -56,6 +56,7 @@ use std::{
     mem,
     path::Path,
     ptr,
+    rc::Rc,
     sync::{Arc, Condvar, Mutex, RwLock},
     thread,
 };
@@ -125,6 +126,12 @@ pub struct Compiler {
     build_clock_ms: i128,
     pending_runtime: Option<LLVMValueRef>,
     force_runtime_handles: bool,
+}
+
+impl Default for Compiler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone)]
@@ -210,7 +217,7 @@ struct FloatValue {
 
 #[derive(Clone)]
 struct ReferenceValue {
-    cell: Arc<Mutex<EvaluatedValue>>,
+    cell: Rc<Mutex<EvaluatedValue>>,
     mutable: bool,
     origin: Option<String>,
     handle: Option<LLVMValueRef>,
@@ -218,7 +225,7 @@ struct ReferenceValue {
 
 #[derive(Clone)]
 struct PointerValue {
-    cell: Arc<Mutex<EvaluatedValue>>,
+    cell: Rc<Mutex<EvaluatedValue>>,
     mutable: bool,
     handle: Option<LLVMValueRef>,
     origin: Option<String>,
@@ -240,7 +247,7 @@ struct RangeValue {
 #[derive(Clone)]
 struct BoxValue {
     handle: Option<LLVMValueRef>,
-    cell: Arc<Mutex<Value>>,
+    cell: Rc<Mutex<Value>>,
     #[allow(dead_code)]
     origin: Option<String>,
 }
@@ -248,26 +255,26 @@ struct BoxValue {
 #[derive(Clone)]
 struct SliceValue {
     handle: Option<LLVMValueRef>,
-    items: Arc<Mutex<Vec<Value>>>,
+    items: Rc<Mutex<Vec<Value>>>,
 }
 
 #[derive(Clone)]
 struct MapValue {
     handle: Option<LLVMValueRef>,
-    entries: Arc<Mutex<BTreeMap<String, Value>>>,
+    entries: Rc<Mutex<BTreeMap<String, Value>>>,
 }
 
 #[derive(Clone)]
 struct IteratorValue {
-    items: Arc<Mutex<Vec<Value>>>,
-    index: Arc<Mutex<usize>>,
+    items: Rc<Mutex<Vec<Value>>>,
+    index: Rc<Mutex<usize>>,
 }
 
 impl IteratorValue {
     fn from_items(items: Vec<Value>) -> Self {
         Self {
-            items: Arc::new(Mutex::new(items)),
-            index: Arc::new(Mutex::new(0)),
+            items: Rc::new(Mutex::new(items)),
+            index: Rc::new(Mutex::new(0)),
         }
     }
 
@@ -285,14 +292,14 @@ impl IteratorValue {
 
 #[derive(Clone)]
 struct ChannelSender {
-    inner: Arc<(Mutex<ChannelState>, Condvar)>,
+    inner: ChannelHandle,
     handle: Option<LLVMValueRef>,
     origin: Option<String>,
 }
 
 #[derive(Clone)]
 struct ChannelReceiver {
-    inner: Arc<(Mutex<ChannelState>, Condvar)>,
+    inner: ChannelHandle,
     handle: Option<LLVMValueRef>,
     origin: Option<String>,
 }
@@ -304,7 +311,7 @@ enum JoinResult {
 
 #[derive(Clone)]
 struct JoinHandleValue {
-    result: Arc<Mutex<JoinResult>>,
+    result: Rc<Mutex<JoinResult>>,
     handle: Option<LLVMValueRef>,
 }
 
@@ -318,10 +325,10 @@ enum TaskResultKind {
 
 #[derive(Clone)]
 struct TaskValue {
-    state: Arc<(Mutex<Option<EvaluatedValue>>, Condvar)>,
+    state: Rc<(Mutex<Option<EvaluatedValue>>, Condvar)>,
     handle: Option<LLVMValueRef>,
     kind: TaskResultKind,
-    pending: Option<Arc<Mutex<Option<DeferredTask>>>>,
+    pending: Option<Rc<Mutex<Option<DeferredTask>>>>,
 }
 
 #[derive(Clone)]
@@ -335,8 +342,13 @@ struct ChannelState {
     closed: bool,
 }
 
+type ChannelInner = (Mutex<ChannelState>, Condvar);
+type ChannelHandle = Rc<ChannelInner>;
+type ChannelHandles = HashMap<u64, ChannelHandle>;
+type BuildChannelHandle = Arc<(Mutex<BuildChannelState>, Condvar)>;
+
 impl ChannelSender {
-    fn new(inner: Arc<(Mutex<ChannelState>, Condvar)>) -> Self {
+    fn new(inner: ChannelHandle) -> Self {
         Self {
             inner,
             handle: None,
@@ -344,7 +356,7 @@ impl ChannelSender {
         }
     }
 
-    fn new_with_state(inner: Arc<(Mutex<ChannelState>, Condvar)>) -> Self {
+    fn new_with_state(inner: ChannelHandle) -> Self {
         Self {
             inner,
             handle: None,
@@ -353,7 +365,7 @@ impl ChannelSender {
     }
 
     fn with_handle(handle: LLVMValueRef) -> Self {
-        let state = Arc::new((
+        let state: ChannelHandle = Rc::new((
             Mutex::new(ChannelState {
                 queue: VecDeque::new(),
                 closed: false,
@@ -387,7 +399,7 @@ impl ChannelSender {
 }
 
 impl ChannelReceiver {
-    fn new(inner: Arc<(Mutex<ChannelState>, Condvar)>) -> Self {
+    fn new(inner: ChannelHandle) -> Self {
         Self {
             inner,
             handle: None,
@@ -395,7 +407,7 @@ impl ChannelReceiver {
         }
     }
 
-    fn new_with_state(inner: Arc<(Mutex<ChannelState>, Condvar)>) -> Self {
+    fn new_with_state(inner: ChannelHandle) -> Self {
         Self {
             inner,
             handle: None,
@@ -404,7 +416,7 @@ impl ChannelReceiver {
     }
 
     fn with_handle(handle: LLVMValueRef) -> Self {
-        let state = Arc::new((
+        let state: ChannelHandle = Rc::new((
             Mutex::new(ChannelState {
                 queue: VecDeque::new(),
                 closed: false,
@@ -475,21 +487,21 @@ impl ChannelReceiver {
 impl JoinHandleValue {
     fn new(value: Value) -> Self {
         Self {
-            result: Arc::new(Mutex::new(JoinResult::Immediate(Some(value)))),
+            result: Rc::new(Mutex::new(JoinResult::Immediate(Some(value)))),
             handle: None,
         }
     }
 
     fn new_build(handle: thread::JoinHandle<Result<BuildEvaluation, String>>) -> Self {
         Self {
-            result: Arc::new(Mutex::new(JoinResult::BuildThread(Some(handle)))),
+            result: Rc::new(Mutex::new(JoinResult::BuildThread(Some(handle)))),
             handle: None,
         }
     }
 
     fn with_handle(handle: LLVMValueRef) -> Self {
         Self {
-            result: Arc::new(Mutex::new(JoinResult::Immediate(None))),
+            result: Rc::new(Mutex::new(JoinResult::Immediate(None))),
             handle: Some(handle),
         }
     }
@@ -526,7 +538,7 @@ impl JoinHandleValue {
 impl TaskValue {
     fn ready(value: EvaluatedValue) -> Self {
         Self {
-            state: Arc::new((Mutex::new(Some(value)), Condvar::new())),
+            state: Rc::new((Mutex::new(Some(value)), Condvar::new())),
             handle: None,
             kind: TaskResultKind::Ready,
             pending: None,
@@ -535,10 +547,10 @@ impl TaskValue {
 
     fn deferred(block: Block, capture_names: Vec<String>) -> Self {
         Self {
-            state: Arc::new((Mutex::new(None), Condvar::new())),
+            state: Rc::new((Mutex::new(None), Condvar::new())),
             handle: None,
             kind: TaskResultKind::Deferred,
-            pending: Some(Arc::new(Mutex::new(Some(DeferredTask {
+            pending: Some(Rc::new(Mutex::new(Some(DeferredTask {
                 block,
                 capture_names,
             })))),
@@ -547,7 +559,7 @@ impl TaskValue {
 
     fn with_handle(handle: LLVMValueRef, kind: TaskResultKind) -> Self {
         Self {
-            state: Arc::new((Mutex::new(None), Condvar::new())),
+            state: Rc::new((Mutex::new(None), Condvar::new())),
             handle: Some(handle),
             kind,
             pending: None,
@@ -617,7 +629,7 @@ struct StructValue {
 
 #[derive(Clone)]
 struct Binding {
-    cell: Arc<Mutex<EvaluatedValue>>,
+    cell: Rc<Mutex<EvaluatedValue>>,
     mutable: bool,
     slot: Option<LLVMValueRef>, // Optional alloca backing for mutable scalars (embedded loops).
 }
@@ -700,7 +712,7 @@ impl BoxValue {
     fn new(value: Value) -> Self {
         Self {
             handle: None,
-            cell: Arc::new(Mutex::new(value)),
+            cell: Rc::new(Mutex::new(value)),
             origin: None,
         }
     }
@@ -712,7 +724,7 @@ impl BoxValue {
     fn with_handle(handle: LLVMValueRef) -> Self {
         Self {
             handle: Some(handle),
-            cell: Arc::new(Mutex::new(Value::Unit)),
+            cell: Rc::new(Mutex::new(Value::Unit)),
             origin: None,
         }
     }
@@ -722,21 +734,21 @@ impl SliceValue {
     fn new() -> Self {
         Self {
             handle: None,
-            items: Arc::new(Mutex::new(Vec::new())),
+            items: Rc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn from_vec(items: Vec<Value>) -> Self {
         Self {
             handle: None,
-            items: Arc::new(Mutex::new(items)),
+            items: Rc::new(Mutex::new(items)),
         }
     }
 
     fn with_handle(handle: LLVMValueRef) -> Self {
         Self {
             handle: Some(handle),
-            items: Arc::new(Mutex::new(Vec::new())),
+            items: Rc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -775,7 +787,7 @@ impl MapValue {
     fn new() -> Self {
         Self {
             handle: None,
-            entries: Arc::new(Mutex::new(BTreeMap::new())),
+            entries: Rc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -790,7 +802,7 @@ impl MapValue {
     fn with_handle(handle: LLVMValueRef) -> Self {
         Self {
             handle: Some(handle),
-            entries: Arc::new(Mutex::new(BTreeMap::new())),
+            entries: Rc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -830,7 +842,7 @@ fn expect_constant_bool(bool_val: &BoolValue) -> Result<bool, String> {
 }
 
 struct BuildCaptureContext {
-    channels: HashMap<*const (), (u64, Arc<(Mutex<BuildChannelState>, Condvar)>)>,
+    channels: HashMap<*const (), (u64, BuildChannelHandle)>,
     references: HashMap<*const (), BuildReference>,
     next_channel_id: u64,
     closure_snapshots: HashMap<usize, ClosureSnapshot>,
@@ -852,9 +864,9 @@ impl BuildCaptureContext {
 
     fn channel_from_inner(
         &mut self,
-        inner: &Arc<(Mutex<ChannelState>, Condvar)>,
-    ) -> Result<(u64, Arc<(Mutex<BuildChannelState>, Condvar)>), String> {
-        let key = Arc::as_ptr(inner) as *const ();
+        inner: &ChannelHandle,
+    ) -> Result<(u64, BuildChannelHandle), String> {
+        let key = Rc::as_ptr(inner) as *const ();
         if let Some((id, existing)) = self.channels.get(&key) {
             return Ok((*id, existing.clone()));
         }
@@ -873,7 +885,7 @@ impl BuildCaptureContext {
             queue: converted,
             closed,
         };
-        let shared = Arc::new((Mutex::new(state), Condvar::new()));
+        let shared: BuildChannelHandle = Arc::new((Mutex::new(state), Condvar::new()));
         let id = self.next_channel_id;
         self.next_channel_id += 1;
         self.channels.insert(key, (id, shared.clone()));
@@ -882,10 +894,10 @@ impl BuildCaptureContext {
 
     fn reference_from_cell(
         &mut self,
-        cell: &Arc<Mutex<EvaluatedValue>>,
+        cell: &Rc<Mutex<EvaluatedValue>>,
         mutable: bool,
     ) -> Result<BuildReference, String> {
-        let key = Arc::as_ptr(cell) as *const ();
+        let key = Rc::as_ptr(cell) as *const ();
         if let Some(existing) = self.references.get(&key) {
             return Ok(existing.clone());
         }
@@ -1099,7 +1111,7 @@ fn value_to_build_value_with_ctx(
             }))
         }
         Value::JoinHandle(handle) => {
-            let key = Arc::as_ptr(&handle.result) as *const ();
+            let key = Rc::as_ptr(&handle.result) as *const ();
             if let Some(existing) = ctx.join_handles.get(&key) {
                 return Ok(BuildValue::JoinHandle(existing.clone()));
             }
@@ -1120,7 +1132,7 @@ fn value_to_build_value_with_ctx(
                     if let Some(thread) = slot.take() {
                         match thread.join() {
                             Ok(result) => {
-                                let eval = result.map_err(|e| e)?;
+                                let eval = result?;
                                 *guard = JoinResult::Immediate(None);
                                 let captured = BuildJoinHandle::ready(eval.clone());
                                 ctx.join_handles.insert(key, captured.clone());
@@ -1488,10 +1500,7 @@ impl Compiler {
             }
         }
         self.build_runtime_handle_scoped(value.value().clone())
-            .map(|handle| {
-                value.set_runtime(handle);
-                handle
-            })
+            .inspect(|&handle| value.set_runtime(handle))
     }
 
     #[allow(dead_code)]
@@ -1548,8 +1557,8 @@ impl Compiler {
     fn apply_build_effects(
         &mut self,
         effects: Vec<BuildEffect>,
-    ) -> Result<HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>>, String> {
-        let mut channel_handles: HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>> = HashMap::new();
+    ) -> Result<ChannelHandles, String> {
+        let mut channel_handles: ChannelHandles = HashMap::new();
         for effect in effects {
             match effect {
                 BuildEffect::Out(values) => {
@@ -1591,7 +1600,7 @@ impl Compiler {
                 BuildEffect::ChannelCreate { id } => {
                     channel_handles.insert(
                         id,
-                        Arc::new((
+                        Rc::new((
                             Mutex::new(ChannelState {
                                 queue: VecDeque::new(),
                                 closed: false,
@@ -1664,7 +1673,7 @@ impl Compiler {
     fn build_value_to_value(
         &mut self,
         value: BuildValue,
-        channels: &mut HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>>,
+        channels: &mut ChannelHandles,
     ) -> Result<Value, String> {
         match value {
             BuildValue::Unit => Ok(Value::Unit),
@@ -1740,8 +1749,8 @@ impl Compiler {
                     converted.push(self.build_value_to_value(value.clone(), channels)?);
                 }
                 Ok(Value::Iterator(IteratorValue {
-                    items: Arc::new(Mutex::new(converted)),
-                    index: Arc::new(Mutex::new(*iter.index.lock().unwrap())),
+                    items: Rc::new(Mutex::new(converted)),
+                    index: Rc::new(Mutex::new(*iter.index.lock().unwrap())),
                 }))
             }
             BuildValue::JoinHandle(handle) => match handle.into_outcome()? {
@@ -1762,7 +1771,7 @@ impl Compiler {
                         .clone(),
                     channels,
                 )?;
-                let cell = Arc::new(Mutex::new(EvaluatedValue::from_value(inner)));
+                let cell = Rc::new(Mutex::new(EvaluatedValue::from_value(inner)));
                 Ok(Value::Reference(ReferenceValue {
                     cell,
                     mutable: reference.mutable,
@@ -1799,7 +1808,7 @@ impl Compiler {
                     existing
                 } else {
                     let (queue, closed) = sender.snapshot();
-                    let shared = Arc::new((
+                    let shared = Rc::new((
                         Mutex::new(ChannelState {
                             queue: VecDeque::new(),
                             closed,
@@ -1828,7 +1837,7 @@ impl Compiler {
                         let guard = lock.lock().unwrap();
                         (guard.queue.clone(), guard.closed)
                     };
-                    let shared = Arc::new((
+                    let shared = Rc::new((
                         Mutex::new(ChannelState {
                             queue: VecDeque::new(),
                             closed,
@@ -1863,7 +1872,7 @@ impl Compiler {
                 }
                 let receiver_candidate = evaluated_wrapped
                     .first()
-                    .and_then(|v| self.value_struct_name(v.value()));
+                    .and_then(|v| Self::value_struct_name(v.value()));
                 let func_entry = self.resolve_function(
                     &name,
                     receiver_candidate.as_deref(),
@@ -1884,7 +1893,7 @@ impl Compiler {
     fn build_closure_from_build(
         &mut self,
         closure: BuildClosure,
-        channels: &mut HashMap<u64, Arc<(Mutex<ChannelState>, Condvar)>>,
+        channels: &mut ChannelHandles,
     ) -> Result<Value, String> {
         let mut key = self.closure_counter + self.closures.len() + 1;
         while self.closures.contains_key(&key) {
@@ -3067,7 +3076,7 @@ impl Compiler {
         unsafe { LLVMConstNull(LLVMPointerType(self.runtime_abi.handle_type, 0)) }
     }
 
-    fn render_runtime_value_bytes(&mut self, value: &Value) -> Result<Vec<u8>, String> {
+    fn render_runtime_value_bytes(value: &Value) -> Result<Vec<u8>, String> {
         let rendered = match value {
             Value::Int(int_value) => int_value
                 .constant()
@@ -3087,7 +3096,7 @@ impl Compiler {
                 let parts: Vec<String> = values
                     .iter()
                     .map(|v| {
-                        self.render_runtime_value_bytes(v).and_then(|b| {
+                        Self::render_runtime_value_bytes(v).and_then(|b| {
                             String::from_utf8(b).map_err(|_| "invalid utf8".to_string())
                         })
                     })
@@ -3099,7 +3108,7 @@ impl Compiler {
                     .values
                     .iter()
                     .map(|v| {
-                        self.render_runtime_value_bytes(v).and_then(|b| {
+                        Self::render_runtime_value_bytes(v).and_then(|b| {
                             String::from_utf8(b).map_err(|_| "invalid utf8".to_string())
                         })
                     })
@@ -3124,7 +3133,7 @@ impl Compiler {
             match segment {
                 FormatRuntimeSegment::Literal(text) => output.push_str(&text),
                 FormatRuntimeSegment::Named(value) => {
-                    let rendered = self.render_runtime_value_bytes(value.value())?;
+                    let rendered = Self::render_runtime_value_bytes(value.value())?;
                     output.push_str(&String::from_utf8(rendered).map_err(|_| "invalid utf8")?);
                 }
                 FormatRuntimeSegment::Implicit => output.push_str("{}"),
@@ -3291,9 +3300,7 @@ impl Compiler {
                 let mut param_types = Vec::with_capacity(params.len());
                 let mut local_bindings = bindings.clone();
                 for param in params {
-                    let Some(ty) = param.ty.as_ref().map(|ann| ann.ty.clone()) else {
-                        return None;
-                    };
+                    let ty = param.ty.as_ref().map(|ann| ann.ty.clone())?;
                     local_bindings.insert(param.name.clone(), ty.clone());
                     param_types.push(ty);
                 }
@@ -3600,7 +3607,7 @@ impl Compiler {
     fn value_from_llvm(&mut self, llvm: LLVMValueRef, ty: &TypeExpr) -> Result<Value, String> {
         match ty {
             TypeExpr::Reference { mutable, .. } => Ok(Value::Reference(ReferenceValue {
-                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: *mutable,
                 origin: None,
                 handle: Some(llvm),
@@ -3744,7 +3751,7 @@ impl Compiler {
             TypeExpr::Unit => Ok(Value::Unit),
             TypeExpr::Slice(_) => Ok(Value::Slice(SliceValue::with_handle(llvm))),
             TypeExpr::Pointer { mutable, .. } => Ok(Value::Pointer(PointerValue {
-                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: *mutable,
                 handle: Some(llvm),
                 origin: None,
@@ -3925,7 +3932,7 @@ impl Compiler {
         let result = match body {
             ClosureBody::Block(block) => self.execute_block_contents(block)?,
             ClosureBody::Expr(expr) => match self
-                .emit_expression_with_hint(expr.node.as_ref(), info.signature.returns.get(0))?
+                .emit_expression_with_hint(expr.node.as_ref(), info.signature.returns.first())?
             {
                 EvalOutcome::Value(value) => BlockEval::Value(value),
                 EvalOutcome::Flow(flow) => BlockEval::Flow(flow),
@@ -4066,7 +4073,7 @@ impl Compiler {
                 .items
                 .lock()
                 .ok()
-                .and_then(|items| items.get(0).cloned())
+                .and_then(|items| items.first().cloned())
                 .and_then(|first| self.value_type_hint(&first))
                 .map(|inner| TypeExpr::Slice(Box::new(inner)))
                 .or_else(|| {
@@ -4645,15 +4652,14 @@ impl Compiler {
                 LLVMBuildStore(self.builder, *handle, elem_ptr);
             }
             let mut indices = [zero, zero];
-            let base_ptr = LLVMBuildInBoundsGEP2(
+            LLVMBuildInBoundsGEP2(
                 self.builder,
                 array_type,
                 alloca,
                 indices.as_mut_ptr(),
                 2,
                 CString::new("enum_vals_base").unwrap().as_ptr(),
-            );
-            base_ptr
+            )
         }
     }
 
@@ -4891,43 +4897,40 @@ impl Compiler {
                                 CString::new("while_let_after").unwrap().as_ptr(),
                             );
                             LLVMBuildBr(self.builder, cond_block);
-                            loop {
-                                LLVMPositionBuilderAtEnd(self.builder, cond_block);
-                                let cond_value = match self.emit_expression(value)? {
-                                    EvalOutcome::Value(value) => value.into_value(),
-                                    EvalOutcome::Flow(flow) => return Ok(Some(flow)),
-                                };
-                                let cond_bool = self.value_to_bool(cond_value)?;
-                                let mut cond_llvm = self.bool_llvm_value(&cond_bool);
-                                if !*expected {
-                                    cond_llvm = LLVMBuildNot(
-                                        self.builder,
-                                        cond_llvm,
-                                        CString::new("while_let_not").unwrap().as_ptr(),
-                                    );
-                                }
-                                LLVMBuildCondBr(self.builder, cond_llvm, body_block, after_block);
-
-                                LLVMPositionBuilderAtEnd(self.builder, body_block);
-                                self.push_scope();
-                                let result = self.execute_block_contents(&stmt.body)?;
-                                self.exit_scope()?;
-                                match result {
-                                    BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {
-                                        LLVMBuildBr(self.builder, cond_block);
-                                    }
-                                    BlockEval::Flow(FlowSignal::Break) => {
-                                        LLVMBuildBr(self.builder, after_block);
-                                    }
-                                    BlockEval::Flow(flow @ FlowSignal::Return(_))
-                                    | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                        LLVMPositionBuilderAtEnd(self.builder, after_block);
-                                        return Ok(Some(flow));
-                                    }
-                                }
-                                LLVMPositionBuilderAtEnd(self.builder, after_block);
-                                break;
+                            LLVMPositionBuilderAtEnd(self.builder, cond_block);
+                            let cond_value = match self.emit_expression(value)? {
+                                EvalOutcome::Value(value) => value.into_value(),
+                                EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                            };
+                            let cond_bool = self.value_to_bool(cond_value)?;
+                            let mut cond_llvm = self.bool_llvm_value(&cond_bool);
+                            if !*expected {
+                                cond_llvm = LLVMBuildNot(
+                                    self.builder,
+                                    cond_llvm,
+                                    CString::new("while_let_not").unwrap().as_ptr(),
+                                );
                             }
+                            LLVMBuildCondBr(self.builder, cond_llvm, body_block, after_block);
+
+                            LLVMPositionBuilderAtEnd(self.builder, body_block);
+                            self.push_scope();
+                            let result = self.execute_block_contents(&stmt.body)?;
+                            self.exit_scope()?;
+                            match result {
+                                BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {
+                                    LLVMBuildBr(self.builder, cond_block);
+                                }
+                                BlockEval::Flow(FlowSignal::Break) => {
+                                    LLVMBuildBr(self.builder, after_block);
+                                }
+                                BlockEval::Flow(flow @ FlowSignal::Return(_))
+                                | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                    LLVMPositionBuilderAtEnd(self.builder, after_block);
+                                    return Ok(Some(flow));
+                                }
+                            }
+                            LLVMPositionBuilderAtEnd(self.builder, after_block);
                         }
                     } else {
                         loop {
@@ -5043,15 +5046,13 @@ impl Compiler {
                             }
                             current += 1;
                         }
-                    } else {
-                        if let Some(flow) = self.emit_dynamic_range_for(
-                            start_value,
-                            end_value,
-                            range_expr.inclusive,
-                            stmt,
-                        )? {
-                            return Ok(Some(flow));
-                        }
+                    } else if let Some(flow) = self.emit_dynamic_range_for(
+                        start_value,
+                        end_value,
+                        range_expr.inclusive,
+                        stmt,
+                    )? {
+                        return Ok(Some(flow));
                     }
                 }
                 ForTarget::Collection(expr) => {
@@ -5084,7 +5085,7 @@ impl Compiler {
     fn emit_expression(&mut self, expr: &Expr) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Literal(Literal::Int(value, _)) => Ok(EvalOutcome::Value(
-                self.evaluated(Value::Int(self.const_int_value(*value as i128))),
+                self.evaluated(Value::Int(self.const_int_value(*value))),
             )),
             Expr::Literal(Literal::Bool(value, _)) => Ok(EvalOutcome::Value(self.evaluated(
                 Value::Bool(BoolValue::new(
@@ -5275,7 +5276,7 @@ impl Compiler {
                 ret,
                 captures,
                 ..
-            } => return self.emit_closure_literal(params, body, ret, captures, None),
+            } => self.emit_closure_literal(params, body, ret, captures, None),
             Expr::FieldAccess { base, field, .. } => {
                 let base_value = match self.emit_expression(base)? {
                     EvalOutcome::Value(value) => value,
@@ -5691,7 +5692,7 @@ impl Compiler {
                 (prompt, handles)
             }
             other => {
-                let prompt = self.render_runtime_value_bytes(&other)?;
+                let prompt = Self::render_runtime_value_bytes(&other)?;
                 (prompt, Vec::new())
             }
         };
@@ -6223,7 +6224,7 @@ impl Compiler {
                         handle: Some(phi),
                     })));
                 }
-                if Arc::ptr_eq(&a.cell, &b.cell) {
+                if Rc::ptr_eq(&a.cell, &b.cell) {
                     return Ok(self.evaluated(Value::Reference(a)));
                 }
                 Err(format!(
@@ -6292,7 +6293,7 @@ impl Compiler {
             _ => match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => Ok(EvalOutcome::Value(
                     Value::Reference(ReferenceValue {
-                        cell: Arc::new(Mutex::new(value)),
+                        cell: Rc::new(Mutex::new(value)),
                         mutable,
                         origin: None,
                         handle: None,
@@ -6330,7 +6331,7 @@ impl Compiler {
                 EvalOutcome::Value(value) => value.into_value(),
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
             };
-            let key = self.expect_string_value(key_value, "map literal key")?;
+            let key = Self::expect_string_value(key_value, "map literal key")?;
             let value = match self.emit_expression(&entry.value)? {
                 EvalOutcome::Value(value) => value.into_value(),
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
@@ -6574,7 +6575,7 @@ impl Compiler {
                         "enum_get",
                     );
                     let reference = ReferenceValue {
-                        cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                        cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                         mutable: false,
                         origin: None,
                         handle: Some(field_handle),
@@ -6656,7 +6657,7 @@ impl Compiler {
                             Some(LLVMConstIntGetZExtValue(tag) as u32)
                         }
                     }
-                    .or_else(|| match enum_value.variant.as_str() {
+                    .or(match enum_value.variant.as_str() {
                         "Ok" => Some(ok_tag.variant_index),
                         "Err" => Some(err_tag.variant_index),
                         _ => None,
@@ -6963,7 +6964,7 @@ impl Compiler {
         // Embedded targets skip libc printf; use runtime print for string-only cases.
         if self.target.is_embedded() {
             if args.is_empty() {
-                if let Ok((ptr, len)) = self.build_runtime_bytes(&fmt.to_string(), "rt_print") {
+                if let Ok((ptr, len)) = self.build_runtime_bytes(fmt, "rt_print") {
                     let mut call_args = [ptr, len];
                     let handle = self.call_runtime(
                         self.runtime_abi.prime_string_new,
@@ -8074,7 +8075,7 @@ impl Compiler {
             .enum_variants
             .values()
             .any(|info| info.enum_name == block.target);
-        if !target_is_struct && !(is_drop_like && target_is_enum) {
+        if !(target_is_struct || (is_drop_like && target_is_enum)) {
             return Err(format!("Unknown target type `{}`", block.target));
         }
         if is_drop_like {
@@ -8310,7 +8311,7 @@ impl Compiler {
             .get(interface)
             .ok_or_else(|| format!("Unknown interface {}", interface))?;
         self.ensure_item_visible(&entry.module, entry.def.visibility, interface, "interface")?;
-        let struct_name = self.value_struct_name(value).ok_or_else(|| {
+        let struct_name = Self::value_struct_name(value).ok_or_else(|| {
             format!(
                 "Interface `{}` expects struct implementing it, found incompatible value",
                 interface
@@ -8339,7 +8340,7 @@ impl Compiler {
         matches!(visibility, Visibility::Public)
             || self
                 .current_module()
-                .map_or(true, |current| current == owner)
+                .is_none_or(|current| current == owner)
     }
 
     fn ensure_item_visible(
@@ -8360,19 +8361,19 @@ impl Compiler {
     }
 
     fn receiver_name_from_values(&self, args: &[Value]) -> Option<String> {
-        args.first().and_then(|value| self.value_struct_name(value))
+        args.first().and_then(Self::value_struct_name)
     }
 
-    fn value_struct_name(&self, value: &Value) -> Option<String> {
+    fn value_struct_name(value: &Value) -> Option<String> {
         match value {
             Value::Struct(instance) => Some(instance.name.clone()),
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap();
-                self.value_struct_name(inner.value())
+                Self::value_struct_name(inner.value())
             }
             Value::Pointer(pointer) => {
                 let inner = pointer.cell.lock().unwrap();
-                self.value_struct_name(inner.value())
+                Self::value_struct_name(inner.value())
             }
             Value::Boxed(_) => None,
             _ => None,
@@ -8668,12 +8669,12 @@ impl Compiler {
         }
     }
 
-    fn expect_string_value(&self, value: Value, ctx: &str) -> Result<String, String> {
+    fn expect_string_value(value: Value, ctx: &str) -> Result<String, String> {
         match value {
             Value::Str(s) => Ok((*s.text).clone()),
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone().into_value();
-                self.expect_string_value(inner, ctx)
+                Self::expect_string_value(inner, ctx)
             }
             _ => Err(format!("{ctx} expects string value")),
         }
@@ -8838,7 +8839,7 @@ impl Compiler {
                 return self.instantiate_enum_variant("None", Vec::new());
             }
             let reference = ReferenceValue {
-                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,
                 handle: Some(loaded),
@@ -8907,7 +8908,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
-                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,
                 handle: Some(loaded),
@@ -8933,20 +8934,15 @@ impl Compiler {
         let receiver = args.remove(0);
         match receiver {
             Value::Slice(slice) => {
-                let mut forwarded = Vec::with_capacity(2);
-                forwarded.push(Value::Slice(slice));
-                forwarded.push(args.remove(0));
+                let forwarded = vec![Value::Slice(slice), args.remove(0)];
                 self.builtin_slice_remove(forwarded)
             }
             Value::Map(map) => {
-                let mut forwarded = Vec::with_capacity(2);
-                forwarded.push(Value::Map(map));
-                forwarded.push(args.remove(0));
+                let forwarded = vec![Value::Map(map), args.remove(0)];
                 self.builtin_map_remove(forwarded)
             }
             Value::Reference(reference) => {
-                let mut forwarded = Vec::new();
-                forwarded.push(reference.cell.lock().unwrap().clone().into_value());
+                let mut forwarded = vec![reference.cell.lock().unwrap().clone().into_value()];
                 forwarded.extend(args);
                 self.builtin_remove(forwarded)
             }
@@ -8968,7 +8964,7 @@ impl Compiler {
             return Err("map_insert expects 3 arguments".into());
         }
         let value = args.pop().unwrap();
-        let key = self.expect_string_value(args.pop().unwrap(), "map_insert")?;
+        let key = Self::expect_string_value(args.pop().unwrap(), "map_insert")?;
         let map = self.expect_map_value(args.pop().unwrap(), "map_insert")?;
         if let Some(handle) = map.handle {
             let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_insert_key")?;
@@ -8991,7 +8987,7 @@ impl Compiler {
         if args.len() != 2 {
             return Err("map_get expects 2 arguments".into());
         }
-        let key = self.expect_string_value(args.pop().unwrap(), "map_get")?;
+        let key = Self::expect_string_value(args.pop().unwrap(), "map_get")?;
         let map = self.expect_map_value(args.pop().unwrap(), "map_get")?;
         if let Some(handle) = map.handle {
             let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_get_key")?;
@@ -9018,7 +9014,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
-                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,
                 handle: Some(loaded),
@@ -9081,7 +9077,7 @@ impl Compiler {
         if args.len() != 2 {
             return Err("remove expects receiver and key".into());
         }
-        let key = self.expect_string_value(args.pop().unwrap(), "remove")?;
+        let key = Self::expect_string_value(args.pop().unwrap(), "remove")?;
         let map = self.expect_map_value(args.pop().unwrap(), "remove")?;
         if let Some(handle) = map.handle {
             let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_remove_key")?;
@@ -9108,7 +9104,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
-                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,
                 handle: Some(loaded),
@@ -9311,7 +9307,7 @@ impl Compiler {
                         )
                     };
                     let reference = ReferenceValue {
-                        cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                        cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                         mutable: false,
                         origin: None,
                         handle: Some(loaded),
@@ -9332,7 +9328,7 @@ impl Compiler {
                 }
             }
             Value::Map(map) => {
-                let key = self.expect_string_value(args.remove(0), "get")?;
+                let key = Self::expect_string_value(args.remove(0), "get")?;
                 if let Some(handle) = map.handle {
                     let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_get_key")?;
                     let slot = unsafe {
@@ -9358,7 +9354,7 @@ impl Compiler {
                         )
                     };
                     let reference = ReferenceValue {
-                        cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                        cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                         mutable: false,
                         origin: None,
                         handle: Some(loaded),
@@ -9404,7 +9400,7 @@ impl Compiler {
                 }
             }
             Value::Map(map) => {
-                let key = self.expect_string_value(index, "index assignment")?;
+                let key = Self::expect_string_value(index, "index assignment")?;
                 map.insert(key, value);
                 Ok(())
             }
@@ -9470,7 +9466,7 @@ impl Compiler {
             return Err("insert expects receiver, key, and value".into());
         }
         let value = args.pop().unwrap();
-        let key = self.expect_string_value(args.pop().unwrap(), "insert")?;
+        let key = Self::expect_string_value(args.pop().unwrap(), "insert")?;
         let map = self.expect_map_value(args.pop().unwrap(), "insert")?;
         if let Some(handle) = map.handle {
             let (key_ptr, key_len) = self.build_runtime_bytes(&key, "insert_key")?;
@@ -9492,7 +9488,7 @@ impl Compiler {
         if args.len() != 1 {
             return Err("fs_exists expects 1 argument".into());
         }
-        let path = self.expect_string_value(args.pop().unwrap(), "fs_exists")?;
+        let path = Self::expect_string_value(args.pop().unwrap(), "fs_exists")?;
         Ok(Value::Bool(
             self.const_bool_value(platform().fs_exists(&path)),
         ))
@@ -9502,7 +9498,7 @@ impl Compiler {
         if args.len() != 1 {
             return Err("fs_read expects 1 argument".into());
         }
-        let path = self.expect_string_value(args.pop().unwrap(), "fs_read")?;
+        let path = Self::expect_string_value(args.pop().unwrap(), "fs_read")?;
         match platform().fs_read(&path) {
             Ok(contents) => {
                 let value = self.build_string_constant(contents)?;
@@ -9519,8 +9515,8 @@ impl Compiler {
         if args.len() != 2 {
             return Err("fs_write expects 2 arguments".into());
         }
-        let contents = self.expect_string_value(args.pop().unwrap(), "fs_write")?;
-        let path = self.expect_string_value(args.pop().unwrap(), "fs_write")?;
+        let contents = Self::expect_string_value(args.pop().unwrap(), "fs_write")?;
+        let path = Self::expect_string_value(args.pop().unwrap(), "fs_write")?;
         match platform().fs_write(&path, &contents) {
             Ok(()) => self.instantiate_enum_variant("Ok", vec![Value::Unit]),
             Err(msg) => {
@@ -9754,7 +9750,7 @@ impl Compiler {
         }
         let cond_value = self.value_to_bool(args.remove(0))?;
         let cond = self.bool_constant_or_llvm(&cond_value, "expect condition")?;
-        let msg = self.expect_string_value(args.remove(0), "expect")?;
+        let msg = Self::expect_string_value(args.remove(0), "expect")?;
         if !cond {
             return Err(msg);
         }
@@ -9765,7 +9761,7 @@ impl Compiler {
         if args.len() != 1 {
             return Err("str_len expects 1 argument".into());
         }
-        let text = self.expect_string_value(args.pop().unwrap(), "str_len")?;
+        let text = Self::expect_string_value(args.pop().unwrap(), "str_len")?;
         Ok(Value::Int(self.const_int_value(text.len() as i128)))
     }
 
@@ -9773,8 +9769,8 @@ impl Compiler {
         if args.len() != 2 {
             return Err("str_contains expects receiver and needle".into());
         }
-        let needle = self.expect_string_value(args.pop().unwrap(), "str_contains")?;
-        let haystack = self.expect_string_value(args.pop().unwrap(), "str_contains")?;
+        let needle = Self::expect_string_value(args.pop().unwrap(), "str_contains")?;
+        let haystack = Self::expect_string_value(args.pop().unwrap(), "str_contains")?;
         Ok(Value::Bool(
             self.const_bool_value(haystack.contains(&needle)),
         ))
@@ -9784,7 +9780,7 @@ impl Compiler {
         if args.len() != 1 {
             return Err("str_trim expects 1 argument".into());
         }
-        let text = self.expect_string_value(args.pop().unwrap(), "str_trim")?;
+        let text = Self::expect_string_value(args.pop().unwrap(), "str_trim")?;
         let trimmed = text.trim().to_string();
         self.make_string_value(&trimmed)
     }
@@ -9793,8 +9789,8 @@ impl Compiler {
         if args.len() != 2 {
             return Err("str_split expects receiver and delimiter".into());
         }
-        let delim = self.expect_string_value(args.pop().unwrap(), "str_split")?;
-        let text = self.expect_string_value(args.pop().unwrap(), "str_split")?;
+        let delim = Self::expect_string_value(args.pop().unwrap(), "str_split")?;
+        let text = Self::expect_string_value(args.pop().unwrap(), "str_split")?;
         let mut parts = Vec::new();
         for segment in text.split(&delim) {
             parts.push(self.make_string_value(segment)?);
@@ -9932,7 +9928,7 @@ impl Compiler {
             queue: VecDeque::new(),
             closed: false,
         };
-        let shared = Arc::new((Mutex::new(state), Condvar::new()));
+        let shared = Rc::new((Mutex::new(state), Condvar::new()));
         let sender = Value::Sender(ChannelSender::new(shared.clone()));
         let receiver = Value::Receiver(ChannelReceiver::new(shared));
         Ok(Value::Tuple(vec![sender, receiver]))
@@ -10184,7 +10180,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
-                cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,
                 handle: Some(loaded),
@@ -10348,7 +10344,7 @@ impl Compiler {
                 .current_return_types()
                 .and_then(|returns| {
                     if returns.len() == 1 {
-                        returns.get(0)
+                        returns.first()
                     } else {
                         None
                     }
@@ -10440,8 +10436,7 @@ impl Compiler {
                     if let Some(constant) = float_value.constant() {
                         return Ok(self.const_bool_value(constant != 0.0));
                     }
-                    let zero =
-                        unsafe { LLVMConstReal(LLVMTypeOf(float_value.llvm()), 0.0f64 as f64) };
+                    let zero = unsafe { LLVMConstReal(LLVMTypeOf(float_value.llvm()), 0.0) };
                     let llvm = unsafe {
                         LLVMBuildFCmp(
                             self.builder,
@@ -10531,12 +10526,12 @@ impl Compiler {
             .map(|frame| {
                 frame
                     .iter()
-                    .filter_map(|action| match action {
-                        CleanupAction::Defer(expr) => Some(BuildCleanup::Defer(expr.clone())),
-                        CleanupAction::Drop(record) => Some(BuildCleanup::Drop(BuildDropRecord {
+                    .map(|action| match action {
+                        CleanupAction::Defer(expr) => BuildCleanup::Defer(expr.clone()),
+                        CleanupAction::Drop(record) => BuildCleanup::Drop(BuildDropRecord {
                             binding: record.binding.clone(),
                             type_name: record.type_name.clone(),
-                        })),
+                        }),
                     })
                     .collect()
             })
@@ -10668,7 +10663,7 @@ impl Compiler {
                 }
             }
         }
-        let cell = Arc::new(Mutex::new(value));
+        let cell = Rc::new(Mutex::new(value));
         {
             let stored = cell.lock().unwrap();
             self.track_reference_borrow_in_scope(stored.value(), scope_index)?;
@@ -10750,7 +10745,7 @@ impl Compiler {
         None
     }
 
-    fn get_binding(&self, name: &str) -> Option<(Arc<Mutex<EvaluatedValue>>, bool)> {
+    fn get_binding(&self, name: &str) -> Option<(Rc<Mutex<EvaluatedValue>>, bool)> {
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.get(name) {
                 return Some((binding.cell.clone(), binding.mutable));
@@ -10863,7 +10858,7 @@ impl Compiler {
                             )
                         };
                         let reference = ReferenceValue {
-                            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                            cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                             mutable: false,
                             origin: None,
                             handle: Some(loaded),
@@ -10941,13 +10936,13 @@ impl Compiler {
                             )
                         };
                         let key_ref = ReferenceValue {
-                            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                            cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                             mutable: false,
                             origin: None,
                             handle: Some(key_handle),
                         };
                         let value_ref = ReferenceValue {
-                            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                            cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                             mutable: false,
                             origin: None,
                             handle: Some(value_handle),
@@ -10986,7 +10981,7 @@ impl Compiler {
                 self.collect_iterable_values(inner)
             }
             Value::Struct(_) => {
-                if let Some(struct_name) = self.value_struct_name(&value) {
+                if let Some(struct_name) = Self::value_struct_name(&value) {
                     let iter_outcome = self.call_function_with_values(
                         "iter",
                         Some(struct_name.as_str()),
@@ -11229,14 +11224,14 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.push_scope();
         let int_binding = Binding {
-            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Int(
+            cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Int(
                 IntValue::new(ptr::null_mut(), Some(7)),
             )))),
             mutable: false,
             slot: None,
         };
         let tuple_binding = Binding {
-            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Tuple(vec![
+            cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Tuple(vec![
                 Value::Bool(compiler.const_bool_value(true)),
                 Value::Int(IntValue::new(ptr::null_mut(), Some(2))),
             ])))),
@@ -11244,7 +11239,7 @@ mod tests {
             slot: None,
         };
         let string_binding = Binding {
-            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Str(
+            cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Str(
                 StringValue::new(ptr::null_mut(), Arc::new("hello".to_string())),
             )))),
             mutable: false,
@@ -11297,7 +11292,7 @@ mod tests {
         let mut compiler = Compiler::new();
         compiler.push_scope();
         let non_const_int = Binding {
-            cell: Arc::new(Mutex::new(EvaluatedValue::from_value(Value::Int(
+            cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Int(
                 IntValue::new(ptr::null_mut(), None),
             )))),
             mutable: false,
@@ -11824,7 +11819,8 @@ fn main() {
     }
 
     fn compile_entry(entry: &str) -> Result<(), String> {
-        let package = load_package(Path::new(entry)).expect(&format!("load package for {}", entry));
+        let package = load_package(Path::new(entry))
+            .unwrap_or_else(|_| panic!("load package for {}", entry));
         let mut compiler = Compiler::new();
         compiler.compile_program(&package.program)
     }

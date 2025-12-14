@@ -459,7 +459,7 @@ fn format_self_shorthand(ty: &TypeExpr) -> Option<String> {
 
 fn format_call_type_args(args: &[TypeExpr]) -> String {
     args.iter()
-        .map(|ty| format_type(ty))
+        .map(format_type)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -591,7 +591,7 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
                 let values = ret
                     .values
                     .iter()
-                    .map(|expr| format_expr(expr))
+                    .map(format_expr)
                     .collect::<Vec<_>>()
                     .join(", ");
                 out.push_str(&format!("return {};\n", values));
@@ -850,7 +850,7 @@ fn write_match_expression(
     out.push_str(&format!("match {} {{\n", format_expr(&expr.expr)));
     for arm in &expr.arms {
         write_indent(out, indent + 2);
-        out.push_str(&format!("{}", format_pattern(&arm.pattern)));
+        out.push_str(&format_pattern(&arm.pattern));
         if let Some(guard) = &arm.guard {
             out.push_str(&format!(" if {}", format_expr(guard)));
         }
@@ -916,7 +916,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         } => {
             let args = args
                 .iter()
-                .map(|expr| format_expr(expr))
+                .map(format_expr)
                 .collect::<Vec<_>>()
                 .join(", ");
             let type_args_str = if type_args.is_empty() {
@@ -934,7 +934,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         Expr::MacroCall { name, args, .. } => {
             let args = args
                 .iter()
-                .map(|arg| format_macro_arg(arg))
+                .map(format_macro_arg)
                 .map(indent_multiline_arg)
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -952,7 +952,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
             StructLiteralKind::Positional(values) => {
                 let inner = values
                     .iter()
-                    .map(|expr| format_expr(expr))
+                    .map(format_expr)
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{name}{{ {inner} }}")
@@ -988,7 +988,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         Expr::Tuple(values, _) => {
             let inner = values
                 .iter()
-                .map(|expr| format_expr(expr))
+                .map(format_expr)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("({inner})")
@@ -996,7 +996,7 @@ fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
         Expr::ArrayLiteral(values, _) => {
             let inner = values
                 .iter()
-                .map(|expr| format_expr(expr))
+                .map(format_expr)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("[{inner}]")
@@ -1163,7 +1163,7 @@ fn indent_multiline_arg(arg: String) -> String {
     if let Some(first) = parts.next() {
         out.push_str(first);
     }
-    while let Some(line) = parts.next() {
+    for line in parts {
         out.push('\n');
         out.push_str("  ");
         out.push_str(line);

@@ -3,7 +3,7 @@
 
 use crate::runtime::{
     error::RuntimeResult,
-    value::{TaskState, TaskValue, Value, make_option_value},
+    value::{TaskValue, Value, make_option_value},
 };
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -81,13 +81,13 @@ impl AsyncRuntime {
 
     /// Cooperative tick: pop any ready task whose deadline has passed or finished.
     #[allow(dead_code)]
-    pub fn poll_ready(&self) -> Option<TaskValue> {
+    fn poll_ready(&self) -> Option<TaskValue> {
         None
     }
 
     /// Register a timer wakeup for the current task (stubbed for now).
     #[allow(dead_code)]
-    pub fn sleep_until(&self, state: Arc<(Mutex<TaskState>, std::sync::Condvar)>) {
+    fn sleep_until(&self, state: Arc<(Mutex<crate::runtime::value::TaskState>, std::sync::Condvar)>) {
         if debug_enabled() {
             eprintln!(
                 "[prime-debug] async_runtime sleep_until stubbed for {:?}",

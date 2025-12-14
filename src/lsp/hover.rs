@@ -573,7 +573,7 @@ fn hover_for_imported_symbol(
                     continue;
                 }
             }
-            if !public || label != &name {
+            if !public || label != name {
                 continue;
             }
             match item {
@@ -803,7 +803,7 @@ fn builtin_method_signature(ty: &TypeExpr, method: &str) -> Option<(&'static str
     }
 }
 
-fn strip_type_refs<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
+fn strip_type_refs(ty: &TypeExpr) -> &TypeExpr {
     match ty {
         TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => strip_type_refs(ty),
         _ => ty,
@@ -1043,7 +1043,7 @@ fn format_function_hover(def: &FunctionDef) -> String {
     let signature = format_function_signature(def);
     let mut content = String::new();
     if let Some(doc) = &def.doc {
-        content.push_str(&doc);
+        content.push_str(doc);
         content.push_str("\n\n");
     }
     content.push_str(&code_block("prime", &format!("{signature} {{}}")));
@@ -1251,16 +1251,16 @@ fn is_simple_literal(snippet: &str) -> bool {
     {
         return true;
     }
-    if let Ok(_) = text.parse::<i128>() {
+    if text.parse::<i128>().is_ok() {
         return true;
     }
-    if let Ok(_) = text.parse::<f64>() {
+    if text.parse::<f64>().is_ok() {
         return true;
     }
     false
 }
 
-fn find_decl_for_identifier<'a>(module: &'a Module, name: &str, offset: usize) -> DeclInfo {
+fn find_decl_for_identifier(module: &Module, name: &str, offset: usize) -> DeclInfo {
     find_local_decl(module, name, offset).unwrap_or_else(|| DeclInfo {
         name: name.to_string(),
         span: Span::new(offset, offset),

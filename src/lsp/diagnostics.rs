@@ -66,7 +66,7 @@ pub fn collect_parse_and_manifest_diagnostics(
     let manifest_context = manifest_context_for_uri(uri);
     if let Some(module) = &module {
         if let Some((manifest, file_path)) = &manifest_context {
-            let issues = analyze_manifest_issues(module, &file_path, Some(&manifest));
+            let issues = analyze_manifest_issues(module, file_path, Some(manifest));
             diags.extend(
                 issues
                     .into_iter()
@@ -97,7 +97,7 @@ pub struct ManifestEntryAction {
 }
 
 impl ManifestEntryAction {
-    pub fn to_code_action(self) -> Option<CodeActionOrCommand> {
+    pub fn into_code_action(self) -> Option<CodeActionOrCommand> {
         let manifest_text = fs::read_to_string(&self.manifest_path).ok()?;
         let manifest_uri = Uri::from_file_path(&self.manifest_path)?;
         let mut doc: DocumentMut = manifest_text.parse().ok()?;
@@ -109,9 +109,7 @@ impl ManifestEntryAction {
         let entry = doc
             .entry("libraries")
             .or_insert(TomlItem::Table(TomlTable::new()));
-        let Some(table) = entry.as_table_like_mut() else {
-            return None;
-        };
+        let table = entry.as_table_like_mut()?;
         table.insert(&key, TomlItem::Value(toml_edit::Value::InlineTable(inline)));
         let end_pos = offset_to_position(&manifest_text, manifest_text.len());
         let new_manifest = doc.to_string();

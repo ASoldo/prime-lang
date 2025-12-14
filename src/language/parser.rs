@@ -1290,7 +1290,7 @@ impl Parser {
                 let prefix_attached = if let Some((prefix_tokens, _)) = repeat_prefix.take() {
                     if let Some(tokens) = arg.tokens.as_mut() {
                         let mut merged = prefix_tokens;
-                        merged.extend(tokens.drain(..));
+                        merged.append(tokens);
                         *tokens = merged;
                     } else {
                         arg.tokens = Some(prefix_tokens);
@@ -1328,7 +1328,7 @@ impl Parser {
                 let prefix_attached = if let Some((prefix_tokens, _)) = repeat_prefix.take() {
                     if let Some(tokens) = arg.tokens.as_mut() {
                         let mut merged = prefix_tokens;
-                        merged.extend(tokens.drain(..));
+                        merged.append(tokens);
                         *tokens = merged;
                     } else {
                         arg.tokens = Some(prefix_tokens);
@@ -1719,11 +1719,7 @@ impl Parser {
             })));
         }
 
-        if allow_tail {
-            Err(self.error_here("Expected ';' after expression"))
-        } else {
-            Err(self.error_here("Expected ';' after expression"))
-        }
+        Err(self.error_here("Expected ';' after expression"))
     }
 
     fn synchronize_statement(&mut self) {
@@ -2076,11 +2072,7 @@ impl Parser {
     fn parse_binary(&mut self, min_prec: u8) -> Result<Expr, SyntaxError> {
         let mut left = self.parse_unary()?;
 
-        loop {
-            let (op, prec) = match self.current_binary_op() {
-                Some(info) => info,
-                None => break,
-            };
+        while let Some((op, prec)) = self.current_binary_op() {
             if prec < min_prec {
                 break;
             }
@@ -2183,38 +2175,35 @@ impl Parser {
                 let saved_last_span = self.last_span.clone();
                 let saved_errors_len = self.errors.len();
                 if self.bracket_followed_by_lparen() {
-                    match self.parse_type_arguments() {
-                        Ok((type_args, _)) => {
-                            if self.matches(TokenKind::LParen) {
-                                self.enter_paren();
-                                let mut args = Vec::new();
-                                if !self.check(TokenKind::RParen) {
-                                    loop {
-                                        args.push(self.parse_expression()?);
-                                        if self.matches(TokenKind::Comma) {
-                                            continue;
-                                        }
-                                        break;
+                    if let Ok((type_args, _)) = self.parse_type_arguments() {
+                        if self.matches(TokenKind::LParen) {
+                            self.enter_paren();
+                            let mut args = Vec::new();
+                            if !self.check(TokenKind::RParen) {
+                                loop {
+                                    args.push(self.parse_expression()?);
+                                    if self.matches(TokenKind::Comma) {
+                                        continue;
                                     }
+                                    break;
                                 }
-                                let end = match self.expect(TokenKind::RParen) {
-                                    Ok(token) => token.span.end,
-                                    Err(err) => {
-                                        self.exit_paren();
-                                        return Err(err);
-                                    }
-                                };
-                                self.exit_paren();
-                                expr = Expr::Call {
-                                    callee: Box::new(expr),
-                                    type_args,
-                                    args,
-                                    span: Span::new(span_start, end),
-                                };
-                                continue;
                             }
+                            let end = match self.expect(TokenKind::RParen) {
+                                Ok(token) => token.span.end,
+                                Err(err) => {
+                                    self.exit_paren();
+                                    return Err(err);
+                                }
+                            };
+                            self.exit_paren();
+                            expr = Expr::Call {
+                                callee: Box::new(expr),
+                                type_args,
+                                args,
+                                span: Span::new(span_start, end),
+                            };
+                            continue;
                         }
-                        Err(_) => {}
                     }
                     // rewind if type argument parse failed or there was no call
                     self.pos = saved_pos;
@@ -2700,10 +2689,7 @@ impl Parser {
     }
 
     fn struct_literals_allowed(&self) -> bool {
-        !self
-            .block_context_stack
-            .iter()
-            .any(|&depth| depth == self.paren_depth)
+        !self.block_context_stack.contains(&self.paren_depth)
     }
 
     fn enter_paren(&mut self) {
@@ -3687,6 +3673,52 @@ fn expr_to_pattern(expr: &Expr) -> Option<Pattern> {
     }
 }
 
+fn legacy_import_segments(input: &str) -> Vec<String> {
+    let without_ext = input.strip_suffix(".prime").unwrap_or(input);
+    let normalized = without_ext.replace("::", "/");
+    normalized
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect()
+}
+
+fn expr_span(expr: &Expr) -> Span {
+    match expr {
+        Expr::Identifier(ident) => ident.span,
+        Expr::Literal(Literal::Int(_, span))
+        | Expr::Literal(Literal::Float(_, span))
+        | Expr::Literal(Literal::Bool(_, span))
+        | Expr::Literal(Literal::String(_, span))
+        | Expr::Literal(Literal::Rune(_, span)) => *span,
+        Expr::Try { span, .. } => *span,
+        Expr::TryPropagate { span, .. } => *span,
+        Expr::Binary { span, .. } => *span,
+        Expr::Unary { span, .. } => *span,
+        Expr::Call { span, .. } => *span,
+        Expr::MacroCall { span, .. } => *span,
+        Expr::FieldAccess { span, .. } => *span,
+        Expr::StructLiteral { span, .. } => *span,
+        Expr::MapLiteral { span, .. } => *span,
+        Expr::EnumLiteral { span, .. } => *span,
+        Expr::Block(block) => block.span,
+        Expr::If(expr) => expr.span,
+        Expr::Match(expr) => expr.span,
+        Expr::Tuple(_, span) => *span,
+        Expr::ArrayLiteral(_, span) => *span,
+        Expr::Range(range) => range.span,
+        Expr::Index { span, .. } => *span,
+        Expr::Reference { span, .. } => *span,
+        Expr::Deref { span, .. } => *span,
+        Expr::Move { span, .. } => *span,
+        Expr::FormatString(literal) => literal.span,
+        Expr::Async { span, .. } => *span,
+        Expr::Await { span, .. } => *span,
+        Expr::Spawn { span, .. } => *span,
+        Expr::Closure { span, .. } => *span,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3762,50 +3794,5 @@ pub enum Result[T, E] { Ok(T), Err(E) }
         let result = parse_module("core::types", path, &source);
         let module = result.expect("parse core types");
         assert!(!module.prelude.is_empty(), "expected prelude exports");
-    }
-}
-fn legacy_import_segments(input: &str) -> Vec<String> {
-    let without_ext = input.strip_suffix(".prime").unwrap_or(input);
-    let normalized = without_ext.replace("::", "/");
-    normalized
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| segment.to_string())
-        .collect()
-}
-
-fn expr_span(expr: &Expr) -> Span {
-    match expr {
-        Expr::Identifier(ident) => ident.span,
-        Expr::Literal(Literal::Int(_, span))
-        | Expr::Literal(Literal::Float(_, span))
-        | Expr::Literal(Literal::Bool(_, span))
-        | Expr::Literal(Literal::String(_, span))
-        | Expr::Literal(Literal::Rune(_, span)) => *span,
-        Expr::Try { span, .. } => *span,
-        Expr::TryPropagate { span, .. } => *span,
-        Expr::Binary { span, .. } => *span,
-        Expr::Unary { span, .. } => *span,
-        Expr::Call { span, .. } => *span,
-        Expr::MacroCall { span, .. } => *span,
-        Expr::FieldAccess { span, .. } => *span,
-        Expr::StructLiteral { span, .. } => *span,
-        Expr::MapLiteral { span, .. } => *span,
-        Expr::EnumLiteral { span, .. } => *span,
-        Expr::Block(block) => block.span,
-        Expr::If(expr) => expr.span,
-        Expr::Match(expr) => expr.span,
-        Expr::Tuple(_, span) => *span,
-        Expr::ArrayLiteral(_, span) => *span,
-        Expr::Range(range) => range.span,
-        Expr::Index { span, .. } => *span,
-        Expr::Reference { span, .. } => *span,
-        Expr::Deref { span, .. } => *span,
-        Expr::Move { span, .. } => *span,
-        Expr::FormatString(literal) => literal.span,
-        Expr::Async { span, .. } => *span,
-        Expr::Await { span, .. } => *span,
-        Expr::Spawn { span, .. } => *span,
-        Expr::Closure { span, .. } => *span,
     }
 }

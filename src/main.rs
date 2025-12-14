@@ -1,43 +1,37 @@
-mod docs;
-mod language;
-mod lsp;
-mod project;
-mod runtime;
-mod target;
-#[cfg(test)]
-mod tests;
-mod tools;
+#![allow(clippy::collapsible_if)]
 
 use clap::{Parser, Subcommand, ValueEnum};
-use language::{
+use prime_lang::docs;
+use prime_lang::{language, lsp, project, tools};
+use prime_lang::language::{
     ast::{Item, ModuleKind},
     span::Span,
 };
-use language::{
+use prime_lang::language::{
     compiler::Compiler, macro_expander, parser::parse_module, typecheck,
     typecheck::TypecheckOptions,
 };
 use miette::NamedSource;
-use project::diagnostics::analyze_manifest_issues;
-use project::{
+use prime_lang::project::diagnostics::analyze_manifest_issues;
+use prime_lang::project::{
     FileErrors, PackageError, apply_manifest_header_with_manifest, canonicalize, find_manifest,
     load_package, load_package_with_manifest, manifest::PackageManifest,
     manifest::canonical_module_name, manifest::manifest_key_for, warn_manifest_drift,
 };
-use runtime::{Interpreter, platform};
+use prime_lang::runtime::{Interpreter, platform};
 use std::{
     env, fs, io,
     path::{Component, Path, PathBuf},
     process::Command,
     sync::{Mutex, OnceLock},
 };
-use target::{BuildOptions, BuildTarget};
+use prime_lang::target::{BuildOptions, BuildTarget};
 use toml::Value;
 use toml_edit::{
     self, Array, DocumentMut, InlineTable, Item as TomlItem, Table as TomlEditTable,
     Value as TomlValue,
 };
-use tools::{
+use prime_lang::tools::{
     diagnostics::{
         emit_manifest_issues, emit_syntax_errors, emit_type_errors, report_io_error,
         report_runtime_error,
@@ -390,6 +384,11 @@ fn main() {
             dep_path,
             features,
         } => {
+            let dep = AddModuleDependency {
+                git,
+                path: dep_path,
+                features,
+            };
             if let Err(err) = add_module(
                 &name,
                 path.as_deref(),
@@ -397,9 +396,7 @@ fn main() {
                 visibility,
                 test,
                 library,
-                git,
-                dep_path,
-                features,
+                dep,
             ) {
                 eprintln!("add failed: {err}");
                 std::process::exit(1);
@@ -1140,7 +1137,7 @@ fn run_gcc_with_runtime(
         }
         BuildTarget::Triple(triple) => Err(format!(
             "unsupported target triple `{triple}`; supported embedded targets: {}",
-            crate::target::embedded_target_hint()
+            prime_lang::target::embedded_target_hint()
         )),
     }
 }
@@ -1315,7 +1312,7 @@ fn expand_env_vars(raw: &str) -> String {
             if matches!(chars.peek(), Some('{')) {
                 let _ = chars.next();
                 let mut name = String::new();
-                while let Some(next) = chars.next() {
+                for next in chars.by_ref() {
                     if next == '}' {
                         break;
                     }
@@ -1804,7 +1801,7 @@ fn init_project(
         fs::create_dir_all(dir)?;
     }
     match kind {
-        NewKind::Workspace { library, binary } => {
+        NewKind::Workspace { library, .. } => {
             let package_name = package_name_from_dir(dir);
             let member_dir = dir.join(&package_name);
             if dir.join("prime.toml").exists() {
@@ -1816,13 +1813,7 @@ fn init_project(
             }
             init_project(
                 &member_dir,
-                if library {
-                    NewKind::Library
-                } else if binary {
-                    NewKind::Binary
-                } else {
-                    NewKind::Binary
-                },
+                if library { NewKind::Library } else { NewKind::Binary },
                 warn_deprecated,
             )?;
             let member_rel = member_dir
@@ -1906,6 +1897,12 @@ version = "0.1.0"
     Ok(())
 }
 
+struct AddModuleDependency {
+    git: Option<String>,
+    path: Option<PathBuf>,
+    features: Vec<String>,
+}
+
 fn add_module(
     module_name: &str,
     explicit_path: Option<&Path>,
@@ -1913,12 +1910,10 @@ fn add_module(
     visibility: ModuleVisibilityArg,
     is_test: bool,
     is_library: bool,
-    dep_git: Option<String>,
-    dep_path: Option<PathBuf>,
-    dep_features: Vec<String>,
+    dep: AddModuleDependency,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if dep_git.is_some() || dep_path.is_some() {
-        return add_dependency_entry(module_name, project, dep_git, dep_path, dep_features);
+    if dep.git.is_some() || dep.path.is_some() {
+        return add_dependency_entry(module_name, project, dep.git, dep.path, dep.features);
     }
     let segments = parse_module_segments(module_name)?;
     let cwd = env::current_dir()?;
@@ -1926,22 +1921,15 @@ fn add_module(
     let manifest_dir = manifest_path
         .parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid manifest path"))?;
+        .ok_or_else(|| io::Error::other("invalid manifest path"))?;
     let manifest_text = fs::read_to_string(&manifest_path)?;
-    let mut doc: DocumentMut = manifest_text.parse().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to parse manifest: {err:?}"),
-        )
-    })?;
+    let mut doc: DocumentMut = manifest_text
+        .parse()
+        .map_err(|err| io::Error::other(format!("failed to parse manifest: {err:?}")))?;
     match doc["manifest_version"].as_str() {
         Some("3") => {}
         _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "`prime add` requires manifest_version = \"3\"",
-            )
-            .into());
+            return Err(io::Error::other("`prime add` requires manifest_version = \"3\"").into());
         }
     }
     let rel_path = match explicit_path {
@@ -1950,16 +1938,11 @@ fn add_module(
     };
     let manifest_path_string = manifest_path_string(&rel_path);
     let manifest_current = PackageManifest::load(&manifest_path).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to load manifest: {err:?}"),
-        )
+        io::Error::other(format!("failed to load manifest: {err:?}"))
     })?;
     let canonical = canonical_module_name(module_name);
     if manifest_current.module_path(&canonical).is_some() {
-        return Err(
-            io::Error::new(io::ErrorKind::Other, "module already exists in manifest").into(),
-        );
+        return Err(io::Error::other("module already exists in manifest").into());
     }
     let key = manifest_key_for(module_name);
     let mut entry = TomlEditTable::new();
@@ -2013,7 +1996,7 @@ fn add_dependency_entry(
     let manifest_dir = manifest_path
         .parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid manifest path"))?;
+        .ok_or_else(|| io::Error::other("invalid manifest path"))?;
     let manifest_text = fs::read_to_string(&manifest_path)?;
     if debug {
         eprintln!(
@@ -2021,28 +2004,23 @@ fn add_dependency_entry(
             manifest_path.display()
         );
     }
-    let mut doc: DocumentMut = manifest_text.parse().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to parse manifest: {err:?}"),
-        )
-    })?;
+    let mut doc: DocumentMut = manifest_text
+        .parse()
+        .map_err(|err| io::Error::other(format!("failed to parse manifest: {err:?}")))?;
     if debug {
         eprintln!("debug add-dep: parsed manifest");
     }
     match doc["manifest_version"].as_str() {
         Some("3") => {}
         _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "`prime add --git/--dep-path` requires manifest_version = \"3\"",
-            )
-            .into());
+            return Err(
+                io::Error::other("`prime add --git/--dep-path` requires manifest_version = \"3\"")
+                    .into(),
+            );
         }
     }
     if !doc["package"].is_table() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "dependencies must be added inside a package manifest (not workspace root)",
         )
         .into());
@@ -2052,7 +2030,7 @@ fn add_dependency_entry(
         .or_insert(TomlItem::Table(TomlEditTable::new()));
     let deps_table = deps_item
         .as_table_like_mut()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "`dependencies` must be a table"))?;
+        .ok_or_else(|| io::Error::other("`dependencies` must be a table"))?;
     if debug {
         eprintln!("debug add-dep: adding entry for {dep_name}");
     }
@@ -2085,13 +2063,13 @@ fn add_dependency_entry(
     fs::write(&manifest_path, doc.to_string())?;
 
     let lock_path = manifest_dir.join("prime.lock");
-    let mut lock = crate::project::lock::load_lockfile(&lock_path).unwrap_or_else(|| {
+    let mut lock = prime_lang::project::lock::load_lockfile(&lock_path).unwrap_or_else(|| {
         PackageManifest::load(&manifest_path)
             .map(|m| m.lock_dependencies())
             .unwrap_or_default()
     });
 
-    let mut locked = crate::project::lock::LockedDependency {
+    let mut locked = prime_lang::project::lock::LockedDependency {
         name: dep_name.to_string(),
         package: None,
         git: dep_git.clone(),
@@ -2129,7 +2107,7 @@ fn add_dependency_entry(
     } else {
         lock.dependencies.push(locked);
     }
-    if let Err(err) = crate::project::lock::write_lockfile(&lock_path, &lock) {
+    if let Err(err) = prime_lang::project::lock::write_lockfile(&lock_path, &lock) {
         eprintln!("warning: failed to write lockfile: {err}");
     }
     Ok(())
@@ -2214,7 +2192,7 @@ fn resolve_edit_manifest(
     if candidate.exists() {
         if let Ok(text) = fs::read_to_string(&candidate) {
             if let Ok(value) = toml::from_str::<Value>(&text) {
-                if !value.get("workspace").is_some() {
+                if value.get("workspace").is_none() {
                     return Ok(candidate);
                 }
             }
@@ -2324,7 +2302,7 @@ fn parse_module_segments(name: &str) -> Result<Vec<String>, Box<dyn std::error::
         .into());
     }
     let parts: Vec<_> = name
-        .split(|ch| ch == ':' || ch == '/')
+        .split([':', '/'])
         .filter(|s| !s.is_empty() && *s != ":")
         .collect();
     if parts.iter().any(|segment| segment.trim().is_empty()) {

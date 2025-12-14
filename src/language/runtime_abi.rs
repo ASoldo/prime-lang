@@ -136,6 +136,12 @@ pub struct RuntimeAbi {
 }
 
 impl RuntimeAbi {
+    /// Declare the runtime ABI imports in the given LLVM module.
+    ///
+    /// # Safety
+    /// - `context` and `module` must be valid LLVM handles created by the same LLVM instance.
+    /// - The module must outlive the returned [`RuntimeAbi`].
+    /// - `pointer_width_bits` must match the target pointer width of the generated code.
     pub unsafe fn declare(
         context: LLVMContextRef,
         module: LLVMModuleRef,

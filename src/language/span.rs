@@ -16,6 +16,10 @@ impl Span {
         self.end.saturating_sub(self.start)
     }
 
+    pub const fn is_empty(&self) -> bool {
+        self.start >= self.end
+    }
+
     pub fn union(self, other: Span) -> Span {
         Span {
             start: self.start.min(other.start),

@@ -105,7 +105,7 @@ pub fn platform() -> &'static dyn Platform {
 
 #[allow(dead_code)]
 pub fn install_platform<P: Platform + 'static>(platform: P) -> Result<(), Box<dyn Platform>> {
-    PLATFORM.set(Box::new(platform)).map_err(|boxed| boxed)
+    PLATFORM.set(Box::new(platform))
 }
 
 pub fn configure_platform(options: &BuildOptions) {

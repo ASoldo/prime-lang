@@ -46,6 +46,12 @@ pub struct Environment {
     borrow_frames: Vec<Vec<String>>,
 }
 
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Environment {
     pub fn new() -> Self {
         Self {

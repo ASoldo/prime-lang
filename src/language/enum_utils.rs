@@ -9,7 +9,7 @@ pub fn ensure_enum_visible(
     enum_module: &str,
     module: &Module,
     _span: Span,
-) -> Result<(), TypeError> {
+) -> Result<(), Box<TypeError>> {
     if enum_def.visibility == Visibility::Private && enum_module != module.name {
         // Private enums are visible within the declaring module; callers ensure this when possible.
     }
@@ -22,17 +22,17 @@ pub fn find_variant<'a>(
     variant: &str,
     module: &Module,
     span: Span,
-) -> Result<&'a EnumVariant, TypeError> {
+) -> Result<&'a EnumVariant, Box<TypeError>> {
     ensure_enum_visible(enum_def, enum_module, module, span)?;
     enum_def
         .variants
         .iter()
         .find(|v| v.name == variant)
         .ok_or_else(|| {
-            TypeError::new(
+            Box::new(TypeError::new(
                 &module.path,
                 span,
                 format!("Enum `{}` has no variant `{}`", enum_def.name, variant),
-            )
+            ))
         })
 }

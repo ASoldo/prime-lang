@@ -11,7 +11,7 @@ use std::{
 };
 use tower_lsp_server::ls_types::{Position, Range, Uri};
 
-pub fn token_at<'a>(tokens: &'a [Token], offset: usize) -> Option<&'a Token> {
+pub fn token_at(tokens: &[Token], offset: usize) -> Option<&Token> {
     tokens
         .iter()
         .find(|token| offset >= token.span.start && offset < token.span.end)
@@ -104,8 +104,8 @@ pub fn offset_to_position(text: &str, offset: usize) -> Position {
 
 pub fn position_to_offset(text: &str, position: Position) -> usize {
     let mut offset = 0usize;
-    let mut current_line = 0u32;
-    for line in text.split_inclusive('\n') {
+    for (current_line, line) in text.split_inclusive('\n').enumerate() {
+        let current_line: u32 = current_line.try_into().unwrap_or(u32::MAX);
         if current_line == position.line {
             let mut col_bytes = 0usize;
             for ch in line.chars().take(position.character as usize) {
@@ -115,7 +115,6 @@ pub fn position_to_offset(text: &str, position: Position) -> usize {
             return offset;
         }
         offset += line.len();
-        current_line += 1;
     }
     text.len()
 }
@@ -142,7 +141,7 @@ pub fn prefix_identifier(text: &str, range: &Range) -> String {
     }
 }
 
-pub fn identifier_prefix_slice<'a>(text: &'a str, offset: usize) -> Option<&'a str> {
+pub fn identifier_prefix_slice(text: &str, offset: usize) -> Option<&str> {
     if text.is_empty() {
         return None;
     }

@@ -3407,7 +3407,7 @@ mod tests {
             .expect("out call evaluates");
         assert!(matches!(result.value, BuildValue::Unit));
         assert_eq!(result.effects.len(), 1);
-        if let Some(BuildEffect::Out(values)) = result.effects.get(0) {
+        if let Some(BuildEffect::Out(values)) = result.effects.first() {
             assert_eq!(values.len(), 1);
             assert!(matches!(values[0], BuildValue::String(ref v) if v == "hi"));
         } else {

@@ -216,6 +216,7 @@ fn run_test_file(root: &Path, path: &Path) -> Result<(), String> {
             if func.name == "main" {
                 continue;
             }
+            let qualified = format!("{}::{}", module.name, func.name);
             let args = if func.params.is_empty() {
                 Vec::new()
             } else if let Some(values) = &last_values {
@@ -226,7 +227,7 @@ fn run_test_file(root: &Path, path: &Path) -> Result<(), String> {
                 } else {
                     println!(
                         "test name:{} path:{} status:skipped (needs {} args, have {})",
-                        format!("{}::{}", module.name, func.name),
+                        &qualified,
                         display,
                         func.params.len(),
                         values.len()
@@ -236,13 +237,12 @@ fn run_test_file(root: &Path, path: &Path) -> Result<(), String> {
             } else {
                 println!(
                     "test name:{} path:{} status:skipped (no chained value for {} args)",
-                    format!("{}::{}", module.name, func.name),
+                    &qualified,
                     display,
                     func.params.len()
                 );
                 continue;
             };
-            let qualified = format!("{}::{}", module.name, func.name);
             let arg_display = format_args_display(&args);
             match interpreter.run_function_with_args(&qualified, args.clone()) {
                 Ok(values) => {

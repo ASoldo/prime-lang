@@ -671,19 +671,17 @@ fn infer_expr_type_with_decls(
     match expr {
         Expr::Call { callee, .. } => match &**callee {
             Expr::Identifier(ident) => {
-                if let Some(decl_ty) = decls
+                if let Some(TypeExpr::Function { returns, .. }) = decls
                     .iter()
                     .rev()
                     .find(|decl| decl.name == ident.name)
                     .and_then(|decl| decl.ty.clone())
                 {
-                    if let TypeExpr::Function { returns, .. } = decl_ty {
-                        return match returns.len() {
-                            0 => Some(TypeExpr::Unit),
-                            1 => Some(returns[0].clone()),
-                            _ => Some(TypeExpr::Tuple(returns)),
-                        };
-                    }
+                    return match returns.len() {
+                        0 => Some(TypeExpr::Unit),
+                        1 => Some(returns[0].clone()),
+                        _ => Some(TypeExpr::Tuple(returns)),
+                    };
                 }
                 function_return_type(module, &ident.name)
             }
@@ -1682,15 +1680,12 @@ fn find_in_match(match_expr: &MatchExpr, offset: usize) -> Option<(String, Span)
 
 fn find_in_format_string(literal: &FormatStringLiteral, offset: usize) -> Option<(String, Span)> {
     for segment in &literal.segments {
-        match segment {
-            FormatSegment::Expr { expr, span } => {
-                if span_contains(*span, offset) {
-                    if let Some(found) = find_in_expr(expr, offset) {
-                        return Some(found);
-                    }
+        if let FormatSegment::Expr { expr, span } = segment {
+            if span_contains(*span, offset) {
+                if let Some(found) = find_in_expr(expr, offset) {
+                    return Some(found);
                 }
             }
-            _ => {}
         }
     }
     None
@@ -1903,7 +1898,7 @@ pub fn receiver_type_name(expr: &TypeExpr) -> Option<String> {
     struct_name_from_type(expr).map(|name| name.to_string())
 }
 
-fn struct_name_from_type<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
+fn struct_name_from_type(ty: &TypeExpr) -> Option<&str> {
     match ty {
         TypeExpr::Named(name, _) => Some(name),
         TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => struct_name_from_type(ty),

@@ -143,18 +143,18 @@ pub fn module_path_completion_context(
     let line_start = text[..offset].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
     let line = &text[line_start..offset];
     let mut trimmed = line.trim_start();
-    if trimmed.starts_with("module ") {
-        let after = trimmed["module ".len()..].trim_start();
+    if let Some(after) = trimmed.strip_prefix("module ") {
+        let after = after.trim_start();
         return Some(ModulePathCompletionContext {
             kind: ModulePathCompletionKind::Declaration,
             prefix: sanitize_module_prefix(after),
         });
     }
-    if trimmed.starts_with("pub ") {
-        trimmed = trimmed["pub ".len()..].trim_start();
+    if let Some(after) = trimmed.strip_prefix("pub ") {
+        trimmed = after.trim_start();
     }
-    if trimmed.starts_with("import ") {
-        let after = trimmed["import ".len()..].trim_start();
+    if let Some(after) = trimmed.strip_prefix("import ") {
+        let after = after.trim_start();
         if let Some(idx) = after.find('{') {
             let module_part = after[..idx].trim_end().trim_end_matches(':');
             return Some(ModulePathCompletionContext {
@@ -239,8 +239,11 @@ pub fn module_selector_items_from_modules(
     module_name: &str,
     modules: &[Module],
 ) -> Vec<CompletionItem> {
-    let target_name = if module_name.ends_with("::prelude") && module_name.contains("::") {
-        module_name.rsplitn(2, "::").nth(1).unwrap_or(module_name)
+    let target_name = if module_name.ends_with("::prelude") {
+        module_name
+            .rsplit_once("::")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(module_name)
     } else {
         module_name
     };
@@ -751,7 +754,7 @@ pub fn member_completion_items(
                         )),
                         filter_text,
                         text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                            range: edit_range.clone(),
+                            range: edit_range,
                             new_text,
                         })),
                         ..Default::default()
@@ -776,7 +779,7 @@ pub fn member_completion_items(
                         )),
                         filter_text,
                         text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                            range: edit_range.clone(),
+                            range: edit_range,
                             new_text,
                         })),
                         ..Default::default()
@@ -805,7 +808,7 @@ pub fn member_completion_items(
                         )),
                         filter_text,
                         text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                            range: edit_range.clone(),
+                            range: edit_range,
                             new_text,
                         })),
                         ..Default::default()
@@ -1020,14 +1023,14 @@ fn push_builtin_member(
         detail: Some(detail),
         filter_text,
         text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-            range: edit_range.clone(),
+            range: *edit_range,
             new_text,
         })),
         ..Default::default()
     });
 }
 
-fn strip_type_refs<'a>(ty: &'a TypeExpr) -> &'a TypeExpr {
+fn strip_type_refs(ty: &TypeExpr) -> &TypeExpr {
     match ty {
         TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => strip_type_refs(ty),
         _ => ty,
@@ -1115,7 +1118,7 @@ pub fn enum_variant_completion_items(
                         kind: Some(CompletionItemKind::ENUM_MEMBER),
                         detail: Some(format!("{} variant", def.name)),
                         text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                            range: edit_range.clone(),
+                            range: edit_range,
                             new_text: variant.name.clone(),
                         })),
                         ..Default::default()
@@ -1148,7 +1151,7 @@ pub fn general_completion_items(
             items.push(CompletionItem {
                 label: decl.name.clone(),
                 kind: Some(CompletionItemKind::VARIABLE),
-                detail: decl.ty.as_ref().map(|ty| format_type_expr(ty)),
+                detail: decl.ty.as_ref().map(format_type_expr),
                 ..Default::default()
             });
         }
@@ -1994,7 +1997,7 @@ fn literal_type(name: &str) -> Option<TypeExpr> {
     None
 }
 
-fn struct_name_from_type<'a>(ty: &'a TypeExpr) -> Option<&'a str> {
+fn struct_name_from_type(ty: &TypeExpr) -> Option<&str> {
     match ty {
         TypeExpr::Named(name, _) => Some(name),
         TypeExpr::Reference { ty, .. } | TypeExpr::Pointer { ty, .. } => struct_name_from_type(ty),
