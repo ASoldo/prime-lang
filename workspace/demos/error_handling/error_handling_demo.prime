@@ -1,7 +1,11 @@
+//! Error handling demo.
+//!
+//! Shows `Result[T, E]`, the `?` operator, and `try { ... }` expressions.
 module demos::error_handling;
 
 import core::types;
 
+/// Validates `value` and returns an error when it is negative.
 fn parse_energy(value: int32) -> Result[int32, string] {
   if value < 0 {
     Err("energy below zero")
@@ -10,6 +14,7 @@ fn parse_energy(value: int32) -> Result[int32, string] {
   }
 }
 
+/// Calls `parse_energy` and uses `?` to early-return on error.
 fn apply_boost(value: int32) -> Result[int32, string] {
   let int32 parsed = parse_energy(value)?;
   if parsed % 2 == 0 {
@@ -19,6 +24,7 @@ fn apply_boost(value: int32) -> Result[int32, string] {
   }
 }
 
+/// Wraps `apply_boost` in a `try` expression, returning a `Result`.
 fn calibrate_profile(value: int32) -> Result[int32, string] {
   try {
     let int32 boosted = apply_boost(value)?;
@@ -26,6 +32,7 @@ fn calibrate_profile(value: int32) -> Result[int32, string] {
   }
 }
 
+/// Helper to print `Result` values.
 fn log_result(label: string, outcome: Result[int32, string]) {
   match outcome {
     Ok(score) => out(`{label} => success {score}`),
@@ -33,6 +40,7 @@ fn log_result(label: string, outcome: Result[int32, string]) {
   }
 }
 
+/// Demonstrates early returns (including multi-value returns).
 fn span_measurements(seed: int32) -> (int32, int32) {
   if seed < 0 {
     return 0, 0;
@@ -47,6 +55,7 @@ fn span_measurements(seed: int32) -> (int32, int32) {
   return midpoint - 5, midpoint + 5;
 }
 
+/// Runs the error-handling examples.
 fn main() {
   out("=== error handling demo ===");
   log_result("stable", calibrate_profile(40));

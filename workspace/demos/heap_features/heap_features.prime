@@ -1,7 +1,13 @@
+//! Heap handle features demo.
+//!
+//! Demonstrates move semantics for heap-backed values:
+//! - `Box[T]` via `box_new(...)`
+//! - slices (`[]T`) moved between bindings
 module demos::heap_features;
 
 import core::types;
 
+/// Prints a slice (by calling `.len()` and `.get(i)`).
 fn describe_slice(label: string, collection: []string) {
   let int32 total = collection.len();
   out(`{label} ({total} entries)`);
@@ -14,12 +20,14 @@ fn describe_slice(label: string, collection: []string) {
   }
 }
 
+/// Moves a `Box` into a new variable and reads its value.
 fn move_box_demo() {
   let Box[int32] payload = box_new(72);
   let Box[int32] relocated = move payload;
   out(`moved box value -> {}`, box_get(relocated));
 }
 
+/// Moves a slice into a new variable and iterates it.
 fn move_slice_demo() {
   let []string squad = [
     "Prime Hero",
@@ -30,6 +38,7 @@ fn move_slice_demo() {
   describe_slice("redeployed squad:", redeployed);
 }
 
+/// Runs the heap-move demos.
 fn main() {
   out("=== heap features ===");
   move_box_demo();

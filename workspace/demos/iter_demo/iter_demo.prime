@@ -1,7 +1,12 @@
+//! Iterators demo.
+//!
+//! Shows how to iterate over slices and maps using `iter().next()` and `for`
+//! loops over iterator helpers (`map_keys`, `map_values`).
 module demos::iter_demo;
 
 import core::types;
 
+/// Runs the iterator demo.
 fn main() {
   let []string names = [
     "Ada",

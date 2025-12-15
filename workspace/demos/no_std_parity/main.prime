@@ -1,15 +1,23 @@
+//! no_std host parity demo.
+//!
+//! This module is designed to run both under a host runtime and under no_std
+//! targets by defining local `Option`/`Result` types. It serves as a "probe
+//! suite" to keep language/runtime behavior consistent across targets.
 module demos::no_std_parity;
 
+/// Minimal `Option` for no_std demos.
 pub enum Option[T] {
   Some(T),
   None,
 }
 
+/// Minimal `Result` for no_std demos.
 pub enum Result[T, E] {
   Ok(T),
   Err(E),
 }
 
+/// Verifies `defer { ... };` runs exactly once at scope exit.
 fn defer_probe() {
   let mut int32 guard = 0;
   defer {
@@ -19,6 +27,7 @@ fn defer_probe() {
   out(`defer probe start guard={guard}`);
 }
 
+/// Checks that `spawn` + `join` produces an awaitable task on this target.
 fn async_result_parity() {
   let (tx, rx) = channel[int32]();
   let worker = spawn async {
@@ -37,6 +46,7 @@ fn async_result_parity() {
   out("async result parity joined");
 }
 
+/// Uses `Result` inside an async task and validates `?`/matching behavior.
 fn async_try_parity() {
   let (tx, rx) = channel[int32]();
   let worker = spawn async {
@@ -58,6 +68,7 @@ fn async_try_parity() {
   }
 }
 
+/// Demonstrates joining a task that returns an `Option`.
 fn timeout_parity() {
   let (tx, rx) = channel[int32]();
   let worker = spawn async {
@@ -76,6 +87,7 @@ fn timeout_parity() {
   }
 }
 
+/// Basic `match` on a locally defined enum.
 fn match_parity() {
   let maybe = Option::Some(3);
   match maybe {
@@ -84,6 +96,12 @@ fn match_parity() {
   }
 }
 
+/// Exercises cancellation and timeout primitives for async tasks.
+///
+/// These APIs are intended to be available in no_std as well:
+/// - `await_timeout(task, ms)`
+/// - `await_cancel(task, token)`
+/// - `await_cancel_timeout(task, token, ms)`
 fn cancellation_timeout_parity() {
   let (tx, rx) = channel[int32]();
   let task = recv_task(rx);
@@ -118,6 +136,7 @@ fn cancellation_timeout_parity() {
   let _ = tx3;
 }
 
+/// Runs the parity probes in sequence.
 fn main() {
   out("no_std parity demo start");
   defer_probe();

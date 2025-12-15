@@ -1,7 +1,12 @@
+//! Filesystem I/O demo.
+//!
+//! Uses the built-in fs helpers to write a file, check it exists, and report
+//! errors via `Result`.
 module demos::fs_demo;
 
 import core::types;
 
+/// Writes a temp file inside the repo and prints the outcome.
 fn main() {
   let string path = "workspace/demos/fs_demo/tmp_demo.txt";
   out(`writing to {path}`);

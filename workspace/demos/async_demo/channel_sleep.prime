@@ -1,7 +1,12 @@
+//! Async + channels + sleeping.
+//!
+//! Spawns one task that sleeps, then sends a value over a channel, while another
+//! task awaits `recv_task(...)`.
 library demos::async_demo::channel_sleep;
 
 import core::types;
 
+/// Runs the channel + sleep demo.
 pub fn run() {
   let (tx, rx) = channel[int]();
   let sleeper = async {

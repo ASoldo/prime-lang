@@ -1,14 +1,25 @@
+//! Closures demo.
+//!
+//! Covers:
+//! - closure syntax: `|args| expr` and `|args| -> T { ... }`
+//! - capturing locals by value and by reference
+//! - higher-order functions (passing/returning closures)
+//! - moving heap handles (slices/maps/boxes) through closures
+//! - `defer` inside a closure body
 module demos::closures;
 
+/// Applies `f` twice: `f(f(value))`.
 fn apply_twice(f: fn(int32) -> int32, value: int32) -> int32 {
   f(f(value))
 }
 
+/// Returns a closure that captures `base`.
 fn make_adder() -> fn(int32) -> int32 {
   let int32 base = 10;
   |x: int32| base + x
 }
 
+/// Runs a tour of closure patterns and prints results.
 fn main() {
   let double = |x: int32| x * 2;
   let twice = apply_twice(double, 3);

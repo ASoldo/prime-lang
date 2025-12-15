@@ -1,19 +1,26 @@
+//! Macros demo.
+//!
+//! Shows how to define macros and how to invoke them using the `~` prefix.
+//! You can inspect expansions with:
+//! `prime-lang expand <file> --line <N> --column <N>`
 module demos::macro_demo;
 
+/// A small struct used by the macros below.
 struct Vec2 {
   x: int32;
   y: int32;
 }
 
+/// Debug-print an expression value and return it unchanged.
 pub macro dbg(value: int32) -> int32 {
   out(`DBG: {value}`);
   value
 }
 
-/// `hello`
-/// [hello]
-/// *hello*
-/// `<div>`[Hello]`</div>`
+/// Constructs a `Vec2` using named fields.
+///
+/// This is a macro to show expansion output (temporary bindings, hygiene) in
+/// `prime-lang expand` and the editor popup.
 macro vec2(x: int32, y: int32) -> Vec2 {
   Vec2{
     x,
@@ -21,6 +28,7 @@ macro vec2(x: int32, y: int32) -> Vec2 {
   }
 }
 
+/// Runs the macro demo (`~vec2(...)` and `~dbg(...)`).
 fn main() {
   let Vec2 p = ~vec2(3, 4);
   let int32 hp = ~dbg(p.x + p.y);

@@ -1,12 +1,18 @@
+//! Parallelism + channels demo.
+//!
+//! Spawns two workers in parallel, sends results back over a channel, and then
+//! joins the workers to ensure completion.
 module demos::parallel_demo;
 
 import core::types;
 
+/// Messages that workers can send back to the main thread.
 enum WorkerOutcome {
   Total(int32),
   Error(string),
 }
 
+/// Worker function that sums `values` and sends a `WorkerOutcome`.
 fn worker(id: int32, tx: Sender[WorkerOutcome], values: []int32) -> Result[(), string] {
   let mut int32 total = 0;
   for value in values {
@@ -15,6 +21,7 @@ fn worker(id: int32, tx: Sender[WorkerOutcome], values: []int32) -> Result[(), s
   send(tx, WorkerOutcome::Total(total + id))
 }
 
+/// Runs the parallel demo and prints collected totals.
 fn main() {
   let (tx, rx) = channel[WorkerOutcome]();
   let []int32 left = [

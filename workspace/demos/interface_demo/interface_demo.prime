@@ -1,19 +1,27 @@
+//! Interface (trait) basics demo.
+//!
+//! Defines an interface, implements it for a type, and calls the interface
+//! method using method-call syntax.
 module demos::interface_demo;
 
+/// A simple data type used for the interface demo.
 struct Hero {
   name: string;
 }
 
+/// Types that can provide a display label.
 pub interface Nameable {
   fn label(hero: Hero) -> string;
 }
 
 impl Nameable for Hero {
+  /// Returns the hero name as its label.
   fn label(hero: Hero) -> string {
     hero.name
   }
 }
 
+/// Runs the interface demo.
 fn main() {
   let Hero hero = Hero{
     "Prime Hero",

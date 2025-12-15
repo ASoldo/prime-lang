@@ -1,0 +1,19 @@
+//! Formatter doc comment regression test.
+//!
+//! Module docs must stay `//!` (not converted to `///`) and item docs must stay
+//! above the item (not attached after `pub`).
+module tests::formatter_doc_comments;
+
+/// Minimal `Option` docs.
+pub enum Option[T] {
+  Some(T),
+  None,
+}
+
+/// A constant with docs.
+pub const ANSWER: int32 = 42;
+
+/// A public function with docs.
+pub fn greet(name: string) {
+  out(`hello {name}`);
+}

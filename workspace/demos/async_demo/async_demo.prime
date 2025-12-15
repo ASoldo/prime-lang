@@ -1,7 +1,12 @@
+//! Async/await basics.
+//!
+//! Shows `async { ... }` tasks, awaiting a task, and printing the result.
+//! Prime async is cooperative: a task makes progress when it is awaited/polled.
 module demos::async_demo;
 
 import core::types;
 
+/// Runs a small async task and prints its result.
 fn main() {
   out("starting async demo (basic task)");
 

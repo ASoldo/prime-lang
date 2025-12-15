@@ -108,10 +108,10 @@ fn write_visibility(out: &mut String, visibility: Visibility) {
 
 fn format_struct(out: &mut String, def: &StructDef) {
     let params = format_type_params(&def.type_params);
-    write_visibility(out, def.visibility);
     if let Some(doc) = &def.doc {
         write_doc_comment(out, doc, false, 0);
     }
+    write_visibility(out, def.visibility);
     out.push_str(&format!("struct {}{} {{\n", def.name, params));
     for field in &def.fields {
         if field.embedded {
@@ -129,10 +129,10 @@ fn format_struct(out: &mut String, def: &StructDef) {
 
 fn format_enum(out: &mut String, def: &EnumDef) {
     let params = format_type_params(&def.type_params);
-    write_visibility(out, def.visibility);
     if let Some(doc) = &def.doc {
         write_doc_comment(out, doc, false, 0);
     }
+    write_visibility(out, def.visibility);
     out.push_str(&format!("enum {}{} {{\n", def.name, params));
     for variant in &def.variants {
         if variant.fields.is_empty() {
@@ -151,10 +151,10 @@ fn format_enum(out: &mut String, def: &EnumDef) {
 
 fn format_interface(out: &mut String, def: &InterfaceDef) {
     let params = format_type_params(&def.type_params);
-    write_visibility(out, def.visibility);
     if let Some(doc) = &def.doc {
         write_doc_comment(out, doc, false, 0);
     }
+    write_visibility(out, def.visibility);
     out.push_str(&format!("interface {}{} {{\n", def.name, params));
     for method in &def.methods {
         out.push_str("  fn ");
@@ -213,10 +213,10 @@ fn format_impl(out: &mut String, block: &ImplBlock) {
 
 fn format_function(out: &mut String, def: &FunctionDef) {
     let params = format_type_params(&def.type_params);
-    write_visibility(out, def.visibility);
     if let Some(doc) = &def.doc {
         write_doc_comment(out, doc, false, 0);
     }
+    write_visibility(out, def.visibility);
     out.push_str(&format!("fn {}{}(", def.name, params));
     for (idx, param) in def.params.iter().enumerate() {
         if idx > 0 {
@@ -252,10 +252,10 @@ fn format_function(out: &mut String, def: &FunctionDef) {
 }
 
 fn format_macro(out: &mut String, def: &MacroDef) {
-    write_visibility(out, def.visibility);
     if let Some(doc) = &def.doc {
         write_doc_comment(out, doc, false, 0);
     }
+    write_visibility(out, def.visibility);
     out.push_str(&format!("macro {}(", def.name));
     for (idx, param) in def.params.iter().enumerate() {
         if idx > 0 {
@@ -462,10 +462,10 @@ fn format_call_type_args(args: &[TypeExpr]) -> String {
 }
 
 fn format_const(out: &mut String, def: &ConstDef) {
-    write_visibility(out, def.visibility);
     if let Some(doc) = &def.doc {
         write_doc_comment(out, doc, false, 0);
     }
+    write_visibility(out, def.visibility);
     out.push_str("const ");
     out.push_str(&def.name);
     if let Some(ty) = &def.ty {
@@ -823,11 +823,12 @@ fn format_while_statement(out: &mut String, stmt: &WhileStmt, indent: usize) {
     out.push_str("}\n");
 }
 
-fn write_doc_comment(out: &mut String, doc: &str, _module: bool, indent: usize) {
+fn write_doc_comment(out: &mut String, doc: &str, module: bool, indent: usize) {
+    let marker = if module { "//!" } else { "///" };
     let prefix = " ".repeat(indent);
     for line in doc.lines() {
         out.push_str(&prefix);
-        out.push_str("///");
+        out.push_str(marker);
         if !line.is_empty() {
             out.push(' ');
             out.push_str(line);
@@ -1786,6 +1787,18 @@ mod tests {
             .expect("fixture input");
         let output = fs::read_to_string("workspace/tests/golden/formatter_comments_out.prime")
             .expect("fixture out");
+        let formatted = format_fixture(&input);
+        assert_eq!(formatted, output);
+    }
+
+    #[test]
+    fn formatter_preserves_doc_comments() {
+        let input =
+            fs::read_to_string("workspace/tests/golden/formatter_doc_comments_in.prime")
+                .expect("fixture input");
+        let output =
+            fs::read_to_string("workspace/tests/golden/formatter_doc_comments_out.prime")
+                .expect("fixture out");
         let formatted = format_fixture(&input);
         assert_eq!(formatted, output);
     }

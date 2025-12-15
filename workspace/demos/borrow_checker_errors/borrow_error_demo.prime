@@ -1,5 +1,10 @@
+//! Borrow-checker scoping demo.
+//!
+//! Uses nested blocks to show where a mutable borrow ends, so a later borrow of
+//! the same value is legal.
 module demos::borrow_checker_errors;
 
+/// Uses nested blocks to ensure each `&mut` borrow stays scoped.
 fn nested_borrow_release() {
   let mut int32 gauge = 20;
   let int32 snapshot = gauge;
@@ -25,6 +30,7 @@ fn nested_borrow_release() {
   out(`gauge stabilized at {gauge}`);
 }
 
+/// Entry point for the scoping demo.
 fn main() {
   nested_borrow_release();
 }

@@ -1,7 +1,12 @@
+//! Channels demo.
+//!
+//! Demonstrates `channel[T]()` with a worker that sends values and a collector
+//! that receives until the sender is closed.
 module demos::channel_demo;
 
 import core::types;
 
+/// Sends each entry in `values`, then closes the sender.
 fn worker(tx: Sender[int32], values: []int32) {
   for v in values {
     send(tx, v);
@@ -9,6 +14,7 @@ fn worker(tx: Sender[int32], values: []int32) {
   close(tx);
 }
 
+/// Receives until the channel closes and returns the sum.
 fn collect(rx: Receiver[int32]) -> int32 {
   let mut int32 total = 0;
   loop {
@@ -24,6 +30,7 @@ fn collect(rx: Receiver[int32]) -> int32 {
   return total;
 }
 
+/// Spawns a worker and returns the collected sum.
 fn run_channels() -> int32 {
   let (tx, rx) = channel[int32]();
   let handle = spawn worker(tx, [1, 2, 3]);
@@ -32,6 +39,7 @@ fn run_channels() -> int32 {
   return sum;
 }
 
+/// Runs the channel demo.
 fn main() {
   out(run_channels());
 }

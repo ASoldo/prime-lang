@@ -1,13 +1,19 @@
+//! Pattern matching demo.
+//!
+//! Shows `match` on tuples, maps, and structs, plus destructuring patterns for
+//! slices and `if let` / `while let` helpers.
 module demos::patterns;
 
 import core::types;
 
+/// Sample struct used for destructuring patterns.
 struct Telemetry {
   hp: int32;
   mp: int32;
   notes: []string;
 }
 
+/// Matches on a tuple `(label, value)` and prints a message.
 fn describe_reading(reading: (string, int32)) {
   match reading {
     ("temp", value) => out(`temperature reading {value}`),
@@ -16,6 +22,7 @@ fn describe_reading(reading: (string, int32)) {
   }
 }
 
+/// Destructures a map and demonstrates `if let` on `Option`.
 fn summarize_stats(stats: Map[string, int32]) {
   let #{ "hp": hp_total, "mp": mp_total } = stats;
   out(`direct stats pair -> hp {hp_total} mp {mp_total}`);
@@ -32,6 +39,7 @@ fn summarize_stats(stats: Map[string, int32]) {
   }
 }
 
+/// Matches on a struct and uses slice patterns to inspect notes.
 fn inspect_telemetry(data: Telemetry) {
   match data {
     Telemetry{ hp: hp, mp: mp, .. } => {
@@ -53,6 +61,7 @@ fn inspect_telemetry(data: Telemetry) {
   }
 }
 
+/// Shows `mut` destructuring bindings for tuples, maps, and structs.
 fn mutate_destructured_bindings() {
   let mut (left, right) = (15, 5);
   left = left + right;
@@ -77,6 +86,7 @@ fn mutate_destructured_bindings() {
   out(`struct mutation total {}`, hp + mp);
 }
 
+/// Runs the pattern demo.
 fn main() {
   describe_reading(("temp", 72));
 

@@ -1,15 +1,28 @@
+//! Bare-metal style demo (no `core::types`).
+//!
+//! This file defines minimal `Option`/`Result` locally and exercises:
+//! - slice transforms (`sum`, `filter_above`)
+//! - channels + `spawn async { ... }` + `join(...)`
+//! - async receive via `recv_task(...)`
+//! - a small `recv_timeout(...)` probe
+//!
+//! Intended for embedded/no_std experimentation; the exact runtime bindings
+//! depend on the target you compile for.
 module demos::bare_metal_embedded;
 
+/// Minimal `Option` for no_std demos.
 pub enum Option[T] {
   Some(T),
   None,
 }
 
+/// Minimal `Result` for no_std demos.
 pub enum Result[T, E] {
   Ok(T),
   Err(E),
 }
 
+/// Runs a suite of simple "parity probes" used on embedded targets.
 fn main() {
   out("bare metal demo starting");
 
@@ -50,6 +63,7 @@ fn main() {
   timeout_parity();
 }
 
+/// Sums a slice of `int32`.
 fn sum(values: []int32) -> int32 {
   let mut int32 acc = 0;
   for value in values {
@@ -58,6 +72,7 @@ fn sum(values: []int32) -> int32 {
   acc
 }
 
+/// Filters values above `threshold` into a new slice.
 fn filter_above(values: []int32, threshold: int32) -> []int32 {
   let mut []int32 result = [];
   for value in values {
@@ -68,6 +83,7 @@ fn filter_above(values: []int32, threshold: int32) -> []int32 {
   result
 }
 
+/// Verifies that `spawn` + `recv_task` + `join` works with local `Result`.
 fn parity_probe() -> Result[int32, string] {
   let (tx, rx) = channel[int32]();
   let worker = spawn async {
@@ -90,6 +106,7 @@ fn parity_probe() -> Result[int32, string] {
   }
 }
 
+/// Exercises sending a `Result` through a channel and transforming it in a task.
 fn async_result_parity() {
   let (tx, rx) = channel[Result[int32, string]]();
   let worker = spawn async {
@@ -109,6 +126,7 @@ fn async_result_parity() {
   out("async result parity joined");
 }
 
+/// Checks `recv_timeout(...)` behavior when no value is available.
 fn timeout_parity() {
   let (tx, rx) = channel[int32]();
   let Option[int32] timed = recv_timeout(rx, 5);

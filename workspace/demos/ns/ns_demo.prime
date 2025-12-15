@@ -1,21 +1,30 @@
+//! Namespaces and free functions demo.
+//!
+//! Uses small structs and free functions to show how names resolve within a
+//! module.
 module demos::ns;
 
+/// Simple struct used for labeling.
 struct Foo {
   value: int32;
 }
 
+/// Another simple struct used for labeling.
 struct Bar {
   value: int32;
 }
 
+/// Returns a fixed label for `Foo`.
 fn label_foo(foo: Foo) -> string {
   "foo"
 }
 
+/// Returns a fixed label for `Bar`.
 fn label_bar(bar: Bar) -> string {
   "bar"
 }
 
+/// Runs the namespace demo.
 fn main() {
   let Foo a = Foo{
     1,

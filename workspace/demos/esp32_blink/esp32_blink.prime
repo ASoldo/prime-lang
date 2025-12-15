@@ -1,15 +1,27 @@
+//! ESP32 blink + runtime probes (no_std).
+//!
+//! This demo is meant to run on ESP32 targets and exercises:
+//! - GPIO input/output (`pin_mode`, `digital_read`, `digital_write`)
+//! - async tasks (`spawn async { ... }`, `await`, `join`)
+//! - channels (`channel`, `send`, `recv_task`, `recv_timeout`)
+//! - printing reset reasons for debugging boot stability
+//!
+//! The file defines minimal `Option`/`Result` types locally (no `core::types`).
 module demos::esp32_blink;
 
+/// Minimal `Option` for no_std demos.
 pub enum Option[T] {
   Some(T),
   None,
 }
 
+/// Minimal `Result` for no_std demos.
 pub enum Result[T, E] {
   Ok(T),
   Err(E),
 }
 
+/// Pretty-prints the platform reset reason.
 fn print_reset_reason(prefix: string, code: int32) {
   if code == 1 {
     out(`${prefix}{code} (POWERON_RESET)`);
@@ -46,6 +58,7 @@ fn print_reset_reason(prefix: string, code: int32) {
   }
 }
 
+/// A tiny channel smoke test used during long-running loops.
 fn channel_demo() {
   out("channel demo: sending 42");
 
@@ -59,6 +72,7 @@ fn channel_demo() {
   close(rx);
 }
 
+/// Validates that a GPIO pin number is non-negative.
 fn ensure_pin(pin: int32) -> Result[int32, string] {
   if pin < 0 {
     Result::Err("pin must be >= 0")
@@ -67,11 +81,13 @@ fn ensure_pin(pin: int32) -> Result[int32, string] {
   }
 }
 
+/// Writes a logic level to the LED pin.
 fn drive_led(led: int32, level: int32) -> Result[(), string] {
   digital_write(led, level);
   Result::Ok(())
 }
 
+/// Sends a `Result` through a channel and validates `spawn`/`join` on device.
 fn async_result_probe() {
   let (tx, rx) = channel[Result[int32, string]]();
   let worker = spawn async {
@@ -94,6 +110,7 @@ fn async_result_probe() {
   close(rx);
 }
 
+/// Creates/drops channels and tasks in a loop to smoke-test pool reuse.
 fn pool_reuse_sanity(iterations: int32) -> Result[(), string] {
   let mut int32 i = 0;
   while i < iterations {
@@ -126,6 +143,7 @@ fn pool_reuse_sanity(iterations: int32) -> Result[(), string] {
   Result::Ok(())
 }
 
+/// Entry point for the ESP32 blink + async demo.
 fn main() {
   let int32 my_var = 5;
   out(`hello from esp32 blink demo and value is {my_var}`);

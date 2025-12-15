@@ -1,45 +1,58 @@
+//! Generic interfaces demo.
+//!
+//! Shows an interface parameterized by `T` with multiple concrete impl blocks.
+//! This is useful when the "self type" needs to be part of the interface.
 module demos::interface_generics;
 
 import core::types;
 
+/// A named actor with a level.
 struct Hero {
   name: string;
   level: int32;
 }
 
+/// A simple type that also participates in `Nameable`.
 struct Drone {
   tag: string;
 }
 
+/// Generic interface implemented for multiple concrete types.
 pub interface Nameable[T] {
   fn label(self: T) -> string;
   fn pair(self: T, other: T) -> string;
 }
 
 impl Nameable[Hero] for Hero {
+  /// Returns the hero name.
   fn label(hero: Hero) -> string {
     hero.name
   }
 
+  /// Picks a label for a hero pairing.
   fn pair(_hero: Hero, other: Hero) -> string {
     other.name
   }
 }
 
 impl Nameable[Drone] for Drone {
+  /// Returns the drone tag.
   fn label(drone: Drone) -> string {
     drone.tag
   }
 
+  /// Picks a label for a drone pairing.
   fn pair(_drone: Drone, other: Drone) -> string {
     other.tag
   }
 }
 
+/// Duplicates a value into a 2-tuple.
 fn duplicate[T](value: T) -> (T, T) {
   (value, value)
 }
 
+/// Runs the generic interface demo.
 fn main() {
   let Hero hero = Hero{
     "Prime Hero",

@@ -1,7 +1,11 @@
+//! Time helpers demo.
+//!
+//! Uses `now_ms()` and `sleep_ms(ms)` to measure a small delay.
 module demos::time_demo;
 
 import core::types;
 
+/// Prints timestamps before/after sleeping.
 fn main() {
   let int64 start = now_ms();
   out(`start ms: {start}`);

@@ -1,19 +1,28 @@
+//! Drop + `defer` ordering demo.
+//!
+//! Implements the `Drop` interface and shows when values are dropped:
+//! - at the end of scope
+//! - after moves (e.g. `box_take`)
+//! - relative to `defer` blocks
 module demos::drop_demo;
 
 import core::types;
 
+/// A small helper that records and prints when it gets dropped.
 struct Tracker {
   label: string;
   log: &mut []string;
 }
 
 impl Drop for Tracker {
+  /// Called automatically when a `Tracker` leaves scope.
   fn drop(self: &mut Tracker) {
     out(`dropping {self.label}`);
     self.log.push(self.label);
   }
 }
 
+/// Creates a `Tracker` and lets it drop at end-of-scope.
 fn scoped_drop(log: &mut []string) {
   let Tracker first = Tracker{
     label: "first",
@@ -22,6 +31,7 @@ fn scoped_drop(log: &mut []string) {
   out(`{first.label} is live`);
 }
 
+/// Demonstrates the interaction between `defer` and drop order.
 fn drop_order_demo(log: &mut []string) {
   let Tracker first = Tracker{
     label: "first",
@@ -36,12 +46,14 @@ fn drop_order_demo(log: &mut []string) {
   out("both trackers created");
 }
 
+/// Moves a `Tracker` out of a `Box` and observes drop timing.
 fn move_and_drop(log: &mut []string) {
   let Box[Tracker] boxed = box_new(Tracker{ label: "holder", log: log });
   let Tracker unboxed = boxed.box_take();
   out(`unboxing {unboxed.label}`);
 }
 
+/// Prints the accumulated drop log.
 fn print_log(log: &[]string) {
   out("print_log start");
   out("drop log:");
@@ -57,6 +69,7 @@ fn print_log(log: &[]string) {
   }
 }
 
+/// Runs the drop-order demos and prints logs after each run.
 fn main() {
   let mut []string log = [];
   scoped_drop(&mut log);

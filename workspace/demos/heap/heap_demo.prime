@@ -1,7 +1,14 @@
+//! Heap basics demo.
+//!
+//! Uses the standard heap-friendly types from `core::types`:
+//! - `Box[T]` for single ownership
+//! - slices (`[]T`) for growable arrays
+//! - `Map[K, V]` for key/value storage
 module demos::heap;
 
 import core::types;
 
+/// Demonstrates `Box`, slices, and maps.
 fn main() {
   let Box[int32] counter = box_new(0);
   bump_counter(&counter, 5);
@@ -33,6 +40,7 @@ fn main() {
   }
 }
 
+/// Adds `amount` to a boxed integer.
 fn bump_counter(counter: &Box[int32], amount: int32) {
   let int32 current = counter.box_get();
   counter.box_set(current + amount);

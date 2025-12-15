@@ -1,11 +1,20 @@
+//! "Lab" demo: a larger, mixed-feature example.
+//!
+//! This module intentionally combines many Prime features in one place:
+//! constants, structs, maps/slices, pattern matching, `if let`/`while let`,
+//! generic helpers, an interface + impl, and basic heap usage via `Box`.
 module demos::lab_demo;
 
+/// Demo title used by `title()`.
 const LAB_TITLE: string = "Prime Resonance Lab";
 
+/// Controls how many rounds `collect_metrics` iterates.
 const ROUND_LIMIT: int32 = 3;
 
+/// Adds a fixed bias during normalization and reading generation.
 const SIGNAL_OFFSET: int32 = 7;
 
+/// Input configuration for an experiment run.
 struct ExperimentPlan {
   name: string;
   baseline: int32;
@@ -14,6 +23,7 @@ struct ExperimentPlan {
   annotations: []string;
 }
 
+/// Output data produced by evaluating an `ExperimentPlan`.
 struct ExperimentResult {
   name: string;
   normalized: int32;
@@ -23,6 +33,7 @@ struct ExperimentResult {
   tags: []string;
 }
 
+/// Builds a default "empty" result used when guards fail.
 fn empty_result() -> ExperimentResult {
   ExperimentResult{
     name: "empty",
@@ -43,6 +54,7 @@ fn empty_result() -> ExperimentResult {
   }
 }
 
+/// Returns the next tag key for a given index.
 fn next_tag_key(idx: int32) -> (bool, string) {
   if idx == 0 {
     return true, "mode";
@@ -54,6 +66,7 @@ fn next_tag_key(idx: int32) -> (bool, string) {
   return false, "";
 }
 
+/// Computes a small "bonus" based on whether `annotations` contains `key`.
 fn annotation_bonus(annotations: []string, key: string, idx: int32) -> (bool, int32) {
   for entry in annotations {
     if entry == key {
@@ -63,6 +76,7 @@ fn annotation_bonus(annotations: []string, key: string, idx: int32) -> (bool, in
   return false, 0;
 }
 
+/// Returns the first tag, if any, from a tag list.
 fn first_tag(tags: []string) -> (bool, string) {
   for entry in tags {
     return true, entry;
@@ -70,16 +84,19 @@ fn first_tag(tags: []string) -> (bool, string) {
   return false, "none";
 }
 
+/// Interface used to demonstrate impl blocks with generic parameters.
 pub interface Summarizable[T] {
   fn label(self: T) -> string;
   fn pair(self: T, other: T) -> string;
 }
 
 impl Summarizable[ExperimentResult] for ExperimentResult {
+  /// Returns a stable label for a result.
   fn label(result: ExperimentResult) -> string {
     result.name
   }
 
+  /// Builds a short label combining two result values.
   fn pair(result: ExperimentResult, other: ExperimentResult) -> string {
     let int32 left = result.normalized;
     let int32 right = other.normalized;
@@ -87,10 +104,12 @@ impl Summarizable[ExperimentResult] for ExperimentResult {
   }
 }
 
+/// Duplicates a value into a 2-tuple.
 fn duplicate[T](value: T) -> (T, T) {
   (value, value)
 }
 
+/// Formats a metrics map using pattern matching on map shape.
 fn describe_metrics(metrics: Map[string, int32]) -> string {
   match metrics {
     #{ "total": total, "synergy": synergy } => `metrics total {total} synergy {synergy}`,
@@ -99,6 +118,7 @@ fn describe_metrics(metrics: Map[string, int32]) -> string {
   }
 }
 
+/// Creates a one-line summary using the first available tag (if any).
 fn highlight_summary(base_label: string, tags: []string) -> string {
   if let (true, primary) = first_tag(tags) {
     return `summary {base_label} primary {primary}`;
@@ -106,14 +126,17 @@ fn highlight_summary(base_label: string, tags: []string) -> string {
   `summary {base_label} primary none`
 }
 
+/// Uses the `Summarizable` impl to merge two results.
 fn merge_pair(result: ExperimentResult, partner: ExperimentResult) -> string {
   result.pair(partner)
 }
 
+/// Returns the lab title constant.
 fn title() -> string {
   LAB_TITLE
 }
 
+/// Builds a few hard-coded plans to evaluate.
 fn build_blueprints(seed: int32) -> []ExperimentPlan {
   [
     ExperimentPlan{
@@ -158,6 +181,7 @@ fn build_blueprints(seed: int32) -> []ExperimentPlan {
   ]
 }
 
+/// Evaluates a plan and returns `(success, result, message)`.
 fn evaluate_plan(plan: ExperimentPlan, iteration: int32) -> (bool, ExperimentResult, string) {
   let (guard_ok, safe_iteration, guard_message) = guard_iteration(iteration);
   if !guard_ok {
@@ -178,6 +202,7 @@ fn evaluate_plan(plan: ExperimentPlan, iteration: int32) -> (bool, ExperimentRes
   return true, ExperimentResult{ name: confirmed_name, normalized: gauge_value, energy_span: (span_low, span_high), readings: readings, metrics: metrics, tags: tags }, "";
 }
 
+/// Validates the iteration number and returns an error message when out of range.
 fn guard_iteration(iteration: int32) -> (bool, int32, string) {
   if iteration < 0 {
     return false, 0, "iteration cannot be negative";
@@ -188,6 +213,7 @@ fn guard_iteration(iteration: int32) -> (bool, int32, string) {
   return true, iteration, "";
 }
 
+/// Computes a target energy value, returning a failure when the range is invalid.
 fn normalize_target(baseline: int32, offset: int32, iteration: int32) -> (bool, int32, string) {
   let int32 candidate = baseline + offset - iteration;
   if candidate < 0 {
@@ -198,6 +224,7 @@ fn normalize_target(baseline: int32, offset: int32, iteration: int32) -> (bool, 
   return true, candidate + SIGNAL_OFFSET, "";
 }
 
+/// Computes a low/high span for a normalized value.
 fn span_window(normalized: int32) -> (int32, int32) {
   if normalized < 60 {
     return normalized - 6, normalized + 6;
@@ -209,6 +236,7 @@ fn span_window(normalized: int32) -> (int32, int32) {
   (midpoint - 5, midpoint + 5)
 }
 
+/// Builds a set of readings around an anchor value.
 fn reading_window(anchor: int32) -> []int32 {
   [
     anchor - 4,
@@ -218,6 +246,7 @@ fn reading_window(anchor: int32) -> []int32 {
   ]
 }
 
+/// Aggregates totals and derives metrics using loops and pattern matching.
 fn collect_metrics(baseline: int32, offset: int32, tuning: Map[string, int32], readings: []int32, iteration: int32) -> Map[string, int32] {
   let mut int32 total = 0;
   for cycle in 0..ROUND_LIMIT {
@@ -254,6 +283,7 @@ fn collect_metrics(baseline: int32, offset: int32, tuning: Map[string, int32], r
   }
 }
 
+/// Builds a tag list based on the plan name, annotations, and derived values.
 fn derive_tags(name: string, annotations: []string, normalized: int32, iteration: int32) -> (string, []string) {
   let string tone = match (name, normalized) {
     ("surge", value) if value > 90 => "volatile",
@@ -280,6 +310,7 @@ fn derive_tags(name: string, annotations: []string, normalized: int32, iteration
   (name, tags)
 }
 
+/// Runs the lab simulation over a few plans and prints summaries.
 fn main() {
   let string lab_title = title();
   out(`== {lab_title} ==`);

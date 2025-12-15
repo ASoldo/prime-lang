@@ -1,15 +1,22 @@
+//! Interactive input demo.
+//!
+//! Uses `in[T](prompt)` to read user input and parse it into a type, returning
+//! `Result[T, string]` on success/failure.
 module demos::input;
 
 import core::types;
 
+/// Prompts for an integer age.
 fn prompt_age() -> Result[int32, string] {
   in[int32]("Enter age: ")
 }
 
+/// Prompts for a string temperature value (unparsed).
 fn prompt_temperature(label: string) -> Result[string, string] {
   in[string](`Temperature for {label}: `)
 }
 
+/// Runs the input demo.
 fn main() {
   match prompt_age() {
     Result::Ok(age) => out(`age is {age}`),

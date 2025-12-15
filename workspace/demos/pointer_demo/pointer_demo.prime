@@ -1,7 +1,13 @@
+//! Pointer helpers demo.
+//!
+//! Demonstrates taking raw pointers to fields (`ptr`, `ptr_mut`) and
+//! dereferencing them. Use this style carefully: pointer operations bypass some
+//! of the safety that references provide.
 module demos::pointer_demo;
 
 import core::types;
 
+/// Builds a `Player` value using types from `core::types`.
 fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
   Player{
     Transform{
@@ -20,6 +26,7 @@ fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
   }
 }
 
+/// Uses `ptr_mut` to update `player.hp` through a raw pointer.
 fn heal_with_pointer(player: &mut Player, delta: int32) -> int32 {
   let mut Player local = *player;
   let ptr = ptr_mut(&mut local.hp);
@@ -28,16 +35,19 @@ fn heal_with_pointer(player: &mut Player, delta: int32) -> int32 {
   *ptr
 }
 
+/// Uses `ptr` to read `player.hp` through a raw pointer.
 fn freeze_hp(player: &Player) -> int32 {
   let ptr = ptr(&player.hp);
   *ptr
 }
 
+/// Demonstrates that ranges can be stored as values.
 fn range_sample() -> Range[int32] {
   let Range[int32] span = 2..=5;
   span
 }
 
+/// Runs the pointer demo.
 fn main() {
   let mut Player hero = spawn_player("Pointer Hero", Vec2{ 0.0, 0.0 }, 50);
   out(`initial hp {hero.hp}`);

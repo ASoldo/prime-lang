@@ -1,16 +1,23 @@
+//! Generics demo.
+//!
+//! Shows basic generic functions (`identity`, `first_or`, `make_pair`) and how
+//! to provide explicit type arguments: `identity[int32](...)`.
 module demos::generic;
 
 import core::types;
 
+/// A simple struct used to show generic functions with user-defined types.
 struct StatLine {
   hp: int32;
   stamina: int32;
 }
 
+/// Returns `value` unchanged.
 fn identity[T](value: T) -> T {
   value
 }
 
+/// Picks between `primary` and `fallback` based on `choose_primary`.
 fn first_or[T](primary: T, fallback: T, choose_primary: bool) -> T {
   if choose_primary {
     primary
@@ -19,10 +26,12 @@ fn first_or[T](primary: T, fallback: T, choose_primary: bool) -> T {
   }
 }
 
+/// Returns a 2-tuple of different generic types.
 fn make_pair[T, U](left: T, right: U) -> (T, U) {
   (left, right)
 }
 
+/// Runs the generic helpers with a few different types.
 fn main() {
   let int32 hp = identity[int32](120);
   let string codename = first_or[string]("Prime Hero", "Fallback", false);
