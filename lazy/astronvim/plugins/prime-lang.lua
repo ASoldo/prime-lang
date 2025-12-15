@@ -24,10 +24,7 @@ return {
 				end
 				local output = vim.fn.systemlist(cmd)
 				if vim.v.shell_error ~= 0 then
-					vim.notify(
-						"Prime expand failed: " .. table.concat(output, "\n"),
-						vim.log.levels.ERROR
-					)
+					vim.notify("Prime expand failed: " .. table.concat(output, "\n"), vim.log.levels.ERROR)
 					return
 				end
 				local lines = #output > 0 and output or { "No expansion output" }
@@ -55,13 +52,7 @@ return {
 					height = height,
 					row = math.max(row, 0),
 					col = math.max(col_off, 0),
-					title = string.format(
-						"%s%s:%d:%d ",
-						title_prefix,
-						vim.fn.fnamemodify(file, ":t"),
-						line,
-						col
-					),
+					title = string.format("%s%s:%d:%d ", title_prefix, vim.fn.fnamemodify(file, ":t"), line, col),
 				})
 				vim.wo[win].wrap = false
 				vim.keymap.set("n", "q", function()
@@ -226,9 +217,9 @@ return {
 			do
 				local highlights = [[
     ["fn" "let" "mut" "import" "export" "prelude" "struct" "enum" "const" "match" "if" "else" "for" "in" "while" "loop" "spawn" "return" "break" "continue" "defer" "module" "test" "library" "macro" "pub" "interface" "impl" "try" "move"] @keyword
-    ("async") @keyword
     ("await") @keyword
     ("|") @keyword
+    ("||") @keyword
     ("{") @keyword
     ("}") @keyword
     ("(") @keyword
@@ -240,16 +231,24 @@ return {
     ("::") @keyword
     ("+") @keyword
     ("-") @keyword
+    ("_") @keyword
+    ("~") @keyword
     ("*") @keyword
     ("%") @keyword
     ("&") @keyword
+    ("&&") @keyword
     ("=") @keyword
     ("#") @keyword
     (",") @keyword
     ("<") @keyword
     (">") @keyword
     ("->") @keyword
+    (">=") @keyword
+    ("<=") @keyword
     ("=>") @keyword
+    ("!") @keyword
+    ("!=") @keyword
+    ("==") @keyword
 
     (module_declaration name: (module_path) @namespace)
     (module_path (identifier) @namespace)
