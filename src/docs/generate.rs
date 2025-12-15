@@ -1,8 +1,12 @@
-use crate::language::{ast::Item, parser::parse_module};
+use crate::language::{
+    ast::{self, Item},
+    parser::parse_module,
+    types::TypeExpr,
+};
 use crate::project::manifest::canonical_module_name;
 use crate::project::{find_manifest, manifest::PackageManifest};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::net::TcpListener;
@@ -88,38 +92,681 @@ fn item_to_doc(item: &Item) -> Option<DocItem> {
     }
 }
 
-fn build_edges(items: &[Item], docs: &[DocItem]) -> Vec<DocEdge> {
-    let mut edges = Vec::new();
-    let mut name_to_kind = std::collections::HashMap::new();
-    for doc in docs {
-        name_to_kind.insert(doc.name.clone(), doc.kind.clone());
+// Relationships for the docs graph are inferred syntactically from the AST.
+// The goal is not full semantic resolution, but a reliable "who mentions/calls/uses"
+// view within a module so the docs canvas feels connected.
+
+#[derive(Default)]
+struct Targets {
+    fns: HashMap<String, String>,
+    consts: HashMap<String, String>,
+    structs: HashMap<String, String>,
+    enums: HashMap<String, String>,
+    interfaces: HashMap<String, String>,
+    macros: HashMap<String, String>,
+}
+
+impl Targets {
+    fn from_docs(docs: &[DocItem]) -> Self {
+        let mut targets = Targets::default();
+        for doc in docs {
+            let key = format!("{}:{}", doc.kind, doc.name);
+            match doc.kind.as_str() {
+                "fn" => {
+                    targets.fns.insert(doc.name.clone(), key);
+                }
+                "const" => {
+                    targets.consts.insert(doc.name.clone(), key);
+                }
+                "struct" => {
+                    targets.structs.insert(doc.name.clone(), key);
+                }
+                "enum" => {
+                    targets.enums.insert(doc.name.clone(), key);
+                }
+                "interface" => {
+                    targets.interfaces.insert(doc.name.clone(), key);
+                }
+                "macro" => {
+                    targets.macros.insert(doc.name.clone(), key);
+                }
+                _ => {}
+            }
+        }
+        targets
     }
 
-    for item in items {
-        if let Item::Impl(def) = item {
-            let sig = if def.inherent {
-                format!("impl {}", def.target)
-            } else {
-                format!("impl {} for {}", def.interface, def.target)
-            };
-            let from = format!("impl:{}", sig);
-            let target = def.target.clone();
-            if name_to_kind.contains_key(&target) {
-                edges.push(DocEdge {
-                    from: from.clone(),
-                    to: format!("{}:{}", name_to_kind[&target], target),
-                    kind: "impl-target".into(),
-                });
+    fn type_keys(&self, name: &str) -> Vec<&String> {
+        let mut out = Vec::new();
+        if let Some(key) = self.structs.get(name) {
+            out.push(key);
+        }
+        if let Some(key) = self.enums.get(name) {
+            out.push(key);
+        }
+        if let Some(key) = self.interfaces.get(name) {
+            out.push(key);
+        }
+        out
+    }
+
+    fn value_keys(&self, name: &str) -> Vec<&String> {
+        let mut out = Vec::new();
+        if let Some(key) = self.consts.get(name) {
+            out.push(key);
+        }
+        if let Some(key) = self.fns.get(name) {
+            out.push(key);
+        }
+        out
+    }
+}
+
+#[derive(Default)]
+struct Uses {
+    calls: HashSet<String>,
+    macro_calls: HashSet<String>,
+    value_refs: HashSet<String>,
+    type_refs: HashSet<String>,
+}
+
+fn collect_type_names(ty: &TypeExpr, out: &mut HashSet<String>) {
+    match ty {
+        TypeExpr::Named(name, args) => {
+            out.insert(name.clone());
+            for arg in args {
+                collect_type_names(arg, out);
             }
-            if !def.interface.is_empty() && name_to_kind.contains_key(&def.interface) {
-                edges.push(DocEdge {
-                    from,
-                    to: format!("{}:{}", name_to_kind[&def.interface], def.interface),
-                    kind: "impl-interface".into(),
-                });
+        }
+        TypeExpr::Slice(inner) => collect_type_names(inner, out),
+        TypeExpr::Array { ty, .. } => collect_type_names(ty, out),
+        TypeExpr::Reference { ty, .. } => collect_type_names(ty, out),
+        TypeExpr::Pointer { ty, .. } => collect_type_names(ty, out),
+        TypeExpr::Tuple(items) => {
+            for item in items {
+                collect_type_names(item, out);
+            }
+        }
+        TypeExpr::Function { params, returns } => {
+            for param in params {
+                collect_type_names(param, out);
+            }
+            for ret in returns {
+                collect_type_names(ret, out);
+            }
+        }
+        TypeExpr::Unit | TypeExpr::SelfType => {}
+    }
+}
+
+fn bind_pattern(pattern: &ast::Pattern, locals: &mut HashSet<String>) {
+    match pattern {
+        ast::Pattern::Wildcard | ast::Pattern::Literal(_) => {}
+        ast::Pattern::Identifier(name, _) => {
+            locals.insert(name.clone());
+        }
+        ast::Pattern::EnumVariant { bindings, .. } => {
+            for binding in bindings {
+                bind_pattern(binding, locals);
+            }
+        }
+        ast::Pattern::Tuple(items, _) => {
+            for item in items {
+                bind_pattern(item, locals);
+            }
+        }
+        ast::Pattern::Map(entries, _) => {
+            for entry in entries {
+                bind_pattern(&entry.pattern, locals);
+            }
+        }
+        ast::Pattern::Struct { fields, .. } => {
+            for field in fields {
+                bind_pattern(&field.pattern, locals);
+            }
+        }
+        ast::Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+            ..
+        } => {
+            for item in prefix {
+                bind_pattern(item, locals);
+            }
+            if let Some(rest) = rest {
+                bind_pattern(rest, locals);
+            }
+            for item in suffix {
+                bind_pattern(item, locals);
             }
         }
     }
+}
+
+fn collect_type_pattern(pattern: &ast::Pattern, out: &mut HashSet<String>) {
+    match pattern {
+        ast::Pattern::EnumVariant {
+            enum_name,
+            bindings,
+            ..
+        } => {
+            if let Some(name) = enum_name {
+                out.insert(name.clone());
+            }
+            for binding in bindings {
+                collect_type_pattern(binding, out);
+            }
+        }
+        ast::Pattern::Struct {
+            struct_name,
+            fields,
+            ..
+        } => {
+            if let Some(name) = struct_name {
+                out.insert(name.clone());
+            }
+            for field in fields {
+                collect_type_pattern(&field.pattern, out);
+            }
+        }
+        ast::Pattern::Tuple(items, _) => {
+            for item in items {
+                collect_type_pattern(item, out);
+            }
+        }
+        ast::Pattern::Map(entries, _) => {
+            for entry in entries {
+                collect_type_pattern(&entry.pattern, out);
+            }
+        }
+        ast::Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+            ..
+        } => {
+            for item in prefix {
+                collect_type_pattern(item, out);
+            }
+            if let Some(rest) = rest {
+                collect_type_pattern(rest, out);
+            }
+            for item in suffix {
+                collect_type_pattern(item, out);
+            }
+        }
+        ast::Pattern::Wildcard | ast::Pattern::Identifier(_, _) | ast::Pattern::Literal(_) => {}
+    }
+}
+
+fn collect_uses_function_body(body: &ast::FunctionBody, locals: &HashSet<String>, out: &mut Uses) {
+    match body {
+        ast::FunctionBody::Block(block) => collect_uses_block(block, locals, out),
+        ast::FunctionBody::Expr(expr) => collect_uses_expr(&expr.node, locals, out),
+    }
+}
+
+fn collect_uses_block(block: &ast::Block, locals_in: &HashSet<String>, out: &mut Uses) {
+    let mut locals = locals_in.clone();
+    for stmt in &block.statements {
+        match stmt {
+            ast::Statement::Let(stmt) => {
+                collect_type_pattern(&stmt.pattern, &mut out.type_refs);
+                if let Some(ty) = &stmt.ty {
+                    collect_type_names(&ty.ty, &mut out.type_refs);
+                }
+                if let Some(value) = &stmt.value {
+                    collect_uses_expr(value, &locals, out);
+                }
+                bind_pattern(&stmt.pattern, &mut locals);
+            }
+            ast::Statement::Assign(stmt) => {
+                collect_uses_expr(&stmt.target, &locals, out);
+                collect_uses_expr(&stmt.value, &locals, out);
+            }
+            ast::Statement::Expr(stmt) => collect_uses_expr(&stmt.expr, &locals, out),
+            ast::Statement::Return(stmt) => {
+                for expr in &stmt.values {
+                    collect_uses_expr(expr, &locals, out);
+                }
+            }
+            ast::Statement::MacroSemi(expr) => collect_uses_expr(&expr.node, &locals, out),
+            ast::Statement::While(stmt) => {
+                match &stmt.condition {
+                    ast::WhileCondition::Expr(expr) => collect_uses_expr(expr, &locals, out),
+                    ast::WhileCondition::Let { pattern, value } => {
+                        collect_type_pattern(pattern, &mut out.type_refs);
+                        collect_uses_expr(value, &locals, out);
+                        let mut body_locals = locals.clone();
+                        bind_pattern(pattern, &mut body_locals);
+                        collect_uses_block(&stmt.body, &body_locals, out);
+                        continue;
+                    }
+                }
+                collect_uses_block(&stmt.body, &locals, out);
+            }
+            ast::Statement::Loop(stmt) => collect_uses_block(&stmt.body, &locals, out),
+            ast::Statement::For(stmt) => {
+                match &stmt.target {
+                    ast::ForTarget::Range(range) => {
+                        collect_uses_expr(&range.start, &locals, out);
+                        collect_uses_expr(&range.end, &locals, out);
+                    }
+                    ast::ForTarget::Collection(expr) => collect_uses_expr(expr, &locals, out),
+                }
+                let mut body_locals = locals.clone();
+                body_locals.insert(stmt.binding.clone());
+                collect_uses_block(&stmt.body, &body_locals, out);
+            }
+            ast::Statement::Defer(stmt) => collect_uses_expr(&stmt.expr, &locals, out),
+            ast::Statement::Block(inner) => collect_uses_block(inner, &locals, out),
+            ast::Statement::Comment { .. } | ast::Statement::Break | ast::Statement::Continue => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_uses_expr(tail, &locals, out);
+    }
+}
+
+fn collect_uses_if_expr(if_expr: &ast::IfExpr, locals: &HashSet<String>, out: &mut Uses) {
+    match &if_expr.condition {
+        ast::IfCondition::Expr(cond) => collect_uses_expr(cond, locals, out),
+        ast::IfCondition::Let { pattern, value } => {
+            collect_type_pattern(pattern, &mut out.type_refs);
+            collect_uses_expr(value, locals, out);
+            let mut then_locals = locals.clone();
+            bind_pattern(pattern, &mut then_locals);
+            collect_uses_block(&if_expr.then_branch, &then_locals, out);
+            if let Some(else_branch) = &if_expr.else_branch {
+                match else_branch {
+                    ast::ElseBranch::Block(block) => collect_uses_block(block, locals, out),
+                    ast::ElseBranch::ElseIf(next) => collect_uses_if_expr(next, locals, out),
+                }
+            }
+            return;
+        }
+    }
+    collect_uses_block(&if_expr.then_branch, locals, out);
+    if let Some(else_branch) = &if_expr.else_branch {
+        match else_branch {
+            ast::ElseBranch::Block(block) => collect_uses_block(block, locals, out),
+            ast::ElseBranch::ElseIf(next) => collect_uses_if_expr(next, locals, out),
+        }
+    }
+}
+
+fn collect_uses_expr(expr: &ast::Expr, locals: &HashSet<String>, out: &mut Uses) {
+    match expr {
+        ast::Expr::Identifier(ident) => {
+            if !locals.contains(&ident.name) {
+                out.value_refs.insert(ident.name.clone());
+            }
+        }
+        ast::Expr::Call {
+            callee,
+            type_args,
+            args,
+            ..
+        } => {
+            if let ast::Expr::Identifier(ident) = callee.as_ref() {
+                if !locals.contains(&ident.name) {
+                    out.calls.insert(ident.name.clone());
+                }
+            } else {
+                collect_uses_expr(callee, locals, out);
+            }
+            for ty in type_args {
+                collect_type_names(ty, &mut out.type_refs);
+            }
+            for arg in args {
+                collect_uses_expr(arg, locals, out);
+            }
+        }
+        ast::Expr::MacroCall { name, args, .. } => {
+            if !locals.contains(&name.name) {
+                out.macro_calls.insert(name.name.clone());
+            }
+            for arg in args {
+                collect_uses_expr(&arg.expr, locals, out);
+            }
+        }
+        ast::Expr::StructLiteral { name, fields, .. } => {
+            out.type_refs.insert(name.clone());
+            match fields {
+                ast::StructLiteralKind::Named(named) => {
+                    for field in named {
+                        collect_uses_expr(&field.value, locals, out);
+                    }
+                }
+                ast::StructLiteralKind::Positional(values) => {
+                    for value in values {
+                        collect_uses_expr(value, locals, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::EnumLiteral {
+            enum_name, values, ..
+        } => {
+            if let Some(name) = enum_name {
+                out.type_refs.insert(name.clone());
+            }
+            for value in values {
+                collect_uses_expr(value, locals, out);
+            }
+        }
+        ast::Expr::Match(match_expr) => {
+            collect_uses_expr(&match_expr.expr, locals, out);
+            for arm in &match_expr.arms {
+                collect_type_pattern(&arm.pattern, &mut out.type_refs);
+                let mut arm_locals = locals.clone();
+                bind_pattern(&arm.pattern, &mut arm_locals);
+                if let Some(guard) = &arm.guard {
+                    collect_uses_expr(guard, &arm_locals, out);
+                }
+                collect_uses_expr(&arm.value, &arm_locals, out);
+            }
+        }
+        ast::Expr::If(if_expr) => collect_uses_if_expr(if_expr, locals, out),
+        ast::Expr::Try { block, .. } => collect_uses_block(block, locals, out),
+        ast::Expr::TryPropagate { expr, .. }
+        | ast::Expr::Unary { expr, .. }
+        | ast::Expr::Reference { expr, .. }
+        | ast::Expr::Deref { expr, .. }
+        | ast::Expr::Move { expr, .. }
+        | ast::Expr::Await { expr, .. }
+        | ast::Expr::Spawn { expr, .. } => collect_uses_expr(expr, locals, out),
+        ast::Expr::Binary { left, right, .. } => {
+            collect_uses_expr(left, locals, out);
+            collect_uses_expr(right, locals, out);
+        }
+        ast::Expr::FieldAccess { base, .. } => collect_uses_expr(base, locals, out),
+        ast::Expr::MapLiteral { entries, .. } => {
+            for entry in entries {
+                collect_uses_expr(&entry.key, locals, out);
+                collect_uses_expr(&entry.value, locals, out);
+            }
+        }
+        ast::Expr::Tuple(values, _) | ast::Expr::ArrayLiteral(values, _) => {
+            for value in values {
+                collect_uses_expr(value, locals, out);
+            }
+        }
+        ast::Expr::Range(range) => {
+            collect_uses_expr(&range.start, locals, out);
+            collect_uses_expr(&range.end, locals, out);
+        }
+        ast::Expr::Index { base, index, .. } => {
+            collect_uses_expr(base, locals, out);
+            collect_uses_expr(index, locals, out);
+        }
+        ast::Expr::Block(block) => collect_uses_block(block, locals, out),
+        ast::Expr::Async { block, .. } => collect_uses_block(block, locals, out),
+        ast::Expr::Closure {
+            params, body, ret, ..
+        } => {
+            if let Some(ret) = ret {
+                collect_type_names(&ret.ty, &mut out.type_refs);
+            }
+            let mut closure_locals = locals.clone();
+            for param in params {
+                closure_locals.insert(param.name.clone());
+                if let Some(ty) = &param.ty {
+                    collect_type_names(&ty.ty, &mut out.type_refs);
+                }
+            }
+            match body {
+                ast::ClosureBody::Block(block) => collect_uses_block(block, &closure_locals, out),
+                ast::ClosureBody::Expr(expr) => {
+                    collect_uses_expr(expr.node.as_ref(), &closure_locals, out)
+                }
+            }
+        }
+        ast::Expr::FormatString(fmt) => {
+            for seg in &fmt.segments {
+                if let ast::FormatSegment::Expr { expr, .. } = seg {
+                    collect_uses_expr(expr, locals, out);
+                }
+            }
+        }
+        ast::Expr::Literal(_) => {}
+    }
+}
+
+fn edge_priority(kind: &str) -> u8 {
+    match kind {
+        "impl-target" | "impl-interface" => 50,
+        "call" => 40,
+        "macro-call" => 35,
+        "type" => 30,
+        "ref" => 10,
+        _ => 1,
+    }
+}
+
+fn upsert_edge(
+    best: &mut HashMap<(String, String), (u8, String)>,
+    from: String,
+    to: String,
+    kind: &str,
+) {
+    if from == to {
+        return;
+    }
+    let prio = edge_priority(kind);
+    match best.get_mut(&(from.clone(), to.clone())) {
+        Some((existing_prio, existing_kind)) => {
+            if prio > *existing_prio {
+                *existing_prio = prio;
+                *existing_kind = kind.to_string();
+            }
+        }
+        None => {
+            best.insert((from, to), (prio, kind.to_string()));
+        }
+    }
+}
+
+fn add_type_edges(
+    best: &mut HashMap<(String, String), (u8, String)>,
+    from: &str,
+    targets: &Targets,
+    ty: &TypeExpr,
+) {
+    let mut names = HashSet::new();
+    collect_type_names(ty, &mut names);
+    for name in names {
+        for key in targets.type_keys(&name) {
+            upsert_edge(best, from.to_string(), key.clone(), "type");
+        }
+    }
+}
+
+fn apply_uses_edges(
+    best: &mut HashMap<(String, String), (u8, String)>,
+    from: &str,
+    targets: &Targets,
+    uses: Uses,
+) {
+    for name in uses.calls {
+        if let Some(key) = targets.fns.get(&name) {
+            upsert_edge(best, from.to_string(), key.clone(), "call");
+        }
+    }
+    for name in uses.macro_calls {
+        if let Some(key) = targets.macros.get(&name) {
+            upsert_edge(best, from.to_string(), key.clone(), "macro-call");
+        }
+    }
+    for name in uses.type_refs {
+        for key in targets.type_keys(&name) {
+            upsert_edge(best, from.to_string(), key.clone(), "type");
+        }
+    }
+    for name in uses.value_refs {
+        for key in targets.value_keys(&name) {
+            upsert_edge(best, from.to_string(), key.clone(), "ref");
+        }
+    }
+}
+
+fn build_edges(items: &[Item], docs: &[DocItem]) -> Vec<DocEdge> {
+    let targets = Targets::from_docs(docs);
+    let mut best_edges: HashMap<(String, String), (u8, String)> = HashMap::new();
+
+    for item in items {
+        match item {
+            Item::Impl(def) => {
+                let sig = if def.inherent {
+                    format!("impl {}", def.target)
+                } else {
+                    format!("impl {} for {}", def.interface, def.target)
+                };
+                let from = format!("impl:{}", sig);
+
+                for target_key in targets.type_keys(&def.target) {
+                    upsert_edge(
+                        &mut best_edges,
+                        from.clone(),
+                        target_key.clone(),
+                        "impl-target",
+                    );
+                }
+                if !def.interface.is_empty() {
+                    for iface_key in targets.type_keys(&def.interface) {
+                        upsert_edge(
+                            &mut best_edges,
+                            from.clone(),
+                            iface_key.clone(),
+                            "impl-interface",
+                        );
+                    }
+                }
+
+                for method in &def.methods {
+                    for param in &method.params {
+                        if let Some(ty) = &param.ty {
+                            add_type_edges(&mut best_edges, &from, &targets, &ty.ty);
+                        }
+                    }
+                    for ret in &method.returns {
+                        add_type_edges(&mut best_edges, &from, &targets, &ret.ty);
+                    }
+                    let locals: HashSet<String> =
+                        method.params.iter().map(|p| p.name.clone()).collect();
+                    let mut uses = Uses::default();
+                    collect_uses_function_body(&method.body, &locals, &mut uses);
+                    apply_uses_edges(&mut best_edges, &from, &targets, uses);
+                }
+            }
+            Item::Function(def) => {
+                let from = format!("fn:{}", def.name);
+                for param in &def.params {
+                    if let Some(ty) = &param.ty {
+                        add_type_edges(&mut best_edges, &from, &targets, &ty.ty);
+                    }
+                }
+                for ret in &def.returns {
+                    add_type_edges(&mut best_edges, &from, &targets, &ret.ty);
+                }
+                let locals: HashSet<String> = def.params.iter().map(|p| p.name.clone()).collect();
+                let mut uses = Uses::default();
+                collect_uses_function_body(&def.body, &locals, &mut uses);
+                apply_uses_edges(&mut best_edges, &from, &targets, uses);
+            }
+            Item::Const(def) => {
+                let from = format!("const:{}", def.name);
+                if let Some(ty) = &def.ty {
+                    add_type_edges(&mut best_edges, &from, &targets, &ty.ty);
+                }
+                let locals = HashSet::new();
+                let mut uses = Uses::default();
+                collect_uses_expr(&def.value, &locals, &mut uses);
+                apply_uses_edges(&mut best_edges, &from, &targets, uses);
+            }
+            Item::Struct(def) => {
+                let from = format!("struct:{}", def.name);
+                for field in &def.fields {
+                    add_type_edges(&mut best_edges, &from, &targets, &field.ty.ty);
+                }
+            }
+            Item::Enum(def) => {
+                let from = format!("enum:{}", def.name);
+                for variant in &def.variants {
+                    for field in &variant.fields {
+                        add_type_edges(&mut best_edges, &from, &targets, &field.ty);
+                    }
+                }
+            }
+            Item::Interface(def) => {
+                let from = format!("interface:{}", def.name);
+                for method in &def.methods {
+                    for param in &method.params {
+                        if let Some(ty) = &param.ty {
+                            add_type_edges(&mut best_edges, &from, &targets, &ty.ty);
+                        }
+                    }
+                    for ret in &method.returns {
+                        add_type_edges(&mut best_edges, &from, &targets, &ret.ty);
+                    }
+                }
+            }
+            Item::Macro(def) => {
+                let from = format!("macro:{}", def.name);
+                if let Some(ret) = &def.return_ty {
+                    add_type_edges(&mut best_edges, &from, &targets, &ret.ty);
+                }
+                let locals: HashSet<String> = def.params.iter().map(|p| p.name.clone()).collect();
+                let mut uses = Uses::default();
+                match &def.body {
+                    ast::MacroBody::Block(block) => collect_uses_block(block, &locals, &mut uses),
+                    ast::MacroBody::Expr(expr) => collect_uses_expr(&expr.node, &locals, &mut uses),
+                    ast::MacroBody::Items(items, _) => {
+                        for item in items {
+                            match item {
+                                Item::Function(f) => {
+                                    collect_uses_function_body(&f.body, &locals, &mut uses);
+                                }
+                                Item::Const(c) => collect_uses_expr(&c.value, &locals, &mut uses),
+                                Item::Macro(m) => match &m.body {
+                                    ast::MacroBody::Block(block) => {
+                                        collect_uses_block(block, &locals, &mut uses)
+                                    }
+                                    ast::MacroBody::Expr(expr) => {
+                                        collect_uses_expr(&expr.node, &locals, &mut uses)
+                                    }
+                                    ast::MacroBody::Items(inner, _) => {
+                                        for inner_item in inner {
+                                            if let Item::Function(f) = inner_item {
+                                                collect_uses_function_body(
+                                                    &f.body, &locals, &mut uses,
+                                                );
+                                            }
+                                        }
+                                    }
+                                },
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                apply_uses_edges(&mut best_edges, &from, &targets, uses);
+            }
+            Item::MacroInvocation(_) | Item::Comment { .. } => {}
+        }
+    }
+
+    let mut edges: Vec<DocEdge> = best_edges
+        .into_iter()
+        .map(|((from, to), (_, kind))| DocEdge { from, to, kind })
+        .collect();
+    edges.sort_by(|a, b| {
+        a.from
+            .cmp(&b.from)
+            .then(a.to.cmp(&b.to))
+            .then(a.kind.cmp(&b.kind))
+    });
     edges
 }
 
@@ -630,6 +1277,24 @@ const colors = {
   default: "#8c93a5",
 };
 
+function rgba(hex, alpha) {
+  const cleaned = (hex || "#ffffff").replace("#", "");
+  const r = parseInt(cleaned.slice(0, 2), 16) || 255;
+  const g = parseInt(cleaned.slice(2, 4), 16) || 255;
+  const b = parseInt(cleaned.slice(4, 6), 16) || 255;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+const edgeColors = {
+  "impl-target": colors.impl,
+  "impl-interface": colors.interface,
+  "call": colors.fn,
+  "macro-call": colors.macro,
+  "type": "#b983ff",
+  "ref": colors.const,
+  "default": "#ffffff",
+};
+
 function formatName(name) {
   return name
     .split("::")
@@ -686,6 +1351,7 @@ function computeLayout(canvas, module, ctx) {
   const vGap = 36;
   const imports = (module.imports || []).map((name) => ({ name, kind: "import", signature: name, key: `import:${name}` }));
   const consts = module.items.filter(it => it.kind === "const").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
+  const enums = module.items.filter(it => it.kind === "enum").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
   const interfaces = module.items.filter(it => it.kind === "interface").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
   const structs = module.items.filter(it => it.kind === "struct").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
   const impls = module.items.filter(it => it.kind === "impl").map(it => ({ ...it, key: `${it.kind}:${it.name}` }));
@@ -694,7 +1360,7 @@ function computeLayout(canvas, module, ctx) {
 
   const layers = [
     imports,
-    [...consts, ...interfaces, ...structs],
+    [...consts, ...enums, ...interfaces, ...structs],
     impls,
     [...fns, ...macros],
   ];
@@ -786,16 +1452,17 @@ function drawGraph(ctx, layout, highlightNodes = new Set(), highlightEdges = new
     if (!from || !to) return;
     const active = highlightEdges.has(edge) || (highlightNodes.size > 0 && highlightNodes.has(edge.from) && highlightNodes.has(edge.to));
     const alpha = active ? 0.9 : 0.2;
+    const edgeColor = edgeColors[edge.kind] || edgeColors.default;
     const { cx: fx, cy: fy, r: fr } = anchor(from, "right");
     const { cx: tx, cy: ty, r: tr } = anchor(to, "left");
-    ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+    ctx.strokeStyle = rgba(edgeColor, alpha);
     ctx.lineWidth = active ? 2 : 1;
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(fx, fy);
     ctx.lineTo(tx, ty);
     ctx.stroke();
-    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.fillStyle = rgba(edgeColor, alpha);
     ctx.beginPath();
     ctx.arc(fx, fy, fr * 0.5, 0, Math.PI * 2);
     ctx.fill();
