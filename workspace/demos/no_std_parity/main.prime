@@ -92,19 +92,20 @@ fn cancellation_timeout_parity() {
     Result::Err(msg) => out(`await_timeout parity err {msg}`),
     _ => out("await_timeout parity unexpected"),
   }
-  let _ = tx;
 
+  let _ = tx;
   let (tx2, rx2) = channel[int32]();
   let CancelToken tok = cancel_token();
   let task2 = recv_task(rx2);
   cancel(tok);
+
   let Result[Option[int32], string] cancelled = await_cancel(task2, tok);
   match cancelled {
     Result::Err(msg) => out(`await_cancel parity err {msg}`),
     _ => out("await_cancel parity unexpected"),
   }
-  let _ = tx2;
 
+  let _ = tx2;
   let (tx3, rx3) = channel[int32]();
   let CancelToken tok3 = cancel_token();
   let task3 = recv_task(rx3);
@@ -113,6 +114,7 @@ fn cancellation_timeout_parity() {
     Result::Err(msg) => out(`await_cancel_timeout parity err {msg}`),
     _ => out("await_cancel_timeout parity unexpected"),
   }
+
   let _ = tx3;
 }
 

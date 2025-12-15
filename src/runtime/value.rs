@@ -420,6 +420,12 @@ impl CancelTokenValue {
     }
 }
 
+impl Default for CancelTokenValue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ReferenceValue {
     pub cell: SharedValue,

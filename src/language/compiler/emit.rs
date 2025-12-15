@@ -4411,8 +4411,8 @@ impl Compiler {
             }
 
             let insert_block = LLVMGetInsertBlock(self.builder);
-            let terminated = !insert_block.is_null()
-                && !LLVMGetBasicBlockTerminator(insert_block).is_null();
+            let terminated =
+                !insert_block.is_null() && !LLVMGetBasicBlockTerminator(insert_block).is_null();
             if !terminated {
                 match result {
                     BlockEval::Flow(FlowSignal::Break) => {
