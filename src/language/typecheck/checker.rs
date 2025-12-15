@@ -2958,6 +2958,173 @@ impl Checker {
                 );
                 Some(make_task_type(TypeExpr::Unit))
             }
+            "cancel_token" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`cancel_token` expects 0 arguments",
+                    ));
+                }
+                Some(TypeExpr::Named("CancelToken".into(), Vec::new()))
+            }
+            "cancel" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`cancel` expects 1 argument (CancelToken)",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("CancelToken".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                Some(TypeExpr::Unit)
+            }
+            "is_cancelled" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`is_cancelled` expects 1 argument (CancelToken)",
+                    ));
+                    return Some(bool_type());
+                }
+                self.check_expression(
+                    module,
+                    &args[0],
+                    Some(&TypeExpr::Named("CancelToken".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                Some(bool_type())
+            }
+            "await_timeout" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`await_timeout` expects 2 arguments (Task[T], millis)",
+                    ));
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![TypeExpr::Unit, string_type()],
+                    ));
+                }
+                let task_ty = self.check_expression(module, &args[0], None, returns, env);
+                self.check_expression(
+                    module,
+                    &args[1],
+                    Some(&TypeExpr::Named("int64".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                if let Some(TypeExpr::Named(name, params)) = task_ty {
+                    if name == "Task" && params.len() == 1 {
+                        return Some(TypeExpr::Named(
+                            "Result".into(),
+                            vec![params[0].clone(), string_type()],
+                        ));
+                    }
+                }
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "`await_timeout` expects a Task as the first argument",
+                ));
+                Some(TypeExpr::Named(
+                    "Result".into(),
+                    vec![TypeExpr::Unit, string_type()],
+                ))
+            }
+            "await_cancel" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`await_cancel` expects 2 arguments (Task[T], CancelToken)",
+                    ));
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![TypeExpr::Unit, string_type()],
+                    ));
+                }
+                let task_ty = self.check_expression(module, &args[0], None, returns, env);
+                self.check_expression(
+                    module,
+                    &args[1],
+                    Some(&TypeExpr::Named("CancelToken".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                if let Some(TypeExpr::Named(name, params)) = task_ty {
+                    if name == "Task" && params.len() == 1 {
+                        return Some(TypeExpr::Named(
+                            "Result".into(),
+                            vec![params[0].clone(), string_type()],
+                        ));
+                    }
+                }
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "`await_cancel` expects a Task as the first argument",
+                ));
+                Some(TypeExpr::Named(
+                    "Result".into(),
+                    vec![TypeExpr::Unit, string_type()],
+                ))
+            }
+            "await_cancel_timeout" => {
+                if args.len() != 3 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`await_cancel_timeout` expects 3 arguments (Task[T], CancelToken, millis)",
+                    ));
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![TypeExpr::Unit, string_type()],
+                    ));
+                }
+                let task_ty = self.check_expression(module, &args[0], None, returns, env);
+                self.check_expression(
+                    module,
+                    &args[1],
+                    Some(&TypeExpr::Named("CancelToken".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                self.check_expression(
+                    module,
+                    &args[2],
+                    Some(&TypeExpr::Named("int64".into(), Vec::new())),
+                    returns,
+                    env,
+                );
+                if let Some(TypeExpr::Named(name, params)) = task_ty {
+                    if name == "Task" && params.len() == 1 {
+                        return Some(TypeExpr::Named(
+                            "Result".into(),
+                            vec![params[0].clone(), string_type()],
+                        ));
+                    }
+                }
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    "`await_cancel_timeout` expects a Task as the first argument",
+                ));
+                Some(TypeExpr::Named(
+                    "Result".into(),
+                    vec![TypeExpr::Unit, string_type()],
+                ))
+            }
             "delay_ms" => {
                 if args.len() != 1 {
                     self.errors.push(TypeError::new(
@@ -4258,6 +4425,12 @@ impl Checker {
                     | "sleep_ms"
                     | "sleep_task"
                     | "now_ms"
+                    | "cancel_token"
+                    | "cancel"
+                    | "is_cancelled"
+                    | "await_timeout"
+                    | "await_cancel"
+                    | "await_cancel_timeout"
                     | "digital_read"
                     | "reset_reason"
             )
@@ -4306,6 +4479,12 @@ impl Checker {
                 | "recv"
                 | "recv_timeout"
                 | "recv_task"
+                | "cancel_token"
+                | "cancel"
+                | "is_cancelled"
+                | "await_timeout"
+                | "await_cancel"
+                | "await_cancel_timeout"
                 | "close"
                 | "join"
                 | "sleep"
@@ -4331,6 +4510,12 @@ impl Checker {
                 | "recv"
                 | "recv_timeout"
                 | "recv_task"
+                | "cancel_token"
+                | "cancel"
+                | "is_cancelled"
+                | "await_timeout"
+                | "await_cancel"
+                | "await_cancel_timeout"
                 | "close"
                 | "join"
                 | "sleep"

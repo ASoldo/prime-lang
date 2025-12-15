@@ -206,6 +206,12 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     const PRIME_RECV_POLL_MS: u32 = parse_u32_env(option_env!("PRIME_RT_RECV_POLL_MS"), 1, 1);
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    const PRIME_CANCEL_TOKEN_SLOTS: usize =
+        parse_usize_env(option_env!("PRIME_RT_CANCEL_TOKEN_SLOTS"), 16, 1);
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -217,6 +223,16 @@ mod embedded {
         done: AtomicBool,
         deadline_ms: UnsafeCell<i128>,
         result: UnsafeCell<PrimeHandle>,
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    #[derive(Debug)]
+    struct CancelTokenSlot {
+        used: AtomicBool,
+        cancelled: AtomicBool,
     }
 
     #[cfg(any(
@@ -238,6 +254,15 @@ mod embedded {
         [const { MaybeUninit::uninit() }; PRIME_TASK_SLOTS];
     #[allow(dead_code)]
     static TASK_SLOTS_READY: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    static mut CANCEL_TOKEN_SLOTS: [MaybeUninit<CancelTokenSlot>; PRIME_CANCEL_TOKEN_SLOTS] =
+        [const { MaybeUninit::uninit() }; PRIME_CANCEL_TOKEN_SLOTS];
+    #[allow(dead_code)]
+    static CANCEL_TOKEN_SLOTS_READY: AtomicBool = AtomicBool::new(false);
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -508,6 +533,69 @@ mod embedded {
     fn task_slots() -> &'static [TaskSlot; PRIME_TASK_SLOTS] {
         ensure_task_slots();
         unsafe { &*(TASK_SLOTS.as_ptr() as *const [TaskSlot; PRIME_TASK_SLOTS]) }
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn ensure_cancel_token_slots() {
+        if CANCEL_TOKEN_SLOTS_READY.load(Ordering::SeqCst) {
+            return;
+        }
+        unsafe {
+            for slot in CANCEL_TOKEN_SLOTS.iter_mut() {
+                slot.write(CancelTokenSlot {
+                    used: AtomicBool::new(false),
+                    cancelled: AtomicBool::new(false),
+                });
+            }
+        }
+        CANCEL_TOKEN_SLOTS_READY.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn cancel_token_slots() -> &'static [CancelTokenSlot; PRIME_CANCEL_TOKEN_SLOTS] {
+        ensure_cancel_token_slots();
+        unsafe {
+            &*(CANCEL_TOKEN_SLOTS.as_ptr() as *const [CancelTokenSlot; PRIME_CANCEL_TOKEN_SLOTS])
+        }
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn alloc_cancel_token_slot() -> Option<&'static CancelTokenSlot> {
+        ensure_cancel_token_slots();
+        for slot in cancel_token_slots().iter() {
+            if slot
+                .used
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                slot.cancelled.store(false, Ordering::SeqCst);
+                return Some(slot);
+            }
+        }
+        None
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn cancel_token_from_handle(handle: PrimeHandle) -> Option<&'static CancelTokenSlot> {
+        if handle.0.is_null() {
+            return None;
+        }
+        let ptr = handle.0 as *const CancelTokenSlot;
+        cancel_token_slots()
+            .iter()
+            .find(|slot| slot.used.load(Ordering::SeqCst) && *slot as *const CancelTokenSlot == ptr)
     }
 
     #[cfg(any(
@@ -1433,6 +1521,74 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none"),
     ))]
+    #[unsafe(export_name = "prime_task_cancel")]
+    pub unsafe extern "C" fn prime_task_cancel(task: PrimeHandle) -> PrimeStatus {
+        let Some(slot) = task_from_handle(task) else {
+            return PrimeStatus::Invalid;
+        };
+        // Detach any channel waiters bound to this task so recycled slots don't get woken.
+        for waiter in channel_waiters().iter() {
+            if !waiter.used.load(Ordering::SeqCst) {
+                continue;
+            }
+            let task_ptr = unsafe { *waiter.task.get() };
+            if task_ptr == slot as *const TaskSlot {
+                waiter.used.store(false, Ordering::SeqCst);
+            }
+        }
+        slot.done.store(false, Ordering::SeqCst);
+        unsafe {
+            *slot.result.get() = PrimeHandle::null();
+            *slot.deadline_ms.get() = 0;
+        }
+        slot.used.store(false, Ordering::SeqCst);
+        #[cfg(target_arch = "xtensa")]
+        {
+            TASK_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        PrimeStatus::Ok
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_cancel_token_new")]
+    pub unsafe extern "C" fn prime_cancel_token_new() -> PrimeHandle {
+        let Some(slot) = alloc_cancel_token_slot() else {
+            return PrimeHandle::null();
+        };
+        PrimeHandle(slot as *const CancelTokenSlot as *mut c_void)
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_cancel_token_cancel")]
+    pub unsafe extern "C" fn prime_cancel_token_cancel(token: PrimeHandle) -> PrimeStatus {
+        let Some(slot) = cancel_token_from_handle(token) else {
+            return PrimeStatus::Invalid;
+        };
+        slot.cancelled.store(true, Ordering::SeqCst);
+        PrimeStatus::Ok
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
+    #[unsafe(export_name = "prime_cancel_token_is_cancelled")]
+    pub unsafe extern "C" fn prime_cancel_token_is_cancelled(token: PrimeHandle) -> bool {
+        cancel_token_from_handle(token)
+            .map(|slot| slot.cancelled.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_sleep_task")]
     pub unsafe extern "C" fn prime_sleep_task(_millis: i64) -> PrimeHandle {
         // For now, block the current thread/task; Xtensa ROM delay is cheap and avoids
@@ -2170,7 +2326,7 @@ mod host {
     use std::ffi::c_void;
     use std::io::{self, Write};
     use std::slice;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::sync::{Arc, Condvar, Mutex};
     use std::thread;
@@ -2198,6 +2354,7 @@ mod host {
         Sender(mpsc::Sender<PrimeHandle>),
         Receiver(Arc<Mutex<mpsc::Receiver<PrimeHandle>>>),
         Task(Arc<HostTaskState>),
+        CancelToken(Arc<AtomicBool>),
     }
 
     #[derive(Clone)]
@@ -2622,7 +2779,11 @@ mod host {
     }
 
     #[unsafe(export_name = "prime_delay_ms")]
-    pub unsafe extern "C" fn prime_delay_ms(_millis: i32) {}
+    pub unsafe extern "C" fn prime_delay_ms(millis: i32) {
+        if millis > 0 {
+            thread::sleep(std::time::Duration::from_millis(millis as u64));
+        }
+    }
 
     #[unsafe(export_name = "prime_pin_mode")]
     pub unsafe extern "C" fn prime_pin_mode(_pin: i32, _mode: i32) {}
@@ -2632,7 +2793,10 @@ mod host {
 
     #[unsafe(export_name = "prime_now_ms")]
     pub unsafe extern "C" fn prime_now_ms() -> i128 {
-        0
+        let now = std::time::SystemTime::now();
+        now.duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i128)
+            .unwrap_or(0)
     }
 
     #[unsafe(export_name = "prime_value_tag")]
@@ -2653,6 +2817,7 @@ mod host {
             HostValue::Receiver(_) => PrimeTag::Receiver,
             HostValue::Sender(_) => PrimeTag::Sender,
             HostValue::Task(_) => PrimeTag::JoinHandle,
+            HostValue::CancelToken(_) => PrimeTag::Unit,
         }
     }
 
@@ -2720,8 +2885,10 @@ mod host {
     }
 
     #[unsafe(export_name = "prime_reference_read")]
-    pub unsafe extern "C" fn prime_reference_read(_target: PrimeHandle) -> PrimeHandle {
-        PrimeHandle::null()
+    pub unsafe extern "C" fn prime_reference_read(target: PrimeHandle) -> PrimeHandle {
+        // Host references are currently represented as an aliasing handle via prime_reference_new,
+        // so "reading" a reference is just retaining the underlying value.
+        prime_value_retain(target)
     }
 
     #[unsafe(export_name = "prime_reference_write")]
@@ -2736,6 +2903,7 @@ mod host {
     struct HostTaskState {
         result: Mutex<Option<PrimeHandle>>,
         done: Condvar,
+        cancelled: AtomicBool,
     }
 
     #[unsafe(export_name = "prime_value_retain")]
@@ -2847,6 +3015,7 @@ mod host {
             HostValue::Enum { tag, .. } => write!(stdout, "<enum {tag}>"),
             HostValue::Unit => write!(stdout, "()"),
             HostValue::Task(_) => write!(stdout, "<task>"),
+            HostValue::CancelToken(_) => write!(stdout, "<cancel token>"),
             HostValue::Receiver(_) => write!(stdout, "<receiver>"),
             HostValue::Sender(_) => write!(stdout, "<sender>"),
             HostValue::Slice(_) => write!(stdout, "<slice>"),
@@ -2918,6 +3087,10 @@ mod host {
         let state_clone = state.clone();
         thread::spawn(move || {
             let result = func(arg);
+            if state_clone.cancelled.load(Ordering::SeqCst) {
+                prime_value_release(result);
+                return;
+            }
             let (lock, cv) = (&state_clone.result, &state_clone.done);
             if let Ok(mut guard) = lock.lock() {
                 *guard = Some(result);
@@ -2943,6 +3116,15 @@ mod host {
             return PrimeStatus::Invalid;
         };
         if let Ok(mut guard) = state.result.lock() {
+            if guard.is_none() {
+                match state
+                    .done
+                    .wait_timeout(guard, std::time::Duration::from_millis(1))
+                {
+                    Ok((next, _)) => guard = next,
+                    Err(_) => return PrimeStatus::Invalid,
+                }
+            }
             if let Some(res) = guard.take() {
                 result_out.write(res);
                 return PrimeStatus::Ok;
@@ -2969,6 +3151,52 @@ mod host {
         PrimeStatus::Invalid
     }
 
+    #[unsafe(export_name = "prime_task_cancel")]
+    pub unsafe extern "C" fn prime_task_cancel(task: PrimeHandle) -> PrimeStatus {
+        if task.0.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(task.0 as *const HostHandle);
+        let HostValue::Task(state) = &data.value else {
+            return PrimeStatus::Invalid;
+        };
+        state.cancelled.store(true, Ordering::SeqCst);
+        state.done.notify_all();
+        PrimeStatus::Ok
+    }
+
+    #[unsafe(export_name = "prime_cancel_token_new")]
+    pub unsafe extern "C" fn prime_cancel_token_new() -> PrimeHandle {
+        to_handle(HostHandle::new(HostValue::CancelToken(Arc::new(
+            AtomicBool::new(false),
+        ))))
+    }
+
+    #[unsafe(export_name = "prime_cancel_token_cancel")]
+    pub unsafe extern "C" fn prime_cancel_token_cancel(handle: PrimeHandle) -> PrimeStatus {
+        if handle.0.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        let HostValue::CancelToken(flag) = &data.value else {
+            return PrimeStatus::Invalid;
+        };
+        flag.store(true, Ordering::SeqCst);
+        PrimeStatus::Ok
+    }
+
+    #[unsafe(export_name = "prime_cancel_token_is_cancelled")]
+    pub unsafe extern "C" fn prime_cancel_token_is_cancelled(handle: PrimeHandle) -> bool {
+        if handle.0.is_null() {
+            return false;
+        }
+        let data = &*(handle.0 as *const HostHandle);
+        let HostValue::CancelToken(flag) = &data.value else {
+            return false;
+        };
+        flag.load(Ordering::SeqCst)
+    }
+
     #[unsafe(export_name = "prime_sleep_task")]
     pub unsafe extern "C" fn prime_sleep_task(millis: i64) -> PrimeHandle {
         let state = Arc::new(HostTaskState::default());
@@ -2979,7 +3207,22 @@ mod host {
             } else {
                 std::time::Duration::from_millis(millis as u64)
             };
-            thread::sleep(duration);
+            let tick = std::time::Duration::from_millis(5);
+            let deadline = std::time::Instant::now() + duration;
+            while std::time::Instant::now() < deadline {
+                if state_clone.cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
+                let now = std::time::Instant::now();
+                let remaining = deadline.saturating_duration_since(now);
+                if remaining.is_zero() {
+                    break;
+                }
+                thread::sleep(std::cmp::min(tick, remaining));
+            }
+            if state_clone.cancelled.load(Ordering::SeqCst) {
+                return;
+            }
             let unit = prime_unit_new();
             let (lock, cv) = (&state_clone.result, &state_clone.done);
             if let Ok(mut guard) = lock.lock() {
@@ -3004,11 +3247,27 @@ mod host {
         let state_clone = state.clone();
         let rx_clone = rx.clone();
         thread::spawn(move || {
-            let received = match rx_clone.lock() {
-                Ok(guard) => guard.recv().ok(),
-                Err(_) => None,
+            let tick = std::time::Duration::from_millis(5);
+            let payload: Option<PrimeHandle> = loop {
+                if state_clone.cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
+                match rx_clone.lock() {
+                    Ok(guard) => match guard.try_recv() {
+                        Ok(handle) => break Some(handle),
+                        Err(mpsc::TryRecvError::Empty) => {
+                            thread::sleep(tick);
+                            continue;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => break None,
+                    },
+                    Err(_) => break None,
+                }
             };
-            let (tag, payloads) = match received {
+            if state_clone.cancelled.load(Ordering::SeqCst) {
+                return;
+            }
+            let (tag, payloads) = match payload {
                 Some(handle) => (0, vec![clone_value(handle)]),
                 None => (1, Vec::new()),
             };

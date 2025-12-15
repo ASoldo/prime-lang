@@ -818,6 +818,24 @@ pub fn keyword_completion_items(
         ("sleep", "Built-in timer helper (millis)"),
         ("sleep_ms", "Built-in timer helper (alias for sleep)"),
         ("sleep_task", "Async timer helper (returns Task[()])"),
+        (
+            "cancel_token",
+            "Async cancellation helper (returns CancelToken)",
+        ),
+        ("cancel", "Async cancellation helper"),
+        ("is_cancelled", "Async cancellation helper"),
+        (
+            "await_timeout",
+            "Await helper with timeout (returns Result[T, string])",
+        ),
+        (
+            "await_cancel",
+            "Await helper with cancellation (returns Result[T, string])",
+        ),
+        (
+            "await_cancel_timeout",
+            "Await helper with cancellation+timeout (returns Result[T, string])",
+        ),
         ("now_ms", "Built-in clock helper (int64 millis)"),
         ("fs_exists", "Built-in file helper"),
         ("fs_read", "Built-in file helper"),

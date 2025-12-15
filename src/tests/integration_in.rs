@@ -3,13 +3,28 @@ use std::{
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
+    sync::OnceLock,
 };
 use tempfile::tempdir;
+
+static BUILD_PRIME_LANG_BIN: OnceLock<()> = OnceLock::new();
+
+fn ensure_prime_lang_binary() {
+    BUILD_PRIME_LANG_BIN.get_or_init(|| {
+        let status = Command::new("cargo")
+            .current_dir(root())
+            .args(["build", "--quiet", "--bin", "prime-lang"])
+            .status()
+            .expect("cargo build prime-lang");
+        assert!(status.success(), "cargo build prime-lang failed");
+    });
+}
 
 fn bin_path() -> String {
     if let Ok(path) = env::var("CARGO_BIN_EXE_prime-lang") {
         return path;
     }
+    ensure_prime_lang_binary();
     let mut fallback =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir not set by cargo"));
     fallback.push("target");
@@ -293,6 +308,124 @@ fn main() {
 }
 
 #[test]
+fn async_cancel_timeout_build_matches_run_output() {
+    let workspace = tempdir().expect("temp workspace");
+    let root_dir = workspace.path();
+    let build_name = "async_cancel_parity";
+
+    let manifest = format!(
+        r#"
+manifest_version = "3"
+
+[package]
+name = "async_cancel_bin"
+version = "0.1.0"
+
+[dependencies]
+core = {{ name = "core", path = "{}/workspace/core" }}
+
+[module]
+name = "async_cancel_bin::main"
+path = "main.prime"
+visibility = "pub"
+"#,
+        root().replace('\\', "\\\\")
+    );
+    fs::write(root_dir.join("prime.toml"), manifest).expect("write manifest");
+
+    fs::write(
+        root_dir.join("main.prime"),
+        r#"
+module async_cancel_bin::main;
+
+import core::types::prelude::{*};
+
+fn main() {
+  let Task[()] t1 = sleep_task(50);
+  let Result[(), string] r1 = await_timeout(t1, 5);
+  match r1 {
+    Ok(_) => out("await_timeout ok"),
+    Err(msg) => out(`await_timeout err {msg}`),
+    _ => out("await_timeout other"),
+  }
+
+  let CancelToken tok = cancel_token();
+  let Task[()] t2 = sleep_task(50);
+  cancel(tok);
+  let Result[(), string] r2 = await_cancel(t2, tok);
+  match r2 {
+    Ok(_) => out("await_cancel ok"),
+    Err(msg) => out(`await_cancel err {msg}`),
+    _ => out("await_cancel other"),
+  }
+
+  let CancelToken tok2 = cancel_token();
+  let Task[()] t3 = sleep_task(50);
+  cancel(tok2);
+  let Result[(), string] r3 = await_cancel_timeout(t3, tok2, 50);
+  match r3 {
+    Ok(_) => out("await_cancel_timeout ok"),
+    Err(msg) => out(`await_cancel_timeout err {msg}`),
+    _ => out("await_cancel_timeout other"),
+  }
+
+  let CancelToken tok3 = cancel_token();
+  let Task[()] t4 = sleep_task(50);
+  let Result[(), string] r4 = await_cancel_timeout(t4, tok3, 5);
+  match r4 {
+    Ok(_) => out("await_cancel_timeout2 ok"),
+    Err(msg) => out(`await_cancel_timeout2 err {msg}`),
+    _ => out("await_cancel_timeout2 other"),
+  }
+}
+"#,
+    )
+    .expect("write program");
+
+    let artifact_dir = root_dir.join(".build.prime").join(build_name);
+    let _ = fs::remove_dir_all(&artifact_dir);
+
+    let status = Command::new(bin_path())
+        .current_dir(root_dir)
+        .args(["build", "main.prime", "--name", build_name])
+        .status()
+        .expect("build async_cancel_bin");
+    assert!(status.success(), "async_cancel_bin build failed");
+
+    let binary = artifact_dir.join(build_name);
+    let build_output = Command::new(&binary)
+        .output()
+        .expect("run compiled async_cancel_bin");
+    assert!(
+        build_output.status.success(),
+        "compiled async_cancel_bin failed: {}",
+        String::from_utf8_lossy(&build_output.stderr)
+    );
+
+    let run_output = Command::new(bin_path())
+        .current_dir(root_dir)
+        .args(["run", "main.prime"])
+        .output()
+        .expect("run interpreted async_cancel_bin");
+    assert!(
+        run_output.status.success(),
+        "interpreted async_cancel_bin failed: {}",
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let build_stdout = String::from_utf8_lossy(&build_output.stdout)
+        .trim()
+        .to_string();
+    let run_stdout = String::from_utf8_lossy(&run_output.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        build_stdout, run_stdout,
+        "build/run output mismatch for await_* cancellation/timeout"
+    );
+}
+
+#[test]
 fn async_demo_matches_golden_output() {
     let expected = fs::read_to_string("workspace/tests/golden/async_demo_output.txt")
         .expect("expected async demo golden output");
@@ -336,6 +469,9 @@ fn no_std_parity_demo_runs_under_host() {
         "async try parity ok 7",
         "match some 3",
         "timeout parity join 11",
+        "await_timeout parity err timeout",
+        "await_cancel parity err cancelled",
+        "await_cancel_timeout parity err timeout",
         "no_std parity demo done",
     ];
     let mut cursor = 0;

@@ -66,11 +66,33 @@ impl Compiler {
                     let current = cell.lock().unwrap();
                     self.release_reference_borrow(current.value());
                 }
-                let updated = value;
+                let mut updated = value;
+                Self::clear_scalar_constant(&mut updated);
                 if let Some(slot) = slot {
-                    if let Value::Int(int_val) = updated.value() {
+                    let int_val = match updated.value() {
+                        Value::Int(int_val) => Some(int_val.clone()),
+                        _ => None,
+                    };
+                    if let Some(int_val) = int_val {
                         unsafe {
-                            LLVMBuildStore(self.builder, int_val.llvm(), slot);
+                            let slot_elem_ty = LLVMGetAllocatedType(slot);
+                            let value_ty = LLVMTypeOf(int_val.llvm());
+                            let stored = if value_ty != slot_elem_ty {
+                                LLVMBuildIntCast(
+                                    self.builder,
+                                    int_val.llvm(),
+                                    slot_elem_ty,
+                                    CString::new(format!("{name}_cast")).unwrap().as_ptr(),
+                                )
+                            } else {
+                                int_val.llvm()
+                            };
+                            LLVMBuildStore(self.builder, stored, slot);
+                            if value_ty != slot_elem_ty {
+                                if let Value::Int(int_mut) = updated.value_mut() {
+                                    *int_mut = IntValue::new(stored, None);
+                                }
+                            }
                         }
                     }
                 }
@@ -717,6 +739,7 @@ impl Compiler {
             Value::Range(_) => "range",
             Value::JoinHandle(_) => "join handle",
             Value::Closure(_) => "closure",
+            Value::CancelToken(_) => "cancel token",
             Value::Unit => "unit",
             Value::Moved => "moved value",
         }

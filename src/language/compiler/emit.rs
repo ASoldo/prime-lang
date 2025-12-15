@@ -309,8 +309,22 @@ impl Compiler {
                 }
                 return Ok(Some(FlowSignal::Return(values)));
             }
-            Statement::Break => return Ok(Some(FlowSignal::Break)),
-            Statement::Continue => return Ok(Some(FlowSignal::Continue)),
+            Statement::Break => {
+                if let Some(control) = self.loop_controls.last().copied() {
+                    unsafe {
+                        LLVMBuildBr(self.builder, control.break_block);
+                    }
+                }
+                return Ok(Some(FlowSignal::Break));
+            }
+            Statement::Continue => {
+                if let Some(control) = self.loop_controls.last().copied() {
+                    unsafe {
+                        LLVMBuildBr(self.builder, control.continue_block);
+                    }
+                }
+                return Ok(Some(FlowSignal::Continue));
+            }
             Statement::Block(block) => {
                 self.push_scope();
                 let result = self.execute_block_contents(block)?;
@@ -392,7 +406,10 @@ impl Compiler {
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
                     let cond_value = self.value_to_bool(condition)?;
-                    if let Some(flag) = cond_value.constant() {
+                    if let Some(flag) = cond_value
+                        .constant()
+                        .filter(|_| !self.runtime_handles_enabled())
+                    {
                         if !flag {
                             break;
                         }
@@ -443,20 +460,38 @@ impl Compiler {
                             let cond_llvm = self.bool_llvm_value(&cond_bool);
                             LLVMBuildCondBr(self.builder, cond_llvm, body_block, after_block);
                             LLVMPositionBuilderAtEnd(self.builder, body_block);
-                            self.push_scope();
-                            let result = self.execute_block_contents(&stmt.body)?;
-                            self.exit_scope()?;
+                            self.loop_controls.push(LoopControl {
+                                break_block: after_block,
+                                continue_block: cond_block,
+                            });
+                            let result = (|| {
+                                self.push_scope();
+                                let result = self.execute_block_contents(&stmt.body)?;
+                                self.exit_scope()?;
+                                Ok::<_, String>(result)
+                            })();
+                            self.loop_controls.pop();
+                            let result = result?;
                             match result {
-                                BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {
-                                    LLVMBuildBr(self.builder, cond_block);
-                                }
-                                BlockEval::Flow(FlowSignal::Break) => {
-                                    LLVMBuildBr(self.builder, after_block);
-                                }
                                 BlockEval::Flow(flow @ FlowSignal::Return(_))
                                 | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
                                     LLVMPositionBuilderAtEnd(self.builder, after_block);
                                     return Ok(Some(flow));
+                                }
+                                _ => {}
+                            }
+
+                            let insert_block = LLVMGetInsertBlock(self.builder);
+                            let terminated = !insert_block.is_null()
+                                && !LLVMGetBasicBlockTerminator(insert_block).is_null();
+                            if !terminated {
+                                match result {
+                                    BlockEval::Flow(FlowSignal::Break) => {
+                                        LLVMBuildBr(self.builder, after_block);
+                                    }
+                                    _ => {
+                                        LLVMBuildBr(self.builder, cond_block);
+                                    }
                                 }
                             }
                             LLVMPositionBuilderAtEnd(self.builder, after_block);
@@ -508,20 +543,38 @@ impl Compiler {
                             LLVMBuildCondBr(self.builder, cond_llvm, body_block, after_block);
 
                             LLVMPositionBuilderAtEnd(self.builder, body_block);
-                            self.push_scope();
-                            let result = self.execute_block_contents(&stmt.body)?;
-                            self.exit_scope()?;
+                            self.loop_controls.push(LoopControl {
+                                break_block: after_block,
+                                continue_block: cond_block,
+                            });
+                            let result = (|| {
+                                self.push_scope();
+                                let result = self.execute_block_contents(&stmt.body)?;
+                                self.exit_scope()?;
+                                Ok::<_, String>(result)
+                            })();
+                            self.loop_controls.pop();
+                            let result = result?;
                             match result {
-                                BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {
-                                    LLVMBuildBr(self.builder, cond_block);
-                                }
-                                BlockEval::Flow(FlowSignal::Break) => {
-                                    LLVMBuildBr(self.builder, after_block);
-                                }
                                 BlockEval::Flow(flow @ FlowSignal::Return(_))
                                 | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
                                     LLVMPositionBuilderAtEnd(self.builder, after_block);
                                     return Ok(Some(flow));
+                                }
+                                _ => {}
+                            }
+
+                            let insert_block = LLVMGetInsertBlock(self.builder);
+                            let terminated = !insert_block.is_null()
+                                && !LLVMGetBasicBlockTerminator(insert_block).is_null();
+                            if !terminated {
+                                match result {
+                                    BlockEval::Flow(FlowSignal::Break) => {
+                                        LLVMBuildBr(self.builder, after_block);
+                                    }
+                                    _ => {
+                                        LLVMBuildBr(self.builder, cond_block);
+                                    }
                                 }
                             }
                             LLVMPositionBuilderAtEnd(self.builder, after_block);
@@ -556,48 +609,84 @@ impl Compiler {
                 }
             },
             Statement::Loop(loop_stmt) => {
-                // For embedded targets, avoid unrolling an infinite loop at compile time;
-                // instead emit a basic block that branches to itself. This keeps IR finite.
-                if self.target.is_embedded() && !block_has_break_or_continue(&loop_stmt.body) {
+                if self.runtime_handles_enabled() {
                     unsafe {
-                        let current_bb = LLVMGetInsertBlock(self.builder);
-                        let func = LLVMGetBasicBlockParent(current_bb);
-                        let loop_bb_name = CString::new("loop").unwrap();
-                        let after_bb_name = CString::new("after_loop").unwrap();
+                        let current_block = LLVMGetInsertBlock(self.builder);
+                        if current_block.is_null() {
+                            return Err("no insertion block for loop".into());
+                        }
+                        let func = LLVMGetBasicBlockParent(current_block);
+                        if func.is_null() {
+                            return Err("loop outside function".into());
+                        }
+
                         let loop_bb = LLVMAppendBasicBlockInContext(
                             self.context,
                             func,
-                            loop_bb_name.as_ptr(),
+                            CString::new("loop").unwrap().as_ptr(),
                         );
                         let after_bb = LLVMAppendBasicBlockInContext(
                             self.context,
                             func,
-                            after_bb_name.as_ptr(),
+                            CString::new("after_loop").unwrap().as_ptr(),
                         );
+
                         LLVMBuildBr(self.builder, loop_bb);
                         LLVMPositionBuilderAtEnd(self.builder, loop_bb);
-                        self.push_scope();
-                        let _ = self.execute_block_contents(&loop_stmt.body)?;
-                        self.exit_scope()?;
-                        LLVMBuildBr(self.builder, loop_bb);
-                        // Position builder after loop to keep subsequent code reachable (though unreachable at runtime).
+
+                        self.loop_controls.push(LoopControl {
+                            break_block: after_bb,
+                            continue_block: loop_bb,
+                        });
+                        let result = (|| {
+                            self.push_scope();
+                            let result = self.execute_block_contents(&loop_stmt.body)?;
+                            self.exit_scope()?;
+                            Ok::<_, String>(result)
+                        })();
+                        self.loop_controls.pop();
+                        let result = result?;
+
+                        let insert_block = LLVMGetInsertBlock(self.builder);
+                        let terminated = !insert_block.is_null()
+                            && !LLVMGetBasicBlockTerminator(insert_block).is_null();
+                        match result {
+                            BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {
+                                if !terminated {
+                                    LLVMBuildBr(self.builder, loop_bb);
+                                }
+                            }
+                            BlockEval::Flow(FlowSignal::Break) => {
+                                if !terminated {
+                                    LLVMBuildBr(self.builder, after_bb);
+                                }
+                            }
+                            BlockEval::Flow(flow @ FlowSignal::Return(_))
+                            | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                LLVMPositionBuilderAtEnd(self.builder, after_bb);
+                                return Ok(Some(flow));
+                            }
+                        }
+
+                        // Continue compiling after the loop in an "after" block (may be unreachable).
                         LLVMPositionBuilderAtEnd(self.builder, after_bb);
                     }
-                    return Ok(None);
-                }
-                loop {
-                    self.push_scope();
-                    let result = self.execute_block_contents(&loop_stmt.body)?;
-                    self.exit_scope()?;
-                    match result {
-                        BlockEval::Value(_) => {}
-                        BlockEval::Flow(FlowSignal::Continue) => continue,
-                        BlockEval::Flow(FlowSignal::Break) => break,
-                        BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
-                        BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
+                } else {
+                    loop {
+                        self.push_scope();
+                        let result = self.execute_block_contents(&loop_stmt.body)?;
+                        self.exit_scope()?;
+                        match result {
+                            BlockEval::Value(_) => {}
+                            BlockEval::Flow(FlowSignal::Continue) => continue,
+                            BlockEval::Flow(FlowSignal::Break) => break,
+                            BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
+                            BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                return Ok(Some(flow));
+                            }
+                        }
                     }
                 }
-                return Ok(None);
             }
             Statement::For(stmt) => match &stmt.target {
                 ForTarget::Range(range_expr) => {
@@ -609,36 +698,45 @@ impl Compiler {
                         EvalOutcome::Value(value) => self.expect_int(value.into_value())?,
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
-                    if let (Some(start_const), Some(end_const)) =
-                        (start_value.constant(), end_value.constant())
-                    {
-                        let mut current = start_const;
-                        let limit = if range_expr.inclusive {
-                            end_const + 1
-                        } else {
-                            end_const
-                        };
-                        while current < limit {
-                            self.push_scope();
-                            self.insert_var(
-                                &stmt.binding,
-                                Value::Int(self.const_int_value(current)).into(),
-                                false,
-                            )?;
-                            let result = self.execute_block_contents(&stmt.body)?;
-                            self.exit_scope()?;
-                            match result {
-                                BlockEval::Value(_) => {}
-                                BlockEval::Flow(FlowSignal::Continue) => {}
-                                BlockEval::Flow(FlowSignal::Break) => break,
-                                BlockEval::Flow(flow @ FlowSignal::Return(_)) => {
-                                    return Ok(Some(flow));
+                    if !self.runtime_handles_enabled() {
+                        if let (Some(start_const), Some(end_const)) =
+                            (start_value.constant(), end_value.constant())
+                        {
+                            let mut current = start_const;
+                            let limit = if range_expr.inclusive {
+                                end_const + 1
+                            } else {
+                                end_const
+                            };
+                            while current < limit {
+                                self.push_scope();
+                                self.insert_var(
+                                    &stmt.binding,
+                                    Value::Int(self.const_int_value(current)).into(),
+                                    false,
+                                )?;
+                                let result = self.execute_block_contents(&stmt.body)?;
+                                self.exit_scope()?;
+                                match result {
+                                    BlockEval::Value(_) => {}
+                                    BlockEval::Flow(FlowSignal::Continue) => {}
+                                    BlockEval::Flow(FlowSignal::Break) => break,
+                                    BlockEval::Flow(flow @ FlowSignal::Return(_)) => {
+                                        return Ok(Some(flow));
+                                    }
+                                    BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
+                                        return Ok(Some(flow));
+                                    }
                                 }
-                                BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                    return Ok(Some(flow));
-                                }
+                                current += 1;
                             }
-                            current += 1;
+                        } else if let Some(flow) = self.emit_dynamic_range_for(
+                            start_value,
+                            end_value,
+                            range_expr.inclusive,
+                            stmt,
+                        )? {
+                            return Ok(Some(flow));
                         }
                     } else if let Some(flow) = self.emit_dynamic_range_for(
                         start_value,
@@ -926,6 +1024,9 @@ impl Compiler {
                         }
                         Value::Task(_) => {
                             return Err("Cannot access field on task value".into());
+                        }
+                        Value::CancelToken(_) => {
+                            return Err("Cannot access field on cancel token value".into());
                         }
                         Value::Closure(_) => {
                             return Err("Cannot access field on closure value".into());
@@ -1361,6 +1462,988 @@ impl Compiler {
             .with_runtime(result_handle),
         ))
     }
+
+    pub(super) fn emit_await_timeout_call(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        self.ensure_async_supported()?;
+        self.force_runtime_handles = true;
+        if args.len() != 2 {
+            return Err("`await_timeout` expects 2 arguments (Task[T], millis)".into());
+        }
+
+        let task_eval = match self.emit_expression(&args[0])? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
+        let millis_eval = match self.emit_expression(&args[1])? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
+
+        let task = match task_eval.into_value() {
+            Value::Task(task) => task,
+            other => {
+                return Err(format!(
+                    "`await_timeout` expects a Task as the first argument (found {})",
+                    self.describe_value(&other)
+                ));
+            }
+        };
+        let millis = self.expect_int(millis_eval.into_value())?;
+
+        // Build-mode / deferred tasks: await immediately and wrap in Result::Ok.
+        if task.handle.is_none() || !self.runtime_handles_enabled() {
+            let value = task.take(self)?;
+            let ok = self.instantiate_enum_variant("Ok", vec![value.into_value()])?;
+            return Ok(EvalOutcome::Value(self.evaluated(ok)));
+        }
+
+        let task_handle = task
+            .handle
+            .ok_or_else(|| "`await_timeout` task missing runtime backing".to_string())?;
+
+        self.ensure_runtime_symbols();
+        unsafe {
+            if self.builder.is_null() || llvm_sys::core::LLVMGetInsertBlock(self.builder).is_null()
+            {
+                return Err("`await_timeout` requires active IR builder".into());
+            }
+        }
+
+        let ok_tag = self
+            .enum_variants
+            .get("Ok")
+            .map(|v| v.variant_index)
+            .ok_or_else(|| {
+                "Result::Ok variant not found; ensure Result is available in build mode".to_string()
+            })?;
+        let err_tag = self
+            .enum_variants
+            .get("Err")
+            .map(|v| v.variant_index)
+            .ok_or_else(|| {
+                "Result::Err variant not found; ensure Result is available in build mode"
+                    .to_string()
+            })?;
+
+        let slot = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_timeout_task_result").unwrap().as_ptr(),
+            )
+        };
+        let result_slot = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_timeout_result_handle")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+
+        let millis_rt = if let Some(constant) = millis.constant() {
+            unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.int_type, constant as u64, 1) }
+        } else {
+            self.int_to_runtime_int(&millis, "await_timeout_millis")?
+        };
+        let zero = unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.int_type, 0, 1) };
+        let neg = unsafe {
+            llvm_sys::core::LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntSLT,
+                millis_rt,
+                zero,
+                CString::new("await_timeout_neg").unwrap().as_ptr(),
+            )
+        };
+        let millis_clamped = unsafe {
+            llvm_sys::core::LLVMBuildSelect(
+                self.builder,
+                neg,
+                zero,
+                millis_rt,
+                CString::new("await_timeout_millis_clamped")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+
+        let mut now_args: [LLVMValueRef; 0] = [];
+        let start = self.call_runtime(
+            self.runtime_abi.prime_now_ms,
+            self.runtime_abi.prime_now_ms_ty,
+            &mut now_args,
+            "now_ms",
+        );
+        let deadline = unsafe {
+            llvm_sys::core::LLVMBuildAdd(
+                self.builder,
+                start,
+                millis_clamped,
+                CString::new("await_timeout_deadline").unwrap().as_ptr(),
+            )
+        };
+
+        let function =
+            unsafe { llvm_sys::core::LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)) };
+        let poll_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_timeout_poll").unwrap().as_ptr(),
+            )
+        };
+        let ready_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_timeout_ready").unwrap().as_ptr(),
+            )
+        };
+        let check_timeout_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_timeout_check").unwrap().as_ptr(),
+            )
+        };
+        let timeout_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_timeout_timeout").unwrap().as_ptr(),
+            )
+        };
+        let merge_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_timeout_merge").unwrap().as_ptr(),
+            )
+        };
+
+        unsafe { llvm_sys::core::LLVMBuildBr(self.builder, poll_block) };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, poll_block) };
+        let mut poll_args = [task_handle, slot];
+        let status = self.call_runtime(
+            self.runtime_abi.prime_task_poll,
+            self.runtime_abi.prime_task_poll_ty,
+            &mut poll_args,
+            "task_poll",
+        );
+        let ok_const = unsafe {
+            llvm_sys::core::LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0)
+        };
+        let is_ready = unsafe {
+            llvm_sys::core::LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                status,
+                ok_const,
+                CString::new("await_timeout_ready_flag").unwrap().as_ptr(),
+            )
+        };
+        unsafe {
+            llvm_sys::core::LLVMBuildCondBr(
+                self.builder,
+                is_ready,
+                ready_block,
+                check_timeout_block,
+            )
+        };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, check_timeout_block) };
+        let mut now_args: [LLVMValueRef; 0] = [];
+        let now = self.call_runtime(
+            self.runtime_abi.prime_now_ms,
+            self.runtime_abi.prime_now_ms_ty,
+            &mut now_args,
+            "now_ms",
+        );
+        let timed_out = unsafe {
+            llvm_sys::core::LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntSGE,
+                now,
+                deadline,
+                CString::new("await_timeout_timed_out").unwrap().as_ptr(),
+            )
+        };
+        unsafe {
+            llvm_sys::core::LLVMBuildCondBr(self.builder, timed_out, timeout_block, poll_block)
+        };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, ready_block) };
+        let loaded = unsafe {
+            llvm_sys::core::LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                slot,
+                CString::new("await_timeout_value").unwrap().as_ptr(),
+            )
+        };
+        let payload_ptr = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_timeout_ok_payload").unwrap().as_ptr(),
+            )
+        };
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, loaded, payload_ptr) };
+        let ok_tag_const = unsafe {
+            llvm_sys::core::LLVMConstInt(LLVMInt32TypeInContext(self.context), ok_tag as u64, 0)
+        };
+        let ok_len = unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.usize_type, 1, 0) };
+        let mut ok_args = [payload_ptr, ok_len, ok_tag_const];
+        let ok_handle = self.call_runtime(
+            self.runtime_abi.prime_enum_new,
+            self.runtime_abi.prime_enum_new_ty,
+            &mut ok_args,
+            "result_ok",
+        );
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, ok_handle, result_slot) };
+        unsafe { llvm_sys::core::LLVMBuildBr(self.builder, merge_block) };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, timeout_block) };
+        let mut cancel_args = [task_handle];
+        let _ = self.call_runtime(
+            self.runtime_abi.prime_task_cancel,
+            self.runtime_abi.prime_task_cancel_ty,
+            &mut cancel_args,
+            "task_cancel",
+        );
+        let (ptr, len) = self.build_runtime_bytes("timeout", "await_timeout_err")?;
+        let mut str_args = [ptr, len];
+        let str_handle = self.call_runtime(
+            self.runtime_abi.prime_string_new,
+            self.runtime_abi.prime_string_new_ty,
+            &mut str_args,
+            "string_new",
+        );
+        let err_payload_ptr = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_timeout_err_payload").unwrap().as_ptr(),
+            )
+        };
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, str_handle, err_payload_ptr) };
+        let err_tag_const = unsafe {
+            llvm_sys::core::LLVMConstInt(LLVMInt32TypeInContext(self.context), err_tag as u64, 0)
+        };
+        let err_len = unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.usize_type, 1, 0) };
+        let mut err_args = [err_payload_ptr, err_len, err_tag_const];
+        let err_handle = self.call_runtime(
+            self.runtime_abi.prime_enum_new,
+            self.runtime_abi.prime_enum_new_ty,
+            &mut err_args,
+            "result_err",
+        );
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, err_handle, result_slot) };
+        unsafe { llvm_sys::core::LLVMBuildBr(self.builder, merge_block) };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, merge_block) };
+        let result_handle = unsafe {
+            llvm_sys::core::LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                result_slot,
+                CString::new("await_timeout_result").unwrap().as_ptr(),
+            )
+        };
+
+        Ok(EvalOutcome::Value(
+            self.evaluated(Value::Enum(EnumValue {
+                enum_name: "Result".into(),
+                variant: "<runtime>".into(),
+                values: Vec::new(),
+                variant_index: 0,
+            }))
+            .with_runtime(result_handle),
+        ))
+    }
+
+    pub(super) fn emit_await_cancel_call(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        self.ensure_async_supported()?;
+        self.force_runtime_handles = true;
+        if args.len() != 2 {
+            return Err("`await_cancel` expects 2 arguments (Task[T], CancelToken)".into());
+        }
+
+        let task_eval = match self.emit_expression(&args[0])? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
+        let token_eval = match self.emit_expression(&args[1])? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
+
+        let task = match task_eval.into_value() {
+            Value::Task(task) => task,
+            other => {
+                return Err(format!(
+                    "`await_cancel` expects a Task as the first argument (found {})",
+                    self.describe_value(&other)
+                ));
+            }
+        };
+        let token = match token_eval.into_value() {
+            Value::CancelToken(token) => token,
+            other => {
+                return Err(format!(
+                    "`await_cancel` expects a CancelToken as the second argument (found {})",
+                    self.describe_value(&other)
+                ));
+            }
+        };
+
+        if task.handle.is_none() || !self.runtime_handles_enabled() {
+            if token.is_cancelled() {
+                let err = self
+                    .instantiate_enum_variant("Err", vec![self.make_string_value("cancelled")?])?;
+                return Ok(EvalOutcome::Value(self.evaluated(err)));
+            }
+            let value = task.take(self)?;
+            let ok = self.instantiate_enum_variant("Ok", vec![value.into_value()])?;
+            return Ok(EvalOutcome::Value(self.evaluated(ok)));
+        }
+
+        let task_handle = task
+            .handle
+            .ok_or_else(|| "`await_cancel` task missing runtime backing".to_string())?;
+        let token_handle = token
+            .handle
+            .ok_or_else(|| "`await_cancel` cancel token missing runtime backing".to_string())?;
+
+        self.ensure_runtime_symbols();
+        unsafe {
+            if self.builder.is_null() || llvm_sys::core::LLVMGetInsertBlock(self.builder).is_null()
+            {
+                return Err("`await_cancel` requires active IR builder".into());
+            }
+        }
+
+        let ok_tag = self
+            .enum_variants
+            .get("Ok")
+            .map(|v| v.variant_index)
+            .ok_or_else(|| {
+                "Result::Ok variant not found; ensure Result is available in build mode".to_string()
+            })?;
+        let err_tag = self
+            .enum_variants
+            .get("Err")
+            .map(|v| v.variant_index)
+            .ok_or_else(|| {
+                "Result::Err variant not found; ensure Result is available in build mode"
+                    .to_string()
+            })?;
+
+        let slot = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_cancel_task_result").unwrap().as_ptr(),
+            )
+        };
+        let result_slot = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_cancel_result_handle").unwrap().as_ptr(),
+            )
+        };
+
+        let function =
+            unsafe { llvm_sys::core::LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)) };
+        let poll_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_poll").unwrap().as_ptr(),
+            )
+        };
+        let ready_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_ready").unwrap().as_ptr(),
+            )
+        };
+        let check_cancel_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_check").unwrap().as_ptr(),
+            )
+        };
+        let cancel_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_cancelled").unwrap().as_ptr(),
+            )
+        };
+        let merge_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_merge").unwrap().as_ptr(),
+            )
+        };
+
+        unsafe { llvm_sys::core::LLVMBuildBr(self.builder, poll_block) };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, poll_block) };
+        let mut poll_args = [task_handle, slot];
+        let status = self.call_runtime(
+            self.runtime_abi.prime_task_poll,
+            self.runtime_abi.prime_task_poll_ty,
+            &mut poll_args,
+            "task_poll",
+        );
+        let ok_const = unsafe {
+            llvm_sys::core::LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0)
+        };
+        let is_ready = unsafe {
+            llvm_sys::core::LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                status,
+                ok_const,
+                CString::new("await_cancel_ready_flag").unwrap().as_ptr(),
+            )
+        };
+        unsafe {
+            llvm_sys::core::LLVMBuildCondBr(self.builder, is_ready, ready_block, check_cancel_block)
+        };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, check_cancel_block) };
+        let mut cancel_args = [token_handle];
+        let cancelled = self.call_runtime(
+            self.runtime_abi.prime_cancel_token_is_cancelled,
+            self.runtime_abi.prime_cancel_token_is_cancelled_ty,
+            &mut cancel_args,
+            "token_is_cancelled",
+        );
+        unsafe {
+            llvm_sys::core::LLVMBuildCondBr(self.builder, cancelled, cancel_block, poll_block)
+        };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, ready_block) };
+        let loaded = unsafe {
+            llvm_sys::core::LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                slot,
+                CString::new("await_cancel_value").unwrap().as_ptr(),
+            )
+        };
+        let payload_ptr = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_cancel_ok_payload").unwrap().as_ptr(),
+            )
+        };
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, loaded, payload_ptr) };
+        let ok_tag_const = unsafe {
+            llvm_sys::core::LLVMConstInt(LLVMInt32TypeInContext(self.context), ok_tag as u64, 0)
+        };
+        let ok_len = unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.usize_type, 1, 0) };
+        let mut ok_args = [payload_ptr, ok_len, ok_tag_const];
+        let ok_handle = self.call_runtime(
+            self.runtime_abi.prime_enum_new,
+            self.runtime_abi.prime_enum_new_ty,
+            &mut ok_args,
+            "result_ok",
+        );
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, ok_handle, result_slot) };
+        unsafe { llvm_sys::core::LLVMBuildBr(self.builder, merge_block) };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, cancel_block) };
+        let mut cancel_task_args = [task_handle];
+        let _ = self.call_runtime(
+            self.runtime_abi.prime_task_cancel,
+            self.runtime_abi.prime_task_cancel_ty,
+            &mut cancel_task_args,
+            "task_cancel",
+        );
+        let (ptr, len) = self.build_runtime_bytes("cancelled", "await_cancel_err")?;
+        let mut str_args = [ptr, len];
+        let str_handle = self.call_runtime(
+            self.runtime_abi.prime_string_new,
+            self.runtime_abi.prime_string_new_ty,
+            &mut str_args,
+            "string_new",
+        );
+        let err_payload_ptr = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_cancel_err_payload").unwrap().as_ptr(),
+            )
+        };
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, str_handle, err_payload_ptr) };
+        let err_tag_const = unsafe {
+            llvm_sys::core::LLVMConstInt(LLVMInt32TypeInContext(self.context), err_tag as u64, 0)
+        };
+        let err_len = unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.usize_type, 1, 0) };
+        let mut err_args = [err_payload_ptr, err_len, err_tag_const];
+        let err_handle = self.call_runtime(
+            self.runtime_abi.prime_enum_new,
+            self.runtime_abi.prime_enum_new_ty,
+            &mut err_args,
+            "result_err",
+        );
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, err_handle, result_slot) };
+        unsafe { llvm_sys::core::LLVMBuildBr(self.builder, merge_block) };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, merge_block) };
+        let result_handle = unsafe {
+            llvm_sys::core::LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                result_slot,
+                CString::new("await_cancel_result").unwrap().as_ptr(),
+            )
+        };
+
+        Ok(EvalOutcome::Value(
+            self.evaluated(Value::Enum(EnumValue {
+                enum_name: "Result".into(),
+                variant: "<runtime>".into(),
+                values: Vec::new(),
+                variant_index: 0,
+            }))
+            .with_runtime(result_handle),
+        ))
+    }
+
+    pub(super) fn emit_await_cancel_timeout_call(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        self.ensure_async_supported()?;
+        self.force_runtime_handles = true;
+        if args.len() != 3 {
+            return Err(
+                "`await_cancel_timeout` expects 3 arguments (Task[T], CancelToken, millis)".into(),
+            );
+        }
+
+        let task_eval = match self.emit_expression(&args[0])? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
+        let token_eval = match self.emit_expression(&args[1])? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
+        let millis_eval = match self.emit_expression(&args[2])? {
+            EvalOutcome::Value(value) => value,
+            EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+        };
+
+        let task = match task_eval.into_value() {
+            Value::Task(task) => task,
+            other => {
+                return Err(format!(
+                    "`await_cancel_timeout` expects a Task as the first argument (found {})",
+                    self.describe_value(&other)
+                ));
+            }
+        };
+        let token = match token_eval.into_value() {
+            Value::CancelToken(token) => token,
+            other => {
+                return Err(format!(
+                    "`await_cancel_timeout` expects a CancelToken as the second argument (found {})",
+                    self.describe_value(&other)
+                ));
+            }
+        };
+        let millis = self.expect_int(millis_eval.into_value())?;
+
+        if task.handle.is_none() || !self.runtime_handles_enabled() {
+            if token.is_cancelled() {
+                let err = self
+                    .instantiate_enum_variant("Err", vec![self.make_string_value("cancelled")?])?;
+                return Ok(EvalOutcome::Value(self.evaluated(err)));
+            }
+            let value = task.take(self)?;
+            let ok = self.instantiate_enum_variant("Ok", vec![value.into_value()])?;
+            return Ok(EvalOutcome::Value(self.evaluated(ok)));
+        }
+
+        let task_handle = task
+            .handle
+            .ok_or_else(|| "`await_cancel_timeout` task missing runtime backing".to_string())?;
+        let token_handle = token.handle.ok_or_else(|| {
+            "`await_cancel_timeout` cancel token missing runtime backing".to_string()
+        })?;
+
+        self.ensure_runtime_symbols();
+        unsafe {
+            if self.builder.is_null() || llvm_sys::core::LLVMGetInsertBlock(self.builder).is_null()
+            {
+                return Err("`await_cancel_timeout` requires active IR builder".into());
+            }
+        }
+
+        let ok_tag = self
+            .enum_variants
+            .get("Ok")
+            .map(|v| v.variant_index)
+            .ok_or_else(|| {
+                "Result::Ok variant not found; ensure Result is available in build mode".to_string()
+            })?;
+        let err_tag = self
+            .enum_variants
+            .get("Err")
+            .map(|v| v.variant_index)
+            .ok_or_else(|| {
+                "Result::Err variant not found; ensure Result is available in build mode"
+                    .to_string()
+            })?;
+
+        let slot = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_cancel_timeout_task_result")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+        let result_slot = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_cancel_timeout_result_handle")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+
+        let millis_rt = if let Some(constant) = millis.constant() {
+            unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.int_type, constant as u64, 1) }
+        } else {
+            self.int_to_runtime_int(&millis, "await_cancel_timeout_millis")?
+        };
+        let zero = unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.int_type, 0, 1) };
+        let neg = unsafe {
+            llvm_sys::core::LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntSLT,
+                millis_rt,
+                zero,
+                CString::new("await_cancel_timeout_neg").unwrap().as_ptr(),
+            )
+        };
+        let millis_clamped = unsafe {
+            llvm_sys::core::LLVMBuildSelect(
+                self.builder,
+                neg,
+                zero,
+                millis_rt,
+                CString::new("await_cancel_timeout_millis_clamped")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+
+        let mut now_args: [LLVMValueRef; 0] = [];
+        let start = self.call_runtime(
+            self.runtime_abi.prime_now_ms,
+            self.runtime_abi.prime_now_ms_ty,
+            &mut now_args,
+            "now_ms",
+        );
+        let deadline = unsafe {
+            llvm_sys::core::LLVMBuildAdd(
+                self.builder,
+                start,
+                millis_clamped,
+                CString::new("await_cancel_timeout_deadline")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+
+        let function =
+            unsafe { llvm_sys::core::LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)) };
+        let check_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_timeout_check").unwrap().as_ptr(),
+            )
+        };
+        let poll_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_timeout_poll").unwrap().as_ptr(),
+            )
+        };
+        let ready_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_timeout_ready").unwrap().as_ptr(),
+            )
+        };
+        let cancel_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_timeout_cancelled")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+        let timeout_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_timeout_timeout")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+        let merge_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_timeout_merge").unwrap().as_ptr(),
+            )
+        };
+
+        // Initial poll for immediate completion.
+        unsafe { llvm_sys::core::LLVMBuildBr(self.builder, poll_block) };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, poll_block) };
+        let mut poll_args = [task_handle, slot];
+        let status = self.call_runtime(
+            self.runtime_abi.prime_task_poll,
+            self.runtime_abi.prime_task_poll_ty,
+            &mut poll_args,
+            "task_poll",
+        );
+        let ok_const = unsafe {
+            llvm_sys::core::LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0)
+        };
+        let is_ready = unsafe {
+            llvm_sys::core::LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                status,
+                ok_const,
+                CString::new("await_cancel_timeout_ready_flag")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+        unsafe {
+            llvm_sys::core::LLVMBuildCondBr(self.builder, is_ready, ready_block, check_block)
+        };
+
+        // Interpreter parity: cancellation/timeout checks happen before the next poll.
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, check_block) };
+        let mut token_args = [token_handle];
+        let cancelled = self.call_runtime(
+            self.runtime_abi.prime_cancel_token_is_cancelled,
+            self.runtime_abi.prime_cancel_token_is_cancelled_ty,
+            &mut token_args,
+            "token_is_cancelled",
+        );
+        let check_timeout_block = unsafe {
+            llvm_sys::core::LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                CString::new("await_cancel_timeout_check_timeout")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+        unsafe {
+            llvm_sys::core::LLVMBuildCondBr(
+                self.builder,
+                cancelled,
+                cancel_block,
+                check_timeout_block,
+            )
+        };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, check_timeout_block) };
+        let mut now_args: [LLVMValueRef; 0] = [];
+        let now = self.call_runtime(
+            self.runtime_abi.prime_now_ms,
+            self.runtime_abi.prime_now_ms_ty,
+            &mut now_args,
+            "now_ms",
+        );
+        let timed_out = unsafe {
+            llvm_sys::core::LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntSGE,
+                now,
+                deadline,
+                CString::new("await_cancel_timeout_timed_out")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+        unsafe {
+            llvm_sys::core::LLVMBuildCondBr(self.builder, timed_out, timeout_block, poll_block)
+        };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, ready_block) };
+        let loaded = unsafe {
+            llvm_sys::core::LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                slot,
+                CString::new("await_cancel_timeout_value").unwrap().as_ptr(),
+            )
+        };
+        let payload_ptr = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_cancel_timeout_ok_payload")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, loaded, payload_ptr) };
+        let ok_tag_const = unsafe {
+            llvm_sys::core::LLVMConstInt(LLVMInt32TypeInContext(self.context), ok_tag as u64, 0)
+        };
+        let ok_len = unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.usize_type, 1, 0) };
+        let mut ok_args = [payload_ptr, ok_len, ok_tag_const];
+        let ok_handle = self.call_runtime(
+            self.runtime_abi.prime_enum_new,
+            self.runtime_abi.prime_enum_new_ty,
+            &mut ok_args,
+            "result_ok",
+        );
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, ok_handle, result_slot) };
+        unsafe { llvm_sys::core::LLVMBuildBr(self.builder, merge_block) };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, cancel_block) };
+        let mut cancel_task_args = [task_handle];
+        let _ = self.call_runtime(
+            self.runtime_abi.prime_task_cancel,
+            self.runtime_abi.prime_task_cancel_ty,
+            &mut cancel_task_args,
+            "task_cancel",
+        );
+        let (ptr, len) =
+            self.build_runtime_bytes("cancelled", "await_cancel_timeout_err_cancelled")?;
+        let mut str_args = [ptr, len];
+        let str_handle = self.call_runtime(
+            self.runtime_abi.prime_string_new,
+            self.runtime_abi.prime_string_new_ty,
+            &mut str_args,
+            "string_new",
+        );
+        let err_payload_ptr = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_cancel_timeout_err_payload")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, str_handle, err_payload_ptr) };
+        let err_tag_const = unsafe {
+            llvm_sys::core::LLVMConstInt(LLVMInt32TypeInContext(self.context), err_tag as u64, 0)
+        };
+        let err_len = unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.usize_type, 1, 0) };
+        let mut err_args = [err_payload_ptr, err_len, err_tag_const];
+        let err_handle = self.call_runtime(
+            self.runtime_abi.prime_enum_new,
+            self.runtime_abi.prime_enum_new_ty,
+            &mut err_args,
+            "result_err",
+        );
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, err_handle, result_slot) };
+        unsafe { llvm_sys::core::LLVMBuildBr(self.builder, merge_block) };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, timeout_block) };
+        let mut cancel_task_args = [task_handle];
+        let _ = self.call_runtime(
+            self.runtime_abi.prime_task_cancel,
+            self.runtime_abi.prime_task_cancel_ty,
+            &mut cancel_task_args,
+            "task_cancel",
+        );
+        let (ptr, len) = self.build_runtime_bytes("timeout", "await_cancel_timeout_err_timeout")?;
+        let mut str_args = [ptr, len];
+        let str_handle = self.call_runtime(
+            self.runtime_abi.prime_string_new,
+            self.runtime_abi.prime_string_new_ty,
+            &mut str_args,
+            "string_new",
+        );
+        let err_payload_ptr = unsafe {
+            llvm_sys::core::LLVMBuildAlloca(
+                self.builder,
+                self.runtime_abi.handle_type,
+                CString::new("await_cancel_timeout_timeout_payload")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, str_handle, err_payload_ptr) };
+        let err_tag_const = unsafe {
+            llvm_sys::core::LLVMConstInt(LLVMInt32TypeInContext(self.context), err_tag as u64, 0)
+        };
+        let err_len = unsafe { llvm_sys::core::LLVMConstInt(self.runtime_abi.usize_type, 1, 0) };
+        let mut err_args = [err_payload_ptr, err_len, err_tag_const];
+        let err_handle = self.call_runtime(
+            self.runtime_abi.prime_enum_new,
+            self.runtime_abi.prime_enum_new_ty,
+            &mut err_args,
+            "result_err",
+        );
+        unsafe { llvm_sys::core::LLVMBuildStore(self.builder, err_handle, result_slot) };
+        unsafe { llvm_sys::core::LLVMBuildBr(self.builder, merge_block) };
+
+        unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, merge_block) };
+        let result_handle = unsafe {
+            llvm_sys::core::LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                result_slot,
+                CString::new("await_cancel_timeout_result")
+                    .unwrap()
+                    .as_ptr(),
+            )
+        };
+
+        Ok(EvalOutcome::Value(
+            self.evaluated(Value::Enum(EnumValue {
+                enum_name: "Result".into(),
+                variant: "<runtime>".into(),
+                values: Vec::new(),
+                variant_index: 0,
+            }))
+            .with_runtime(result_handle),
+        ))
+    }
     pub(super) fn try_builtin_call(
         &mut self,
         name: &str,
@@ -1455,6 +2538,16 @@ impl Compiler {
             "sleep_task" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_sleep_task(values)))
             }
+            "cancel_token" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_cancel_token(values)))
+            }
+            "cancel" => Some(self.invoke_builtin(args, |this, values| this.builtin_cancel(values))),
+            "is_cancelled" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_is_cancelled(values)))
+            }
+            "await_timeout" => Some(self.emit_await_timeout_call(args)),
+            "await_cancel" => Some(self.emit_await_cancel_call(args)),
+            "await_cancel_timeout" => Some(self.emit_await_cancel_timeout_call(args)),
             "close" => Some(self.invoke_builtin(args, |this, values| this.builtin_close(values))),
             "join" => Some(self.invoke_builtin(args, |this, values| this.builtin_join(values))),
             "sleep" => {
@@ -1579,7 +2672,15 @@ impl Compiler {
                             }
                             BlockEval::Flow(FlowSignal::Break)
                             | BlockEval::Flow(FlowSignal::Continue) => {
-                                LLVMBuildBr(self.builder, merge_block);
+                                let current_block = LLVMGetInsertBlock(self.builder);
+                                if current_block.is_null()
+                                    || LLVMGetBasicBlockTerminator(current_block).is_null()
+                                {
+                                    return Err(
+                                        "break/continue in dynamic if branch did not terminate block"
+                                            .into(),
+                                    );
+                                }
                             }
                         };
 
@@ -1603,7 +2704,16 @@ impl Compiler {
                                         }
                                         BlockEval::Flow(FlowSignal::Break)
                                         | BlockEval::Flow(FlowSignal::Continue) => {
-                                            LLVMBuildBr(self.builder, merge_block);
+                                            let current_block = LLVMGetInsertBlock(self.builder);
+                                            if current_block.is_null()
+                                                || LLVMGetBasicBlockTerminator(current_block)
+                                                    .is_null()
+                                            {
+                                                return Err(
+                                                    "break/continue in dynamic if branch did not terminate block"
+                                                        .into(),
+                                                );
+                                            }
                                         }
                                     };
                                 }
@@ -2084,7 +3194,7 @@ impl Compiler {
         let supported_patterns = match_expr.arms.iter().all(|arm| match &arm.pattern {
             Pattern::EnumVariant { bindings, .. } => bindings
                 .iter()
-                .all(|b| matches!(b, Pattern::Identifier(_, _))),
+                .all(|b| matches!(b, Pattern::Identifier(_, _) | Pattern::Wildcard)),
             Pattern::Wildcard => true,
             _ => false,
         });
@@ -2167,6 +3277,9 @@ impl Compiler {
             if let Some(bindings) = bindings {
                 for (field_idx, binding) in bindings.iter().enumerate() {
                     let Pattern::Identifier(name, _) = binding else {
+                        if matches!(binding, Pattern::Wildcard) {
+                            continue;
+                        }
                         return Ok(None);
                     };
                     let field_handle = self.call_runtime(
@@ -2189,10 +3302,29 @@ impl Compiler {
             }
             let arm_value = self.emit_expression(&arm.value)?;
             self.exit_scope()?;
-            if let EvalOutcome::Value(val) = arm_value {
-                result_value = Some(val);
+            match arm_value {
+                EvalOutcome::Value(val) => {
+                    result_value = Some(val);
+                    unsafe { LLVMBuildBr(self.builder, merge_block) };
+                }
+                EvalOutcome::Flow(flow @ FlowSignal::Return(_))
+                | EvalOutcome::Flow(flow @ FlowSignal::Propagate(_)) => {
+                    unsafe {
+                        LLVMPositionBuilderAtEnd(self.builder, merge_block);
+                    }
+                    return Ok(Some(EvalOutcome::Flow(flow)));
+                }
+                EvalOutcome::Flow(FlowSignal::Break) | EvalOutcome::Flow(FlowSignal::Continue) => {
+                    let current_block = unsafe { LLVMGetInsertBlock(self.builder) };
+                    if current_block.is_null()
+                        || unsafe { LLVMGetBasicBlockTerminator(current_block) }.is_null()
+                    {
+                        return Err(
+                            "break/continue in runtime match arm did not terminate block".into(),
+                        );
+                    }
+                }
             }
-            unsafe { LLVMBuildBr(self.builder, merge_block) };
             current_block = else_block;
         }
 
@@ -2803,29 +3935,61 @@ impl Compiler {
         if let Some(value) = result {
             return Ok(value);
         }
+        let mut lhs_llvm = lhs.llvm();
+        let mut rhs_llvm = rhs.llvm();
+        unsafe {
+            let lhs_ty = LLVMTypeOf(lhs_llvm);
+            let rhs_ty = LLVMTypeOf(rhs_llvm);
+            if lhs_ty != rhs_ty && !lhs_ty.is_null() && !rhs_ty.is_null() {
+                let lhs_bits = LLVMGetIntTypeWidth(lhs_ty);
+                let rhs_bits = LLVMGetIntTypeWidth(rhs_ty);
+                if lhs_bits < rhs_bits {
+                    lhs_llvm = LLVMBuildSExt(
+                        self.builder,
+                        lhs_llvm,
+                        rhs_ty,
+                        CString::new("int_widen").unwrap().as_ptr(),
+                    );
+                } else if rhs_bits < lhs_bits {
+                    rhs_llvm = LLVMBuildSExt(
+                        self.builder,
+                        rhs_llvm,
+                        lhs_ty,
+                        CString::new("int_widen").unwrap().as_ptr(),
+                    );
+                } else {
+                    rhs_llvm = LLVMBuildIntCast(
+                        self.builder,
+                        rhs_llvm,
+                        lhs_ty,
+                        CString::new("int_cast").unwrap().as_ptr(),
+                    );
+                }
+            }
+        }
         let name = CString::new("int_bin").unwrap();
         let llvm = match op {
             BinaryOp::Add => unsafe {
-                LLVMBuildAdd(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr())
+                LLVMBuildAdd(self.builder, lhs_llvm, rhs_llvm, name.as_ptr())
             },
             BinaryOp::Sub => unsafe {
-                LLVMBuildSub(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr())
+                LLVMBuildSub(self.builder, lhs_llvm, rhs_llvm, name.as_ptr())
             },
             BinaryOp::Mul => unsafe {
-                LLVMBuildMul(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr())
+                LLVMBuildMul(self.builder, lhs_llvm, rhs_llvm, name.as_ptr())
             },
             BinaryOp::Div => unsafe {
-                LLVMBuildSDiv(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr())
+                LLVMBuildSDiv(self.builder, lhs_llvm, rhs_llvm, name.as_ptr())
             },
             BinaryOp::Rem => unsafe {
-                LLVMBuildSRem(self.builder, lhs.llvm(), rhs.llvm(), name.as_ptr())
+                LLVMBuildSRem(self.builder, lhs_llvm, rhs_llvm, name.as_ptr())
             },
             BinaryOp::Lt => unsafe {
                 LLVMBuildICmp(
                     self.builder,
                     llvm_sys::LLVMIntPredicate::LLVMIntSLT,
-                    lhs.llvm(),
-                    rhs.llvm(),
+                    lhs_llvm,
+                    rhs_llvm,
                     name.as_ptr(),
                 )
             },
@@ -2833,8 +3997,8 @@ impl Compiler {
                 LLVMBuildICmp(
                     self.builder,
                     llvm_sys::LLVMIntPredicate::LLVMIntSLE,
-                    lhs.llvm(),
-                    rhs.llvm(),
+                    lhs_llvm,
+                    rhs_llvm,
                     name.as_ptr(),
                 )
             },
@@ -2842,8 +4006,8 @@ impl Compiler {
                 LLVMBuildICmp(
                     self.builder,
                     llvm_sys::LLVMIntPredicate::LLVMIntSGT,
-                    lhs.llvm(),
-                    rhs.llvm(),
+                    lhs_llvm,
+                    rhs_llvm,
                     name.as_ptr(),
                 )
             },
@@ -2851,8 +4015,8 @@ impl Compiler {
                 LLVMBuildICmp(
                     self.builder,
                     llvm_sys::LLVMIntPredicate::LLVMIntSGE,
-                    lhs.llvm(),
-                    rhs.llvm(),
+                    lhs_llvm,
+                    rhs_llvm,
                     name.as_ptr(),
                 )
             },
@@ -2860,8 +4024,8 @@ impl Compiler {
                 LLVMBuildICmp(
                     self.builder,
                     llvm_sys::LLVMIntPredicate::LLVMIntEQ,
-                    lhs.llvm(),
-                    rhs.llvm(),
+                    lhs_llvm,
+                    rhs_llvm,
                     name.as_ptr(),
                 )
             },
@@ -2869,8 +4033,8 @@ impl Compiler {
                 LLVMBuildICmp(
                     self.builder,
                     llvm_sys::LLVMIntPredicate::LLVMIntNE,
-                    lhs.llvm(),
-                    rhs.llvm(),
+                    lhs_llvm,
+                    rhs_llvm,
                     name.as_ptr(),
                 )
             },
@@ -3193,6 +4357,11 @@ impl Compiler {
                 func,
                 CString::new("for_range_body").unwrap().as_ptr(),
             );
+            let continue_block = LLVMAppendBasicBlockInContext(
+                self.context,
+                func,
+                CString::new("for_range_continue").unwrap().as_ptr(),
+            );
             let after_block = LLVMAppendBasicBlockInContext(
                 self.context,
                 func,
@@ -3217,34 +4386,53 @@ impl Compiler {
             LLVMBuildCondBr(self.builder, cmp, body_block, after_block);
 
             LLVMPositionBuilderAtEnd(self.builder, body_block);
-            self.push_scope();
-            self.insert_var(
-                &stmt.binding,
-                Value::Int(IntValue::new(cur, None)).into(),
-                false,
-            )?;
-            let result = self.execute_block_contents(&stmt.body)?;
-            self.exit_scope()?;
+            self.loop_controls.push(LoopControl {
+                break_block: after_block,
+                continue_block,
+            });
+            let result = (|| {
+                self.push_scope();
+                self.insert_var(
+                    &stmt.binding,
+                    Value::Int(IntValue::new(cur, None)).into(),
+                    false,
+                )?;
+                let result = self.execute_block_contents(&stmt.body)?;
+                self.exit_scope()?;
+                Ok::<_, String>(result)
+            })();
+            self.loop_controls.pop();
+            let result = result?;
 
             match result {
-                BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {
-                    let next = LLVMBuildAdd(
-                        self.builder,
-                        cur,
-                        one,
-                        CString::new("for_range_next").unwrap().as_ptr(),
-                    );
-                    LLVMBuildStore(self.builder, next, loop_var);
-                    LLVMBuildBr(self.builder, cond_block);
-                }
-                BlockEval::Flow(FlowSignal::Break) => {
-                    LLVMBuildBr(self.builder, after_block);
-                }
                 BlockEval::Flow(flow @ FlowSignal::Return(_))
-                | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                    return Ok(Some(flow));
+                | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
+                _ => {}
+            }
+
+            let insert_block = LLVMGetInsertBlock(self.builder);
+            let terminated = !insert_block.is_null()
+                && !LLVMGetBasicBlockTerminator(insert_block).is_null();
+            if !terminated {
+                match result {
+                    BlockEval::Flow(FlowSignal::Break) => {
+                        LLVMBuildBr(self.builder, after_block);
+                    }
+                    _ => {
+                        LLVMBuildBr(self.builder, continue_block);
+                    }
                 }
             }
+
+            LLVMPositionBuilderAtEnd(self.builder, continue_block);
+            let next = LLVMBuildAdd(
+                self.builder,
+                cur,
+                one,
+                CString::new("for_range_next").unwrap().as_ptr(),
+            );
+            LLVMBuildStore(self.builder, next, loop_var);
+            LLVMBuildBr(self.builder, cond_block);
 
             LLVMPositionBuilderAtEnd(self.builder, after_block);
             Ok(None)

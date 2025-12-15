@@ -408,6 +408,18 @@ impl Compiler {
                 self.emit_printf_call("%.*s", &mut args);
                 Ok(())
             }
+            Value::CancelToken(token) => {
+                if let Some(handle) = token.handle {
+                    self.emit_runtime_print(handle);
+                    Ok(())
+                } else {
+                    let (ptr, len) =
+                        self.build_runtime_bytes("<cancel_token>", "print_cancel_token")?;
+                    let mut args = [ptr, len];
+                    self.emit_printf_call("%.*s", &mut args);
+                    Ok(())
+                }
+            }
             Value::Moved => Err("Cannot print moved value in build mode".into()),
         }
     }
@@ -650,6 +662,9 @@ impl Compiler {
                 }
                 Err("join handle missing runtime backing".into())
             }
+            Value::CancelToken(token) => token
+                .handle
+                .ok_or_else(|| "cancel token missing runtime backing".to_string()),
             Value::Pointer(ptr) => {
                 let inner = ptr.cell.lock().unwrap().clone().into_value();
                 let target = self.build_runtime_handle(inner)?;
@@ -754,6 +769,7 @@ impl Compiler {
                 | Value::Receiver(_)
                 | Value::Struct(_)
                 | Value::Pointer(_)
+                | Value::CancelToken(_)
         );
         if !allowed {
             return None;

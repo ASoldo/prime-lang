@@ -1,7 +1,8 @@
 use crate::language::ast::{ClosureBody, FunctionParam};
-use crate::runtime::error::RuntimeResult;
+use crate::runtime::error::{RuntimeError, RuntimeResult};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -27,6 +28,7 @@ pub enum Value {
     Iterator(IteratorValue),
     JoinHandle(Box<JoinHandleValue>),
     Task(Box<TaskValue>),
+    CancelToken(CancelTokenValue),
     Pointer(PointerValue),
     Closure(ClosureValue),
     Moved,
@@ -47,7 +49,11 @@ impl Value {
             Value::Slice(slice) => !slice.items.lock().unwrap().is_empty(),
             Value::Map(map) => !map.entries.lock().unwrap().is_empty(),
             Value::FormatTemplate(_) => true,
-            Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) | Value::Task(_) => true,
+            Value::Sender(_)
+            | Value::Receiver(_)
+            | Value::JoinHandle(_)
+            | Value::Task(_)
+            | Value::CancelToken(_) => true,
             Value::Pointer(_) => true,
             Value::Closure(_) => true,
             Value::Iterator(iter) => {
@@ -220,12 +226,32 @@ impl TaskValue {
     ) {
         let (lock, cvar) = &**state;
         let mut guard = lock.lock().unwrap();
+        if guard.finished {
+            return;
+        }
         guard.result = Some(result);
         guard.finished = true;
         if std::env::var_os("PRIME_DEBUG_ASYNC").is_some() {
             eprintln!("[prime-debug] task store_result signaled");
         }
         cvar.notify_all();
+    }
+
+    pub fn cancel_with(&self, message: impl Into<String>) -> bool {
+        let (lock, cvar) = &*self.state;
+        let mut guard = match lock.lock() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+        if guard.finished {
+            return false;
+        }
+        guard.result = Some(Err(RuntimeError::Cancelled {
+            message: message.into(),
+        }));
+        guard.finished = true;
+        cvar.notify_all();
+        true
     }
 
     pub fn join(&self) -> Result<Value, String> {
@@ -238,6 +264,30 @@ impl TaskValue {
         }
         match guard.result.take() {
             Some(Ok(value)) => Ok(value),
+            Some(Err(err)) => Err(err.to_string()),
+            None => Err("task missing result".into()),
+        }
+    }
+
+    pub fn join_timeout(&self, millis: i64) -> Result<Option<Value>, String> {
+        let duration = if millis <= 0 {
+            Duration::from_millis(0)
+        } else {
+            Duration::from_millis(millis as u64)
+        };
+        let (lock, cvar) = &*self.state;
+        let mut guard = lock.lock().map_err(|_| "task state poisoned")?;
+        if !guard.finished {
+            let (next, timeout) = cvar
+                .wait_timeout_while(guard, duration, |state| !state.finished)
+                .map_err(|_| "task wait poisoned".to_string())?;
+            guard = next;
+            if timeout.timed_out() && !guard.finished {
+                return Ok(None);
+            }
+        }
+        match guard.result.take() {
+            Some(Ok(value)) => Ok(Some(value)),
             Some(Err(err)) => Err(err.to_string()),
             None => Err("task missing result".into()),
         }
@@ -336,6 +386,7 @@ impl fmt::Display for Value {
             Value::Receiver(_) => write!(f, "Receiver"),
             Value::JoinHandle(_) => write!(f, "JoinHandle"),
             Value::Task(_) => write!(f, "Task"),
+            Value::CancelToken(_) => write!(f, "CancelToken"),
             Value::Pointer(ptr) => write!(
                 f,
                 "{}Pointer->{}",
@@ -345,6 +396,27 @@ impl fmt::Display for Value {
             Value::Closure(_) => write!(f, "<closure>"),
             Value::Moved => write!(f, "<moved>"),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CancelTokenValue {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancelTokenValue {
+    pub fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
     }
 }
 

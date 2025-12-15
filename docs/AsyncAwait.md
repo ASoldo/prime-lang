@@ -16,6 +16,30 @@ This note captures the intended shape of async/await for Prime. It is a checkpoi
 - `spawn expr` accepts sync or async bodies; async bodies run on the fiber scheduler, sync bodies stay on OS threads (unchanged).
 - `Task[T]` gains `join() -> Result[T, Panic]` and is directly awaitable; `Result` propagation with `?` works inside async the same as sync.
 
+## Cancellation and Timeouts
+
+Prime keeps cancellation explicit (no unwind/exception model): cancellation and timeouts surface as `Result[T, string]`.
+
+### CancelToken
+- `cancel_token() -> CancelToken`: create a new cancellation token (initially not cancelled).
+- `cancel(token: CancelToken) -> ()`: mark the token as cancelled.
+- `is_cancelled(token: CancelToken) -> bool`: read the cancellation flag.
+
+`CancelToken` is just a shared flag; it does not stop work on its own. It becomes effective when code checks it (via `is_cancelled`) or when you await a `Task` with the helpers below.
+
+### Await Helpers
+- `await_timeout[T](task: Task[T], millis: int64) -> Result[T, string]`
+- `await_cancel[T](task: Task[T], token: CancelToken) -> Result[T, string]`
+- `await_cancel_timeout[T](task: Task[T], token: CancelToken, millis: int64) -> Result[T, string]`
+
+Semantics (interpreter/build output/embedded no_std should match):
+- If `task` completes first, return `Ok(value)`.
+- On timeout, cancel the task and return `Err("timeout")`.
+- On cancellation, cancel the task and return `Err("cancelled")`.
+- Task failures bubble out as `Err(message)` (panic payload as a string) and do not unwind the caller.
+- `millis <= 0` behaves like an immediate timeout check.
+- In `await_cancel_timeout`, cancellation wins if both become true in the same tick.
+
 ## Typing and Borrowing Rules
 - Any `await` introduces a suspension point; the checker ensures no `&mut` (or unique ownership that implies exclusivity) lives across it unless the lifetime is proven disjoint.
 - Captured values that cross suspension must be `Send` (and `'static` if moved into detached tasks). Non-sendable values must be scoped before the `await` or cloned.

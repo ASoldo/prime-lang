@@ -16,6 +16,8 @@ pub enum RuntimeError {
     Unsupported { message: String },
     #[error("Runtime panic: {message}")]
     Panic { message: String },
+    #[error("Task cancelled: {message}")]
+    Cancelled { message: String },
     #[error("Match error: {message}")]
     MatchError { message: String },
     #[error("Function `{name}` expected {expected} arguments but received {received}")]

@@ -179,6 +179,32 @@ impl Compiler {
         }
     }
 
+    pub(super) fn expect_cancel_token(
+        &mut self,
+        value: Value,
+        ctx: &str,
+    ) -> Result<CancelTokenValue, String> {
+        match value {
+            Value::CancelToken(token) => Ok(token),
+            Value::Reference(reference) => {
+                if let Some(reference_handle) = reference.handle {
+                    let mut call_args = [reference_handle];
+                    let handle = self.call_runtime(
+                        self.runtime_abi.prime_reference_read,
+                        self.runtime_abi.prime_reference_read_ty,
+                        &mut call_args,
+                        "cancel_token_ref_read",
+                    );
+                    Ok(CancelTokenValue::with_handle(handle))
+                } else {
+                    let inner = reference.cell.lock().unwrap().clone().into_value();
+                    self.expect_cancel_token(inner, ctx)
+                }
+            }
+            _ => Err(format!("{ctx} expects CancelToken value")),
+        }
+    }
+
     pub(super) fn expect_string_value(value: Value, ctx: &str) -> Result<String, String> {
         match value {
             Value::Str(s) => Ok((*s.text).clone()),
@@ -1074,6 +1100,8 @@ impl Compiler {
         if args.len() != 1 {
             return Err("sleep_task expects 1 argument".into());
         }
+        self.ensure_async_supported()?;
+        self.force_runtime_handles = true;
         let millis = self.expect_int(args.pop().unwrap())?;
         if self.runtime_handles_enabled() {
             self.ensure_runtime_symbols();
@@ -1099,6 +1127,67 @@ impl Compiler {
         }
         let task = TaskValue::ready(self.evaluated(Value::Unit));
         Ok(Value::Task(Box::new(task)))
+    }
+
+    pub(super) fn builtin_cancel_token(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        if !args.is_empty() {
+            return Err("cancel_token expects 0 arguments".into());
+        }
+        if self.runtime_handles_enabled() {
+            self.ensure_runtime_symbols();
+            let mut call_args: [LLVMValueRef; 0] = [];
+            let handle = self.call_runtime(
+                self.runtime_abi.prime_cancel_token_new,
+                self.runtime_abi.prime_cancel_token_new_ty,
+                &mut call_args,
+                "cancel_token_new",
+            );
+            return Ok(Value::CancelToken(CancelTokenValue::with_handle(handle)));
+        }
+        Ok(Value::CancelToken(CancelTokenValue::new_build()))
+    }
+
+    pub(super) fn builtin_cancel(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("cancel expects 1 argument".into());
+        }
+        let token = self.expect_cancel_token(args.pop().unwrap(), "cancel")?;
+        if let Some(handle) = token.handle {
+            if self.runtime_handles_enabled() {
+                self.ensure_runtime_symbols();
+                let mut call_args = [handle];
+                let _ = self.call_runtime(
+                    self.runtime_abi.prime_cancel_token_cancel,
+                    self.runtime_abi.prime_cancel_token_cancel_ty,
+                    &mut call_args,
+                    "cancel_token_cancel",
+                );
+                return Ok(Value::Unit);
+            }
+        }
+        token.cancel();
+        Ok(Value::Unit)
+    }
+
+    pub(super) fn builtin_is_cancelled(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("is_cancelled expects 1 argument".into());
+        }
+        let token = self.expect_cancel_token(args.pop().unwrap(), "is_cancelled")?;
+        if let Some(handle) = token.handle {
+            if self.runtime_handles_enabled() {
+                self.ensure_runtime_symbols();
+                let mut call_args = [handle];
+                let flag = self.call_runtime(
+                    self.runtime_abi.prime_cancel_token_is_cancelled,
+                    self.runtime_abi.prime_cancel_token_is_cancelled_ty,
+                    &mut call_args,
+                    "cancel_token_is_cancelled",
+                );
+                return Ok(Value::Bool(BoolValue::new(flag, None)));
+            }
+        }
+        Ok(Value::Bool(self.const_bool_value(token.is_cancelled())))
     }
 
     pub(super) fn ensure_embedded_target(&self, name: &str) -> Result<(), String> {

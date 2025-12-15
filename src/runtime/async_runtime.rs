@@ -3,11 +3,11 @@
 
 use crate::runtime::{
     error::RuntimeResult,
-    value::{TaskValue, Value, make_option_value},
+    value::{TaskValue, TryRecvOutcome, Value, make_option_value},
 };
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn debug_enabled() -> bool {
     std::env::var_os("PRIME_DEBUG_ASYNC").is_some()
@@ -50,33 +50,69 @@ impl AsyncRuntime {
         } else {
             Duration::from_millis(millis as u64)
         };
-        self.spawn_blocking(move || {
+        let (task, state) = TaskValue::new_pair();
+        thread::spawn(move || {
+            let tick = Duration::from_millis(5);
+            let deadline = Instant::now() + duration;
             if debug_enabled() {
                 eprintln!(
                     "[prime-debug] async_runtime sleep_task sleeping for {:?}",
                     duration
                 );
             }
-            thread::sleep(duration);
+            while Instant::now() < deadline {
+                if TaskValue::with_state(state.clone()).is_finished() {
+                    return;
+                }
+                let now = Instant::now();
+                let remaining = deadline.saturating_duration_since(now);
+                if remaining.is_zero() {
+                    break;
+                }
+                thread::sleep(std::cmp::min(tick, remaining));
+            }
             if debug_enabled() {
                 eprintln!("[prime-debug] async_runtime sleep_task finished sleep");
             }
-            Ok(Value::Unit)
-        })
+            TaskValue::store_result(&state, Ok(Value::Unit));
+        });
+        task
     }
 
     /// Create a task that resolves when the channel yields a value or closes.
     pub fn recv_task(&self, receiver: crate::runtime::value::ChannelReceiver) -> TaskValue {
-        self.spawn_blocking(move || {
+        let (task, state) = TaskValue::new_pair();
+        thread::spawn(move || {
             if debug_enabled() {
-                eprintln!("[prime-debug] async_runtime recv_task blocking wait");
+                eprintln!("[prime-debug] async_runtime recv_task waiting");
             }
-            let value = receiver.recv();
-            if debug_enabled() {
-                eprintln!("[prime-debug] async_runtime recv_task wake");
+            let tick = Duration::from_millis(5);
+            loop {
+                if TaskValue::with_state(state.clone()).is_finished() {
+                    return;
+                }
+                match receiver.try_recv() {
+                    TryRecvOutcome::Item(value) => {
+                        if debug_enabled() {
+                            eprintln!("[prime-debug] async_runtime recv_task received value");
+                        }
+                        TaskValue::store_result(&state, Ok(make_option_value(Some(value))));
+                        return;
+                    }
+                    TryRecvOutcome::Closed => {
+                        if debug_enabled() {
+                            eprintln!("[prime-debug] async_runtime recv_task closed");
+                        }
+                        TaskValue::store_result(&state, Ok(make_option_value(None)));
+                        return;
+                    }
+                    TryRecvOutcome::Pending => {
+                        thread::sleep(tick);
+                    }
+                }
             }
-            Ok(make_option_value(value))
-        })
+        });
+        task
     }
 
     /// Cooperative tick: pop any ready task whose deadline has passed or finished.

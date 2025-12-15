@@ -9,9 +9,10 @@ use crate::runtime::{
     error::{RuntimeError, RuntimeResult},
     platform::{platform, std_builtins_enabled, std_disabled_message},
     value::{
-        BoxValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue, EnumValue,
-        FormatRuntimeSegment, FormatTemplateValue, IteratorValue, JoinHandleValue, MapValue,
-        PointerValue, RangeValue, ReferenceValue, SliceValue, StructInstance, Value,
+        BoxValue, CancelTokenValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue,
+        EnumValue, FormatRuntimeSegment, FormatTemplateValue, IteratorValue, JoinHandleValue,
+        MapValue, PointerValue, RangeValue, ReferenceValue, SliceValue, StructInstance, TaskValue,
+        Value,
     },
 };
 use crate::target::{BuildTarget, embedded_target_hint};
@@ -1094,6 +1095,12 @@ impl Interpreter {
             "sleep_ms" => self.builtin_sleep_ms(args),
             "sleep_task" => self.builtin_sleep_task(args),
             "recv_task" => self.builtin_recv_task(args),
+            "cancel_token" => self.builtin_cancel_token(args),
+            "cancel" => self.builtin_cancel(args),
+            "is_cancelled" => self.builtin_is_cancelled(args),
+            "await_timeout" => self.builtin_await_timeout(args),
+            "await_cancel" => self.builtin_await_cancel(args),
+            "await_cancel_timeout" => self.builtin_await_cancel_timeout(args),
             "now_ms" => self.builtin_now_ms(args),
             "fs_exists" => self.builtin_fs_exists(args),
             "fs_read" => self.builtin_fs_read(args),
@@ -1847,6 +1854,38 @@ impl Interpreter {
         }
     }
 
+    fn expect_cancel_token(&self, name: &str, value: Value) -> RuntimeResult<CancelTokenValue> {
+        match value {
+            Value::CancelToken(token) => Ok(token),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.lock().unwrap().clone();
+                self.expect_cancel_token(name, cloned)
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!(
+                    "`{name}` expects CancelToken, found {}",
+                    self.describe_value(&other)
+                ),
+            }),
+        }
+    }
+
+    fn expect_task(&self, name: &str, value: Value) -> RuntimeResult<TaskValue> {
+        match value {
+            Value::Task(task) => Ok(*task),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.lock().unwrap().clone();
+                self.expect_task(name, cloned)
+            }
+            other => Err(RuntimeError::TypeMismatch {
+                message: format!(
+                    "`{name}` expects Task, found {}",
+                    self.describe_value(&other)
+                ),
+            }),
+        }
+    }
+
     fn builtin_send(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         require_std_builtins("send")?;
         self.expect_arity("send", &args, 2)?;
@@ -1961,6 +2000,165 @@ impl Interpreter {
         }
         let task = self.async_runtime.sleep_task(millis as i64);
         Ok(vec![Value::Task(Box::new(task))])
+    }
+
+    fn builtin_cancel_token(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("cancel_token")?;
+        self.expect_arity("cancel_token", &args, 0)?;
+        Ok(vec![Value::CancelToken(CancelTokenValue::new())])
+    }
+
+    fn builtin_cancel(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("cancel")?;
+        self.expect_arity("cancel", &args, 1)?;
+        let token = self.expect_cancel_token("cancel", args.remove(0))?;
+        token.cancel();
+        Ok(vec![Value::Unit])
+    }
+
+    fn builtin_is_cancelled(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("is_cancelled")?;
+        self.expect_arity("is_cancelled", &args, 1)?;
+        let token = self.expect_cancel_token("is_cancelled", args.remove(0))?;
+        Ok(vec![Value::Bool(token.is_cancelled())])
+    }
+
+    fn builtin_await_timeout(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("await_timeout")?;
+        self.expect_arity("await_timeout", &args, 2)?;
+        let millis = Self::expect_int_value("await_timeout", args.pop().unwrap())?;
+        let millis_i64: i64 = millis
+            .try_into()
+            .unwrap_or_else(|_| if millis.is_negative() { 0 } else { i64::MAX });
+        let task = self.expect_task("await_timeout", args.remove(0))?;
+        match task.join_timeout(millis_i64) {
+            Ok(Some(value)) => {
+                let ok = self.instantiate_enum("Result", "Ok", vec![value])?;
+                Ok(vec![ok])
+            }
+            Ok(None) => {
+                task.cancel_with("timeout");
+                let err =
+                    self.instantiate_enum("Result", "Err", vec![Value::String("timeout".into())])?;
+                Ok(vec![err])
+            }
+            Err(msg) => {
+                let err = self.instantiate_enum("Result", "Err", vec![Value::String(msg)])?;
+                Ok(vec![err])
+            }
+        }
+    }
+
+    fn builtin_await_cancel(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("await_cancel")?;
+        self.expect_arity("await_cancel", &args, 2)?;
+        let token = self.expect_cancel_token("await_cancel", args.pop().unwrap())?;
+        let task = self.expect_task("await_cancel", args.remove(0))?;
+
+        match task.join_timeout(0) {
+            Ok(Some(value)) => {
+                let ok = self.instantiate_enum("Result", "Ok", vec![value])?;
+                return Ok(vec![ok]);
+            }
+            Ok(None) => {}
+            Err(msg) => {
+                let err = self.instantiate_enum("Result", "Err", vec![Value::String(msg)])?;
+                return Ok(vec![err]);
+            }
+        }
+
+        if token.is_cancelled() {
+            task.cancel_with("cancelled");
+            let err =
+                self.instantiate_enum("Result", "Err", vec![Value::String("cancelled".into())])?;
+            return Ok(vec![err]);
+        }
+
+        loop {
+            match task.join_timeout(5) {
+                Ok(Some(value)) => {
+                    let ok = self.instantiate_enum("Result", "Ok", vec![value])?;
+                    return Ok(vec![ok]);
+                }
+                Ok(None) => {
+                    if token.is_cancelled() {
+                        task.cancel_with("cancelled");
+                        let err = self.instantiate_enum(
+                            "Result",
+                            "Err",
+                            vec![Value::String("cancelled".into())],
+                        )?;
+                        return Ok(vec![err]);
+                    }
+                }
+                Err(msg) => {
+                    let err = self.instantiate_enum("Result", "Err", vec![Value::String(msg)])?;
+                    return Ok(vec![err]);
+                }
+            }
+        }
+    }
+
+    fn builtin_await_cancel_timeout(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("await_cancel_timeout")?;
+        self.expect_arity("await_cancel_timeout", &args, 3)?;
+        let millis = Self::expect_int_value("await_cancel_timeout", args.pop().unwrap())?;
+        let token = self.expect_cancel_token("await_cancel_timeout", args.pop().unwrap())?;
+        let task = self.expect_task("await_cancel_timeout", args.remove(0))?;
+
+        match task.join_timeout(0) {
+            Ok(Some(value)) => {
+                let ok = self.instantiate_enum("Result", "Ok", vec![value])?;
+                return Ok(vec![ok]);
+            }
+            Ok(None) => {}
+            Err(msg) => {
+                let err = self.instantiate_enum("Result", "Err", vec![Value::String(msg)])?;
+                return Ok(vec![err]);
+            }
+        }
+
+        if token.is_cancelled() {
+            task.cancel_with("cancelled");
+            let err =
+                self.instantiate_enum("Result", "Err", vec![Value::String("cancelled".into())])?;
+            return Ok(vec![err]);
+        }
+
+        let start = platform().now_ms();
+        let millis_i128 = millis.max(0);
+        let deadline = start.saturating_add(millis_i128);
+        loop {
+            if token.is_cancelled() {
+                task.cancel_with("cancelled");
+                let err = self.instantiate_enum(
+                    "Result",
+                    "Err",
+                    vec![Value::String("cancelled".into())],
+                )?;
+                return Ok(vec![err]);
+            }
+            let now = platform().now_ms();
+            if now >= deadline {
+                task.cancel_with("timeout");
+                let err =
+                    self.instantiate_enum("Result", "Err", vec![Value::String("timeout".into())])?;
+                return Ok(vec![err]);
+            }
+            let remaining = deadline - now;
+            let wait_ms: i64 = std::cmp::min(5i128, remaining).try_into().unwrap_or(0);
+            match task.join_timeout(wait_ms) {
+                Ok(Some(value)) => {
+                    let ok = self.instantiate_enum("Result", "Ok", vec![value])?;
+                    return Ok(vec![ok]);
+                }
+                Ok(None) => {}
+                Err(msg) => {
+                    let err = self.instantiate_enum("Result", "Err", vec![Value::String(msg)])?;
+                    return Ok(vec![err]);
+                }
+            }
+        }
     }
 
     fn builtin_delay_ms(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
@@ -3912,6 +4110,7 @@ impl Interpreter {
             Value::Pointer(_) => "pointer",
             Value::JoinHandle(_) => "join handle",
             Value::Task(_) => "task",
+            Value::CancelToken(_) => "cancel token",
             Value::Closure(_) => "closure",
             Value::Unit => "unit",
             Value::Moved => "moved value",

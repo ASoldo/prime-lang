@@ -84,6 +84,38 @@ fn match_parity() {
   }
 }
 
+fn cancellation_timeout_parity() {
+  let (tx, rx) = channel[int32]();
+  let task = recv_task(rx);
+  let Result[Option[int32], string] timeout = await_timeout(task, 0);
+  match timeout {
+    Result::Err(msg) => out(`await_timeout parity err {msg}`),
+    _ => out("await_timeout parity unexpected"),
+  }
+  let _ = tx;
+
+  let (tx2, rx2) = channel[int32]();
+  let CancelToken tok = cancel_token();
+  let task2 = recv_task(rx2);
+  cancel(tok);
+  let Result[Option[int32], string] cancelled = await_cancel(task2, tok);
+  match cancelled {
+    Result::Err(msg) => out(`await_cancel parity err {msg}`),
+    _ => out("await_cancel parity unexpected"),
+  }
+  let _ = tx2;
+
+  let (tx3, rx3) = channel[int32]();
+  let CancelToken tok3 = cancel_token();
+  let task3 = recv_task(rx3);
+  let Result[Option[int32], string] timeout2 = await_cancel_timeout(task3, tok3, 0);
+  match timeout2 {
+    Result::Err(msg) => out(`await_cancel_timeout parity err {msg}`),
+    _ => out("await_cancel_timeout parity unexpected"),
+  }
+  let _ = tx3;
+}
+
 fn main() {
   out("no_std parity demo start");
   defer_probe();
@@ -91,5 +123,6 @@ fn main() {
   async_try_parity();
   match_parity();
   timeout_parity();
+  cancellation_timeout_parity();
   out("no_std parity demo done");
 }

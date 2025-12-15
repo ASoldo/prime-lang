@@ -105,6 +105,14 @@ pub struct RuntimeAbi {
     pub prime_task_poll_ty: LLVMTypeRef,
     pub prime_task_wake: LLVMValueRef,
     pub prime_task_wake_ty: LLVMTypeRef,
+    pub prime_task_cancel: LLVMValueRef,
+    pub prime_task_cancel_ty: LLVMTypeRef,
+    pub prime_cancel_token_new: LLVMValueRef,
+    pub prime_cancel_token_new_ty: LLVMTypeRef,
+    pub prime_cancel_token_cancel: LLVMValueRef,
+    pub prime_cancel_token_cancel_ty: LLVMTypeRef,
+    pub prime_cancel_token_is_cancelled: LLVMValueRef,
+    pub prime_cancel_token_is_cancelled_ty: LLVMTypeRef,
     pub prime_sleep_task: LLVMValueRef,
     pub prime_sleep_task_ty: LLVMTypeRef,
     pub prime_recv_task: LLVMValueRef,
@@ -393,6 +401,22 @@ impl RuntimeAbi {
             status_type,
             &mut [handle_type, handle_type],
         );
+        let (prime_task_cancel, prime_task_cancel_ty) =
+            declare_fn(module, "prime_task_cancel", status_type, &mut [handle_type]);
+        let (prime_cancel_token_new, prime_cancel_token_new_ty) =
+            declare_fn(module, "prime_cancel_token_new", handle_type, &mut []);
+        let (prime_cancel_token_cancel, prime_cancel_token_cancel_ty) = declare_fn(
+            module,
+            "prime_cancel_token_cancel",
+            status_type,
+            &mut [handle_type],
+        );
+        let (prime_cancel_token_is_cancelled, prime_cancel_token_is_cancelled_ty) = declare_fn(
+            module,
+            "prime_cancel_token_is_cancelled",
+            bool_type,
+            &mut [handle_type],
+        );
         let (prime_sleep_task, prime_sleep_task_ty) =
             declare_fn(module, "prime_sleep_task", handle_type, &mut [int_type]);
         let (prime_recv_task, prime_recv_task_ty) =
@@ -559,6 +583,14 @@ impl RuntimeAbi {
             prime_task_poll_ty,
             prime_task_wake,
             prime_task_wake_ty,
+            prime_task_cancel,
+            prime_task_cancel_ty,
+            prime_cancel_token_new,
+            prime_cancel_token_new_ty,
+            prime_cancel_token_cancel,
+            prime_cancel_token_cancel_ty,
+            prime_cancel_token_is_cancelled,
+            prime_cancel_token_is_cancelled_ty,
             prime_sleep_task,
             prime_sleep_task_ty,
             prime_recv_task,
@@ -683,6 +715,14 @@ impl RuntimeAbi {
             prime_task_poll_ty: std::ptr::null_mut(),
             prime_task_wake: std::ptr::null_mut(),
             prime_task_wake_ty: std::ptr::null_mut(),
+            prime_task_cancel: std::ptr::null_mut(),
+            prime_task_cancel_ty: std::ptr::null_mut(),
+            prime_cancel_token_new: std::ptr::null_mut(),
+            prime_cancel_token_new_ty: std::ptr::null_mut(),
+            prime_cancel_token_cancel: std::ptr::null_mut(),
+            prime_cancel_token_cancel_ty: std::ptr::null_mut(),
+            prime_cancel_token_is_cancelled: std::ptr::null_mut(),
+            prime_cancel_token_is_cancelled_ty: std::ptr::null_mut(),
             prime_sleep_task: std::ptr::null_mut(),
             prime_sleep_task_ty: std::ptr::null_mut(),
             prime_recv_task: std::ptr::null_mut(),

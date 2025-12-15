@@ -36,14 +36,16 @@ use llvm_sys::{
         LLVMConstIntGetZExtValue, LLVMConstNull, LLVMConstPointerNull, LLVMConstReal,
         LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
         LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext, LLVMFloatTypeInContext,
-        LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetElementType, LLVMGetFirstBasicBlock,
-        LLVMGetFirstInstruction, LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetIntTypeWidth,
-        LLVMGetLastInstruction, LLVMGetModuleContext, LLVMGetParam, LLVMGetReturnType,
-        LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext, LLVMIntTypeInContext,
-        LLVMIsAConstantInt, LLVMIsAFunction, LLVMModuleCreateWithNameInContext, LLVMPointerType,
-        LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore,
-        LLVMPrintModuleToFile, LLVMSetLinkage, LLVMSetTarget, LLVMStructCreateNamed,
-        LLVMStructSetBody, LLVMStructTypeInContext, LLVMTypeOf, LLVMVoidTypeInContext,
+        LLVMFunctionType, LLVMGetAllocatedType, LLVMGetBasicBlockParent, LLVMGetElementType,
+        LLVMGetFirstBasicBlock, LLVMGetBasicBlockTerminator, LLVMGetFirstInstruction,
+        LLVMGetGlobalParent,
+        LLVMGetInsertBlock, LLVMGetIntTypeWidth, LLVMGetLastInstruction, LLVMGetModuleContext,
+        LLVMGetParam, LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext,
+        LLVMInt32TypeInContext, LLVMIntTypeInContext, LLVMIsAConstantInt, LLVMIsAFunction,
+        LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilder,
+        LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMPrintModuleToFile, LLVMSetLinkage,
+        LLVMSetTarget, LLVMStructCreateNamed, LLVMStructSetBody, LLVMStructTypeInContext,
+        LLVMTypeOf, LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -57,7 +59,10 @@ use std::{
     path::Path,
     ptr,
     rc::Rc,
-    sync::{Arc, Condvar, Mutex, RwLock},
+    sync::{
+        Arc, Condvar, Mutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
 };
 
@@ -133,6 +138,7 @@ pub struct Compiler {
     build_clock_ms: i128,
     pending_runtime: Option<LLVMValueRef>,
     force_runtime_handles: bool,
+    loop_controls: Vec<LoopControl>,
 }
 
 impl Default for Compiler {
@@ -161,6 +167,7 @@ enum Value {
     Iterator(IteratorValue),
     JoinHandle(Box<JoinHandleValue>),
     Task(Box<TaskValue>),
+    CancelToken(CancelTokenValue),
     Pointer(PointerValue),
     Range(RangeValue),
     Closure(ClosureValue),
@@ -236,6 +243,36 @@ struct PointerValue {
     mutable: bool,
     handle: Option<LLVMValueRef>,
     origin: Option<String>,
+}
+
+#[derive(Clone)]
+struct CancelTokenValue {
+    handle: Option<LLVMValueRef>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancelTokenValue {
+    fn new_build() -> Self {
+        Self {
+            handle: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn with_handle(handle: LLVMValueRef) -> Self {
+        Self {
+            handle: Some(handle),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Clone)]
@@ -690,6 +727,12 @@ impl From<Value> for EvaluatedValue {
     fn from(value: Value) -> Self {
         EvaluatedValue::from_value(value)
     }
+}
+
+#[derive(Clone, Copy)]
+struct LoopControl {
+    break_block: LLVMBasicBlockRef,
+    continue_block: LLVMBasicBlockRef,
 }
 
 enum FlowSignal {
@@ -1154,6 +1197,9 @@ fn value_to_build_value_with_ctx(
                 JoinResult::Immediate(None) => Err("join handle already consumed".into()),
             }
         }
+        Value::CancelToken(_) => {
+            Err("CancelToken cannot be captured for parallel build execution".into())
+        }
         Value::Moved => Err(format!(
             "{} cannot be captured for parallel build execution",
             describe_value(value)
@@ -1555,6 +1601,7 @@ impl Compiler {
                 build_clock_ms: 0,
                 pending_runtime: None,
                 force_runtime_handles: false,
+                loop_controls: Vec::new(),
             };
             compiler.reset_module();
             compiler
@@ -2032,8 +2079,9 @@ impl Compiler {
             Self::log_rss("[prime-debug] compile_program/start", true);
         }
         self.reset_module();
-        self.force_runtime_handles = false;
+        self.force_runtime_handles = self.target.is_embedded();
         self.pending_runtime = None;
+        self.loop_controls.clear();
         self.scopes.clear();
         self.active_mut_borrows.clear();
         self.borrow_frames.clear();
@@ -2247,43 +2295,6 @@ fn flow_name(flow: &FlowSignal) -> &'static str {
     }
 }
 
-fn block_has_break_or_continue(block: &Block) -> bool {
-    for stmt in &block.statements {
-        match stmt {
-            Statement::Break | Statement::Continue => return true,
-            Statement::Block(inner) => {
-                if block_has_break_or_continue(inner) {
-                    return true;
-                }
-            }
-            Statement::While(while_stmt) => {
-                if block_has_break_or_continue(&while_stmt.body) {
-                    return true;
-                }
-            }
-            Statement::Loop(loop_stmt) => {
-                if block_has_break_or_continue(&loop_stmt.body) {
-                    return true;
-                }
-            }
-            Statement::For(for_stmt) => {
-                if block_has_break_or_continue(&for_stmt.body) {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-    if let Some(tail) = &block.tail {
-        if let Expr::Block(tail_block) = &**tail {
-            if block_has_break_or_continue(tail_block) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn type_name_from_type_expr(expr: &TypeExpr) -> Option<String> {
     match expr {
         TypeExpr::Named(name, _) => Some(name.clone()),
@@ -2337,6 +2348,7 @@ fn describe_value(value: &Value) -> &'static str {
         Value::JoinHandle(_) => "join handle",
         Value::Closure(_) => "closure",
         Value::Task(_) => "task",
+        Value::CancelToken(_) => "cancel token",
         Value::Moved => "moved",
     }
 }

@@ -384,6 +384,39 @@ fn builtin_function_docs(name: &str) -> Option<String> {
             "Built-in concurrency helper\n{}\nWaits for `spawn` to finish and produces its value.",
             code_block("prime", "fn join[T](handle: JoinHandle[T]) -> T")
         )),
+        "cancel_token" => Some(format!(
+            "Built-in async cancellation helper\n{}\nCreate a cancellation token that can be passed into tasks or used with cancellation-aware helpers.",
+            code_block("prime", "fn cancel_token() -> CancelToken")
+        )),
+        "cancel" => Some(format!(
+            "Built-in async cancellation helper\n{}\nMarks the token as cancelled (idempotent).",
+            code_block("prime", "fn cancel(token: CancelToken) -> ()")
+        )),
+        "is_cancelled" => Some(format!(
+            "Built-in async cancellation helper\n{}\nReturns true once the token has been cancelled.",
+            code_block("prime", "fn is_cancelled(token: CancelToken) -> bool")
+        )),
+        "await_timeout" => Some(format!(
+            "Built-in await helper\n{}\nReturns `Err(\"timeout\")` when the task does not complete in time.",
+            code_block(
+                "prime",
+                "fn await_timeout[T](task: Task[T], millis: int64) -> Result[T, string]"
+            )
+        )),
+        "await_cancel" => Some(format!(
+            "Built-in await helper\n{}\nReturns `Err(\"cancelled\")` when the token is cancelled before the task completes.",
+            code_block(
+                "prime",
+                "fn await_cancel[T](task: Task[T], token: CancelToken) -> Result[T, string]"
+            )
+        )),
+        "await_cancel_timeout" => Some(format!(
+            "Built-in await helper\n{}\nReturns `Err(\"cancelled\")` if the token is cancelled first, otherwise `Err(\"timeout\")` if the deadline expires.",
+            code_block(
+                "prime",
+                "fn await_cancel_timeout[T](task: Task[T], token: CancelToken, millis: int64) -> Result[T, string]"
+            )
+        )),
         "ptr" => Some(format!(
             "Built-in pointer helper\n{}\nCreates a raw pointer from an existing reference without changing ownership.",
             code_block("prime", "fn ptr[T](value: &T) -> *T")
