@@ -13,9 +13,9 @@ pub enum Result[T, E] {
 fn defer_probe() {
   let mut int32 guard = 0;
   defer {
-  guard = guard + 1;
-  out(`defer ran guard={guard}`);
-};
+    guard = guard + 1;
+    out(`defer ran guard={guard}`);
+  };
   out(`defer probe start guard={guard}`);
 }
 

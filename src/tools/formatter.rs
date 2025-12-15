@@ -613,7 +613,20 @@ fn format_statement(out: &mut String, statement: &Statement, indent: usize) -> b
         }
         Statement::Defer(stmt) => {
             write_indent(out, indent);
-            out.push_str(&format!("defer {};\n", format_expr(&stmt.expr)));
+            match &stmt.expr {
+                Expr::Block(block) => {
+                    out.push_str("defer {\n");
+                    format_block(out, block, indent + 2);
+                    write_indent(out, indent);
+                    out.push_str("};\n");
+                }
+                expr => {
+                    out.push_str("defer ");
+                    let formatted = format_expr(expr);
+                    indent_multiline_into(out, indent + 2, formatted);
+                    out.push_str(";\n");
+                }
+            }
             false
         }
         Statement::Break => {
@@ -1805,6 +1818,36 @@ fn repeat_param_supports_semicolon_separator() -> bool {
     seen = seen + 2;
   }, seen);
   seen == 3 && result == 3
+}
+"#;
+
+        let formatted = format_fixture(input);
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn formatter_defer_blocks_indent() {
+        let input = r#"test tests::formatter_defer;
+
+fn defer_probe() {
+  let mut int32 guard = 0;
+  defer {
+  guard = guard + 1;
+  out(`defer ran guard={guard}`);
+};
+  out(`defer probe start guard={guard}`);
+}
+"#;
+
+        let expected = r#"test tests::formatter_defer;
+
+fn defer_probe() {
+  let mut int32 guard = 0;
+  defer {
+    guard = guard + 1;
+    out(`defer ran guard={guard}`);
+  };
+  out(`defer probe start guard={guard}`);
 }
 "#;
 

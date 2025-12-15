@@ -562,7 +562,7 @@ function renderContent() {
     top.appendChild(chip);
     const sig = document.createElement('span');
     sig.className = 'sig';
-    sig.innerHTML = `<span class="syntax-key">${it.kind}</span> ${formatName(it.name)}`;
+    sig.innerHTML = renderSigAfterChip(it.kind, it.signature);
     top.appendChild(sig);
     card.appendChild(top);
     if (it.doc) {
@@ -647,6 +647,29 @@ function renderSig(kind, name) {
     return `<span class="syntax-key">impl</span> ${formatName(clean)}`;
   }
   return `<span class="syntax-key">${kind}</span> ${formatName(name)}`;
+}
+
+function renderSigAfterChip(kind, signature) {
+  let rest = (signature || "").trim();
+  const prefix = `${kind} `;
+  if (rest.startsWith(prefix)) {
+    rest = rest.slice(prefix.length).trim();
+  }
+  if (kind === "impl") {
+    const clean = rest.replace(/^impl\s+/, "").trim();
+    const m = /^(.+)\s+for\s+(.+)$/.exec(clean);
+    if (m) {
+      return `${formatName(m[1].trim())} <span class="syntax-key">for</span> ${formatName(m[2].trim())}`;
+    }
+    return formatName(clean);
+  }
+  if (kind === "macro") {
+    if (rest.startsWith("~")) {
+      const name = rest.slice(1).trim();
+      return `<span class="syntax-key">~</span>${formatName(name)}`;
+    }
+  }
+  return formatName(rest);
 }
 
 function displayName(kind, name) {
