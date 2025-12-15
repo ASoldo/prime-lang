@@ -780,6 +780,7 @@ optionally run them) to catch parser/typecheck regressions early:
 ```bash
 ./scripts/check_examples.sh            # lint all modules
 PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh  # also run them
+./scripts/ci.sh                        # fmt/clippy/tests (+ docs smoke), matches CI
 ```
 
 This script keeps demos like `lab_demo.prime` in sync with the CLI and grammar

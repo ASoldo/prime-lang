@@ -9,9 +9,12 @@ Prime-lang is a single Rust binary (`prime-lang`) plus a workspace of `.prime` d
 
 ## Checks
 
-- Format: `cargo fmt`
-- Tests: `cargo test`
-- Lint (Rust): `cargo clippy --all-targets --all-features`
+- CI-equivalent (recommended): `./scripts/ci.sh`
+- Format: `cargo fmt --all -- --check`
+- Tests (single-threaded integration harness): `cargo test --all -- --test-threads=1`
+- Lint (Rust): `cargo clippy --all-targets --all-features -- -D warnings`
+
+Note: `cargo test -- --format=json` and `cargo test -- --report-time` require nightly `-Z unstable-options`.
 
 ## Prime docs (HTML app)
 
@@ -27,6 +30,7 @@ Docs are sourced from Prime doc comments:
 
 - Start the language server (stdio): `prime-lang lsp`
 - Neovim config for AstroNvim lives under `lazy/astronvim/plugins/prime-lang.lua`.
+- Manual LSP smoke checklist: `docs/LspRegressionChecklist.md`
 
 ## Example regression sweep
 

@@ -289,7 +289,7 @@ match in[float64](`Temp {label}: `, label) {
   Ok(temp) => out(`got {temp}`),
   Err(msg) => out(`input error: {msg}`),
 }"#,
-                explanation: "`in[T](prompt, ...) -> Result[T, string]` reads a line from stdin, parses it to the requested type, and returns `Ok`/`Err` so callers stay in control. Prompts may be format strings; type arguments are required. Currently supported in interpreter mode (compiled binaries reject `in`).",
+                explanation: "`in[T](prompt, ...) -> Result[T, string]` reads a line from stdin, parses it to the requested type, and returns `Ok`/`Err` so callers stay in control. Prompts may be format strings; type arguments are required. Supported in interpreter mode and host builds; embedded/no_std targets currently reject `in` (no stdin).",
             },
             TopicSection {
                 title: "Example programs",
