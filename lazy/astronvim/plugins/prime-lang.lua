@@ -71,6 +71,8 @@ return {
 					vim.bo.commentstring = "// %s"
 					vim.wo.foldmethod = "expr"
 					vim.wo.foldexpr = "v:lua.vim.treesitter.foldexpr()"
+					vim.wo.foldenable = true
+					vim.wo.foldlevel = 99
 				end,
 			})
 
@@ -401,6 +403,29 @@ return {
     ]]
 				local f = assert(io.open(query_root .. "/aerial.scm", "w"))
 				f:write(aerial)
+				f:close()
+			end
+
+			-- folds.scm
+			do
+				-- Neovim's Tree-sitter folding uses the `@fold` capture.
+				-- We fold:
+				-- - code blocks (`{ ... }`)
+				-- - composite items that use braces but are not `block` nodes in the grammar
+				--   (struct/enum/interface/impl definitions)
+				-- - large selector lists (export prelude / import { ... })
+				local folds = [[
+    (block) @fold
+
+    (struct_definition) @fold
+    (enum_definition) @fold
+    (interface_definition) @fold
+    (impl_definition) @fold
+
+    (import_selector_list) @fold
+    ]]
+				local f = assert(io.open(query_root .. "/folds.scm", "w"))
+				f:write(folds)
 				f:close()
 			end
 
