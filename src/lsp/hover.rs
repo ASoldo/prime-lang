@@ -316,7 +316,11 @@ fn hover_for_imported_module_doc(
             continue;
         }
         let imported = resolve_import_module(import, modules)?;
-        return Some(markdown_hover(text, usage_span, format_module_hover(imported)));
+        return Some(markdown_hover(
+            text,
+            usage_span,
+            format_module_hover(imported),
+        ));
     }
     None
 }

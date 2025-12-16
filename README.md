@@ -259,6 +259,8 @@ exits with an error code and a hint if a query doesn’t map to any topic.
 - `prime-lang docs --serve --port 7878` serves the same app over HTTP
   (`http://127.0.0.1:7878` by default). Use the browser UI to search, click
   imports to hop across modules, and inspect relationships in the canvas graph.
+  When served, Prime watches your workspace `.prime` files + `prime.toml` and
+  auto-reloads the page as docs regenerate on save.
 
 ### `prime.toml` manifest
 

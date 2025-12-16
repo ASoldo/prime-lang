@@ -1793,12 +1793,10 @@ mod tests {
 
     #[test]
     fn formatter_preserves_doc_comments() {
-        let input =
-            fs::read_to_string("workspace/tests/golden/formatter_doc_comments_in.prime")
-                .expect("fixture input");
-        let output =
-            fs::read_to_string("workspace/tests/golden/formatter_doc_comments_out.prime")
-                .expect("fixture out");
+        let input = fs::read_to_string("workspace/tests/golden/formatter_doc_comments_in.prime")
+            .expect("fixture input");
+        let output = fs::read_to_string("workspace/tests/golden/formatter_doc_comments_out.prime")
+            .expect("fixture out");
         let formatted = format_fixture(&input);
         assert_eq!(formatted, output);
     }

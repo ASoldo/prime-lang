@@ -237,7 +237,7 @@ prime-lang docs --list
 prime-lang docs --query for,match
 prime-lang docs --generate --out docs.html
 prime-lang docs --serve --port 7878"#,
-                explanation: "`prime-lang docs` renders the built-in reference topics, `--list` shows topic keys and aliases, and `--query` filters to specific topics. `--generate` produces a single-page HTML app from workspace doc comments (`///` and `//!`) and `--serve` hosts it locally over HTTP for browsing.",
+                explanation: "`prime-lang docs` renders the built-in reference topics, `--list` shows topic keys and aliases, and `--query` filters to specific topics. `--generate` produces a single-page HTML app from workspace doc comments (`///` and `//!`) and `--serve` hosts it locally over HTTP for browsing. When serving, the docs app auto-regenerates and reloads as you edit `.prime` files.",
             },
         ],
     },

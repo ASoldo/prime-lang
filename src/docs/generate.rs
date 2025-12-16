@@ -5,12 +5,19 @@ use crate::language::{
 };
 use crate::project::manifest::canonical_module_name;
 use crate::project::{find_manifest, manifest::PackageManifest};
+use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc, Mutex, RwLock,
+    atomic::{AtomicUsize, Ordering},
+    mpsc,
+};
+use std::time::{Duration, Instant};
 use toml::Value;
 
 #[derive(Debug, Clone, Serialize)]
@@ -1118,6 +1125,45 @@ let filterTerm = '';
 let expanded = new Set();
 let suppressPush = false;
 
+const UI_STORAGE_SEARCH = 'prime-docs:search';
+const UI_STORAGE_EXPANDED = 'prime-docs:expanded';
+
+function persistSearch() {
+  try {
+    if (searchEl.value) {
+      sessionStorage.setItem(UI_STORAGE_SEARCH, searchEl.value);
+    } else {
+      sessionStorage.removeItem(UI_STORAGE_SEARCH);
+    }
+  } catch (_) {}
+}
+
+function persistExpanded() {
+  try {
+    sessionStorage.setItem(UI_STORAGE_EXPANDED, JSON.stringify(Array.from(expanded)));
+  } catch (_) {}
+}
+
+function restoreUiState() {
+  try {
+    const savedSearch = sessionStorage.getItem(UI_STORAGE_SEARCH) || '';
+    if (savedSearch) {
+      searchEl.value = savedSearch;
+      filterTerm = savedSearch.toLowerCase();
+      searchClear.classList.add('visible');
+    }
+    const rawExpanded = sessionStorage.getItem(UI_STORAGE_EXPANDED);
+    if (rawExpanded) {
+      const list = JSON.parse(rawExpanded);
+      if (Array.isArray(list)) {
+        list.forEach((idx) => expanded.add(idx));
+      }
+    }
+  } catch (_) {}
+}
+
+restoreUiState();
+
 function pushState(moduleIdx, anchor) {
   if (suppressPush) return;
   const hash = `#${modules[moduleIdx].name}${anchor ? `:${anchor}` : ''}`;
@@ -1148,6 +1194,7 @@ function renderNav(filter='') {
       } else {
         expanded.add(idx);
       }
+      persistExpanded();
       selectModule(idx);
     };
     wrap.appendChild(btn);
@@ -1629,17 +1676,23 @@ function renderAll(filter='') {
   renderContent();
 }
 searchEl.addEventListener('input', (e)=> {
-  renderNav(e.target.value.toLowerCase());
+  const value = e.target.value;
+  persistSearch();
+  renderNav(value.toLowerCase());
 });
 searchEl.addEventListener('keypress', (e) => {
   if (e.key === 'Enter') {
-    renderAll(e.target.value.toLowerCase());
+    const value = e.target.value;
+    persistSearch();
+    renderAll(value.toLowerCase());
   }
 });
 searchClear.addEventListener('click', ()=> {
   searchEl.value = '';
   filterTerm = '';
   expanded.clear();
+  persistSearch();
+  persistExpanded();
   renderAll('');
   searchClear.classList.remove('visible');
 });
@@ -1683,6 +1736,23 @@ window.addEventListener('popstate', (e) => {
 const initial = history.state || stateFromHash() || { module: 0, anchor: null };
 applyState(initial);
 pushState(initial.module, initial.anchor);
+
+// Live-reload when serving docs locally.
+// The generator output is also used as a standalone HTML file, so guard by protocol.
+(() => {
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+  try {
+    const es = new EventSource('/events');
+    es.addEventListener('reload', () => {
+      persistSearch();
+      persistExpanded();
+      location.reload();
+    });
+    es.addEventListener('error', (e) => console.warn('[prime-docs] live reload error', e));
+  } catch (e) {
+    console.warn('[prime-docs] live reload unavailable', e);
+  }
+})();
 </script>
 "##,
     );
@@ -1691,22 +1761,286 @@ pushState(initial.module, initial.anchor);
     Ok(final_html)
 }
 
+type SharedDocsHtml = Arc<RwLock<String>>;
+
+struct SseHub {
+    next_id: AtomicUsize,
+    listeners: Mutex<Vec<(usize, mpsc::Sender<()>)>>,
+}
+
+impl SseHub {
+    fn new() -> Self {
+        Self {
+            next_id: AtomicUsize::new(1),
+            listeners: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn subscribe(&self) -> (usize, mpsc::Receiver<()>) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::channel();
+        let mut guard = match self.listeners.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.push((id, tx));
+        (id, rx)
+    }
+
+    fn unsubscribe(&self, id: usize) {
+        let mut guard = match self.listeners.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.retain(|(existing, _)| *existing != id);
+    }
+
+    fn broadcast_reload(&self) {
+        let mut guard = match self.listeners.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.retain(|(_, tx)| tx.send(()).is_ok());
+    }
+}
+
+type SharedSseHub = Arc<SseHub>;
+
 pub fn serve_docs(port: u16) -> Result<(), String> {
-    let html = build_docs_html()?;
+    let html_state: SharedDocsHtml = Arc::new(RwLock::new(build_docs_html()?));
+    let sse: SharedSseHub = Arc::new(SseHub::new());
+
+    let manifest_path = find_manifest(Path::new("."))
+        .ok_or_else(|| "prime.toml not found; run from a project root".to_string())?;
+    let root_dir = manifest_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    spawn_docs_watcher(root_dir, html_state.clone(), sse.clone());
+
     let listener = TcpListener::bind(("127.0.0.1", port))
         .map_err(|err| format!("failed to bind 127.0.0.1:{port}: {err}"))?;
     println!("Serving docs at http://127.0.0.1:{port} (Ctrl+C to stop)");
+    println!("Watching workspace for changes (auto-regenerate + reload enabled).");
     for stream in listener.incoming() {
-        let mut stream = stream.map_err(|err| format!("incoming connection failed: {err}"))?;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\n\r\n{}",
-            html.len(),
-            html
-        );
-        stream
-            .write_all(response.as_bytes())
-            .map_err(|err| format!("failed to write response: {err}"))?;
+        let stream = stream.map_err(|err| format!("incoming connection failed: {err}"))?;
+        let html_state = html_state.clone();
+        let sse = sse.clone();
+        std::thread::spawn(move || {
+            if let Err(err) = handle_docs_connection(stream, &html_state, &sse) {
+                eprintln!("docs connection error: {err}");
+            }
+        });
     }
+    Ok(())
+}
+
+fn build_watcher(
+    tx: mpsc::Sender<Result<notify::Event, notify::Error>>,
+) -> notify::Result<RecommendedWatcher> {
+    notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    })
+    .map(|mut watcher| {
+        watcher
+            .configure(Config::default().with_poll_interval(Duration::from_millis(200)))
+            .ok();
+        watcher
+    })
+}
+
+fn spawn_docs_watcher(root: PathBuf, html: SharedDocsHtml, sse: SharedSseHub) {
+    std::thread::spawn(move || {
+        let (tx, rx) = mpsc::channel();
+        let mut watcher = match build_watcher(tx) {
+            Ok(w) => w,
+            Err(err) => {
+                eprintln!("docs watcher failed to start: {err}");
+                return;
+            }
+        };
+        if let Err(err) = watcher.watch(&root, RecursiveMode::Recursive) {
+            eprintln!("docs watcher failed to watch {}: {err}", root.display());
+            return;
+        }
+
+        let mut pending = false;
+        let mut last_event = Instant::now();
+        let debounce = Duration::from_millis(250);
+
+        loop {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(Ok(evt)) => {
+                    if !matches!(
+                        evt.kind,
+                        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                    ) {
+                        continue;
+                    }
+                    if evt.paths.iter().any(|p| should_regenerate_docs(p)) {
+                        pending = true;
+                        last_event = Instant::now();
+                    }
+                }
+                Ok(Err(err)) => eprintln!("docs watcher error: {err}"),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if !pending {
+                        continue;
+                    }
+                    if last_event.elapsed() < debounce {
+                        continue;
+                    }
+                    pending = false;
+
+                    match build_docs_html() {
+                        Ok(new_html) => {
+                            if let Ok(mut guard) = html.write() {
+                                *guard = new_html;
+                            }
+                            sse.broadcast_reload();
+                        }
+                        Err(err) => {
+                            eprintln!("docs rebuild failed: {err}");
+                        }
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+}
+
+fn should_regenerate_docs(path: &Path) -> bool {
+    if path.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy();
+        s == "target" || s == ".git" || s == ".prime" || s == ".build.prime"
+    }) {
+        return false;
+    }
+    if path.file_name().and_then(|n| n.to_str()) == Some("prime.toml") {
+        return true;
+    }
+    path.extension().and_then(|e| e.to_str()) == Some("prime")
+}
+
+fn handle_docs_connection(
+    mut stream: std::net::TcpStream,
+    html: &SharedDocsHtml,
+    sse: &SharedSseHub,
+) -> Result<(), String> {
+    let mut buf = [0u8; 4096];
+    let n = stream
+        .read(&mut buf)
+        .map_err(|err| format!("failed to read request: {err}"))?;
+    if n == 0 {
+        return Ok(());
+    }
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let first = req.lines().next().unwrap_or_default();
+    let mut parts = first.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let path = parts.next().unwrap_or("/");
+    if method != "GET" {
+        write_plain_response(&mut stream, 405, "method not allowed")?;
+        return Ok(());
+    }
+
+    match path {
+        "/events" => serve_sse(&mut stream, sse),
+        "/" | "/index.html" => {
+            let html = html
+                .read()
+                .map_err(|_| "docs html lock poisoned".to_string())?
+                .clone();
+            write_html_response(&mut stream, 200, &html)
+        }
+        _ => write_plain_response(&mut stream, 404, "not found"),
+    }
+}
+
+fn write_html_response(
+    stream: &mut std::net::TcpStream,
+    status: u16,
+    body: &str,
+) -> Result<(), String> {
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "OK",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|err| format!("failed to write response: {err}"))?;
+    Ok(())
+}
+
+fn write_plain_response(
+    stream: &mut std::net::TcpStream,
+    status: u16,
+    body: &str,
+) -> Result<(), String> {
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "OK",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|err| format!("failed to write response: {err}"))?;
+    Ok(())
+}
+
+fn serve_sse(stream: &mut std::net::TcpStream, sse: &SharedSseHub) -> Result<(), String> {
+    let (id, rx) = sse.subscribe();
+
+    stream
+        .write_all(
+            b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: keep-alive\r\n\r\n",
+        )
+        .map_err(|err| format!("failed to write sse headers: {err}"))?;
+    stream
+        .write_all(b": connected\n\n")
+        .map_err(|err| format!("failed to write sse prelude: {err}"))?;
+    stream
+        .flush()
+        .map_err(|err| format!("failed to flush sse prelude: {err}"))?;
+
+    let heartbeat = Duration::from_secs(30);
+    loop {
+        match rx.recv_timeout(heartbeat) {
+            Ok(()) => {
+                let msg = b"event: reload\ndata: 1\n\n";
+                if stream.write_all(msg).is_err() {
+                    break;
+                }
+                if stream.flush().is_err() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if stream.write_all(b": ping\n\n").is_err() {
+                    break;
+                }
+                if stream.flush().is_err() {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    sse.unsubscribe(id);
     Ok(())
 }
 

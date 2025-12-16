@@ -19,7 +19,7 @@ Note: `cargo test -- --format=json` and `cargo test -- --report-time` require ni
 ## Prime docs (HTML app)
 
 - Generate HTML: `prime-lang docs --generate --out docs.html`
-- Serve over HTTP: `prime-lang docs --serve --port 7878` (default: `http://127.0.0.1:7878`)
+- Serve over HTTP: `prime-lang docs --serve --port 7878` (default: `http://127.0.0.1:7878`, auto-regenerates + reloads on save)
 
 Docs are sourced from Prime doc comments:
 

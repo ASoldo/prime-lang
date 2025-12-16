@@ -48,10 +48,12 @@ prime-lang docs --generate --out docs.html
 prime-lang docs --serve --port 7878
 ```
 
+When serving docs over HTTP, Prime watches your workspace `.prime` files and
+auto-reloads the page as docs regenerate on save.
+
 ## CI-equivalent checks
 
 ```bash
 ./scripts/ci.sh
 ./scripts/check_examples.sh
 ```
-
