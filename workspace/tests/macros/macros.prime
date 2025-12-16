@@ -1,20 +1,32 @@
+//! Macro system regression tests.
+//!
+//! Covers:
+//! - statement macros (`~assert_positive(...)`)
+//! - expression macros (returning values)
+//! - item macros injected at module scope
+//! - hygiene escape via `@ident`
+//! - `tokens`, `block`, `pattern`, and `repeat` parameters
 test tests::macros;
 
+/// Statement macro used by multiple tests.
 macro assert_positive(value: int32) {
   expect(value > 0, "value should stay positive");
 }
 
+/// Expression macro that prints a label and returns the sum.
 macro sum_label(a: int32, b: int32) -> int32 {
   out(`sum {a + b}`);
   a + b
 }
 
+/// Item macro that generates a function returning 43 (unused).
 macro add_itemz() {
   fn generated_value() -> int32 {
     43
   }
 }
 
+/// Item macro that generates a function returning 42.
 macro add_item() {
   fn generated_value() -> int32 {
     42
@@ -23,15 +35,18 @@ macro add_item() {
 
 ~add_item();
 
+/// `tokens` parameter macro (inline expansion without a binding).
 macro repeat(expr: tokens) -> int32 {
   expr + expr
 }
 
+/// `block` parameter macro (runs the provided block twice).
 macro apply_twice(body: block) {
   body;
   body;
 }
 
+/// `pattern` parameter macro (expands into a `match`).
 macro match_literal(pat: pattern, value: int32) -> int32 {
   match value {
     pat => 7,
@@ -39,15 +54,18 @@ macro match_literal(pat: pattern, value: int32) -> int32 {
   }
 }
 
+/// `repeat+` parameter macro (expands into a tuple).
 macro collect(values: repeat+) -> (int32, int32, int32) {
   values
 }
 
+/// Ensures statement macros expand in a normal statement context.
 fn statement_macro_executes() -> bool {
   ~assert_positive(2);
   true
 }
 
+/// Ensures statement macros expand in loop bodies.
 fn statement_macro_runs_inside_loop() -> bool {
   let []int32 values = [
     1,
@@ -62,30 +80,36 @@ fn statement_macro_runs_inside_loop() -> bool {
   total == 6
 }
 
+/// Ensures expression macros can be used in `let` initializers.
 fn expression_macro_in_statement_context() -> bool {
   let int32 value = ~sum_label(3, 4);
   value == 7
 }
 
+/// Macro demonstrating hygiene escape with `@value`.
 macro capture_outer() -> int32 {
   @value + 1
 }
 
+/// Ensures `@` escape resolves to the surrounding binding.
 fn capture_escape_opt_in() -> bool {
   let int32 value = 5;
   let int32 bumped = ~capture_outer();
   bumped == 6
 }
 
+/// Ensures item macros can inject functions at module scope.
 fn item_macro_generates_function() -> bool {
   generated_value() == 42
 }
 
+/// Ensures a `tokens` parameter is inlined verbatim.
 fn tokens_param_inlines_without_binding() -> bool {
   let int32 sum = ~repeat(2 + 3);
   sum == 10
 }
 
+/// Ensures a `block` parameter can be expanded multiple times.
 fn block_param_runs_multiple_times() -> bool {
   let mut int32 seen = 0;
   ~apply_twice({
@@ -94,19 +118,23 @@ fn block_param_runs_multiple_times() -> bool {
   seen == 2
 }
 
+/// Ensures a `pattern` parameter can be used inside a generated `match`.
 fn pattern_param_expands_into_match() -> bool {
   ~match_literal(0, 0) == 7 && ~match_literal(1, 0) == 0
 }
 
+/// Ensures `repeat+` expands with the default separator.
 fn repeat_param_expands_tuple() -> bool {
   let (a, b, c) = ~collect(@sep = , 1, 2, 3);
   a == 1 && b == 2 && c == 3
 }
 
+/// `repeat+` macro used to validate custom separators.
 macro tally(values: repeat+) -> int32 {
   values
 }
 
+/// Ensures `repeat+` supports semicolon separators for blocks/statements.
 fn repeat_param_supports_semicolon_separator() -> bool {
   let mut int32 seen = 0;
   let int32 result = ~tally(@sep = ; {
@@ -117,17 +145,20 @@ fn repeat_param_supports_semicolon_separator() -> bool {
   seen == 3 && result == 3
 }
 
+/// `repeat*` macro used to validate empty repetition.
 macro tally_optional(values: repeat*) -> int32 {
   let mut int32 total = 0;
   values;
   total
 }
 
+/// Ensures `repeat*` allows an empty argument list.
 fn repeat_star_allows_empty() -> bool {
   let int32 result = ~tally_optional();
   result == 0
 }
 
+/// Ensures `repeat+` supports a custom separator token.
 fn repeat_param_supports_custom_separator() -> bool {
   let (x, y, z) = ~tally(@sep = | 5, 6, 7);
   x == 5 && y == 6 && z == 7

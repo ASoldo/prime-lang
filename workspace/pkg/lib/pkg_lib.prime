@@ -1,3 +1,6 @@
+//! Package library used by workspace tests and examples.
+//!
+//! Exposes a small `Banner` type via the prelude to validate package imports.
 library pkg::lib;
 
 export prelude {
@@ -7,11 +10,13 @@ export prelude {
   describe,
 };
 
+/// A simple message container used for import/type tests.
 pub struct Banner {
   message: string;
   highlighted: bool;
 }
 
+/// Constructs a non-highlighted banner.
 pub fn banner(message: string) -> Banner {
   Banner{
     message,
@@ -19,6 +24,7 @@ pub fn banner(message: string) -> Banner {
   }
 }
 
+/// Constructs a banner with an explicit highlight flag.
 pub fn promote(label: string, highlight: bool) -> Banner {
   Banner{
     message: label,
@@ -26,10 +32,12 @@ pub fn promote(label: string, highlight: bool) -> Banner {
   }
 }
 
+/// Formats a banner into a stable status string.
 pub fn describe(b: Banner) -> string {
   status_label(b.highlighted)
 }
 
+/// Private helper for `describe`.
 fn status_label(flag: bool) -> string {
   if flag {
     "highlighted"

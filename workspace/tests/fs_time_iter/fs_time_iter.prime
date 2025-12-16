@@ -1,7 +1,12 @@
+//! Built-in runtime feature tests.
+//!
+//! Covers filesystem helpers, time helpers, and iterator helpers from
+//! `core::types`.
 test tests::fs_time_iter;
 
 import core::types;
 
+/// Verifies `fs_write` + `fs_exists` + `fs_read` roundtrip.
 fn fs_roundtrip() -> bool {
   let string path = "workspace/tests/fs_time_iter/tmp_fs.txt";
   match fs_write(path, "fs builtins") {
@@ -17,6 +22,7 @@ fn fs_roundtrip() -> bool {
   }
 }
 
+/// Ensures `now_ms()` moves forward after a `sleep_ms`.
 fn time_advances() -> bool {
   let int64 start = now_ms();
   sleep_ms(1);
@@ -24,6 +30,7 @@ fn time_advances() -> bool {
   end >= start
 }
 
+/// Ensures `Iterator.next()` works for slices.
 fn slice_iter_next() -> bool {
   let []int32 items = [1, 2, 3];
   let Iterator[int32] iter = items.iter();
@@ -33,6 +40,7 @@ fn slice_iter_next() -> bool {
   }
 }
 
+/// Ensures map iterators and helper methods yield expected keys/values.
 fn map_iter_and_helpers() -> bool {
   let Map[string, int32] scores = #{
     "one": 1,

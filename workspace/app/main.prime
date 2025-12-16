@@ -1,18 +1,28 @@
+//! Prime workspace example app.
+//!
+//! A single-file "gameplay" program that exercises many language features:
+//! imports + preludes, interfaces + impl blocks, structs/enums, pattern
+//! matching, loops (`while`/`for`), `Option`/`Result`, `defer`, pointers, and
+//! string helpers.
 module app::main;
 
 import core::types::prelude::{*};
 import libpkg_a::lib::{example};
 
+/// How many steps the training countdown runs.
 const TRAINING_LIMIT: int32 = 3;
 
+/// Simple rendering interface used by the panel types.
 pub interface Renderable[T] {
   fn render(self: T);
 }
 
+/// Simple naming interface used by the panel types.
 pub interface Nameable[T] {
   fn label(self: T) -> string;
 }
 
+/// UI projection of a `Player` used for rendering.
 struct PlayerPanel {
   label: string;
   position: Vec2;
@@ -22,6 +32,7 @@ struct PlayerPanel {
   level: int32;
 }
 
+/// UI projection of an `Enemy` used for rendering.
 struct EnemyPanel {
   label: string;
   position: Vec2;
@@ -29,12 +40,14 @@ struct EnemyPanel {
   attack: Damage;
 }
 
+/// UI projection of a `Quest` used for rendering.
 struct QuestPanel {
   label: string;
   reward: int32;
   completed: bool;
 }
 
+/// Rendering impl for `PlayerPanel`.
 impl Renderable[PlayerPanel] for PlayerPanel {
   fn render(panel: PlayerPanel) {
     let mut string status = "ready";
@@ -50,12 +63,14 @@ impl Renderable[PlayerPanel] for PlayerPanel {
   }
 }
 
+/// Naming impl for `PlayerPanel`.
 impl Nameable[PlayerPanel] for PlayerPanel {
   fn label(panel: PlayerPanel) -> string {
     panel.label
   }
 }
 
+/// Rendering impl for `EnemyPanel`.
 impl Renderable[EnemyPanel] for EnemyPanel {
   fn render(panel: EnemyPanel) {
     out("--- enemy ---");
@@ -64,12 +79,14 @@ impl Renderable[EnemyPanel] for EnemyPanel {
   }
 }
 
+/// Naming impl for `EnemyPanel`.
 impl Nameable[EnemyPanel] for EnemyPanel {
   fn label(panel: EnemyPanel) -> string {
     panel.label
   }
 }
 
+/// Rendering impl for `QuestPanel`.
 impl Renderable[QuestPanel] for QuestPanel {
   fn render(panel: QuestPanel) {
     out("--- quest ---");
@@ -85,12 +102,14 @@ impl Renderable[QuestPanel] for QuestPanel {
   }
 }
 
+/// Naming impl for `QuestPanel`.
 impl Nameable[QuestPanel] for QuestPanel {
   fn label(panel: QuestPanel) -> string {
     panel.label
   }
 }
 
+/// Builds a `PlayerPanel` view for rendering.
 fn player_panel(p: Player) -> PlayerPanel {
   PlayerPanel{
     p.name,
@@ -102,6 +121,7 @@ fn player_panel(p: Player) -> PlayerPanel {
   }
 }
 
+/// Builds an `EnemyPanel` view for rendering.
 fn enemy_panel(e: Enemy) -> EnemyPanel {
   EnemyPanel{
     e.kind,
@@ -111,6 +131,7 @@ fn enemy_panel(e: Enemy) -> EnemyPanel {
   }
 }
 
+/// Builds a `QuestPanel` view for rendering.
 fn quest_panel(q: Quest) -> QuestPanel {
   QuestPanel{
     q.title,
@@ -119,6 +140,7 @@ fn quest_panel(q: Quest) -> QuestPanel {
   }
 }
 
+/// Demonstrates `defer` and looping by calibrating a named station.
 fn calibrate_station(name: string) {
   out(`Calibrating station: {name}`);
   defer out("Station teardown complete");
@@ -130,6 +152,7 @@ fn calibrate_station(name: string) {
   }
 }
 
+/// Entry point: runs a scripted demo session.
 fn main() {
   out("=== prime-lang gameplay demo ===");
 
@@ -244,6 +267,7 @@ fn main() {
   out(example());
 }
 
+/// Constructs a `Player` with default velocity and derived stamina.
 fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
   Player{
     Transform{
@@ -262,6 +286,7 @@ fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
   }
 }
 
+/// Constructs an `Enemy` with default velocity.
 fn spawn_enemy(kind: string, position: Vec2, attack: Damage) -> Enemy {
   Enemy{
     Transform{
@@ -276,6 +301,7 @@ fn spawn_enemy(kind: string, position: Vec2, attack: Damage) -> Enemy {
   }
 }
 
+/// Returns a new player moved by an offset.
 fn move_player(p: Player, offset: Vec2) -> Player {
   let Vec2 next = add_vec2(p.position, offset);
   Player{
@@ -292,6 +318,7 @@ fn move_player(p: Player, offset: Vec2) -> Player {
   }
 }
 
+/// Adds two vectors component-wise.
 fn add_vec2(a: Vec2, b: Vec2) -> Vec2 {
   Vec2{
     a.x + b.x,
@@ -299,6 +326,7 @@ fn add_vec2(a: Vec2, b: Vec2) -> Vec2 {
   }
 }
 
+/// Applies flat or percent damage to a player.
 fn apply_damage(p: Player, damage: Damage) -> Player {
   match damage {
     Flat(amount) =>     Player{
@@ -331,6 +359,7 @@ fn apply_damage(p: Player, damage: Damage) -> Player {
   }
 }
 
+/// Heals a player and boosts stamina.
 fn drink_potion(p: Player, heal: int32) -> Player {
   let int32 boosted = p.hp + heal;
   Player{
@@ -347,6 +376,7 @@ fn drink_potion(p: Player, heal: int32) -> Player {
   }
 }
 
+/// Increases player level and stats.
 fn level_up(p: Player, levels: int32) -> Player {
   let int32 bonus = levels * 5;
   Player{
@@ -363,10 +393,12 @@ fn level_up(p: Player, levels: int32) -> Player {
   }
 }
 
+/// Prints a session banner.
 fn announce_session(message: string) {
   out(`--- session log --- {message}`);
 }
 
+/// Simulates a few rounds of damage application.
 fn run_encounter(hero: Player, ally: Player, enemy: Enemy) {
   let mut int32 round = 0;
   let mut Player current = hero;
@@ -381,6 +413,7 @@ fn run_encounter(hero: Player, ally: Player, enemy: Enemy) {
   player_panel(ally).render();
 }
 
+/// Prints a simple countdown.
 fn countdown(limit: int32) {
   let mut int32 step = 0;
   while step < limit {
@@ -389,6 +422,7 @@ fn countdown(limit: int32) {
   }
 }
 
+/// Demonstrates `for` loops over ranges.
 fn simulate_patrol(name: string, steps: int32) {
   out(`--- patrol start: {name} ---`);
   for i in 0..steps {
@@ -397,6 +431,7 @@ fn simulate_patrol(name: string, steps: int32) {
   out("--- patrol complete ---");
 }
 
+/// Returns an available training slot on even days.
 fn find_training_slot(day: int32) -> Option[int32] {
   if day % 2 == 0 {
     Some(day)
@@ -405,6 +440,7 @@ fn find_training_slot(day: int32) -> Option[int32] {
   }
 }
 
+/// Converts high percent attacks into an error using `Result`.
 fn resolve_attack(hero: Player, damage: Damage) -> Result[Player, string] {
   let Player updated = match damage {
     Flat(amount) => apply_damage(hero, Flat(amount)),
@@ -419,11 +455,13 @@ fn resolve_attack(hero: Player, damage: Damage) -> Result[Player, string] {
   Ok(updated)
 }
 
+/// Reads hp through an immutable reference.
 fn peek_hp(target: &Player) -> int32 {
   let Player snapshot = *target;
   snapshot.hp
 }
 
+/// Updates hp through a mutable reference.
 fn refill_hp(target: &mut Player, amount: int32) {
   let Player snapshot = *target;
   let Player refreshed = Player{
@@ -435,6 +473,7 @@ fn refill_hp(target: &mut Player, amount: int32) {
   *target = refreshed;
 }
 
+/// Produces a `MissionEvent` based on readiness and available slots.
 fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
   if ready {
     MissionEvent::Completed(name)
@@ -447,6 +486,7 @@ fn plan_mission(name: string, ready: bool, slots_open: bool) -> MissionEvent {
   }
 }
 
+/// Prints a `MissionEvent` with pattern matches and guards.
 fn describe_event(event: MissionEvent) {
   match event {
     MissionEvent::Completed(stage) if stage == "Prime ascent" => {
@@ -464,6 +504,7 @@ fn describe_event(event: MissionEvent) {
   }
 }
 
+/// Returns a user-friendly message for a `MissionEvent`.
 fn summarize_event(event: MissionEvent) -> string {
   match event {
     MissionEvent::Completed(stage) => stage,
@@ -472,12 +513,14 @@ fn summarize_event(event: MissionEvent) -> string {
   }
 }
 
+/// Returns quotient and remainder.
 fn divmod(a: int32, b: int32) -> (int32, int32) {
   let int32 q = a / b;
   let int32 r = a % b;
   (q, r)
 }
 
+/// Single-step healing helper.
 fn heal(player: Player, boost: int32) -> Player {
   Player{
     Transform{
@@ -493,6 +536,7 @@ fn heal(player: Player, boost: int32) -> Player {
   }
 }
 
+/// Demonstrates LIFO execution order of `defer` blocks.
 fn test_defer_order() {
   out("arming defers");
   defer out("first");
@@ -500,6 +544,7 @@ fn test_defer_order() {
   defer out("last");
 }
 
+/// Exercises builtin string helpers and test assertions.
 fn uses_asserts() -> bool {
   assert(true);
   expect(true, "expect should not panic");

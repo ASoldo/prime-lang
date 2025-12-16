@@ -1,7 +1,12 @@
+//! Package app example.
+//!
+//! Imports `pkg::lib` and prints a few values to validate that package modules
+//! load and run correctly.
 module pkg::app;
 
 import pkg::lib;
 
+/// Entry point for the package app demo.
 fn main() {
   let Banner banner = banner("Prime modules loaded");
   let string base_message = banner.message;

@@ -1,5 +1,10 @@
+//! Numeric type support tests.
+//!
+//! Ensures the parser and typechecker accept all builtin numeric types and
+//! common arithmetic/bitwise operations.
 test tests::types_numeric;
 
+/// Verifies all numeric types can be declared and used in expressions.
 fn accepts_all_numeric_types() -> bool {
   let int8 a = 0;
   let int16 b = 0;

@@ -1,7 +1,8 @@
 use crate::language::{
     ast::{
         ConstDef, EnumDef, EnumVariant, FunctionDef, ImportSelector, InterfaceDef, Item, MacroDef,
-        MacroParam, MacroParamKind, MacroRepeatQuantifier, Module, StructDef, Visibility,
+        MacroParam, MacroParamKind, MacroRepeatQuantifier, Module, ModuleKind, StructDef,
+        Visibility,
     },
     span::Span,
     token::{Token, TokenKind},
@@ -125,6 +126,9 @@ pub fn hover_for_token(
             } else if let Some(doc) = builtin_function_docs(name) {
                 Some(doc)
             } else if let Some(module) = module {
+                if let Some(hover) = hover_for_current_module_doc(text, span, module) {
+                    return Some(hover);
+                }
                 if let Some(field_hover) =
                     hover_for_struct_field_definition(text, span, name, module)
                 {
@@ -137,6 +141,11 @@ pub fn hover_for_token(
                 }
                 if let Some(mods) = modules {
                     if let Some(hover) = hover_for_imported_symbol(text, span, name, module, mods) {
+                        return Some(hover);
+                    }
+                    if let Some(hover) =
+                        hover_for_imported_module_doc(text, span, name, module, mods)
+                    {
                         return Some(hover);
                     }
                 }
@@ -174,15 +183,42 @@ pub fn hover_for_token(
             }
         }
         TokenKind::Let => Some(keyword_doc("let", "Introduces a new binding.")),
-        TokenKind::TestKw => Some(keyword_doc(
-            "test",
-            "Declares a test module; enables `fn` bodies as test cases.",
-        )),
-        TokenKind::ModuleKw => Some(keyword_doc("module", "Declares a regular module.")),
-        TokenKind::LibraryKw => Some(keyword_doc(
-            "library",
-            "Declares a library module (importable, no `main`).",
-        )),
+        TokenKind::TestKw => {
+            if let Some(module) = module {
+                if let Some(decl_span) = module.declared_span {
+                    if span.start >= decl_span.start && span.end <= decl_span.end {
+                        return Some(markdown_hover(text, span, format_module_hover(module)));
+                    }
+                }
+            }
+            Some(keyword_doc(
+                "test",
+                "Declares a test module; enables `fn` bodies as test cases.",
+            ))
+        }
+        TokenKind::ModuleKw => {
+            if let Some(module) = module {
+                if let Some(decl_span) = module.declared_span {
+                    if span.start >= decl_span.start && span.end <= decl_span.end {
+                        return Some(markdown_hover(text, span, format_module_hover(module)));
+                    }
+                }
+            }
+            Some(keyword_doc("module", "Declares a regular module."))
+        }
+        TokenKind::LibraryKw => {
+            if let Some(module) = module {
+                if let Some(decl_span) = module.declared_span {
+                    if span.start >= decl_span.start && span.end <= decl_span.end {
+                        return Some(markdown_hover(text, span, format_module_hover(module)));
+                    }
+                }
+            }
+            Some(keyword_doc(
+                "library",
+                "Declares a library module (importable, no `main`).",
+            ))
+        }
         TokenKind::Fn => Some(keyword_doc(
             "fn",
             "Defines a function. Functions are hygienic; hovers display params and returns.",
@@ -251,6 +287,60 @@ pub fn hover_for_token(
         _ => None,
     }?;
     Some(markdown_hover(text, span, hover))
+}
+
+fn hover_for_current_module_doc(text: &str, usage_span: Span, module: &Module) -> Option<Hover> {
+    let decl_span = module.declared_span?;
+    if usage_span.start < decl_span.start || usage_span.end > decl_span.end {
+        return None;
+    }
+    Some(markdown_hover(
+        text,
+        usage_span,
+        format_module_hover(module),
+    ))
+}
+
+fn hover_for_imported_module_doc(
+    text: &str,
+    usage_span: Span,
+    name: &str,
+    module: &Module,
+    modules: &[Module],
+) -> Option<Hover> {
+    for import in &module.imports {
+        if usage_span.start < import.span.start || usage_span.end > import.span.end {
+            continue;
+        }
+        if !import.path.segments.iter().any(|seg| seg == name) {
+            continue;
+        }
+        let imported = resolve_import_module(import, modules)?;
+        return Some(markdown_hover(text, usage_span, format_module_hover(imported)));
+    }
+    None
+}
+
+fn resolve_import_module<'a>(
+    import: &crate::language::ast::Import,
+    modules: &'a [Module],
+) -> Option<&'a Module> {
+    let import_name = import.path.to_string();
+    modules.iter().find(|m| m.name == import_name).or_else(|| {
+        if import
+            .path
+            .segments
+            .last()
+            .map(|s| s == "prelude")
+            .unwrap_or(false)
+            && import.path.segments.len() > 1
+        {
+            let base = import.path.segments[..import.path.segments.len() - 1].join("::");
+            modules.iter().find(|m| m.name == base)
+        } else {
+            None
+        }
+    })
 }
 
 fn builtin_function_docs(name: &str) -> Option<String> {
@@ -1019,6 +1109,26 @@ fn format_enum_variant_signature(variant: &EnumVariant) -> String {
     }
 }
 
+fn module_kind_keyword(kind: ModuleKind) -> &'static str {
+    match kind {
+        ModuleKind::Module => "module",
+        ModuleKind::Library => "library",
+        ModuleKind::Test => "test",
+    }
+}
+
+fn format_module_hover(module: &Module) -> String {
+    let mut out = String::new();
+    if let Some(doc) = &module.doc {
+        out.push_str(doc.trim_end());
+        out.push_str("\n\n");
+    }
+    let keyword = module_kind_keyword(module.kind);
+    let name = module.declared_name.as_deref().unwrap_or(&module.name);
+    out.push_str(&code_block("prime", &format!("{keyword} {name};")));
+    out
+}
+
 fn format_const_snippet(text: &str, def: &ConstDef) -> String {
     let snippet = extract_text(text, def.span.start, def.span.end)
         .trim()
@@ -1530,5 +1640,139 @@ fn main() {
             contents.contains("value") && contents.contains("int32"),
             "expected hover to include field name and type, got {contents}"
         );
+    }
+
+    #[test]
+    fn hover_shows_module_doc_on_module_declaration_name() {
+        let text = r#"//! Module docs appear on hover.
+module demo::hover;
+
+fn main() {}
+"#;
+        let tokens = lex(text).expect("lex tokens");
+        let module =
+            parse_module("demo::hover", PathBuf::from("demo.prime"), text).expect("parse module");
+        let token = tokens
+            .iter()
+            .find(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "demo"))
+            .expect("module segment token");
+        let hover = hover_for_token(
+            text,
+            token,
+            &[],
+            Some(&module),
+            None,
+            Some(std::slice::from_ref(&module)),
+        )
+        .expect("hover result");
+        match hover.contents {
+            HoverContents::Markup(content) => {
+                assert!(
+                    content.value.contains("Module docs appear on hover."),
+                    "expected module docs, got {}",
+                    content.value
+                );
+                assert!(content.value.contains("module demo::hover;"));
+            }
+            _ => panic!("expected markup hover"),
+        }
+    }
+
+    #[test]
+    fn hover_shows_module_doc_on_import_path() {
+        let importer_text = r#"module demo::importer;
+
+import demo::dep;
+
+fn main() {}
+"#;
+        let dep_text = r#"//! Dep module docs.
+module demo::dep;
+
+pub fn greet() {}
+"#;
+        let importer_tokens = lex(importer_text).expect("lex tokens");
+        let importer = parse_module(
+            "demo::importer",
+            PathBuf::from("importer.prime"),
+            importer_text,
+        )
+        .expect("parse importer");
+        let dep = parse_module("demo::dep", PathBuf::from("dep.prime"), dep_text).expect("dep");
+        let modules = vec![importer.clone(), dep];
+        let token = importer_tokens
+            .iter()
+            .find(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "dep"))
+            .expect("import path token");
+        let hover = hover_for_token(
+            importer_text,
+            token,
+            &[],
+            Some(&modules[0]),
+            None,
+            Some(&modules),
+        )
+        .expect("hover result");
+        match hover.contents {
+            HoverContents::Markup(content) => {
+                assert!(
+                    content.value.contains("Dep module docs."),
+                    "expected dep module docs, got {}",
+                    content.value
+                );
+                assert!(content.value.contains("module demo::dep;"));
+            }
+            _ => panic!("expected markup hover"),
+        }
+    }
+
+    #[test]
+    fn hover_resolves_prelude_import_to_base_module() {
+        let importer_text = r#"module demo::importer;
+
+import demo::dep::prelude;
+
+fn main() {}
+"#;
+        let dep_text = r#"//! Dep module docs.
+module demo::dep;
+
+export prelude { greet };
+
+pub fn greet() {}
+"#;
+        let importer_tokens = lex(importer_text).expect("lex tokens");
+        let importer = parse_module(
+            "demo::importer",
+            PathBuf::from("importer.prime"),
+            importer_text,
+        )
+        .expect("parse importer");
+        let dep = parse_module("demo::dep", PathBuf::from("dep.prime"), dep_text).expect("dep");
+        let modules = vec![importer.clone(), dep];
+        let token = importer_tokens
+            .iter()
+            .find(|token| matches!(&token.kind, TokenKind::Identifier(name) if name == "prelude"))
+            .expect("prelude segment token");
+        let hover = hover_for_token(
+            importer_text,
+            token,
+            &[],
+            Some(&modules[0]),
+            None,
+            Some(&modules),
+        )
+        .expect("hover result");
+        match hover.contents {
+            HoverContents::Markup(content) => {
+                assert!(
+                    content.value.contains("Dep module docs."),
+                    "expected dep module docs, got {}",
+                    content.value
+                );
+                assert!(content.value.contains("module demo::dep;"));
+            }
+            _ => panic!("expected markup hover"),
+        }
     }
 }

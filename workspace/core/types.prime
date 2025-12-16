@@ -1,3 +1,8 @@
+//! Core library types.
+//!
+//! This library defines the foundational types used across the workspace and
+//! re-exports them via `export prelude { ... }` so users can do:
+//! `import core::types::prelude::{*};`
 library core::types;
 
 export prelude {
@@ -15,50 +20,60 @@ export prelude {
   Quest,
 };
 
+/// A value that may be present (`Some`) or absent (`None`).
 pub enum Option[T] {
   Some(T),
   None,
 }
 
+/// A computation result (`Ok`) or an error (`Err`).
 pub enum Result[T, E] {
   Ok(T),
   Err(E),
 }
 
+/// Minimal iterator interface (pull-based).
 pub interface Iterator[T] {
   fn next(self: Self) -> Option[T];
 }
 
+/// Types that can produce an iterator-friendly collection.
 pub interface Iterable[T] {
   fn iter(self: Self) -> []T;
 }
 
+/// 2D vector used by the demo app types.
 pub struct Vec2 {
   x: float32;
   y: float32;
 }
 
+/// Position/velocity pair for simple movement.
 pub struct Transform {
   position: Vec2;
   velocity: Vec2;
 }
 
+/// Simple hit-point + stamina record.
 pub struct Stats {
   hp: int32;
   stamina: int32;
 }
 
+/// Damage representation used by the demo app.
 pub enum Damage {
   Flat(int32),
   Percent(int32),
 }
 
+/// Mission state events used by the demo app.
 pub enum MissionEvent {
   Completed(string),
   Failed(string),
   Waiting,
 }
 
+/// Player entity used by the demo app.
 pub struct Player {
   Transform;
   Stats;
@@ -66,12 +81,14 @@ pub struct Player {
   level: int32;
 }
 
+/// Enemy entity used by the demo app.
 pub struct Enemy {
   Transform;
   kind: string;
   attack: Damage;
 }
 
+/// Quest record used by the demo app.
 pub struct Quest {
   title: string;
   reward: int32;

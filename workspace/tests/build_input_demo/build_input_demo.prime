@@ -1,7 +1,11 @@
+//! Build + input smoke test program.
+//!
+//! Used by integration tests that feed scripted input into `in[T](...)`.
 module tests::build_input_demo;
 
 import core::types;
 
+/// Entry point for the build/input demo.
 fn main() {
   match in[int32](`Enter age: `) {
     Result::Ok(age) => out(`age recorded: {age}`),

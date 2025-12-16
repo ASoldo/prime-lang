@@ -1,12 +1,17 @@
+//! Host parity tests for async + channels.
+//!
+//! These tests keep host runtime behavior consistent with no_std probes.
 test tests::parity;
 
 import core::types;
 
+/// Minimal result-like enum for async tests.
 pub enum IntResult {
   Ok(int32),
   Err(string),
 }
 
+/// Ensures async task return values can be matched and transformed.
 fn async_try_parity() -> bool {
   let (tx, rx) = channel[IntResult]();
   let worker = spawn async {
@@ -32,6 +37,7 @@ fn async_try_parity() -> bool {
   }
 }
 
+/// Ensures `join` works for a task returning an `Option`.
 fn timeout_parity() -> bool {
   let (tx, rx) = channel[int32]();
   let worker = spawn async {
@@ -48,6 +54,7 @@ fn timeout_parity() -> bool {
   }
 }
 
+/// Runs parity tests with assertions.
 fn main() {
   assert(async_try_parity());
   assert(timeout_parity());

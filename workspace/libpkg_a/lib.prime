@@ -1,9 +1,13 @@
+//! Example library used by the workspace app.
+//!
+//! This package exists to demonstrate importing symbols from another package.
 library libpkg_a::lib;
 
 export prelude {
   example,
 };
 
+/// Small example function used by `app::main`.
 pub fn example() -> int32 {
   0
 }

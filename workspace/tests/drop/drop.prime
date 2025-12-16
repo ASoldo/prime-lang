@@ -1,18 +1,25 @@
+//! Drop semantics tests.
+//!
+//! Validates `Drop` runs exactly once, at the correct time, and interacts
+//! correctly with `defer`.
 test tests::drop;
 
 import core::types;
 
+/// Records its own drops into a shared log slice.
 struct Tracker {
   label: string;
   log: &mut []string;
 }
 
+/// `Drop` impl used by the tests below.
 impl Drop for Tracker {
   fn drop(self: &mut Tracker) {
     self.log.push(self.label);
   }
 }
 
+/// Ensures values are dropped when leaving a scope.
 fn drop_runs_on_scope_exit() -> bool {
   let mut []string log = [];
   {
@@ -25,6 +32,7 @@ fn drop_runs_on_scope_exit() -> bool {
   }
 }
 
+/// Ensures `defer` runs between inner drops in LIFO order.
 fn drop_orders_with_defer() -> bool {
   let mut []string log = [];
   {
@@ -40,6 +48,7 @@ fn drop_orders_with_defer() -> bool {
   }
 }
 
+/// Ensures a moved-out value is dropped once after its last use.
 fn drop_occurs_once_after_last_use() -> bool {
   let mut []string log = [];
   {
