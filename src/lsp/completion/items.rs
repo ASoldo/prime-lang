@@ -840,6 +840,7 @@ pub fn keyword_completion_items(
         ("fs_exists", "Built-in file helper"),
         ("fs_read", "Built-in file helper"),
         ("fs_write", "Built-in file helper"),
+        ("fs_write_bytes", "Built-in binary file helper"),
         ("ptr", "Built-in pointer helper"),
         ("ptr_mut", "Built-in pointer helper"),
         ("cast", "Built-in cast helper"),
@@ -869,7 +870,7 @@ pub fn keyword_completion_items(
         ("abs", "Built-in math helper"),
     ];
     let embedded_target = target.map(|t| t.is_embedded()).unwrap_or(false);
-    const EMBEDDED_HOST_ONLY: &[&str] = &["fs_exists", "fs_read", "fs_write"];
+    const EMBEDDED_HOST_ONLY: &[&str] = &["fs_exists", "fs_read", "fs_write", "fs_write_bytes"];
     for (label, detail) in BUILTIN_FUNCS.iter().filter(|(name, _)| {
         prefix_matches(name, prefix)
             && !(embedded_target && EMBEDDED_HOST_ONLY.iter().any(|host_only| host_only == name))

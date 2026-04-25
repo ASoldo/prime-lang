@@ -1683,7 +1683,8 @@ impl Compiler {
                 }
                 BuildEffect::FsExists { .. }
                 | BuildEffect::FsRead { .. }
-                | BuildEffect::FsWrite { .. } => {
+                | BuildEffect::FsWrite { .. }
+                | BuildEffect::FsWriteBytes { .. } => {
                     // Recorded only for deterministic replays; nothing to apply in compiled artifacts.
                 }
                 BuildEffect::NowMs { value } => {

@@ -395,25 +395,17 @@ impl Compiler {
 
     pub(super) fn attach_origin(value: &mut EvaluatedValue, name: &str) {
         match value.value_mut() {
-            Value::Reference(reference) => {
-                if reference.origin.is_none() {
-                    reference.origin = Some(name.to_string());
-                }
+            Value::Reference(reference) if reference.origin.is_none() => {
+                reference.origin = Some(name.to_string());
             }
-            Value::Pointer(pointer) => {
-                if pointer.origin.is_none() {
-                    pointer.origin = Some(name.to_string());
-                }
+            Value::Pointer(pointer) if pointer.origin.is_none() => {
+                pointer.origin = Some(name.to_string());
             }
-            Value::Sender(sender) => {
-                if sender.origin.is_none() {
-                    sender.origin = Some(name.to_string());
-                }
+            Value::Sender(sender) if sender.origin.is_none() => {
+                sender.origin = Some(name.to_string());
             }
-            Value::Receiver(receiver) => {
-                if receiver.origin.is_none() {
-                    receiver.origin = Some(name.to_string());
-                }
+            Value::Receiver(receiver) if receiver.origin.is_none() => {
+                receiver.origin = Some(name.to_string());
             }
             _ => {}
         }

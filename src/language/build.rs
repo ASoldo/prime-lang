@@ -335,6 +335,11 @@ pub enum BuildEffect {
         contents: String,
         result: Result<(), String>,
     },
+    FsWriteBytes {
+        path: String,
+        len: usize,
+        result: Result<(), String>,
+    },
     NowMs {
         value: i128,
     },
@@ -1691,7 +1696,7 @@ impl BuildInterpreter {
                     },
                 )?;
             }
-            for (param, value) in closure.params.iter().zip(args.into_iter()) {
+            for (param, value) in closure.params.iter().zip(args) {
                 let pattern = Pattern::Identifier(param.name.clone(), param.span);
                 self.bind_pattern(&pattern, value, param.mutability)?;
             }
@@ -2245,7 +2250,7 @@ impl BuildInterpreter {
                     if items.len() != values.len() {
                         return Ok(false);
                     }
-                    for (pat, val) in items.iter().zip(values.into_iter()) {
+                    for (pat, val) in items.iter().zip(values) {
                         if !self.try_bind_pattern(pat, val, mutability)? {
                             return Ok(false);
                         }
@@ -2278,7 +2283,7 @@ impl BuildInterpreter {
                     if bindings.len() != values.len() {
                         return Ok(false);
                     }
-                    for (pat, val) in bindings.iter().zip(values.into_iter()) {
+                    for (pat, val) in bindings.iter().zip(values) {
                         if !self.try_bind_pattern(pat, val, mutability)? {
                             return Ok(false);
                         }
@@ -2457,6 +2462,31 @@ impl BuildInterpreter {
                 Self::expect_string_value(inner, context)
             }
             other => Err(format!("{context} expects string, found {}", other.kind())),
+        }
+    }
+
+    fn expect_byte_values(value: BuildValue, context: &str) -> Result<Vec<u8>, String> {
+        match value {
+            BuildValue::Slice(items) => {
+                let mut bytes = Vec::with_capacity(items.len());
+                for item in items {
+                    let BuildValue::Int(byte) = item else {
+                        return Err(format!("{context} expects []uint8"));
+                    };
+                    if !(0..=255).contains(&byte) {
+                        return Err(format!(
+                            "{context} expects bytes in range 0..=255, found {byte}"
+                        ));
+                    }
+                    bytes.push(byte as u8);
+                }
+                Ok(bytes)
+            }
+            BuildValue::Reference(reference) => {
+                let inner = reference.cell.lock().unwrap().clone();
+                Self::expect_byte_values(inner, context)
+            }
+            other => Err(format!("{context} expects slice, found {}", other.kind())),
         }
     }
 
@@ -2730,6 +2760,27 @@ impl BuildInterpreter {
                 self.effects.push(BuildEffect::FsWrite {
                     path: path.clone(),
                     contents,
+                    result: result.clone(),
+                });
+                match result {
+                    Ok(()) => Ok(self.wrap_enum("Ok", vec![BuildValue::Unit])),
+                    Err(msg) => Ok(self.wrap_enum("Err", vec![BuildValue::String(msg)])),
+                }
+            }
+            "fs_write_bytes" => {
+                self.require_std_or_embedded("fs_write_bytes")?;
+                if args.len() != 2 {
+                    return Err("fs_write_bytes expects 2 arguments".into());
+                }
+                let path_value = self.eval_expr_mut(&args[0])?;
+                let path = Self::expect_string_value(path_value, "fs_write_bytes")?;
+                let contents_value = self.eval_expr_mut(&args[1])?;
+                let contents = Self::expect_byte_values(contents_value, "fs_write_bytes")?;
+                let len = contents.len();
+                let result = std::fs::write(&path, contents).map_err(|err| err.to_string());
+                self.effects.push(BuildEffect::FsWriteBytes {
+                    path: path.clone(),
+                    len,
                     result: result.clone(),
                 });
                 match result {
@@ -3127,7 +3178,7 @@ impl BuildInterpreter {
             ));
         }
         self.push_scope();
-        for (param, value) in func.def.params.iter().zip(args.into_iter()) {
+        for (param, value) in func.def.params.iter().zip(args) {
             let pattern = Pattern::Identifier(param.name.clone(), param.span);
             self.bind_pattern(&pattern, value, param.mutability)?;
         }

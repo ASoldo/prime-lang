@@ -2569,6 +2569,9 @@ impl Compiler {
             "fs_write" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_fs_write(values)))
             }
+            "fs_write_bytes" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_fs_write_bytes(values)))
+            }
             "pin_mode" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_pin_mode(values)))
             }
@@ -3766,6 +3769,9 @@ impl Compiler {
             (Value::Float(a), Value::Int(b)) => {
                 let converted = self.int_to_float(&b)?;
                 self.eval_float_binary(op, a, converted)
+            }
+            (Value::Str(a), Value::Str(b)) if matches!(op, BinaryOp::Add) => {
+                self.build_string_constant(format!("{}{}", a.text, b.text))
             }
             (Value::Str(a), Value::Str(b)) if matches!(op, BinaryOp::Eq | BinaryOp::NotEq) => {
                 let cmp = (*a.text == *b.text) == matches!(op, BinaryOp::Eq);

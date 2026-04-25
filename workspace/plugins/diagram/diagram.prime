@@ -1,0 +1,1242 @@
+//! Prime diagram plugin/framework.
+//!
+//! Loads a compact runtime text format and renders diagrams to SVG or PNG.
+//! Data format:
+//! - `title=Pipeline`
+//! - `node=load|Load Data|event|flow|Runtime input|0`
+//! - `port=load|out|exec|flow`
+//! - `edge=load|render|runtime|out|in`
+library prime::diagram;
+
+import core::types::prelude::{*};
+
+export prelude {
+  Diagram,
+  DiagramNode,
+  DiagramEdge,
+  DiagramPort,
+  empty_diagram,
+  parse_diagram,
+  load_diagram,
+  validate_diagram,
+  diagram_summary,
+  render_svg,
+  render_png,
+  write_svg,
+  write_png,
+  load_and_write,
+};
+
+const NODE_WIDTH: int32 = 190;
+
+const NODE_MIN_HEIGHT: int32 = 128;
+
+const NODE_MARGIN_X: int32 = 36;
+
+const NODE_MARGIN_Y: int32 = 86;
+
+const NODE_STEP_X: int32 = 238;
+
+const NODE_STEP_Y: int32 = 164;
+
+const PORT_ROW_HEIGHT: int32 = 20;
+
+const PNG_NODE_WIDTH: int32 = 126;
+
+const PNG_NODE_MIN_HEIGHT: int32 = 90;
+
+const PNG_NODE_HEADER_HEIGHT: int32 = 20;
+
+const PNG_PORT_ROW_HEIGHT: int32 = 14;
+
+const PNG_MARGIN_X: int32 = 14;
+
+const PNG_NODE_Y: int32 = 62;
+
+const PNG_NODE_STEP_X: int32 = 180;
+
+pub struct DiagramNode {
+  id: string;
+  label: string;
+  kind: string;
+  lane: string;
+  detail: string;
+  column: string;
+}
+
+pub struct DiagramEdge {
+  from_id: string;
+  to_id: string;
+  label: string;
+  from_port: string;
+  to_port: string;
+}
+
+pub struct DiagramPort {
+  node_id: string;
+  name: string;
+  direction: string;
+  kind: string;
+}
+
+pub struct Diagram {
+  title: string;
+  nodes: []DiagramNode;
+  edges: []DiagramEdge;
+  ports: []DiagramPort;
+}
+
+pub fn empty_diagram(title: string) -> Diagram {
+  Diagram{
+    title: title,
+    nodes: [],
+    edges: [],
+    ports: [],
+  }
+}
+
+pub fn load_diagram(path: string) -> Result[Diagram, string] {
+  match fs_read(path) {
+    Result::Ok(text) => parse_diagram(text),
+    Result::Err(msg) => {
+      return Err(msg);
+    },
+  }
+}
+
+pub fn parse_diagram(text: string) -> Result[Diagram, string] {
+  let mut string title = "Diagram";
+  let mut []DiagramNode nodes = [];
+  let mut []DiagramEdge edges = [];
+  let mut []DiagramPort ports = [];
+  let []string lines = text.str_split("\n");
+  for raw_line in lines {
+    let string line = raw_line.str_trim();
+    if line == "" {
+      continue;
+    }
+
+    let []string pair = line.str_split("=");
+    if pair.len() < 2 {
+      return Err(`invalid diagram line: {line}`);
+    }
+
+    let string key = field(pair, 0);
+    let string value = field(pair, 1);
+    if key == "title" {
+      title = value;
+    } else if key == "node" {
+      let []string parts = value.str_split("|");
+      if parts.len() < 2 {
+        return Err(`node line needs id and label: {line}`);
+      }
+      nodes.push(DiagramNode{ id: field(parts, 0), label: field(parts, 1), kind: field(parts, 2), lane: field(parts, 3), detail: field(parts, 4), column: field(parts, 5) });
+    } else if key == "port" {
+      let []string parts = value.str_split("|");
+      if parts.len() < 3 {
+        return Err(`port line needs node, direction, and name: {line}`);
+      }
+      ports.push(DiagramPort{ node_id: field(parts, 0), direction: field(parts, 1), name: field(parts, 2), kind: field(parts, 3) });
+    } else if key == "edge" {
+      let []string parts = value.str_split("|");
+      if parts.len() < 2 {
+        return Err(`edge line needs from and to ids: {line}`);
+      }
+      edges.push(DiagramEdge{ from_id: field(parts, 0), to_id: field(parts, 1), label: field(parts, 2), from_port: field(parts, 3), to_port: field(parts, 4) });
+    } else {
+      return Err(`unknown diagram key: {key}`);
+    }
+  }
+
+  let Diagram diagram = Diagram{
+    title: title,
+    nodes: nodes,
+    edges: edges,
+    ports: ports,
+  };
+  match validate_diagram(&diagram) {
+    Result::Ok(_) => {
+    },
+    Result::Err(msg) => {
+      return Err(msg);
+    },
+  }
+  Ok(diagram)
+}
+
+pub fn write_svg(diagram: &Diagram, path: string) -> Result[(), string] {
+  fs_write(path, render_svg(diagram))
+}
+
+pub fn write_png(diagram: &Diagram, path: string) -> Result[(), string] {
+  fs_write_bytes(path, render_png(diagram))
+}
+
+pub fn load_and_write(input_path: string, svg_path: string, png_path: string) -> Result[(), string] {
+  match load_diagram(input_path) {
+    Result::Ok(diagram) => {
+      match write_svg(&diagram, svg_path) {
+        Result::Ok(_) => {
+        },
+        Result::Err(msg) => {
+          return Err(msg);
+        },
+      }
+      write_png(&diagram, png_path)
+    },
+    Result::Err(msg) => {
+      return Err(msg);
+    },
+  }
+}
+
+pub fn validate_diagram(diagram: &Diagram) -> Result[(), string] {
+  if diagram.nodes.len() == 0 {
+    return Err("diagram needs at least one node");
+  }
+
+  let string duplicate = duplicate_node_id(&diagram.nodes);
+  if duplicate != "" {
+    return Err(`duplicate diagram node id: {duplicate}`);
+  }
+
+  let mut int32 port_idx = 0;
+  while port_idx < diagram.ports.len() {
+    match diagram.ports[port_idx] {
+      Some(port) => {
+        if !node_exists(&diagram.nodes, port.node_id) {
+          return Err(`port references unknown node: {port.node_id}`);
+        }
+        if !is_input_direction(port.direction) && !is_output_direction(port.direction) {
+          return Err(`invalid port direction: {port.direction}`);
+        }
+      },
+      None => {
+      },
+    }
+    port_idx = port_idx + 1;
+  }
+
+  let mut int32 edge_idx = 0;
+  while edge_idx < diagram.edges.len() {
+    match diagram.edges[edge_idx] {
+      Some(edge) => {
+        if !node_exists(&diagram.nodes, edge.from_id) {
+          return Err(`edge references unknown source node: {edge.from_id}`);
+        }
+        if !node_exists(&diagram.nodes, edge.to_id) {
+          return Err(`edge references unknown target node: {edge.to_id}`);
+        }
+        if edge.from_port != "" && !port_exists(&diagram.ports, edge.from_id, "out", edge.from_port) {
+          return Err(`edge references unknown output port: {edge.from_id}.{edge.from_port}`);
+        }
+        if edge.to_port != "" && !port_exists(&diagram.ports, edge.to_id, "in", edge.to_port) {
+          return Err(`edge references unknown input port: {edge.to_id}.{edge.to_port}`);
+        }
+      },
+      None => {
+      },
+    }
+    edge_idx = edge_idx + 1;
+  }
+  Ok(())
+}
+
+pub fn diagram_summary(diagram: &Diagram) -> string {
+  `{diagram.title}: {diagram.nodes.len()} nodes, {diagram.edges.len()} edges, {diagram.ports.len()} ports`
+}
+
+pub fn render_svg(diagram: &Diagram) -> string {
+  let int32 width = diagram_width(&diagram.nodes);
+  let int32 height = diagram_height(&diagram.nodes, &diagram.ports);
+  let mut string svg = `<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">`;
+  svg = svg + `<defs><pattern id="grid-small" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M16 0H0V16" fill="none" stroke="#182743" stroke-width="1"/></pattern><pattern id="grid-large" width="80" height="80" patternUnits="userSpaceOnUse"><rect width="80" height="80" fill="url(#grid-small)"/><path d="M80 0H0V80" fill="none" stroke="#253b60" stroke-width="1.2"/></pattern><filter id="node-shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000814" flood-opacity="0.55"/></filter></defs>`;
+  svg = svg + `<rect width="100%" height="100%" fill="#08111f"/><rect width="100%" height="100%" fill="url(#grid-large)" opacity="0.8"/>`;
+  svg = svg + `<text x="36" y="44" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="800" fill="#e6f1ff">{diagram.title}</text>`;
+  svg = svg + `<text x="36" y="66" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12" fill="#7dd3fc">Prime runtime graph</text>`;
+  let mut int32 edge_idx = 0;
+  while edge_idx < diagram.edges.len() {
+    match diagram.edges[edge_idx] {
+      Some(edge) => {
+        let int32 from_idx = node_index(&diagram.nodes, edge.from_id);
+        let int32 to_idx = node_index(&diagram.nodes, edge.to_id);
+        if from_idx >= 0 && to_idx >= 0 {
+          let DiagramNode from_node = node_at(&diagram.nodes, from_idx);
+          let DiagramNode to_node = node_at(&diagram.nodes, to_idx);
+          let int32 x1 = node_x_for(from_node, from_idx) + NODE_WIDTH;
+          let int32 y1 = port_center_y(&diagram.ports, from_node, "out", edge.from_port);
+          let int32 x2 = node_x_for(to_node, to_idx);
+          let int32 y2 = port_center_y(&diagram.ports, to_node, "in", edge.to_port);
+          let int32 bend = max(24, abs(x2 - x1) / 3);
+          let string wire = wire_color(edge.label);
+          svg = svg + `<path d="M{x1} {y1} C{x1 + bend} {y1}, {x2 - bend} {y2}, {x2} {y2}" fill="none" stroke="#06101e" stroke-width="8" stroke-linecap="round" opacity="0.9"/>`;
+          svg = svg + `<path d="M{x1} {y1} C{x1 + bend} {y1}, {x2 - bend} {y2}, {x2} {y2}" fill="none" stroke="{wire}" stroke-width="3.4" stroke-linecap="round"/>`;
+          if edge.label != "" {
+            let int32 label_x = (x1 + x2) / 2;
+            let int32 label_y = (y1 + y2) / 2 - 10;
+            svg = svg + `<text x="{label_x}" y="{label_y}" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="11" fill="#bae6fd">{edge.label}</text>`;
+          }
+        }
+      },
+      None => {
+      },
+    }
+    edge_idx = edge_idx + 1;
+  }
+
+  let mut int32 node_idx = 0;
+  while node_idx < diagram.nodes.len() {
+    match diagram.nodes[node_idx] {
+      Some(node) => {
+        let int32 x = node_x_for(node, node_idx);
+        let int32 y = node_y(node.lane);
+        let int32 h = node_height(node, &diagram.ports);
+        let string header = node_header_fill(node.kind);
+        svg = svg + `<g filter="url(#node-shadow)"><rect x="{x}" y="{y}" width="{NODE_WIDTH}" height="{h}" rx="9" fill="#101a2e"/><path d="M{x + 9} {y}H{x + NODE_WIDTH - 9}Q{x + NODE_WIDTH} {y} {x + NODE_WIDTH} {y + 9}V{y + 38}H{x}V{y + 9}Q{x} {y} {x + 9} {y}Z" fill="{header}"/><rect x="{x}" y="{y}" width="{NODE_WIDTH}" height="{h}" rx="9" fill="none" stroke="#2f81f7" stroke-width="1.6"/><text x="{x + 14}" y="{y + 24}" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" font-weight="800" fill="#f8fbff">{node.label}</text>`;
+        if node.kind != "" {
+          svg = svg + `<text x="{x + 14}" y="{y + 55}" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="11" fill="#8fb5dc">{node.kind}</text>`;
+        }
+        if node.detail != "" {
+          svg = svg + `<text x="{x + 14}" y="{y + h - 16}" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="11" fill="#c4d9f2">{node.detail}</text>`;
+        }
+        svg = svg + render_node_ports(&diagram.ports, node, x, y);
+        svg = svg + `</g>`;
+      },
+      None => {
+      },
+    }
+    node_idx = node_idx + 1;
+  }
+  svg + `</svg>`
+}
+
+pub fn render_png(diagram: &Diagram) -> []uint8 {
+  let int32 width = png_width(&diagram.nodes);
+  let int32 height = png_height(&diagram.nodes, &diagram.ports);
+  let []uint8 raw = png_scanlines(diagram, width, height);
+  let []uint8 compressed = zlib_uncompressed(raw);
+  let mut []uint8 png = [];
+  push_byte(png, 137);
+  push_byte(png, 80);
+  push_byte(png, 78);
+  push_byte(png, 71);
+  push_byte(png, 13);
+  push_byte(png, 10);
+  push_byte(png, 26);
+  push_byte(png, 10);
+
+  let mut []uint8 ihdr = [];
+  push_u32_be(ihdr, cast[int64](width));
+  push_u32_be(ihdr, cast[int64](height));
+  push_byte(ihdr, 8);
+  push_byte(ihdr, 2);
+  push_byte(ihdr, 0);
+  push_byte(ihdr, 0);
+  push_byte(ihdr, 0);
+  append_chunk(png, 73, 72, 68, 82, &ihdr);
+  append_chunk(png, 73, 68, 65, 84, &compressed);
+
+  let []uint8 iend = [];
+  append_chunk(png, 73, 69, 78, 68, &iend);
+  png
+}
+
+fn field(values: []string, index: int32) -> string {
+  match values[index] {
+    Some(value) => value.str_trim(),
+    None => "",
+  }
+}
+
+fn node_exists(nodes: &[]DiagramNode, id: string) -> bool {
+  node_index(nodes, id) >= 0
+}
+
+fn duplicate_node_id(nodes: &[]DiagramNode) -> string {
+  let mut int32 outer = 0;
+  while outer < nodes.len() {
+    match nodes[outer] {
+      Some(left) => {
+        let mut int32 inner = outer + 1;
+        while inner < nodes.len() {
+          match nodes[inner] {
+            Some(right) => {
+              if left.id == right.id {
+                return left.id;
+              }
+            },
+            None => {
+            },
+          }
+          inner = inner + 1;
+        }
+      },
+      None => {
+      },
+    }
+    outer = outer + 1;
+  }
+  ""
+}
+
+fn port_exists(ports: &[]DiagramPort, node_id: string, direction: string, name: string) -> bool {
+  port_index(ports, node_id, direction, name) >= 0
+}
+
+fn diagram_width(nodes: &[]DiagramNode) -> int32 {
+  if nodes.len() == 0 {
+    return 320;
+  }
+
+  let mut int32 width = 320;
+  let mut int32 idx = 0;
+  while idx < nodes.len() {
+    match nodes[idx] {
+      Some(node) => {
+        width = max(width, node_x_for(node, idx) + NODE_WIDTH + NODE_MARGIN_X);
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  width
+}
+
+fn diagram_height(nodes: &[]DiagramNode, ports: &[]DiagramPort) -> int32 {
+  let mut int32 height = NODE_MARGIN_Y + NODE_MIN_HEIGHT + 36;
+  let mut int32 idx = 0;
+  while idx < nodes.len() {
+    match nodes[idx] {
+      Some(node) => {
+        height = max(height, node_y(node.lane) + node_height(node, ports) + 36);
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  height
+}
+
+fn node_x_for(node: DiagramNode, index: int32) -> int32 {
+  NODE_MARGIN_X + node_column(node, index) * NODE_STEP_X
+}
+
+fn node_column(node: DiagramNode, index: int32) -> int32 {
+  let int32 column = column_value(node.column);
+  if column >= 0 {
+    column
+  } else {
+    index
+  }
+}
+
+fn column_value(value: string) -> int32 {
+  if value == "0" {
+    return 0;
+  } else if value == "1" {
+    return 1;
+  } else if value == "2" {
+    return 2;
+  } else if value == "3" {
+    return 3;
+  } else if value == "4" {
+    return 4;
+  } else if value == "5" {
+    return 5;
+  } else if value == "6" {
+    return 6;
+  } else if value == "7" {
+    return 7;
+  } else if value == "8" {
+    return 8;
+  } else if value == "9" {
+    return 9;
+  } else if value == "10" {
+    return 10;
+  } else if value == "11" {
+    return 11;
+  } else if value == "12" {
+    return 12;
+  } else if value == "13" {
+    return 13;
+  } else if value == "14" {
+    return 14;
+  }
+  return -1;
+}
+
+fn node_y(lane: string) -> int32 {
+  if lane == "top" || lane == "flow" || lane == "0" {
+    NODE_MARGIN_Y
+  } else if lane == "data" || lane == "middle" || lane == "mid" || lane == "1" {
+    NODE_MARGIN_Y + NODE_STEP_Y
+  } else if lane == "async" || lane == "bottom" || lane == "2" {
+    NODE_MARGIN_Y + NODE_STEP_Y * 2
+  } else {
+    NODE_MARGIN_Y
+  }
+}
+
+fn node_at(nodes: &[]DiagramNode, index: int32) -> DiagramNode {
+  match nodes[index] {
+    Some(node) => node,
+    None =>     DiagramNode{
+      id: "",
+      label: "",
+      kind: "",
+      lane: "",
+      detail: "",
+      column: "",
+    },
+  }
+}
+
+fn node_height(node: DiagramNode, ports: &[]DiagramPort) -> int32 {
+  let int32 rows = max(count_ports(ports, node.id, "in"), count_ports(ports, node.id, "out"));
+  max(NODE_MIN_HEIGHT, 76 + max(1, rows) * PORT_ROW_HEIGHT)
+}
+
+fn is_input_direction(direction: string) -> bool {
+  direction == "in" || direction == "input"
+}
+
+fn is_output_direction(direction: string) -> bool {
+  direction == "out" || direction == "output"
+}
+
+fn direction_matches(direction: string, expected: string) -> bool {
+  if expected == "in" {
+    is_input_direction(direction)
+  } else {
+    is_output_direction(direction)
+  }
+}
+
+fn count_ports(ports: &[]DiagramPort, node_id: string, direction: string) -> int32 {
+  let mut int32 count = 0;
+  let mut int32 idx = 0;
+  while idx < ports.len() {
+    match ports[idx] {
+      Some(port) => {
+        if port.node_id == node_id && direction_matches(port.direction, direction) {
+          count = count + 1;
+        }
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  count
+}
+
+fn port_index(ports: &[]DiagramPort, node_id: string, direction: string, name: string) -> int32 {
+  let mut int32 found = 0;
+  let mut int32 idx = 0;
+  while idx < ports.len() {
+    match ports[idx] {
+      Some(port) => {
+        if port.node_id == node_id && direction_matches(port.direction, direction) {
+          if name == "" || port.name == name {
+            return found;
+          }
+          found = found + 1;
+        }
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  -1
+}
+
+fn port_center_y(ports: &[]DiagramPort, node: DiagramNode, direction: string, name: string) -> int32 {
+  let int32 y = node_y(node.lane);
+  let int32 idx = port_index(ports, node.id, direction, name);
+  if idx < 0 {
+    y + node_height(node, ports) / 2
+  } else {
+    y + 74 + idx * PORT_ROW_HEIGHT
+  }
+}
+
+fn png_width(nodes: &[]DiagramNode) -> int32 {
+  if nodes.len() == 0 {
+    return 160;
+  }
+
+  let mut int32 width = 160;
+  let mut int32 idx = 0;
+  while idx < nodes.len() {
+    match nodes[idx] {
+      Some(node) => {
+        width = max(width, png_node_x_for(node, idx) + PNG_NODE_WIDTH + PNG_MARGIN_X);
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  width
+}
+
+fn png_height(nodes: &[]DiagramNode, ports: &[]DiagramPort) -> int32 {
+  let mut int32 height = PNG_NODE_Y + PNG_NODE_MIN_HEIGHT + 18;
+  let mut int32 idx = 0;
+  while idx < nodes.len() {
+    match nodes[idx] {
+      Some(node) => {
+        height = max(height, png_node_y(node.lane) + png_node_height(node, ports) + 18);
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  max(96, height)
+}
+
+fn png_node_x(index: int32) -> int32 {
+  PNG_MARGIN_X + index * PNG_NODE_STEP_X
+}
+
+fn png_node_x_for(node: DiagramNode, index: int32) -> int32 {
+  PNG_MARGIN_X + node_column(node, index) * PNG_NODE_STEP_X
+}
+
+fn png_node_height(node: DiagramNode, ports: &[]DiagramPort) -> int32 {
+  let int32 rows = max(count_ports(ports, node.id, "in"), count_ports(ports, node.id, "out"));
+  max(PNG_NODE_MIN_HEIGHT, 50 + max(1, rows) * PNG_PORT_ROW_HEIGHT)
+}
+
+fn node_index(nodes: &[]DiagramNode, id: string) -> int32 {
+  let mut int32 idx = 0;
+  while idx < nodes.len() {
+    match nodes[idx] {
+      Some(node) => {
+        if node.id == id {
+          return idx;
+        }
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  -1
+}
+
+fn node_header_fill(kind: string) -> string {
+  if kind == "event" || kind == "source" {
+    "#0f8b5f"
+  } else if kind == "function" || kind == "runtime" {
+    "#1f6feb"
+  } else if kind == "async" {
+    "#7c3aed"
+  } else if kind == "output" {
+    "#b7791f"
+  } else {
+    "#244a73"
+  }
+}
+
+fn wire_color(label: string) -> string {
+  if label == "exec" || label == "flow" {
+    "#f8fafc"
+  } else if label == "async" {
+    "#c084fc"
+  } else if label == "error" {
+    "#fb7185"
+  } else {
+    "#38bdf8"
+  }
+}
+
+fn port_color(kind: string) -> string {
+  if kind == "exec" || kind == "flow" {
+    "#f8fafc"
+  } else if kind == "bool" {
+    "#f87171"
+  } else if kind == "data" || kind == "string" {
+    "#38bdf8"
+  } else if kind == "object" {
+    "#34d399"
+  } else {
+    "#93c5fd"
+  }
+}
+
+fn render_node_ports(ports: &[]DiagramPort, node: DiagramNode, x: int32, y: int32) -> string {
+  let mut string svg = "";
+  let mut int32 input_count = 0;
+  let mut int32 output_count = 0;
+  let mut int32 idx = 0;
+  while idx < ports.len() {
+    match ports[idx] {
+      Some(port) => {
+        if port.node_id == node.id && is_input_direction(port.direction) {
+          let int32 py = y + 74 + input_count * PORT_ROW_HEIGHT;
+          let string fill = port_color(port.kind);
+          svg = svg + `<circle cx="{x}" cy="{py}" r="5" fill="{fill}" stroke="#020617" stroke-width="2"/><text x="{x + 13}" y="{py + 4}" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="11" fill="#d8e7f7">{port.name}</text>`;
+          input_count = input_count + 1;
+        } else if port.node_id == node.id && is_output_direction(port.direction) {
+          let int32 py = y + 74 + output_count * PORT_ROW_HEIGHT;
+          let string fill = port_color(port.kind);
+          svg = svg + `<circle cx="{x + NODE_WIDTH}" cy="{py}" r="5" fill="{fill}" stroke="#020617" stroke-width="2"/><text x="{x + NODE_WIDTH - 13}" y="{py + 4}" text-anchor="end" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="11" fill="#d8e7f7">{port.name}</text>`;
+          output_count = output_count + 1;
+        }
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  if input_count == 0 {
+    svg = svg + `<circle cx="{x}" cy="{y + node_height(node, ports) / 2}" r="5" fill="#f8fafc" stroke="#020617" stroke-width="2"/>`;
+  }
+  if output_count == 0 {
+    svg = svg + `<circle cx="{x + NODE_WIDTH}" cy="{y + node_height(node, ports) / 2}" r="5" fill="#38bdf8" stroke="#020617" stroke-width="2"/>`;
+  }
+  svg
+}
+
+fn png_scanlines(diagram: &Diagram, width: int32, height: int32) -> []uint8 {
+  let mut []uint8 bytes = [];
+  let mut int32 y = 0;
+  while y < height {
+    push_byte(bytes, 0);
+
+    let mut int32 x = 0;
+    while x < width {
+      if x % 20 == 0 || y % 20 == 0 {
+        push_byte(bytes, 22);
+        push_byte(bytes, 38);
+        push_byte(bytes, 64);
+      } else {
+        push_byte(bytes, 8);
+        push_byte(bytes, 17);
+        push_byte(bytes, 31);
+      }
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+  draw_text(bytes, width, diagram.title, 12, 14, 2, 230, 241, 255);
+  draw_png_edges(bytes, width, diagram);
+  draw_png_nodes(bytes, width, diagram);
+  bytes
+}
+
+fn draw_png_edges(canvas: []uint8, width: int32, diagram: &Diagram) {
+  let mut int32 idx = 0;
+  while idx < diagram.edges.len() {
+    match diagram.edges[idx] {
+      Some(edge) => {
+        let int32 from_idx = node_index(&diagram.nodes, edge.from_id);
+        let int32 to_idx = node_index(&diagram.nodes, edge.to_id);
+        if from_idx >= 0 && to_idx >= 0 {
+          let DiagramNode from_node = node_at(&diagram.nodes, from_idx);
+          let DiagramNode to_node = node_at(&diagram.nodes, to_idx);
+          let int32 x1 = png_node_x_for(from_node, from_idx) + PNG_NODE_WIDTH;
+          let int32 y1 = png_port_center_y(&diagram.ports, from_node, "out", edge.from_port);
+          let int32 x2 = png_node_x_for(to_node, to_idx);
+          let int32 y2 = png_port_center_y(&diagram.ports, to_node, "in", edge.to_port);
+          let int32 mid = (x1 + x2) / 2;
+          let (wr, wg, wb) = png_wire_rgb(edge.label);
+          draw_line(canvas, width, x1, y1, mid, y1, wr, wg, wb);
+          draw_line(canvas, width, mid, y1, mid, y2, wr, wg, wb);
+          draw_line(canvas, width, mid, y2, x2, y2, wr, wg, wb);
+          if edge.label != "" {
+            let int32 label_y = if y1 < y2 {
+              y1
+            } else {
+              y2
+            };
+            draw_text(canvas, width, edge.label, mid - text_width(edge.label, 1) / 2, label_y - 10, 1, 186, 230, 253);
+          }
+        }
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+}
+
+fn draw_png_nodes(canvas: []uint8, width: int32, diagram: &Diagram) {
+  let mut int32 idx = 0;
+  while idx < diagram.nodes.len() {
+    match diagram.nodes[idx] {
+      Some(node) => {
+        let int32 x0 = png_node_x_for(node, idx);
+        let int32 y0 = png_node_y(node.lane);
+        let int32 h = png_node_height(node, &diagram.ports);
+        let (hr, hg, hb) = png_header_rgb(node.kind);
+        draw_rect(canvas, width, x0 + 3, y0 + 4, PNG_NODE_WIDTH, h, 2, 6, 23);
+        draw_rect(canvas, width, x0, y0, PNG_NODE_WIDTH, h, 16, 26, 46);
+        draw_rect(canvas, width, x0, y0, PNG_NODE_WIDTH, PNG_NODE_HEADER_HEIGHT, hr, hg, hb);
+        draw_border(canvas, width, x0, y0, PNG_NODE_WIDTH, h, 47, 129, 247);
+        draw_text(canvas, width, node.label, x0 + 6, y0 + 7, 1, 248, 251, 255);
+        if node.kind != "" {
+          draw_text(canvas, width, node.kind, x0 + 6, y0 + 31, 1, 147, 197, 253);
+        }
+        if node.detail != "" {
+          draw_text(canvas, width, node.detail, x0 + 6, y0 + h - 12, 1, 196, 217, 242);
+        }
+        draw_png_ports(canvas, width, &diagram.ports, node, x0, y0);
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+}
+
+fn png_node_y(lane: string) -> int32 {
+  if lane == "data" || lane == "middle" || lane == "mid" || lane == "1" {
+    174
+  } else {
+    PNG_NODE_Y
+  }
+}
+
+fn png_port_center_y(ports: &[]DiagramPort, node: DiagramNode, direction: string, name: string) -> int32 {
+  let int32 y = png_node_y(node.lane);
+  let int32 idx = port_index(ports, node.id, direction, name);
+  if idx < 0 {
+    y + png_node_height(node, ports) / 2
+  } else {
+    y + 54 + idx * PNG_PORT_ROW_HEIGHT
+  }
+}
+
+fn draw_png_ports(canvas: []uint8, width: int32, ports: &[]DiagramPort, node: DiagramNode, x: int32, y: int32) {
+  let mut int32 input_count = 0;
+  let mut int32 output_count = 0;
+  let mut int32 idx = 0;
+  while idx < ports.len() {
+    match ports[idx] {
+      Some(port) => {
+        if port.node_id == node.id && is_input_direction(port.direction) {
+          let int32 py = y + 54 + input_count * PNG_PORT_ROW_HEIGHT;
+          let (r, g, b) = png_port_rgb(port.kind);
+          draw_dot(canvas, width, x, py, r, g, b);
+          draw_text(canvas, width, port.name, x + 7, py - 3, 1, 216, 231, 247);
+          input_count = input_count + 1;
+        } else if port.node_id == node.id && is_output_direction(port.direction) {
+          let int32 py = y + 54 + output_count * PNG_PORT_ROW_HEIGHT;
+          let (r, g, b) = png_port_rgb(port.kind);
+          draw_dot(canvas, width, x + PNG_NODE_WIDTH, py, r, g, b);
+          draw_text_right(canvas, width, port.name, x + PNG_NODE_WIDTH - 7, py - 3, 1, 216, 231, 247);
+          output_count = output_count + 1;
+        }
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  if input_count == 0 {
+    draw_dot(canvas, width, x, y + png_node_height(node, ports) / 2, 248, 250, 252);
+  }
+  if output_count == 0 {
+    draw_dot(canvas, width, x + PNG_NODE_WIDTH, y + png_node_height(node, ports) / 2, 56, 189, 248);
+  }
+}
+
+fn png_header_rgb(kind: string) -> (int32, int32, int32) {
+  if kind == "event" || kind == "source" {
+    return 15, 139, 95;
+  } else if kind == "function" || kind == "runtime" {
+    return 31, 111, 235;
+  } else if kind == "async" {
+    return 124, 58, 237;
+  } else if kind == "output" {
+    return 183, 121, 31;
+  }
+  return 36, 74, 115;
+}
+
+fn png_wire_rgb(label: string) -> (int32, int32, int32) {
+  if label == "exec" || label == "flow" {
+    return 248, 250, 252;
+  } else if label == "async" {
+    return 192, 132, 252;
+  } else if label == "error" {
+    return 251, 113, 133;
+  }
+  return 56, 189, 248;
+}
+
+fn png_port_rgb(kind: string) -> (int32, int32, int32) {
+  if kind == "exec" || kind == "flow" {
+    return 248, 250, 252;
+  } else if kind == "bool" {
+    return 248, 113, 113;
+  } else if kind == "data" || kind == "string" {
+    return 56, 189, 248;
+  } else if kind == "object" {
+    return 52, 211, 153;
+  }
+  return 147, 197, 253;
+}
+
+fn set_pixel(canvas: []uint8, width: int32, x: int32, y: int32, r: int32, g: int32, b: int32) {
+  if x < 0 || y < 0 {
+    return;
+  }
+  if x >= width {
+    return;
+  }
+
+  let int32 row = width * 3 + 1;
+  let int32 offset = y * row + 1 + x * 3;
+  if offset + 2 >= canvas.len() {
+    return;
+  }
+  canvas[offset] = cast[uint8](r);
+  canvas[offset + 1] = cast[uint8](g);
+  canvas[offset + 2] = cast[uint8](b);
+}
+
+fn draw_rect(canvas: []uint8, width: int32, x0: int32, y0: int32, w: int32, h: int32, r: int32, g: int32, b: int32) {
+  let mut int32 y = y0;
+  while y < y0 + h {
+    let mut int32 x = x0;
+    while x < x0 + w {
+      set_pixel(canvas, width, x, y, r, g, b);
+      x = x + 1;
+    }
+    y = y + 1;
+  }
+}
+
+fn draw_border(canvas: []uint8, width: int32, x: int32, y: int32, w: int32, h: int32, r: int32, g: int32, b: int32) {
+  draw_rect(canvas, width, x, y, w, 2, r, g, b);
+  draw_rect(canvas, width, x, y + h - 2, w, 2, r, g, b);
+  draw_rect(canvas, width, x, y, 2, h, r, g, b);
+  draw_rect(canvas, width, x + w - 2, y, 2, h, r, g, b);
+}
+
+fn draw_dot(canvas: []uint8, width: int32, x: int32, y: int32, r: int32, g: int32, b: int32) {
+  draw_rect(canvas, width, x - 2, y - 2, 5, 5, r, g, b);
+}
+
+fn draw_line(canvas: []uint8, width: int32, x1: int32, y1: int32, x2: int32, y2: int32, r: int32, g: int32, b: int32) {
+  let int32 steps = max(1, max(abs(x2 - x1), abs(y2 - y1)));
+  let mut int32 i = 0;
+  while i <= steps {
+    let int32 x = x1 + (x2 - x1) * i / steps;
+    let int32 y = y1 + (y2 - y1) * i / steps;
+    draw_dot(canvas, width, x, y, r, g, b);
+    i = i + 1;
+  }
+}
+
+fn draw_text(canvas: []uint8, width: int32, text: string, x: int32, y: int32, scale: int32, r: int32, g: int32, b: int32) {
+  let []string chars = text.str_split("");
+  let mut int32 cursor = 0;
+  for ch in chars {
+    if ch != "" {
+      draw_char(canvas, width, ch, x + cursor, y, scale, r, g, b);
+      cursor = cursor + 6 * scale;
+    }
+  }
+}
+
+fn draw_text_right(canvas: []uint8, width: int32, text: string, right_x: int32, y: int32, scale: int32, r: int32, g: int32, b: int32) {
+  draw_text(canvas, width, text, right_x - text_width(text, scale), y, scale, r, g, b)
+}
+
+fn text_width(text: string, scale: int32) -> int32 {
+  let []string chars = text.str_split("");
+  let mut int32 count = 0;
+  for ch in chars {
+    if ch != "" {
+      count = count + 1;
+    }
+  }
+  count * 6 * scale
+}
+
+fn draw_char(canvas: []uint8, width: int32, ch: string, x: int32, y: int32, scale: int32, r: int32, g: int32, b: int32) {
+  let mut int32 row = 0;
+  while row < 7 {
+    let int32 mask = glyph_row(ch, row);
+    let mut int32 col = 0;
+    while col < 5 {
+      let int32 bit = glyph_bit(col);
+      if mask & bit != 0 {
+        draw_rect(canvas, width, x + col * scale, y + row * scale, scale, scale, r, g, b);
+      }
+      col = col + 1;
+    }
+    row = row + 1;
+  }
+}
+
+fn glyph_bit(col: int32) -> int32 {
+  if col == 0 {
+    16
+  } else if col == 1 {
+    8
+  } else if col == 2 {
+    4
+  } else if col == 3 {
+    2
+  } else {
+    1
+  }
+}
+
+fn glyph_pick(row: int32, a: int32, b: int32, c: int32, d: int32, e: int32, f: int32, g: int32) -> int32 {
+  if row == 0 {
+    a
+  } else if row == 1 {
+    b
+  } else if row == 2 {
+    c
+  } else if row == 3 {
+    d
+  } else if row == 4 {
+    e
+  } else if row == 5 {
+    f
+  } else {
+    g
+  }
+}
+
+fn glyph_row(ch: string, row: int32) -> int32 {
+  if ch == "A" || ch == "a" {
+    glyph_pick(row, 14, 17, 17, 31, 17, 17, 17)
+  } else if ch == "B" || ch == "b" {
+    glyph_pick(row, 30, 17, 17, 30, 17, 17, 30)
+  } else if ch == "C" || ch == "c" {
+    glyph_pick(row, 14, 17, 16, 16, 16, 17, 14)
+  } else if ch == "D" || ch == "d" {
+    glyph_pick(row, 30, 17, 17, 17, 17, 17, 30)
+  } else if ch == "E" || ch == "e" {
+    glyph_pick(row, 31, 16, 16, 30, 16, 16, 31)
+  } else if ch == "F" || ch == "f" {
+    glyph_pick(row, 31, 16, 16, 30, 16, 16, 16)
+  } else if ch == "G" || ch == "g" {
+    glyph_pick(row, 14, 17, 16, 23, 17, 17, 15)
+  } else if ch == "H" || ch == "h" {
+    glyph_pick(row, 17, 17, 17, 31, 17, 17, 17)
+  } else if ch == "I" || ch == "i" {
+    glyph_pick(row, 14, 4, 4, 4, 4, 4, 14)
+  } else if ch == "J" || ch == "j" {
+    glyph_pick(row, 1, 1, 1, 1, 17, 17, 14)
+  } else if ch == "K" || ch == "k" {
+    glyph_pick(row, 17, 18, 20, 24, 20, 18, 17)
+  } else if ch == "L" || ch == "l" {
+    glyph_pick(row, 16, 16, 16, 16, 16, 16, 31)
+  } else if ch == "M" || ch == "m" {
+    glyph_pick(row, 17, 27, 21, 21, 17, 17, 17)
+  } else if ch == "N" || ch == "n" {
+    glyph_pick(row, 17, 25, 21, 19, 17, 17, 17)
+  } else if ch == "O" || ch == "o" {
+    glyph_pick(row, 14, 17, 17, 17, 17, 17, 14)
+  } else if ch == "P" || ch == "p" {
+    glyph_pick(row, 30, 17, 17, 30, 16, 16, 16)
+  } else if ch == "Q" || ch == "q" {
+    glyph_pick(row, 14, 17, 17, 17, 21, 18, 13)
+  } else if ch == "R" || ch == "r" {
+    glyph_pick(row, 30, 17, 17, 30, 20, 18, 17)
+  } else if ch == "S" || ch == "s" {
+    glyph_pick(row, 15, 16, 16, 14, 1, 1, 30)
+  } else if ch == "T" || ch == "t" {
+    glyph_pick(row, 31, 4, 4, 4, 4, 4, 4)
+  } else if ch == "U" || ch == "u" {
+    glyph_pick(row, 17, 17, 17, 17, 17, 17, 14)
+  } else if ch == "V" || ch == "v" {
+    glyph_pick(row, 17, 17, 17, 17, 17, 10, 4)
+  } else if ch == "W" || ch == "w" {
+    glyph_pick(row, 17, 17, 17, 21, 21, 21, 10)
+  } else if ch == "X" || ch == "x" {
+    glyph_pick(row, 17, 17, 10, 4, 10, 17, 17)
+  } else if ch == "Y" || ch == "y" {
+    glyph_pick(row, 17, 17, 10, 4, 4, 4, 4)
+  } else if ch == "Z" || ch == "z" {
+    glyph_pick(row, 31, 1, 2, 4, 8, 16, 31)
+  } else if ch == "0" {
+    glyph_pick(row, 14, 17, 19, 21, 25, 17, 14)
+  } else if ch == "1" {
+    glyph_pick(row, 4, 12, 4, 4, 4, 4, 14)
+  } else if ch == "2" {
+    glyph_pick(row, 14, 17, 1, 2, 4, 8, 31)
+  } else if ch == "3" {
+    glyph_pick(row, 30, 1, 1, 14, 1, 1, 30)
+  } else if ch == "4" {
+    glyph_pick(row, 2, 6, 10, 18, 31, 2, 2)
+  } else if ch == "5" {
+    glyph_pick(row, 31, 16, 16, 30, 1, 1, 30)
+  } else if ch == "6" {
+    glyph_pick(row, 14, 16, 16, 30, 17, 17, 14)
+  } else if ch == "7" {
+    glyph_pick(row, 31, 1, 2, 4, 8, 8, 8)
+  } else if ch == "8" {
+    glyph_pick(row, 14, 17, 17, 14, 17, 17, 14)
+  } else if ch == "9" {
+    glyph_pick(row, 14, 17, 17, 15, 1, 1, 14)
+  } else if ch == "-" {
+    glyph_pick(row, 0, 0, 0, 31, 0, 0, 0)
+  } else if ch == "+" {
+    glyph_pick(row, 0, 4, 4, 31, 4, 4, 0)
+  } else if ch == "/" {
+    glyph_pick(row, 1, 1, 2, 4, 8, 16, 16)
+  } else if ch == "." {
+    glyph_pick(row, 0, 0, 0, 0, 0, 12, 12)
+  } else if ch == ":" {
+    glyph_pick(row, 0, 12, 12, 0, 12, 12, 0)
+  } else {
+    0
+  }
+}
+
+fn zlib_uncompressed(data: []uint8) -> []uint8 {
+  let mut []uint8 out = [];
+  push_byte(out, 120);
+  push_byte(out, 1);
+
+  let mut int32 offset = 0;
+  while offset < data.len() {
+    let int32 remaining = data.len() - offset;
+    let int32 block_len = min(remaining, 65535);
+    if offset + block_len >= data.len() {
+      push_byte(out, 1);
+    } else {
+      push_byte(out, 0);
+    }
+    push_u16_le(out, cast[int64](block_len));
+    push_u16_le(out, cast[int64](65535 - block_len));
+
+    let mut int32 idx = 0;
+    while idx < block_len {
+      match data[offset + idx] {
+        Some(byte) => out.push(byte),
+        None => {
+        },
+      }
+      idx = idx + 1;
+    }
+    offset = offset + block_len;
+  }
+  push_u32_be(out, adler32(&data));
+  out
+}
+
+fn append_chunk(out: []uint8, t0: int32, t1: int32, t2: int32, t3: int32, data: &[]uint8) {
+  push_u32_be(out, cast[int64](data.len()));
+  push_byte(out, t0);
+  push_byte(out, t1);
+  push_byte(out, t2);
+  push_byte(out, t3);
+  append_bytes(out, data);
+
+  let mut []uint8 crc_data = [];
+  push_byte(crc_data, t0);
+  push_byte(crc_data, t1);
+  push_byte(crc_data, t2);
+  push_byte(crc_data, t3);
+  append_bytes(crc_data, data);
+  push_u32_be(out, crc32(&crc_data));
+}
+
+fn append_bytes(out: []uint8, data: &[]uint8) {
+  let mut int32 idx = 0;
+  while idx < data.len() {
+    match data[idx] {
+      Some(byte) => out.push(byte),
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+}
+
+fn adler32(data: &[]uint8) -> int64 {
+  let mut int64 a = 1;
+  let mut int64 b = 0;
+  let mut int32 idx = 0;
+  while idx < data.len() {
+    match data[idx] {
+      Some(byte) => {
+        a = (a + cast[int64](byte)) % 65521;
+        b = (b + a) % 65521;
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  b * 65536 + a
+}
+
+fn crc32(data: &[]uint8) -> int64 {
+  let []int64 table = crc_table();
+  let mut int64 crc = 4294967295;
+  let mut int32 idx = 0;
+  while idx < data.len() {
+    match data[idx] {
+      Some(byte) => {
+        let int32 table_idx = cast[int32]((crc ^ cast[int64](byte)) & 255);
+        match table[table_idx] {
+          Some(entry) => {
+            crc = crc / 256 ^ entry;
+          },
+          None => {
+          },
+        }
+      },
+      None => {
+      },
+    }
+    idx = idx + 1;
+  }
+  crc ^ 4294967295
+}
+
+fn crc_table() -> []int64 {
+  let mut []int64 table = [];
+  let mut int64 n = 0;
+  while n < 256 {
+    let mut int64 c = n;
+    let mut int32 bit = 0;
+    while bit < 8 {
+      if c & 1 == 1 {
+        c = c / 2 ^ 3988292384;
+      } else {
+        c = c / 2;
+      }
+      bit = bit + 1;
+    }
+    table.push(c);
+    n = n + 1;
+  }
+  table
+}
+
+fn push_u32_be(out: []uint8, value: int64) {
+  push_byte(out, value / 16777216);
+  push_byte(out, value / 65536 % 256);
+  push_byte(out, value / 256 % 256);
+  push_byte(out, value % 256);
+}
+
+fn push_u16_le(out: []uint8, value: int64) {
+  push_byte(out, value % 256);
+  push_byte(out, value / 256 % 256);
+}
+
+fn push_byte(out: []uint8, value: int64) {
+  let mut int64 normalized = value % 256;
+  if normalized < 0 {
+    normalized = normalized + 256;
+  }
+  out.push(cast[uint8](normalized));
+}

@@ -52,10 +52,8 @@ fn argument_index(segment: &str) -> usize {
     for ch in segment.chars() {
         match ch {
             '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
+            ')' | ']' | '}' if depth > 0 => {
+                depth -= 1;
             }
             ',' if depth == 0 => count += 1,
             _ => {}

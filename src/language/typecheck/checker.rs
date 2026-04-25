@@ -2361,7 +2361,7 @@ impl Checker {
         env: &mut FnEnv,
         span: Span,
     ) -> Option<TypeExpr> {
-        let allows_type_args = matches!(name, "channel" | "in" | "recv_task");
+        let allows_type_args = matches!(name, "channel" | "in" | "recv_task" | "cast");
         if !allows_type_args && !type_args.is_empty() {
             self.errors.push(TypeError::new(
                 &module.path,
@@ -3221,6 +3221,27 @@ impl Checker {
                 }
                 self.check_expression(module, &args[0], Some(&string_type()), returns, env);
                 self.check_expression(module, &args[1], Some(&string_type()), returns, env);
+                Some(TypeExpr::Named(
+                    "Result".into(),
+                    vec![TypeExpr::Unit, string_type()],
+                ))
+            }
+            "fs_write_bytes" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`fs_write_bytes` expects 2 arguments (path, contents)",
+                    ));
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![TypeExpr::Unit, string_type()],
+                    ));
+                }
+                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                let bytes_type =
+                    TypeExpr::Slice(Box::new(TypeExpr::Named("uint8".into(), Vec::new())));
+                self.check_expression(module, &args[1], Some(&bytes_type), returns, env);
                 Some(TypeExpr::Named(
                     "Result".into(),
                     vec![TypeExpr::Unit, string_type()],
@@ -4494,6 +4515,7 @@ impl Checker {
                 | "fs_exists"
                 | "fs_read"
                 | "fs_write"
+                | "fs_write_bytes"
                 | "ptr"
                 | "ptr_mut"
                 | "cast"
@@ -4525,6 +4547,7 @@ impl Checker {
                 | "fs_exists"
                 | "fs_read"
                 | "fs_write"
+                | "fs_write_bytes"
         )
     }
 
@@ -5113,7 +5136,39 @@ impl Checker {
     ) -> Option<TypeExpr> {
         let pointer_bits = self.pointer_bits();
         match op {
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
+            BinaryOp::Add => {
+                let string_expected = expected.filter(|ty| is_string_type(ty));
+                let numeric_expected =
+                    expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
+                let left_ty = self.check_expression(
+                    module,
+                    left,
+                    string_expected.or(numeric_expected),
+                    returns,
+                    env,
+                );
+                let string_ty = string_type();
+                let right_expected = if left_ty.as_ref().is_some_and(is_string_type) {
+                    Some(&string_ty)
+                } else {
+                    numeric_expected.or(left_ty.as_ref())
+                };
+                let right_ty = self.check_expression(module, right, right_expected, returns, env);
+                if left_ty.as_ref().is_some_and(is_string_type)
+                    && right_ty.as_ref().is_some_and(is_string_type)
+                {
+                    Some(string_type())
+                } else {
+                    self.resolve_numeric_type(
+                        module,
+                        span,
+                        numeric_expected,
+                        left_ty.as_ref(),
+                        right_ty.as_ref(),
+                    )
+                }
+            }
+            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
                 let numeric_expected =
                     expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
                 let left_ty = self.check_expression(module, left, numeric_expected, returns, env);

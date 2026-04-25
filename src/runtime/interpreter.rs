@@ -457,7 +457,7 @@ impl Interpreter {
             }
             return self.call_in(args, &type_args[0]);
         }
-        let allows_type_args = name == "channel";
+        let allows_type_args = matches!(name, "channel" | "cast");
         if !allows_type_args && !type_args.is_empty() && self.is_builtin_name(name) {
             return Err(RuntimeError::Unsupported {
                 message: format!("`{}` does not accept type arguments", name),
@@ -488,7 +488,7 @@ impl Interpreter {
         self.module_stack.push(info.module.clone());
         let result = (|| {
             self.env.push_scope();
-            for (param, value) in info.def.params.iter().zip(args.into_iter()) {
+            for (param, value) in info.def.params.iter().zip(args) {
                 self.declare_with_drop(
                     &param.name,
                     value,
@@ -567,7 +567,7 @@ impl Interpreter {
         for captured in &closure.captures {
             self.declare_with_drop(&captured.name, captured.value.clone(), captured.mutable)?;
         }
-        for (param, value) in closure.params.iter().zip(args.into_iter()) {
+        for (param, value) in closure.params.iter().zip(args) {
             self.declare_with_drop(&param.name, value, param.mutability == Mutability::Mutable)?;
         }
         let result = match &closure.body {
@@ -1105,6 +1105,7 @@ impl Interpreter {
             "fs_exists" => self.builtin_fs_exists(args),
             "fs_read" => self.builtin_fs_read(args),
             "fs_write" => self.builtin_fs_write(args),
+            "fs_write_bytes" => self.builtin_fs_write_bytes(args),
             "pin_mode" => self.builtin_pin_mode(args),
             "digital_write" => self.builtin_digital_write(args),
             "delay_ms" => self.builtin_delay_ms(args),
@@ -1249,6 +1250,7 @@ impl Interpreter {
                 | "fs_exists"
                 | "fs_read"
                 | "fs_write"
+                | "fs_write_bytes"
                 | "pin_mode"
                 | "digital_write"
         )
@@ -1501,15 +1503,7 @@ impl Interpreter {
     fn expect_string_or_format(name: &str, value: Value) -> RuntimeResult<String> {
         match value {
             Value::String(s) => Ok(s),
-            Value::FormatTemplate(template) => {
-                let mut buf = String::new();
-                for segment in template.segments {
-                    if let FormatRuntimeSegment::Literal(lit) = segment {
-                        buf.push_str(&lit);
-                    }
-                }
-                Ok(buf)
-            }
+            Value::FormatTemplate(template) => Ok(Self::render_format_template_static(template)),
             Value::Reference(reference) => {
                 let cloned = reference.cell.lock().unwrap().clone();
                 Self::expect_string_or_format(name, cloned)
@@ -1517,6 +1511,30 @@ impl Interpreter {
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects string"),
             }),
+        }
+    }
+
+    fn render_format_template_static(template: FormatTemplateValue) -> String {
+        let mut buf = String::new();
+        for segment in template.segments {
+            match segment {
+                FormatRuntimeSegment::Literal(lit) => buf.push_str(&lit),
+                FormatRuntimeSegment::Named(value) => buf.push_str(&value.to_string()),
+                FormatRuntimeSegment::Implicit => buf.push_str("{}"),
+            }
+        }
+        buf
+    }
+
+    fn value_as_string(value: Value) -> Option<String> {
+        match value {
+            Value::String(s) => Some(s),
+            Value::FormatTemplate(template) => Some(Self::render_format_template_static(template)),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.lock().unwrap().clone();
+                Self::value_as_string(cloned)
+            }
+            _ => None,
         }
     }
 
@@ -2199,6 +2217,37 @@ impl Interpreter {
         let path = Self::expect_string_or_format("fs_write", args.remove(0))?;
         let contents = Self::expect_string_or_format("fs_write", args.remove(0))?;
         match platform().fs_write(&path, &contents) {
+            Ok(()) => {
+                let ok = self.instantiate_enum("Result", "Ok", vec![Value::Unit])?;
+                Ok(vec![ok])
+            }
+            Err(err) => {
+                let err_val =
+                    self.instantiate_enum("Result", "Err", vec![Value::String(err.to_string())])?;
+                Ok(vec![err_val])
+            }
+        }
+    }
+
+    fn builtin_fs_write_bytes(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("fs_write_bytes")?;
+        self.expect_arity("fs_write_bytes", &args, 2)?;
+        let path = Self::expect_string_or_format("fs_write_bytes", args.remove(0))?;
+        let contents = Self::expect_slice("fs_write_bytes", args.remove(0))?;
+        let mut bytes = Vec::with_capacity(contents.len());
+        for idx in 0..contents.len() {
+            let Some(value) = contents.get(idx) else {
+                continue;
+            };
+            let byte = Self::expect_int_value("fs_write_bytes", value)?;
+            if !(0..=255).contains(&byte) {
+                return Err(RuntimeError::TypeMismatch {
+                    message: format!("fs_write_bytes expects bytes in range 0..=255, found {byte}"),
+                });
+            }
+            bytes.push(byte as u8);
+        }
+        match platform().fs_write_bytes(&path, &bytes) {
             Ok(()) => {
                 let ok = self.instantiate_enum("Result", "Ok", vec![Value::Unit])?;
                 Ok(vec![ok])
@@ -3638,7 +3687,17 @@ impl Interpreter {
     fn eval_binary(&self, op: BinaryOp, left: Value, right: Value) -> RuntimeResult<Value> {
         use BinaryOp::*;
         match op {
-            Add | Sub | Mul | Div | Rem => Self::eval_numeric(op, left, right),
+            Add => {
+                if let (Some(lhs), Some(rhs)) = (
+                    Self::value_as_string(left.clone()),
+                    Self::value_as_string(right.clone()),
+                ) {
+                    Ok(Value::String(format!("{lhs}{rhs}")))
+                } else {
+                    Self::eval_numeric(op, left, right)
+                }
+            }
+            Sub | Mul | Div | Rem => Self::eval_numeric(op, left, right),
             And => Ok(Value::Bool(left.as_bool() && right.as_bool())),
             Or => Ok(Value::Bool(left.as_bool() || right.as_bool())),
             BitAnd | BitOr | BitXor => self.eval_bitwise(op, left, right),

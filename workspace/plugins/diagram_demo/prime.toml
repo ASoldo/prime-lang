@@ -1,0 +1,14 @@
+manifest_version = "3"
+
+[package]
+name = "prime::diagram_demo"
+version = "0.1.0"
+
+[module]
+name = "prime::diagram_demo"
+path = "main.prime"
+visibility = "pub"
+
+[libraries]
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }
+prime_diagram = { name = "prime::diagram", path = "../diagram/diagram.prime", visibility = "pub" }

@@ -944,8 +944,8 @@ impl Compiler {
                 if !reference.mutable {
                     return Err("Cannot assign through immutable reference".into());
                 }
-                if reference.handle.is_some() {
-                    let mut call_args = [reference.handle.unwrap()];
+                if let Some(reference_handle) = reference.handle {
+                    let mut call_args = [reference_handle];
                     let handle = self.call_runtime(
                         self.runtime_abi.prime_reference_read,
                         self.runtime_abi.prime_reference_read_ty,
@@ -1054,6 +1054,41 @@ impl Compiler {
         let contents = Self::expect_string_value(args.pop().unwrap(), "fs_write")?;
         let path = Self::expect_string_value(args.pop().unwrap(), "fs_write")?;
         match platform().fs_write(&path, &contents) {
+            Ok(()) => self.instantiate_enum_variant("Ok", vec![Value::Unit]),
+            Err(msg) => {
+                let err = self.build_string_constant(msg)?;
+                self.instantiate_enum_variant("Err", vec![err])
+            }
+        }
+    }
+
+    pub(super) fn builtin_fs_write_bytes(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("fs_write_bytes expects 2 arguments".into());
+        }
+        let contents = self.expect_slice_value(args.pop().unwrap(), "fs_write_bytes")?;
+        if contents.handle.is_some() {
+            return Err(
+                "fs_write_bytes cannot inspect captured slice handle in build mode; run it at runtime"
+                    .into(),
+            );
+        }
+        let path = Self::expect_string_value(args.pop().unwrap(), "fs_write_bytes")?;
+        let mut bytes = Vec::with_capacity(contents.len());
+        for idx in 0..contents.len() {
+            let Some(value) = contents.get(idx) else {
+                continue;
+            };
+            let int_value = self.expect_int(value)?;
+            let byte = self.int_constant_or_llvm(&int_value, "fs_write_bytes")?;
+            if !(0..=255).contains(&byte) {
+                return Err(format!(
+                    "fs_write_bytes expects bytes in range 0..=255, found {byte}"
+                ));
+            }
+            bytes.push(byte as u8);
+        }
+        match platform().fs_write_bytes(&path, &bytes) {
             Ok(()) => self.instantiate_enum_variant("Ok", vec![Value::Unit]),
             Err(msg) => {
                 let err = self.build_string_constant(msg)?;

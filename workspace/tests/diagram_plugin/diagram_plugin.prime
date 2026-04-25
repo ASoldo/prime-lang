@@ -1,0 +1,108 @@
+//! Diagram plugin regression tests.
+test tests::diagram_plugin;
+
+import core::types::prelude::{*};
+import prime::diagram::prelude::{*};
+
+fn parses_and_renders_svg() -> bool {
+  let string source = "title=Runtime\nnode=a|Load|source\nnode=b|Render|runtime\nedge=a|b|data";
+  match parse_diagram(source) {
+    Result::Ok(diagram) => {
+      let string svg = render_svg(&diagram);
+      svg.str_contains("<svg") && svg.str_contains("Load") && svg.str_contains("Render")
+    },
+    Result::Err(_) => false,
+  }
+}
+
+fn renders_png_signature() -> bool {
+  let string source = "title=Runtime\nnode=a|Load|source\nnode=b|Render|runtime\nedge=a|b|data";
+  match parse_diagram(source) {
+    Result::Ok(diagram) => {
+      let []uint8 png = render_png(&diagram);
+      if png.len() < 8 {
+        return false;
+      }
+      match png[0] {
+        Some(a) => {
+          match png[1] {
+            Some(b) => {
+              match png[2] {
+                Some(c) => {
+                  match png[3] {
+                    Some(d) => a == 137 && b == 80 && c == 78 && d == 71,
+                    None => false,
+                  }
+                },
+                None => false,
+              }
+            },
+            None => false,
+          }
+        },
+        None => false,
+      }
+    },
+    Result::Err(_) => false,
+  }
+}
+
+fn writes_runtime_files() -> bool {
+  let string source = "title=Runtime\nnode=a|Load|source\nnode=b|Render|runtime\nedge=a|b|data";
+  match parse_diagram(source) {
+    Result::Ok(diagram) => {
+      let string svg = "workspace/tests/diagram_plugin/tmp_diagram.svg";
+      let string png = "workspace/tests/diagram_plugin/tmp_diagram.png";
+      match write_svg(&diagram, svg) {
+        Result::Ok(_) => {
+        },
+        Result::Err(_) => {
+          return false;
+        },
+      }
+      match write_png(&diagram, png) {
+        Result::Ok(_) => fs_exists(svg) && fs_exists(png),
+        Result::Err(_) => false,
+      }
+    },
+    Result::Err(_) => false,
+  }
+}
+
+fn rejects_unknown_edge_node() -> bool {
+  let string source = "title=Runtime\nnode=a|Load|source\nedge=a|missing|data";
+  match parse_diagram(source) {
+    Result::Ok(_) => false,
+    Result::Err(msg) => msg.str_contains("unknown target node"),
+  }
+}
+
+fn rejects_unknown_named_port() -> bool {
+  let string source = "title=Runtime\nnode=a|Load|source\nport=a|out|payload|data\nnode=b|Render|runtime\nedge=a|b|data|payload|payload";
+  match parse_diagram(source) {
+    Result::Ok(_) => false,
+    Result::Err(msg) => msg.str_contains("unknown input port"),
+  }
+}
+
+fn summarizes_port_graph() -> bool {
+  let string source = "title=Runtime\nnode=a|Load|source\nport=a|out|payload|data\nnode=b|Render|runtime\nport=b|in|payload|data\nedge=a|b|data|payload|payload";
+  match parse_diagram(source) {
+    Result::Ok(diagram) => {
+      let string summary = diagram_summary(&diagram);
+      summary.str_contains("2 nodes") && summary.str_contains("1 edges") && summary.str_contains("2 ports")
+    },
+    Result::Err(_) => false,
+  }
+}
+
+fn renders_explicit_columns() -> bool {
+  let string source = "title=Runtime\nnode=a|Load|source|flow|start|0\nnode=b|Render|runtime|flow|end|3\nedge=a|b|data";
+  match parse_diagram(source) {
+    Result::Ok(diagram) => {
+      let string svg = render_svg(&diagram);
+      svg.str_contains("width=\"976\"")
+    },
+    Result::Err(_) => false,
+  }
+}

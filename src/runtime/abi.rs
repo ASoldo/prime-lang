@@ -2829,13 +2829,8 @@ mod host {
         let data = &*(handle.0 as *const HostHandle);
         match data.value {
             HostValue::Int(i) => i,
-            HostValue::Bool(b) => {
-                if b {
-                    1
-                } else {
-                    0
-                }
-            }
+            HostValue::Bool(true) => 1,
+            HostValue::Bool(false) => 0,
             _ => 0,
         }
     }

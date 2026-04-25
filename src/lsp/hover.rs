@@ -511,6 +511,31 @@ fn builtin_function_docs(name: &str) -> Option<String> {
                 "fn await_cancel_timeout[T](task: Task[T], token: CancelToken, millis: int64) -> Result[T, string]"
             )
         )),
+        "fs_exists" => Some(format!(
+            "Built-in file helper\n{}",
+            code_block("prime", "fn fs_exists(path: string) -> bool")
+        )),
+        "fs_read" => Some(format!(
+            "Built-in file helper\n{}",
+            code_block(
+                "prime",
+                "fn fs_read(path: string) -> Result[string, string]"
+            )
+        )),
+        "fs_write" => Some(format!(
+            "Built-in file helper\n{}",
+            code_block(
+                "prime",
+                "fn fs_write(path: string, contents: string) -> Result[(), string]"
+            )
+        )),
+        "fs_write_bytes" => Some(format!(
+            "Built-in binary file helper\n{}",
+            code_block(
+                "prime",
+                "fn fs_write_bytes(path: string, contents: []uint8) -> Result[(), string]"
+            )
+        )),
         "ptr" => Some(format!(
             "Built-in pointer helper\n{}\nCreates a raw pointer from an existing reference without changing ownership.",
             code_block("prime", "fn ptr[T](value: &T) -> *T")
