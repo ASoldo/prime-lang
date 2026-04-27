@@ -342,13 +342,7 @@ impl Compiler {
             } else {
                 self.int_to_usize(&int_value, "slice_get_index")?
             };
-            let slot = unsafe {
-                LLVMBuildAlloca(
-                    self.builder,
-                    self.runtime_abi.handle_type,
-                    CString::new("slice_get_out").unwrap().as_ptr(),
-                )
-            };
+            let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "slice_get_out");
             unsafe {
                 LLVMBuildStore(self.builder, self.null_handle_ptr(), slot);
             }
@@ -422,13 +416,7 @@ impl Compiler {
             } else {
                 self.int_to_usize(&int_value, "slice_get_int_index")?
             };
-            let slot = unsafe {
-                LLVMBuildAlloca(
-                    self.builder,
-                    self.runtime_abi.handle_type,
-                    CString::new("slice_get_int_out").unwrap().as_ptr(),
-                )
-            };
+            let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "slice_get_int_out");
             unsafe {
                 LLVMBuildStore(self.builder, self.null_handle_ptr(), slot);
             }
@@ -454,6 +442,7 @@ impl Compiler {
                 &mut as_int_args,
                 "slice_get_int_value",
             );
+            self.runtime_release(loaded);
             let fallback_ty = unsafe { LLVMTypeOf(fallback.llvm()) };
             let loaded_cast = unsafe {
                 LLVMBuildIntCast(
@@ -520,13 +509,7 @@ impl Compiler {
             } else {
                 self.int_to_usize(&int_value, "slice_remove_index")?
             };
-            let slot = unsafe {
-                LLVMBuildAlloca(
-                    self.builder,
-                    self.runtime_abi.handle_type,
-                    CString::new("slice_remove_out").unwrap().as_ptr(),
-                )
-            };
+            let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "slice_remove_out");
             let mut call_args = [handle, idx_arg, slot];
             self.call_runtime(
                 self.runtime_abi.prime_slice_remove_handle,
@@ -626,13 +609,7 @@ impl Compiler {
         let map = self.expect_map_value(args.pop().unwrap(), "map_get")?;
         if let Some(handle) = map.handle {
             let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_get_key")?;
-            let slot = unsafe {
-                LLVMBuildAlloca(
-                    self.builder,
-                    self.runtime_abi.handle_type,
-                    CString::new("map_get_out").unwrap().as_ptr(),
-                )
-            };
+            let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "map_get_out");
             let mut call_args = [handle, key_ptr, key_len, slot];
             self.call_runtime(
                 self.runtime_abi.prime_map_get_handle,
@@ -716,13 +693,7 @@ impl Compiler {
         let map = self.expect_map_value(args.pop().unwrap(), "remove")?;
         if let Some(handle) = map.handle {
             let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_remove_key")?;
-            let slot = unsafe {
-                LLVMBuildAlloca(
-                    self.builder,
-                    self.runtime_abi.handle_type,
-                    CString::new("map_remove_out").unwrap().as_ptr(),
-                )
-            };
+            let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "map_remove_out");
             let mut call_args = [handle, key_ptr, key_len, slot];
             self.call_runtime(
                 self.runtime_abi.prime_map_remove_handle,
@@ -919,13 +890,8 @@ impl Compiler {
                     } else {
                         self.int_to_usize(&int_value, "get_index")?
                     };
-                    let slot = unsafe {
-                        LLVMBuildAlloca(
-                            self.builder,
-                            self.runtime_abi.handle_type,
-                            CString::new("slice_get_out").unwrap().as_ptr(),
-                        )
-                    };
+                    let slot =
+                        self.build_entry_alloca(self.runtime_abi.handle_type, "slice_get_out");
                     let mut call_args = [handle, idx_arg, slot];
                     self.call_runtime(
                         self.runtime_abi.prime_slice_get_handle,
@@ -966,13 +932,7 @@ impl Compiler {
                 let key = Self::expect_string_value(args.remove(0), "get")?;
                 if let Some(handle) = map.handle {
                     let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_get_key")?;
-                    let slot = unsafe {
-                        LLVMBuildAlloca(
-                            self.builder,
-                            self.runtime_abi.handle_type,
-                            CString::new("map_get_out").unwrap().as_ptr(),
-                        )
-                    };
+                    let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "map_get_out");
                     let mut call_args = [handle, key_ptr, key_len, slot];
                     self.call_runtime(
                         self.runtime_abi.prime_map_get_handle,
@@ -2054,13 +2014,7 @@ impl Compiler {
         let receiver = self.expect_receiver(args.pop().unwrap(), "recv")?;
         if let Some(handle) = receiver.handle {
             self.ensure_runtime_symbols();
-            let slot = unsafe {
-                LLVMBuildAlloca(
-                    self.builder,
-                    self.runtime_abi.handle_type,
-                    CString::new("recv_out").unwrap().as_ptr(),
-                )
-            };
+            let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "recv_out");
             let mut call_args = [handle, slot];
             let status = self.call_runtime(
                 self.runtime_abi.prime_recv,
@@ -2097,13 +2051,7 @@ impl Compiler {
                     CString::new("recv_merge").unwrap().as_ptr(),
                 )
             };
-            let option_slot = unsafe {
-                LLVMBuildAlloca(
-                    self.builder,
-                    self.runtime_abi.handle_type,
-                    CString::new("recv_option").unwrap().as_ptr(),
-                )
-            };
+            let option_slot = self.build_entry_alloca(self.runtime_abi.handle_type, "recv_option");
             let ok_const =
                 unsafe { LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0) };
             let closed_const = unsafe {
@@ -2129,6 +2077,7 @@ impl Compiler {
                     0,
                 )
             };
+            let payload_ptr = self.build_entry_alloca(self.runtime_abi.handle_type, "recv_payload");
             unsafe {
                 let switch = LLVMBuildSwitch(self.builder, status, other_block, 2);
                 LLVMAddCase(switch, ok_const, ok_block);
@@ -2140,11 +2089,6 @@ impl Compiler {
                     self.runtime_abi.handle_type,
                     slot,
                     CString::new("recv_loaded").unwrap().as_ptr(),
-                );
-                let payload_ptr = LLVMBuildAlloca(
-                    self.builder,
-                    self.runtime_abi.handle_type,
-                    CString::new("recv_payload").unwrap().as_ptr(),
                 );
                 LLVMBuildStore(self.builder, loaded, payload_ptr);
                 let mut ok_args = [
@@ -2228,13 +2172,7 @@ impl Compiler {
             } else {
                 self.int_to_runtime_int(&millis, "recv_timeout_millis")?
             };
-            let slot = unsafe {
-                LLVMBuildAlloca(
-                    self.builder,
-                    self.runtime_abi.handle_type,
-                    CString::new("recv_timeout_out").unwrap().as_ptr(),
-                )
-            };
+            let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "recv_timeout_out");
             let mut call_args = [handle, duration, slot];
             let status = self.call_runtime(
                 self.runtime_abi.prime_recv_timeout,

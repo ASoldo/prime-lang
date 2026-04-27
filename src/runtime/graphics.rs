@@ -1,12 +1,17 @@
 use image::ImageReader;
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
+use std::sync::{Mutex, MutexGuard};
 
-thread_local! {
-    static RUNTIME: RefCell<Option<GraphicsRuntime>> = const { RefCell::new(None) };
-}
+struct RuntimeSlot(Mutex<Option<GraphicsRuntime>>);
+
+// Prime native programs call the graphics ABI from the generated main thread.
+// The mutex serializes accidental re-entry without relying on Rust TLS setup in
+// binaries whose entrypoint is generated outside Rust.
+unsafe impl Sync for RuntimeSlot {}
+
+static RUNTIME: RuntimeSlot = RuntimeSlot(Mutex::new(None));
 
 #[derive(Clone)]
 struct Sprite {
@@ -83,9 +88,7 @@ pub(crate) fn open(title: &str, width: i32, height: i32) -> Result<(), String> {
         .map_err(|err| format!("failed to open graphics window: {err}"))?;
         GraphicsRuntime::Window(Box::new(WindowRuntime { window, buffer }))
     };
-    RUNTIME.with(|runtime_cell| {
-        runtime_cell.replace(Some(runtime));
-    });
+    *runtime_slot()? = Some(runtime);
     Ok(())
 }
 
@@ -137,26 +140,24 @@ pub(crate) fn text(
 }
 
 pub(crate) fn present() -> Result<bool, String> {
-    RUNTIME.with(|runtime_cell| {
-        let mut borrowed = runtime_cell.borrow_mut();
-        let runtime = borrowed
-            .as_mut()
-            .ok_or_else(|| "graphics window is not open".to_string())?;
-        match runtime {
-            GraphicsRuntime::Window(runtime) => {
-                runtime
-                    .window
-                    .update_with_buffer(
-                        &runtime.buffer.buffer,
-                        runtime.buffer.width,
-                        runtime.buffer.height,
-                    )
-                    .map_err(|err| format!("failed to present graphics frame: {err}"))?;
-                Ok(runtime.window.is_open() && runtime.buffer.next_frame_allows_continue())
-            }
-            GraphicsRuntime::Headless(runtime) => Ok(runtime.next_frame_allows_continue()),
+    let mut slot = runtime_slot()?;
+    let runtime = slot
+        .as_mut()
+        .ok_or_else(|| "graphics window is not open".to_string())?;
+    match runtime {
+        GraphicsRuntime::Window(runtime) => {
+            runtime
+                .window
+                .update_with_buffer(
+                    &runtime.buffer.buffer,
+                    runtime.buffer.width,
+                    runtime.buffer.height,
+                )
+                .map_err(|err| format!("failed to present graphics frame: {err}"))?;
+            Ok(runtime.window.is_open() && runtime.buffer.next_frame_allows_continue())
         }
-    })
+        GraphicsRuntime::Headless(runtime) => Ok(runtime.next_frame_allows_continue()),
+    }
 }
 
 pub(crate) fn key_down(name: &str) -> Result<bool, String> {
@@ -170,17 +171,20 @@ pub(crate) fn key_pressed(name: &str) -> Result<bool, String> {
 }
 
 pub(crate) fn should_close() -> bool {
-    RUNTIME.with(|runtime_cell| match runtime_cell.borrow().as_ref() {
+    let Ok(slot) = runtime_slot() else {
+        return true;
+    };
+    match slot.as_ref() {
         Some(GraphicsRuntime::Window(runtime)) => !runtime.window.is_open(),
         Some(GraphicsRuntime::Headless(_)) => false,
         None => true,
-    })
+    }
 }
 
 pub(crate) fn close() {
-    RUNTIME.with(|runtime_cell| {
-        runtime_cell.replace(None);
-    });
+    if let Ok(mut slot) = runtime_slot() {
+        *slot = None;
+    }
 }
 
 fn checked_dimension(value: i32, label: &str) -> Result<usize, String> {
@@ -212,30 +216,33 @@ fn max_frames() -> Option<usize> {
 }
 
 fn with_buffer<T>(op: impl FnOnce(&mut BufferRuntime) -> Result<T, String>) -> Result<T, String> {
-    RUNTIME.with(|runtime_cell| {
-        let mut borrowed = runtime_cell.borrow_mut();
-        let runtime = borrowed
-            .as_mut()
-            .ok_or_else(|| "graphics window is not open".to_string())?;
-        match runtime {
-            GraphicsRuntime::Window(runtime) => op(&mut runtime.buffer),
-            GraphicsRuntime::Headless(runtime) => op(runtime),
-        }
-    })
+    let mut slot = runtime_slot()?;
+    let runtime = slot
+        .as_mut()
+        .ok_or_else(|| "graphics window is not open".to_string())?;
+    match runtime {
+        GraphicsRuntime::Window(runtime) => op(&mut runtime.buffer),
+        GraphicsRuntime::Headless(runtime) => op(runtime),
+    }
 }
 
 fn with_window(name: &str, op: impl FnOnce(&Window, Key) -> bool) -> Result<bool, String> {
     let Some(key) = key_from_name(name) else {
         return Err(format!("unknown graphics key `{name}`"));
     };
-    RUNTIME.with(|runtime_cell| {
-        let borrowed = runtime_cell.borrow();
-        match borrowed.as_ref() {
-            Some(GraphicsRuntime::Window(runtime)) => Ok(op(&runtime.window, key)),
-            Some(GraphicsRuntime::Headless(_)) => Ok(false),
-            None => Err("graphics window is not open".to_string()),
-        }
-    })
+    let slot = runtime_slot()?;
+    match slot.as_ref() {
+        Some(GraphicsRuntime::Window(runtime)) => Ok(op(&runtime.window, key)),
+        Some(GraphicsRuntime::Headless(_)) => Ok(false),
+        None => Err("graphics window is not open".to_string()),
+    }
+}
+
+fn runtime_slot() -> Result<MutexGuard<'static, Option<GraphicsRuntime>>, String> {
+    RUNTIME
+        .0
+        .lock()
+        .map_err(|_| "graphics runtime lock is poisoned".to_string())
 }
 
 fn load_sprite(cache: &mut HashMap<String, Sprite>, path: &str) -> Result<Sprite, String> {

@@ -2388,8 +2388,8 @@ mod host {
         Bool(bool),
         Str(String),
         Enum { tag: u32, values: Vec<HostValue> },
-        Slice(Vec<PrimeHandle>),
-        Map(BTreeMap<String, PrimeHandle>),
+        Slice(Arc<Mutex<Vec<PrimeHandle>>>),
+        Map(Arc<Mutex<BTreeMap<String, PrimeHandle>>>),
         Sender(mpsc::Sender<PrimeHandle>),
         Receiver(Arc<Mutex<mpsc::Receiver<PrimeHandle>>>),
         Task(Arc<HostTaskState>),
@@ -2416,7 +2416,40 @@ mod host {
     }
 
     fn to_handle(data: HostHandle) -> PrimeHandle {
-        PrimeHandle(Box::into_raw(Box::new(data)) as *mut c_void)
+        PrimeHandle(Arc::into_raw(Arc::new(data)) as *mut c_void)
+    }
+
+    impl Drop for HostHandle {
+        fn drop(&mut self) {
+            unsafe {
+                release_host_value(&mut self.value);
+            }
+        }
+    }
+
+    unsafe fn release_host_value(value: &mut HostValue) {
+        match value {
+            HostValue::Slice(items) if Arc::strong_count(items) == 1 => {
+                if let Ok(mut items) = items.lock() {
+                    for handle in items.drain(..) {
+                        prime_value_release(handle);
+                    }
+                }
+            }
+            HostValue::Map(entries) if Arc::strong_count(entries) == 1 => {
+                if let Ok(mut entries) = entries.lock() {
+                    for (_, handle) in std::mem::take(&mut *entries) {
+                        prime_value_release(handle);
+                    }
+                }
+            }
+            HostValue::Enum { values, .. } => {
+                for value in values {
+                    release_host_value(value);
+                }
+            }
+            _ => {}
+        }
     }
 
     unsafe fn clone_value(handle: PrimeHandle) -> HostValue {
@@ -2540,7 +2573,9 @@ mod host {
 
     #[unsafe(export_name = "prime_slice_new")]
     pub unsafe extern "C" fn prime_slice_new() -> PrimeHandle {
-        to_handle(HostHandle::new(HostValue::Slice(Vec::new())))
+        to_handle(HostHandle::new(HostValue::Slice(Arc::new(Mutex::new(
+            Vec::new(),
+        )))))
     }
 
     #[unsafe(export_name = "prime_slice_push_handle")]
@@ -2551,8 +2586,11 @@ mod host {
         if slice.0.is_null() {
             return PrimeStatus::Invalid;
         }
-        let data = &mut *(slice.0 as *mut HostHandle);
-        if let HostValue::Slice(items) = &mut data.value {
+        let data = &*(slice.0 as *const HostHandle);
+        if let HostValue::Slice(items) = &data.value {
+            let Ok(mut items) = items.lock() else {
+                return PrimeStatus::Invalid;
+            };
             items.push(prime_value_retain(value));
             return PrimeStatus::Ok;
         }
@@ -2574,6 +2612,9 @@ mod host {
         }
         let data = &*(slice.0 as *const HostHandle);
         if let HostValue::Slice(items) = &data.value {
+            let Ok(items) = items.lock() else {
+                return 0;
+            };
             return items.len();
         }
         0
@@ -2590,6 +2631,9 @@ mod host {
         }
         let data = &*(slice.0 as *const HostHandle);
         if let HostValue::Slice(items) = &data.value {
+            let Ok(items) = items.lock() else {
+                return PrimeStatus::Invalid;
+            };
             if let Some(handle) = items.get(idx) {
                 value_out.write(prime_value_retain(*handle));
                 return PrimeStatus::Ok;
@@ -2608,8 +2652,11 @@ mod host {
         if slice.0.is_null() {
             return PrimeStatus::Invalid;
         }
-        let data = &mut *(slice.0 as *mut HostHandle);
-        if let HostValue::Slice(items) = &mut data.value {
+        let data = &*(slice.0 as *const HostHandle);
+        if let HostValue::Slice(items) = &data.value {
+            let Ok(mut items) = items.lock() else {
+                return PrimeStatus::Invalid;
+            };
             if idx < items.len() {
                 let replacement = prime_value_retain(value);
                 let old = std::mem::replace(&mut items[idx], replacement);
@@ -2630,8 +2677,11 @@ mod host {
         if slice.0.is_null() || value_out.is_null() {
             return PrimeStatus::Invalid;
         }
-        let data = &mut *(slice.0 as *mut HostHandle);
-        if let HostValue::Slice(items) = &mut data.value {
+        let data = &*(slice.0 as *const HostHandle);
+        if let HostValue::Slice(items) = &data.value {
+            let Ok(mut items) = items.lock() else {
+                return PrimeStatus::Invalid;
+            };
             if idx < items.len() {
                 let removed = items.remove(idx);
                 value_out.write(removed);
@@ -2644,7 +2694,9 @@ mod host {
 
     #[unsafe(export_name = "prime_map_new")]
     pub unsafe extern "C" fn prime_map_new() -> PrimeHandle {
-        to_handle(HostHandle::new(HostValue::Map(BTreeMap::new())))
+        to_handle(HostHandle::new(HostValue::Map(Arc::new(Mutex::new(
+            BTreeMap::new(),
+        )))))
     }
 
     #[unsafe(export_name = "prime_map_len_handle")]
@@ -2654,6 +2706,9 @@ mod host {
         }
         let data = &*(map.0 as *const HostHandle);
         if let HostValue::Map(entries) = &data.value {
+            let Ok(entries) = entries.lock() else {
+                return 0;
+            };
             return entries.len();
         }
         0
@@ -2669,12 +2724,17 @@ mod host {
         if map.0.is_null() || key_ptr.is_null() {
             return PrimeStatus::Invalid;
         }
-        let data = &mut *(map.0 as *mut HostHandle);
-        if let HostValue::Map(entries) = &mut data.value {
+        let data = &*(map.0 as *const HostHandle);
+        if let HostValue::Map(entries) = &data.value {
+            let Ok(mut entries) = entries.lock() else {
+                return PrimeStatus::Invalid;
+            };
             let key = std::str::from_utf8(slice::from_raw_parts(key_ptr, key_len))
                 .unwrap_or_default()
                 .to_string();
-            entries.insert(key, prime_value_retain(value));
+            if let Some(old) = entries.insert(key, prime_value_retain(value)) {
+                prime_value_release(old);
+            }
             return PrimeStatus::Ok;
         }
         PrimeStatus::Invalid
@@ -2702,6 +2762,9 @@ mod host {
         }
         let data = &*(map.0 as *const HostHandle);
         if let HostValue::Map(entries) = &data.value {
+            let Ok(entries) = entries.lock() else {
+                return PrimeStatus::Invalid;
+            };
             let key =
                 std::str::from_utf8(slice::from_raw_parts(key_ptr, key_len)).unwrap_or_default();
             if let Some(val) = entries.get(key) {
@@ -2733,8 +2796,11 @@ mod host {
         if map.0.is_null() || key_ptr.is_null() || value_out.is_null() {
             return PrimeStatus::Invalid;
         }
-        let data = &mut *(map.0 as *mut HostHandle);
-        if let HostValue::Map(entries) = &mut data.value {
+        let data = &*(map.0 as *const HostHandle);
+        if let HostValue::Map(entries) = &data.value {
+            let Ok(mut entries) = entries.lock() else {
+                return PrimeStatus::Invalid;
+            };
             let key = std::str::from_utf8(slice::from_raw_parts(key_ptr, key_len))
                 .unwrap_or_default()
                 .to_string();
@@ -2769,6 +2835,9 @@ mod host {
         }
         let data = &*(map.0 as *const HostHandle);
         let HostValue::Map(entries) = &data.value else {
+            return PrimeStatus::Invalid;
+        };
+        let Ok(entries) = entries.lock() else {
             return PrimeStatus::Invalid;
         };
         if let Some((k, v)) = entries.iter().nth(idx) {
@@ -2866,7 +2935,7 @@ mod host {
             return PrimeTag::Unit;
         }
         let data = &*(handle.0 as *const HostHandle);
-        match data.value {
+        match &data.value {
             HostValue::Unit => PrimeTag::Unit,
             HostValue::Int(_) => PrimeTag::Int,
             HostValue::Float(_) => PrimeTag::Float,
@@ -2888,8 +2957,8 @@ mod host {
             return 0;
         }
         let data = &*(handle.0 as *const HostHandle);
-        match data.value {
-            HostValue::Int(i) => i,
+        match &data.value {
+            HostValue::Int(i) => *i,
             HostValue::Bool(true) => 1,
             HostValue::Bool(false) => 0,
             _ => 0,
@@ -2902,9 +2971,9 @@ mod host {
             return false;
         }
         let data = &*(handle.0 as *const HostHandle);
-        match data.value {
-            HostValue::Bool(b) => b,
-            HostValue::Int(i) => i != 0,
+        match &data.value {
+            HostValue::Bool(b) => *b,
+            HostValue::Int(i) => *i != 0,
             _ => false,
         }
     }
@@ -2915,9 +2984,9 @@ mod host {
             return 0.0;
         }
         let data = &*(handle.0 as *const HostHandle);
-        match data.value {
-            HostValue::Float(f) => f,
-            HostValue::Int(i) => i as f64,
+        match &data.value {
+            HostValue::Float(f) => *f,
+            HostValue::Int(i) => *i as f64,
             _ => 0.0,
         }
     }
@@ -2932,7 +3001,7 @@ mod host {
             return PrimeStatus::Invalid;
         }
         let data = &*(handle.0 as *const HostHandle);
-        let HostValue::Str(ref s) = data.value else {
+        let HostValue::Str(s) = &data.value else {
             return PrimeStatus::Invalid;
         };
         ptr_out.write(s.as_bytes().as_ptr());
@@ -2967,8 +3036,10 @@ mod host {
         if value.0.is_null() {
             return PrimeHandle::null();
         }
-        let data = &*(value.0 as *const HostHandle);
-        to_handle(data.clone())
+        let handle = Arc::from_raw(value.0 as *const HostHandle);
+        let retained = handle.clone();
+        let _ = Arc::into_raw(handle);
+        PrimeHandle(Arc::into_raw(retained) as *mut c_void)
     }
 
     #[unsafe(export_name = "prime_value_release")]
@@ -2976,7 +3047,7 @@ mod host {
         if value.0.is_null() {
             return;
         }
-        let _ = Box::from_raw(value.0 as *mut HostHandle);
+        drop(Arc::from_raw(value.0 as *const HostHandle));
     }
 
     #[unsafe(export_name = "prime_unit_new")]

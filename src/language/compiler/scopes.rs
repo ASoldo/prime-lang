@@ -393,27 +393,23 @@ impl Compiler {
         let mut slot = None;
         if mutable {
             match value.value().clone() {
-                Value::Int(int_val) => unsafe {
-                    let ty = LLVMTypeOf(int_val.llvm());
-                    let alloca = LLVMBuildAlloca(
-                        self.builder,
-                        ty,
-                        CString::new(format!("{name}_slot")).unwrap().as_ptr(),
-                    );
-                    LLVMBuildStore(self.builder, int_val.llvm(), alloca);
+                Value::Int(int_val) => {
+                    let ty = unsafe { LLVMTypeOf(int_val.llvm()) };
+                    let alloca = self.build_entry_alloca(ty, &format!("{name}_slot"));
+                    unsafe {
+                        LLVMBuildStore(self.builder, int_val.llvm(), alloca);
+                    }
                     slot = Some(alloca);
-                },
-                Value::Bool(flag) => unsafe {
-                    let ty = LLVMTypeOf(flag.llvm());
-                    let alloca = LLVMBuildAlloca(
-                        self.builder,
-                        ty,
-                        CString::new(format!("{name}_slot")).unwrap().as_ptr(),
-                    );
+                }
+                Value::Bool(flag) => {
+                    let ty = unsafe { LLVMTypeOf(flag.llvm()) };
+                    let alloca = self.build_entry_alloca(ty, &format!("{name}_slot"));
                     let stored = self.bool_llvm_value(&flag);
-                    LLVMBuildStore(self.builder, stored, alloca);
+                    unsafe {
+                        LLVMBuildStore(self.builder, stored, alloca);
+                    }
                     slot = Some(alloca);
-                },
+                }
                 _ => {}
             }
         }
@@ -601,13 +597,8 @@ impl Compiler {
                     for idx in 0..len {
                         let idx_const =
                             unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) };
-                        let slot = unsafe {
-                            LLVMBuildAlloca(
-                                self.builder,
-                                self.runtime_abi.handle_type,
-                                CString::new("slice_iter_out").unwrap().as_ptr(),
-                            )
-                        };
+                        let slot =
+                            self.build_entry_alloca(self.runtime_abi.handle_type, "slice_iter_out");
                         let mut call_args = [handle, idx_const, slot];
                         self.call_runtime(
                             self.runtime_abi.prime_slice_get_handle,
@@ -664,20 +655,10 @@ impl Compiler {
                     for idx in 0..len {
                         let idx_const =
                             unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) };
-                        let key_slot = unsafe {
-                            LLVMBuildAlloca(
-                                self.builder,
-                                self.runtime_abi.handle_type,
-                                CString::new("map_iter_key").unwrap().as_ptr(),
-                            )
-                        };
-                        let value_slot = unsafe {
-                            LLVMBuildAlloca(
-                                self.builder,
-                                self.runtime_abi.handle_type,
-                                CString::new("map_iter_val").unwrap().as_ptr(),
-                            )
-                        };
+                        let key_slot =
+                            self.build_entry_alloca(self.runtime_abi.handle_type, "map_iter_key");
+                        let value_slot =
+                            self.build_entry_alloca(self.runtime_abi.handle_type, "map_iter_val");
                         let mut call_args = [handle, idx_const, key_slot, value_slot];
                         self.call_runtime(
                             self.runtime_abi.prime_map_entry_handle,

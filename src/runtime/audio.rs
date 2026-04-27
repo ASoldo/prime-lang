@@ -1,13 +1,18 @@
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::File;
 use std::io::BufReader;
+use std::sync::{Mutex, MutexGuard};
 
-thread_local! {
-    static RUNTIME: RefCell<Option<AudioRuntime>> = const { RefCell::new(None) };
-}
+struct RuntimeSlot(Mutex<Option<AudioRuntime>>);
+
+// Prime native programs call the audio ABI from the generated main thread. The
+// mutex keeps access serialized and avoids Rust TLS assumptions in generated
+// executables linked against the runtime static library.
+unsafe impl Sync for RuntimeSlot {}
+
+static RUNTIME: RuntimeSlot = RuntimeSlot(Mutex::new(None));
 
 enum AudioRuntime {
     Real(RealAudio),
@@ -27,54 +32,69 @@ struct SilentAudio {
 }
 
 pub(crate) fn play(path: &str, looped: bool) -> Result<i32, String> {
-    RUNTIME.with(|runtime_cell| {
-        let mut borrowed = runtime_cell.borrow_mut();
-        if borrowed.is_none() {
-            borrowed.replace(new_runtime()?);
-        }
-        let runtime = borrowed
-            .as_mut()
-            .ok_or_else(|| "audio runtime failed to start".to_string())?;
-        match runtime {
-            AudioRuntime::Real(runtime) => runtime.play(path, looped),
-            AudioRuntime::Silent(runtime) => Ok(runtime.play()),
-        }
-    })
+    let mut slot = runtime_slot()?;
+    if slot.is_none() {
+        *slot = Some(new_runtime()?);
+    }
+    let runtime = slot
+        .as_mut()
+        .ok_or_else(|| "audio runtime failed to start".to_string())?;
+    match runtime {
+        AudioRuntime::Real(runtime) => runtime.play(path, looped),
+        AudioRuntime::Silent(runtime) => Ok(runtime.play()),
+    }
 }
 
 pub(crate) fn stop(handle: i32) -> bool {
-    RUNTIME.with(|runtime_cell| match runtime_cell.borrow_mut().as_mut() {
+    let Ok(mut slot) = runtime_slot() else {
+        return false;
+    };
+    match slot.as_mut() {
         Some(AudioRuntime::Real(runtime)) => runtime.stop(handle),
         Some(AudioRuntime::Silent(runtime)) => runtime.stop(handle),
         None => false,
-    })
+    }
 }
 
 pub(crate) fn stop_all() {
-    RUNTIME.with(|runtime_cell| {
-        if let Some(runtime) = runtime_cell.borrow_mut().as_mut() {
-            match runtime {
-                AudioRuntime::Real(runtime) => runtime.stop_all(),
-                AudioRuntime::Silent(runtime) => runtime.stop_all(),
-            }
+    let Ok(mut slot) = runtime_slot() else {
+        return;
+    };
+    if let Some(runtime) = slot.as_mut() {
+        match runtime {
+            AudioRuntime::Real(runtime) => runtime.stop_all(),
+            AudioRuntime::Silent(runtime) => runtime.stop_all(),
         }
-    });
+    }
 }
 
 pub(crate) fn set_volume(handle: i32, volume_percent: i32) -> bool {
-    RUNTIME.with(|runtime_cell| match runtime_cell.borrow_mut().as_mut() {
+    let Ok(mut slot) = runtime_slot() else {
+        return false;
+    };
+    match slot.as_mut() {
         Some(AudioRuntime::Real(runtime)) => runtime.set_volume(handle, volume_percent),
         Some(AudioRuntime::Silent(runtime)) => runtime.handles.contains(&handle),
         None => false,
-    })
+    }
 }
 
 pub(crate) fn is_playing(handle: i32) -> bool {
-    RUNTIME.with(|runtime_cell| match runtime_cell.borrow().as_ref() {
+    let Ok(slot) = runtime_slot() else {
+        return false;
+    };
+    match slot.as_ref() {
         Some(AudioRuntime::Real(runtime)) => runtime.is_playing(handle),
         Some(AudioRuntime::Silent(runtime)) => runtime.handles.contains(&handle),
         None => false,
-    })
+    }
+}
+
+fn runtime_slot() -> Result<MutexGuard<'static, Option<AudioRuntime>>, String> {
+    RUNTIME
+        .0
+        .lock()
+        .map_err(|_| "audio runtime lock is poisoned".to_string())
 }
 
 fn new_runtime() -> Result<AudioRuntime, String> {
