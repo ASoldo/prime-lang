@@ -395,6 +395,13 @@ fn builtin_function_docs(name: &str) -> Option<String> {
                 "fn slice_get[T](slice: []T, index: int32) -> Option[T]"
             )
         )),
+        "slice_get_int" => Some(format!(
+            "Built-in integer slice helper\n{}",
+            code_block(
+                "prime",
+                "fn slice_get_int(slice: []int32, index: int32, fallback: int32) -> int32"
+            )
+        )),
         "map_new" => Some(format!(
             "Built-in map helper\n{}",
             code_block("prime", "fn map_new[V]() -> Map[string, V]")
@@ -566,6 +573,13 @@ fn builtin_function_docs(name: &str) -> Option<String> {
             code_block(
                 "prime",
                 "fn gfx_text(text: string, x: int32, y: int32, scale: int32, r: int32, g: int32, b: int32) -> ()"
+            )
+        )),
+        "gfx_text_int" => Some(format!(
+            "Native graphics text helper\n{}",
+            code_block(
+                "prime",
+                "fn gfx_text_int(label: string, value: int32, x: int32, y: int32, scale: int32, r: int32, g: int32, b: int32) -> ()"
             )
         )),
         "gfx_present" => Some(format!(

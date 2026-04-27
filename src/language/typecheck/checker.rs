@@ -2637,6 +2637,30 @@ impl Checker {
                 self.expect_slice_type(module, span, slice_ty.as_ref())
                     .map(make_option_type)
             }
+            "slice_get_int" => {
+                if args.len() != 3 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`slice_get_int` expects 3 arguments, got {}", args.len()),
+                    ));
+                    return Some(int_type());
+                }
+                let slice_ty = self.check_expression(module, &args[0], None, returns, env);
+                self.check_expression(module, &args[1], Some(&int_type()), returns, env);
+                let fallback_ty =
+                    self.check_expression(module, &args[2], Some(&int_type()), returns, env);
+                self.ensure_type(
+                    module,
+                    expr_span(&args[2]),
+                    &int_type(),
+                    fallback_ty.as_ref(),
+                );
+                if let Some(elem_ty) = self.expect_slice_type(module, span, slice_ty.as_ref()) {
+                    self.ensure_type(module, expr_span(&args[0]), &int_type(), Some(&elem_ty));
+                }
+                Some(int_type())
+            }
             "slice_remove" => {
                 if args.len() != 2 {
                     self.errors.push(TypeError::new(
@@ -3322,6 +3346,21 @@ impl Checker {
                         &module.path,
                         span,
                         "`gfx_text` expects 7 arguments (text, x, y, scale, r, g, b)",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                for arg in args.iter().skip(1) {
+                    self.check_expression(module, arg, Some(&int_type()), returns, env);
+                }
+                Some(TypeExpr::Unit)
+            }
+            "gfx_text_int" => {
+                if args.len() != 8 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`gfx_text_int` expects 8 arguments (label, value, x, y, scale, r, g, b)",
                     ));
                     return Some(TypeExpr::Unit);
                 }
@@ -4669,6 +4708,7 @@ impl Checker {
                 | "slice_push"
                 | "slice_len"
                 | "slice_get"
+                | "slice_get_int"
                 | "map_new"
                 | "map_insert"
                 | "map_get"
@@ -4713,6 +4753,7 @@ impl Checker {
                 | "gfx_rect"
                 | "gfx_sprite"
                 | "gfx_text"
+                | "gfx_text_int"
                 | "gfx_present"
                 | "gfx_key_down"
                 | "gfx_key_pressed"
@@ -4760,6 +4801,7 @@ impl Checker {
                 | "gfx_rect"
                 | "gfx_sprite"
                 | "gfx_text"
+                | "gfx_text_int"
                 | "gfx_present"
                 | "gfx_key_down"
                 | "gfx_key_pressed"

@@ -16,6 +16,7 @@ fn gfx_clear(r: int32, g: int32, b: int32) -> ()
 fn gfx_rect(x: int32, y: int32, width: int32, height: int32, r: int32, g: int32, b: int32) -> ()
 fn gfx_sprite(path: string, x: int32, y: int32, width: int32, height: int32, r: int32, g: int32, b: int32) -> Result[(), string]
 fn gfx_text(text: string, x: int32, y: int32, scale: int32, r: int32, g: int32, b: int32) -> ()
+fn gfx_text_int(label: string, value: int32, x: int32, y: int32, scale: int32, r: int32, g: int32, b: int32) -> ()
 fn gfx_present() -> bool
 fn gfx_key_down(key: string) -> bool
 fn gfx_key_pressed(key: string) -> bool

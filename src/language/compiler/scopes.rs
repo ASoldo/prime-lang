@@ -69,12 +69,8 @@ impl Compiler {
                 let mut updated = value;
                 Self::clear_scalar_constant(&mut updated);
                 if let Some(slot) = slot {
-                    let int_val = match updated.value() {
-                        Value::Int(int_val) => Some(int_val.clone()),
-                        _ => None,
-                    };
-                    if let Some(int_val) = int_val {
-                        unsafe {
+                    match updated.value().clone() {
+                        Value::Int(int_val) => unsafe {
                             let slot_elem_ty = LLVMGetAllocatedType(slot);
                             let value_ty = LLVMTypeOf(int_val.llvm());
                             let stored = if value_ty != slot_elem_ty {
@@ -93,7 +89,29 @@ impl Compiler {
                                     *int_mut = IntValue::new(stored, None);
                                 }
                             }
-                        }
+                        },
+                        Value::Bool(flag) => unsafe {
+                            let slot_elem_ty = LLVMGetAllocatedType(slot);
+                            let value = self.bool_llvm_value(&flag);
+                            let value_ty = LLVMTypeOf(value);
+                            let stored = if value_ty != slot_elem_ty {
+                                LLVMBuildIntCast(
+                                    self.builder,
+                                    value,
+                                    slot_elem_ty,
+                                    CString::new(format!("{name}_cast")).unwrap().as_ptr(),
+                                )
+                            } else {
+                                value
+                            };
+                            LLVMBuildStore(self.builder, stored, slot);
+                            if value_ty != slot_elem_ty {
+                                if let Value::Bool(bool_mut) = updated.value_mut() {
+                                    *bool_mut = BoolValue::new(stored, None);
+                                }
+                            }
+                        },
+                        _ => {}
                     }
                 }
                 *cell.lock().unwrap() = updated;
@@ -355,12 +373,27 @@ impl Compiler {
         let mut value = value;
         if mutable {
             Self::clear_scalar_constant(&mut value);
+            if self.target.is_host() {
+                let runtime_seed = match value.value() {
+                    Value::Slice(slice) if slice.handle.is_none() => {
+                        Some(Value::Slice(slice.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some(seed) = runtime_seed {
+                    let handle = self.build_runtime_handle(seed)?;
+                    if let Value::Slice(slice) = value.value_mut() {
+                        slice.handle = Some(handle);
+                    }
+                    value.set_runtime(handle);
+                }
+            }
         }
         Self::attach_origin(&mut value, name);
         let mut slot = None;
         if mutable {
-            if let Value::Int(int_val) = value.value() {
-                unsafe {
+            match value.value().clone() {
+                Value::Int(int_val) => unsafe {
                     let ty = LLVMTypeOf(int_val.llvm());
                     let alloca = LLVMBuildAlloca(
                         self.builder,
@@ -369,7 +402,19 @@ impl Compiler {
                     );
                     LLVMBuildStore(self.builder, int_val.llvm(), alloca);
                     slot = Some(alloca);
-                }
+                },
+                Value::Bool(flag) => unsafe {
+                    let ty = LLVMTypeOf(flag.llvm());
+                    let alloca = LLVMBuildAlloca(
+                        self.builder,
+                        ty,
+                        CString::new(format!("{name}_slot")).unwrap().as_ptr(),
+                    );
+                    let stored = self.bool_llvm_value(&flag);
+                    LLVMBuildStore(self.builder, stored, alloca);
+                    slot = Some(alloca);
+                },
+                _ => {}
             }
         }
         let cell = Rc::new(Mutex::new(value));
@@ -425,19 +470,36 @@ impl Compiler {
             if let Some(binding) = scope.get(name) {
                 if let Some(slot) = binding.slot {
                     let guard = binding.cell.lock().unwrap().clone();
-                    if let Value::Int(int_val) = guard.value() {
-                        let constant = int_val.constant();
-                        unsafe {
-                            let loaded = LLVMBuildLoad2(
-                                self.builder,
-                                LLVMTypeOf(int_val.llvm()),
-                                slot,
-                                CString::new(format!("{name}_load")).unwrap().as_ptr(),
-                            );
-                            return Some(
-                                self.evaluated(Value::Int(IntValue::new(loaded, constant))),
-                            );
+                    match guard.value() {
+                        Value::Int(int_val) => {
+                            let constant = int_val.constant();
+                            unsafe {
+                                let loaded = LLVMBuildLoad2(
+                                    self.builder,
+                                    LLVMTypeOf(int_val.llvm()),
+                                    slot,
+                                    CString::new(format!("{name}_load")).unwrap().as_ptr(),
+                                );
+                                return Some(
+                                    self.evaluated(Value::Int(IntValue::new(loaded, constant))),
+                                );
+                            }
                         }
+                        Value::Bool(flag) => {
+                            let constant = flag.constant();
+                            unsafe {
+                                let loaded = LLVMBuildLoad2(
+                                    self.builder,
+                                    LLVMTypeOf(flag.llvm()),
+                                    slot,
+                                    CString::new(format!("{name}_load")).unwrap().as_ptr(),
+                                );
+                                return Some(
+                                    self.evaluated(Value::Bool(BoolValue::new(loaded, constant))),
+                                );
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 return Some(binding.cell.lock().unwrap().clone());

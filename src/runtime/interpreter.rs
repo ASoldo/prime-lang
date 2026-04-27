@@ -1067,6 +1067,7 @@ impl Interpreter {
             "slice_push" => self.builtin_slice_push(args),
             "slice_len" => self.builtin_slice_len(args),
             "slice_get" => self.builtin_slice_get(args),
+            "slice_get_int" => self.builtin_slice_get_int(args),
             "map_new" => self.builtin_map_new(args),
             "map_insert" => self.builtin_map_insert(args),
             "map_get" => self.builtin_map_get(args),
@@ -1113,6 +1114,7 @@ impl Interpreter {
             "gfx_rect" => self.builtin_gfx_rect(args),
             "gfx_sprite" => self.builtin_gfx_sprite(args),
             "gfx_text" => self.builtin_gfx_text(args),
+            "gfx_text_int" => self.builtin_gfx_text_int(args),
             "gfx_present" => self.builtin_gfx_present(args),
             "gfx_key_down" => self.builtin_gfx_key_down(args),
             "gfx_key_pressed" => self.builtin_gfx_key_pressed(args),
@@ -1234,6 +1236,7 @@ impl Interpreter {
                 | "slice_push"
                 | "slice_len"
                 | "slice_get"
+                | "slice_get_int"
                 | "map_new"
                 | "map_insert"
                 | "map_get"
@@ -1273,6 +1276,7 @@ impl Interpreter {
                 | "gfx_rect"
                 | "gfx_sprite"
                 | "gfx_text"
+                | "gfx_text_int"
                 | "gfx_present"
                 | "gfx_key_down"
                 | "gfx_key_pressed"
@@ -1405,6 +1409,40 @@ impl Interpreter {
         let value = value.unwrap();
         let some = self.instantiate_enum("Option", "Some", vec![value])?;
         Ok(vec![some])
+    }
+
+    fn builtin_slice_get_int(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("slice_get_int", &args, 3)?;
+        let slice = Self::expect_slice("slice_get_int", args.remove(0))?;
+        let index = match args.remove(0) {
+            Value::Int(i) => i,
+            _ => {
+                return Err(RuntimeError::TypeMismatch {
+                    message: "slice_get_int expects integer index".into(),
+                });
+            }
+        };
+        let fallback = match args.remove(0) {
+            Value::Int(i) => i,
+            _ => {
+                return Err(RuntimeError::TypeMismatch {
+                    message: "slice_get_int expects integer fallback".into(),
+                });
+            }
+        };
+        if index < 0 {
+            return Ok(vec![Value::Int(fallback)]);
+        }
+        match slice.get(index as usize) {
+            Some(Value::Int(value)) => Ok(vec![Value::Int(value)]),
+            Some(other) => Err(RuntimeError::TypeMismatch {
+                message: format!(
+                    "slice_get_int expected int element, found {}",
+                    self.describe_value(&other)
+                ),
+            }),
+            None => Ok(vec![Value::Int(fallback)]),
+        }
     }
 
     fn builtin_map_new(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
@@ -2359,6 +2397,23 @@ impl Interpreter {
         let r = self.expect_i32_value("gfx_text", args.remove(0))?;
         let g = self.expect_i32_value("gfx_text", args.remove(0))?;
         let b = self.expect_i32_value("gfx_text", args.remove(0))?;
+        graphics::text(&text, x, y, scale, r, g, b)
+            .map_err(|message| RuntimeError::Unsupported { message })?;
+        Ok(vec![Value::Unit])
+    }
+
+    fn builtin_gfx_text_int(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_text_int")?;
+        self.expect_arity("gfx_text_int", &args, 8)?;
+        let label = Self::expect_string_or_format("gfx_text_int", args.remove(0))?;
+        let value = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let x = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let y = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let scale = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let r = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let g = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let b = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let text = format!("{label} {value}");
         graphics::text(&text, x, y, scale, r, g, b)
             .map_err(|message| RuntimeError::Unsupported { message })?;
         Ok(vec![Value::Unit])

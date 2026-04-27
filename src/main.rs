@@ -547,6 +547,17 @@ fn compile_runtime_abi_with_cargo(
             manifest_dir, abi_path
         );
     }
+    let dependencies = if target.is_embedded() {
+        String::new()
+    } else {
+        r#"
+[dependencies]
+minifb = "0.27"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rodio = "0.17"
+"#
+        .to_string()
+    };
     let manifest = format!(
         r#"[package]
 name = "runtime-abi"
@@ -557,10 +568,12 @@ edition = "2021"
 name = "runtime_abi"
 path = "{}"
 crate-type = ["staticlib"]
+{}
 "#,
         abi_path
             .to_str()
-            .ok_or_else(|| "non-utf8 path to abi.rs".to_string())?
+            .ok_or_else(|| "non-utf8 path to abi.rs".to_string())?,
+        dependencies
     );
     fs::write(cargo_dir.join("Cargo.toml"), manifest)
         .map_err(|err| format!("failed to write runtime Cargo.toml: {err}"))?;
@@ -1291,6 +1304,7 @@ fn link_host(obj_path: &Path, runtime_lib: Option<&Path>, bin_path: &Path) -> Re
         .arg(bin_path)
         .arg("-lpthread")
         .arg("-ldl")
+        .arg("-lasound")
         .arg("-lm");
     let output = cmd
         .output()

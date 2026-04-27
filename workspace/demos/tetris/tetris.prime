@@ -36,23 +36,29 @@ fn make_board() -> []int32 {
 }
 
 fn board_get(board: []int32, x: int32, y: int32) -> int32 {
-  if x < 0 || x >= COLS || y >= ROWS {
-    return 1;
+  let mut int32 result = 1;
+  if x >= 0 && x < COLS && y < ROWS {
+    if y < 0 {
+      result = 0;
+    } else {
+      result = slice_get_int(board, y * COLS + x, 1);
+    }
   }
-  if y < 0 {
-    return 0;
-  }
-  match board[y * COLS + x] {
-    Some(value) => value,
-    None => 1,
-  }
+  result
 }
 
 fn board_set(board: []int32, x: int32, y: int32, value: int32) {
-  if x < 0 || x >= COLS || y < 0 || y >= ROWS {
-    return;
+  if x >= 0 && x < COLS && y >= 0 && y < ROWS {
+    board[y * COLS + x] = value;
   }
-  board[y * COLS + x] = value;
+}
+
+fn reset_board(board: []int32) {
+  for y in 0..ROWS {
+    for x in 0..COLS {
+      board_set(board, x, y, 0);
+    }
+  }
 }
 
 fn normalize_rotation(rotation: int32) -> int32 {
@@ -63,286 +69,162 @@ fn normalize_rotation(rotation: int32) -> int32 {
   value
 }
 
+fn select_cell(index: int32, first: int32, second: int32, third: int32, fourth: int32) -> int32 {
+  let mut int32 value = first;
+  if index == 1 {
+    value = second;
+  }
+  if index == 2 {
+    value = third;
+  }
+  if index == 3 {
+    value = fourth;
+  }
+  value
+}
+
 fn cell_x(kind: int32, rotation: int32, index: int32) -> int32 {
   let int32 rot = normalize_rotation(rotation);
+  let mut int32 value = 0;
   if kind == 1 {
-    if rot % 2 == 0 {
-      if index == 0 {
-        return -1;
-      }
-      if index == 1 {
-        return 0;
-      }
-      if index == 2 {
-        return 1;
-      }
-      return 2;
+    if rot == 0 || rot == 2 {
+      value = select_cell(index, -1, 0, 1, 2);
+    } else {
+      value = 1;
     }
-    return 1;
   }
   if kind == 2 {
-    if index == 1 || index == 3 {
-      return 1;
-    }
-    return 0;
+    value = select_cell(index, 0, 1, 0, 1);
   }
   if kind == 3 {
     if rot == 0 || rot == 2 {
-      if index == 0 {
-        return -1;
-      }
-      if index == 2 {
-        return 1;
-      }
-      return 0;
+      value = select_cell(index, -1, 0, 1, 0);
     }
     if rot == 1 {
-      if index == 3 {
-        return 1;
-      }
-      return 0;
+      value = select_cell(index, 0, 0, 0, 1);
     }
-    if index == 3 {
-      return -1;
+    if rot == 3 {
+      value = select_cell(index, 0, 0, 0, -1);
     }
-    return 0;
   }
   if kind == 4 {
-    if rot % 2 == 0 {
-      if index == 1 {
-        return 1;
-      }
-      if index == 2 {
-        return -1;
-      }
-      return 0;
+    if rot == 0 || rot == 2 {
+      value = select_cell(index, 0, 1, -1, 0);
+    } else {
+      value = select_cell(index, 0, 0, 1, 1);
     }
-    if index == 2 || index == 3 {
-      return 1;
-    }
-    return 0;
   }
   if kind == 5 {
-    if rot % 2 == 0 {
-      if index == 0 {
-        return -1;
-      }
-      if index == 3 {
-        return 1;
-      }
-      return 0;
+    if rot == 0 || rot == 2 {
+      value = select_cell(index, -1, 0, 0, 1);
+    } else {
+      value = select_cell(index, 1, 1, 0, 0);
     }
-    if index == 0 || index == 1 {
-      return 1;
-    }
-    return 0;
   }
   if kind == 6 {
     if rot == 0 {
-      if index == 0 || index == 3 {
-        return -1;
-      }
-      if index == 2 {
-        return 1;
-      }
-      return 0;
+      value = select_cell(index, -1, 0, 1, -1);
     }
     if rot == 1 {
-      if index == 3 {
-        return 1;
-      }
-      return 0;
+      value = select_cell(index, 0, 0, 0, 1);
     }
     if rot == 2 {
-      if index == 0 {
-        return -1;
-      }
-      if index == 2 || index == 3 {
-        return 1;
-      }
-      return 0;
+      value = select_cell(index, -1, 0, 1, 1);
     }
-    if index == 3 {
-      return -1;
+    if rot == 3 {
+      value = select_cell(index, 0, 0, 0, -1);
     }
-    return 0;
   }
-  if rot == 0 {
-    if index == 0 {
-      return -1;
+  if kind == 7 {
+    if rot == 0 {
+      value = select_cell(index, -1, 0, 1, 1);
     }
-    if index == 2 || index == 3 {
-      return 1;
+    if rot == 1 {
+      value = select_cell(index, 0, 0, 0, 1);
     }
-    return 0;
+    if rot == 2 {
+      value = select_cell(index, -1, 0, 1, -1);
+    }
+    if rot == 3 {
+      value = select_cell(index, 0, 0, 0, -1);
+    }
   }
-  if rot == 1 {
-    if index == 3 {
-      return 1;
-    }
-    return 0;
-  }
-  if rot == 2 {
-    if index == 0 || index == 3 {
-      return -1;
-    }
-    if index == 2 {
-      return 1;
-    }
-    return 0;
-  }
-  if index == 3 {
-    return -1;
-  }
-  return 0;
+  value
 }
 
 fn cell_y(kind: int32, rotation: int32, index: int32) -> int32 {
   let int32 rot = normalize_rotation(rotation);
+  let mut int32 value = 0;
   if kind == 1 {
-    if rot % 2 == 0 {
-      return 0;
+    if rot == 1 || rot == 3 {
+      value = select_cell(index, -1, 0, 1, 2);
     }
-    if index == 0 {
-      return -1;
-    }
-    if index == 1 {
-      return 0;
-    }
-    if index == 2 {
-      return 1;
-    }
-    return 2;
   }
   if kind == 2 {
-    if index >= 2 {
-      return 1;
-    }
-    return 0;
+    value = select_cell(index, 0, 0, 1, 1);
   }
   if kind == 3 {
     if rot == 0 {
-      if index == 3 {
-        return 1;
-      }
-      return 0;
+      value = select_cell(index, 0, 0, 0, 1);
     }
     if rot == 1 || rot == 3 {
-      if index == 0 {
-        return -1;
-      }
-      if index == 2 {
-        return 1;
-      }
-      return 0;
+      value = select_cell(index, -1, 0, 1, 0);
     }
-    if index == 3 {
-      return -1;
+    if rot == 2 {
+      value = select_cell(index, 0, 0, 0, -1);
     }
-    return 0;
   }
-  if kind == 4 {
-    if rot % 2 == 0 {
-      if index >= 2 {
-        return 1;
-      }
-      return 0;
+  if kind == 4 || kind == 5 {
+    if rot == 0 || rot == 2 {
+      value = select_cell(index, 0, 0, 1, 1);
+    } else {
+      value = select_cell(index, -1, 0, 0, 1);
     }
-    if index == 0 {
-      return -1;
-    }
-    if index == 3 {
-      return 1;
-    }
-    return 0;
-  }
-  if kind == 5 {
-    if rot % 2 == 0 {
-      if index >= 2 {
-        return 1;
-      }
-      return 0;
-    }
-    if index == 0 {
-      return -1;
-    }
-    if index == 3 {
-      return 1;
-    }
-    return 0;
   }
   if kind == 6 {
     if rot == 0 {
-      if index == 3 {
-        return 1;
-      }
-      return 0;
+      value = select_cell(index, 0, 0, 0, 1);
     }
     if rot == 1 {
-      if index == 0 || index == 3 {
-        return -1;
-      }
-      if index == 2 {
-        return 1;
-      }
-      return 0;
+      value = select_cell(index, -1, 0, 1, -1);
     }
     if rot == 2 {
-      if index == 3 {
-        return -1;
-      }
-      return 0;
+      value = select_cell(index, 0, 0, 0, -1);
     }
-    if index == 0 {
-      return -1;
+    if rot == 3 {
+      value = select_cell(index, -1, 0, 1, 1);
     }
-    if index == 2 || index == 3 {
-      return 1;
-    }
-    return 0;
   }
-  if rot == 0 {
-    if index == 3 {
-      return 1;
+  if kind == 7 {
+    if rot == 0 {
+      value = select_cell(index, 0, 0, 0, 1);
     }
-    return 0;
-  }
-  if rot == 1 {
-    if index == 0 {
-      return -1;
+    if rot == 1 {
+      value = select_cell(index, -1, 0, 1, 1);
     }
-    if index == 2 || index == 3 {
-      return 1;
+    if rot == 2 {
+      value = select_cell(index, 0, 0, 0, -1);
     }
-    return 0;
-  }
-  if rot == 2 {
-    if index == 3 {
-      return -1;
+    if rot == 3 {
+      value = select_cell(index, -1, 0, 1, -1);
     }
-    return 0;
   }
-  if index == 0 || index == 3 {
-    return -1;
-  }
-  if index == 2 {
-    return 1;
-  }
-  return 0;
+  value
 }
 
 fn can_move(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) -> bool {
+  let mut bool valid = true;
   for index in 0..4 {
     let int32 px = x + cell_x(kind, rotation, index);
     let int32 py = y + cell_y(kind, rotation, index);
     if px < 0 || px >= COLS || py >= ROWS {
-      return false;
+      valid = false;
     }
     if py >= 0 && board_get(board, px, py) != 0 {
-      return false;
+      valid = false;
     }
   }
-  true
+  valid
 }
 
 fn lock_piece(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) {
@@ -356,12 +238,13 @@ fn lock_piece(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) 
 }
 
 fn row_full(board: []int32, row: int32) -> bool {
+  let mut bool full = true;
   for x in 0..COLS {
     if board_get(board, x, row) == 0 {
-      return false;
+      full = false;
     }
   }
-  true
+  full
 }
 
 fn clear_lines(board: []int32) -> int32 {
@@ -388,28 +271,47 @@ fn clear_lines(board: []int32) -> int32 {
 }
 
 fn piece_color(kind: int32) -> (int32, int32, int32) {
+  let mut int32 r = 70;
+  let mut int32 g = 96;
+  let mut int32 b = 130;
   if kind == 1 {
-    return 83, 220, 255;
+    r = 83;
+    g = 220;
+    b = 255;
   }
   if kind == 2 {
-    return 255, 211, 77;
+    r = 255;
+    g = 211;
+    b = 77;
   }
   if kind == 3 {
-    return 178, 116, 255;
+    r = 178;
+    g = 116;
+    b = 255;
   }
   if kind == 4 {
-    return 68, 231, 141;
+    r = 68;
+    g = 231;
+    b = 141;
   }
   if kind == 5 {
-    return 255, 88, 88;
+    r = 255;
+    g = 88;
+    b = 88;
   }
   if kind == 6 {
-    return 79, 142, 255;
+    r = 79;
+    g = 142;
+    b = 255;
   }
   if kind == 7 {
-    return 255, 161, 67;
+    r = 255;
+    g = 161;
+    b = 67;
   }
-  return 70, 96, 130;
+
+  let (int32, int32, int32) color = (r, g, b);
+  color
 }
 
 fn draw_cell(screen_x: int32, screen_y: int32, kind: int32, ghost: bool) {
@@ -454,7 +356,7 @@ fn ghost_y(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) -> 
 fn next_seed(seed: int32) -> int32 {
   let mut int32 next = (seed * 1103515245 + 12345) % 2147483647;
   if next < 0 {
-    next = -next;
+    next = 0 - next;
   }
   if next == 0 {
     next = 17;
@@ -467,24 +369,58 @@ fn kind_from_seed(seed: int32) -> int32 {
 }
 
 fn drop_interval(level: int32) -> int64 {
-  let int32 interval = max(90, 680 - (level - 1) * 55);
-  cast[int64](interval)
+  let mut int64 interval = 90;
+  if level <= 1 {
+    interval = 680;
+  }
+  if level == 2 {
+    interval = 625;
+  }
+  if level == 3 {
+    interval = 570;
+  }
+  if level == 4 {
+    interval = 515;
+  }
+  if level == 5 {
+    interval = 460;
+  }
+  if level == 6 {
+    interval = 405;
+  }
+  if level == 7 {
+    interval = 350;
+  }
+  if level == 8 {
+    interval = 295;
+  }
+  if level == 9 {
+    interval = 240;
+  }
+  if level == 10 {
+    interval = 185;
+  }
+  if level == 11 {
+    interval = 130;
+  }
+  interval
 }
 
 fn add_score(score: int32, level: int32, cleared: int32) -> int32 {
+  let mut int32 result = score;
   if cleared == 1 {
-    return score + 100 * level;
+    result = score + 100 * level;
   }
   if cleared == 2 {
-    return score + 300 * level;
+    result = score + 300 * level;
   }
   if cleared == 3 {
-    return score + 500 * level;
+    result = score + 500 * level;
   }
   if cleared >= 4 {
-    return score + 800 * level;
+    result = score + 800 * level;
   }
-  score
+  result
 }
 
 fn draw_board(board: []int32) {
@@ -528,9 +464,9 @@ fn draw_preview(kind: int32) {
 
 fn draw_hud(score: int32, lines: int32, level: int32, next_kind: int32, paused: bool, game_over: bool) {
   gfx_text("PRIME TETRIS", PANEL_X, 34, 2, 214, 235, 255);
-  gfx_text(`SCORE {score}`, PANEL_X, 92, 1, 125, 185, 255);
-  gfx_text(`LINES {lines}`, PANEL_X, 120, 1, 125, 185, 255);
-  gfx_text(`LEVEL {level}`, PANEL_X, 148, 1, 125, 185, 255);
+  gfx_text_int("SCORE", score, PANEL_X, 92, 1, 125, 185, 255);
+  gfx_text_int("LINES", lines, PANEL_X, 120, 1, 125, 185, 255);
+  gfx_text_int("LEVEL", level, PANEL_X, 148, 1, 125, 185, 255);
   gfx_text("NEXT", PANEL_X, 204, 1, 214, 235, 255);
   draw_preview(next_kind);
   gfx_text("MOVE  ARROWS", PANEL_X, 360, 1, 93, 133, 181);
@@ -553,7 +489,6 @@ fn main() {
     },
     Result::Err(msg) => {
       out(`graphics failed: {msg}`);
-      return;
     },
   }
   match audio_play(MUSIC_PATH, true) {
@@ -564,7 +499,7 @@ fn main() {
   }
 
   let mut []int32 board = make_board();
-  let mut int32 seed = cast[int32](now_ms() % 2147483647);
+  let mut int32 seed = 73129;
   seed = next_seed(seed);
   let mut int32 current = kind_from_seed(seed);
   seed = next_seed(seed);
@@ -594,7 +529,7 @@ fn main() {
       paused = !paused;
     }
     if game_over && gfx_key_pressed("r") {
-      board = make_board();
+      reset_board(board);
       seed = next_seed(seed);
       current = kind_from_seed(seed);
       seed = next_seed(seed);

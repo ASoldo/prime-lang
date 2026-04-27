@@ -1149,6 +1149,19 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none"),
     ))]
+    #[unsafe(export_name = "prime_slice_set_handle")]
+    pub unsafe extern "C" fn prime_slice_set_handle(
+        _slice: PrimeHandle,
+        _idx: usize,
+        _value: PrimeHandle,
+    ) -> PrimeStatus {
+        PrimeStatus::Invalid
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none"),
+    ))]
     #[unsafe(export_name = "prime_slice_remove_handle")]
     pub unsafe extern "C" fn prime_slice_remove_handle(
         _slice: PrimeHandle,
@@ -2321,7 +2334,26 @@ pub use embedded::*;
     target_arch = "xtensa",
     all(target_arch = "riscv32", target_os = "none"),
 )))]
+// `abi.rs` is also compiled as a standalone staticlib during `prime-lang build`,
+// so it must be able to load these sibling runtime modules without `runtime/mod.rs`.
+#[allow(clippy::duplicate_mod)]
+#[path = "audio.rs"]
+mod abi_audio_runtime;
+
+#[cfg(not(any(
+    target_arch = "xtensa",
+    all(target_arch = "riscv32", target_os = "none"),
+)))]
+#[allow(clippy::duplicate_mod)]
+#[path = "graphics.rs"]
+mod abi_graphics_runtime;
+
+#[cfg(not(any(
+    target_arch = "xtensa",
+    all(target_arch = "riscv32", target_os = "none"),
+)))]
 mod host {
+    use super::{abi_audio_runtime as audio_runtime, abi_graphics_runtime as graphics_runtime};
     use std::collections::BTreeMap;
     use std::ffi::c_void;
     use std::io::{self, Write};
@@ -2339,6 +2371,13 @@ mod host {
 
     unsafe extern "C" {
         fn fflush(stream: *mut std::ffi::c_void) -> i32;
+    }
+
+    unsafe fn read_host_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
+        if ptr.is_null() {
+            return None;
+        }
+        std::str::from_utf8(slice::from_raw_parts(ptr, len)).ok()
     }
 
     #[derive(Clone, Debug)]
@@ -2553,6 +2592,28 @@ mod host {
         if let HostValue::Slice(items) = &data.value {
             if let Some(handle) = items.get(idx) {
                 value_out.write(prime_value_retain(*handle));
+                return PrimeStatus::Ok;
+            }
+            return PrimeStatus::Closed;
+        }
+        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_slice_set_handle")]
+    pub unsafe extern "C" fn prime_slice_set_handle(
+        slice: PrimeHandle,
+        idx: usize,
+        value: PrimeHandle,
+    ) -> PrimeStatus {
+        if slice.0.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let data = &mut *(slice.0 as *mut HostHandle);
+        if let HostValue::Slice(items) = &mut data.value {
+            if idx < items.len() {
+                let replacement = prime_value_retain(value);
+                let old = std::mem::replace(&mut items[idx], replacement);
+                prime_value_release(old);
                 return PrimeStatus::Ok;
             }
             return PrimeStatus::Closed;
@@ -3278,6 +3339,162 @@ mod host {
             }
         });
         task_to_handle(state)
+    }
+
+    #[unsafe(export_name = "prime_gfx_open")]
+    pub unsafe extern "C" fn prime_gfx_open(
+        title_ptr: *const u8,
+        title_len: usize,
+        width: i32,
+        height: i32,
+    ) -> bool {
+        let Some(title) = read_host_str(title_ptr, title_len) else {
+            return false;
+        };
+        graphics_runtime::open(title, width, height).is_ok()
+    }
+
+    #[unsafe(export_name = "prime_gfx_clear")]
+    pub unsafe extern "C" fn prime_gfx_clear(r: i32, g: i32, b: i32) {
+        let _ = graphics_runtime::clear(r, g, b);
+    }
+
+    #[unsafe(export_name = "prime_gfx_rect")]
+    pub unsafe extern "C" fn prime_gfx_rect(
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        r: i32,
+        g: i32,
+        b: i32,
+    ) {
+        let _ = graphics_runtime::rect(x, y, width, height, r, g, b);
+    }
+
+    #[unsafe(export_name = "prime_gfx_sprite")]
+    pub unsafe extern "C" fn prime_gfx_sprite(
+        path_ptr: *const u8,
+        path_len: usize,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        r: i32,
+        g: i32,
+        b: i32,
+    ) -> bool {
+        let Some(path) = read_host_str(path_ptr, path_len) else {
+            return false;
+        };
+        graphics_runtime::sprite(
+            path,
+            graphics_runtime::RectSpec {
+                x,
+                y,
+                width,
+                height,
+            },
+            graphics_runtime::ColorSpec { r, g, b },
+        )
+        .is_ok()
+    }
+
+    #[unsafe(export_name = "prime_gfx_text")]
+    pub unsafe extern "C" fn prime_gfx_text(
+        text_ptr: *const u8,
+        text_len: usize,
+        x: i32,
+        y: i32,
+        scale: i32,
+        r: i32,
+        g: i32,
+        b: i32,
+    ) {
+        if let Some(text) = read_host_str(text_ptr, text_len) {
+            let _ = graphics_runtime::text(text, x, y, scale, r, g, b);
+        }
+    }
+
+    #[unsafe(export_name = "prime_gfx_text_int")]
+    pub unsafe extern "C" fn prime_gfx_text_int(
+        label_ptr: *const u8,
+        label_len: usize,
+        value: i32,
+        x: i32,
+        y: i32,
+        scale: i32,
+        r: i32,
+        g: i32,
+        b: i32,
+    ) {
+        if let Some(label) = read_host_str(label_ptr, label_len) {
+            let text = format!("{label} {value}");
+            let _ = graphics_runtime::text(&text, x, y, scale, r, g, b);
+        }
+    }
+
+    #[unsafe(export_name = "prime_gfx_present")]
+    pub unsafe extern "C" fn prime_gfx_present() -> bool {
+        graphics_runtime::present().unwrap_or(false)
+    }
+
+    #[unsafe(export_name = "prime_gfx_key_down")]
+    pub unsafe extern "C" fn prime_gfx_key_down(key_ptr: *const u8, key_len: usize) -> bool {
+        let Some(key) = read_host_str(key_ptr, key_len) else {
+            return false;
+        };
+        graphics_runtime::key_down(key).unwrap_or(false)
+    }
+
+    #[unsafe(export_name = "prime_gfx_key_pressed")]
+    pub unsafe extern "C" fn prime_gfx_key_pressed(key_ptr: *const u8, key_len: usize) -> bool {
+        let Some(key) = read_host_str(key_ptr, key_len) else {
+            return false;
+        };
+        graphics_runtime::key_pressed(key).unwrap_or(false)
+    }
+
+    #[unsafe(export_name = "prime_gfx_should_close")]
+    pub unsafe extern "C" fn prime_gfx_should_close() -> bool {
+        graphics_runtime::should_close()
+    }
+
+    #[unsafe(export_name = "prime_gfx_close")]
+    pub unsafe extern "C" fn prime_gfx_close() {
+        graphics_runtime::close();
+    }
+
+    #[unsafe(export_name = "prime_audio_play")]
+    pub unsafe extern "C" fn prime_audio_play(
+        path_ptr: *const u8,
+        path_len: usize,
+        looped: bool,
+    ) -> i32 {
+        let Some(path) = read_host_str(path_ptr, path_len) else {
+            return 0;
+        };
+        audio_runtime::play(path, looped).unwrap_or(0)
+    }
+
+    #[unsafe(export_name = "prime_audio_stop")]
+    pub unsafe extern "C" fn prime_audio_stop(handle: i32) -> bool {
+        audio_runtime::stop(handle)
+    }
+
+    #[unsafe(export_name = "prime_audio_stop_all")]
+    pub unsafe extern "C" fn prime_audio_stop_all() {
+        audio_runtime::stop_all();
+    }
+
+    #[unsafe(export_name = "prime_audio_set_volume")]
+    pub unsafe extern "C" fn prime_audio_set_volume(handle: i32, volume_percent: i32) -> bool {
+        audio_runtime::set_volume(handle, volume_percent)
+    }
+
+    #[unsafe(export_name = "prime_audio_is_playing")]
+    pub unsafe extern "C" fn prime_audio_is_playing(handle: i32) -> bool {
+        audio_runtime::is_playing(handle)
     }
 
     #[unsafe(export_name = "prime_env_free")]

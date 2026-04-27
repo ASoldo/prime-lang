@@ -395,6 +395,105 @@ impl Compiler {
         self.instantiate_enum_variant("Some", vec![value])
     }
 
+    pub(super) fn builtin_slice_get_int(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 3 {
+            return Err("slice_get_int expects 3 arguments".into());
+        }
+        let fallback = self.expect_int(args.pop().unwrap())?;
+        let index_value = args.pop().unwrap();
+        let mut slice = self.expect_slice_value(args.pop().unwrap(), "slice_get_int")?;
+        let int_value = self.expect_int(index_value)?;
+        let idx_const = int_value.constant();
+        if let Some(idx) = idx_const {
+            if idx < 0 {
+                return Ok(Value::Int(fallback));
+            }
+        }
+        let mut handle = slice.handle;
+        if handle.is_none() && idx_const.is_none() {
+            if let Ok(runtime) = self.build_runtime_handle(Value::Slice(slice.clone())) {
+                slice.handle = Some(runtime);
+                handle = Some(runtime);
+            }
+        }
+        if let Some(handle) = handle {
+            let idx_arg = if let Some(idx) = idx_const {
+                unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) }
+            } else {
+                self.int_to_usize(&int_value, "slice_get_int_index")?
+            };
+            let slot = unsafe {
+                LLVMBuildAlloca(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    CString::new("slice_get_int_out").unwrap().as_ptr(),
+                )
+            };
+            unsafe {
+                LLVMBuildStore(self.builder, self.null_handle_ptr(), slot);
+            }
+            let mut call_args = [handle, idx_arg, slot];
+            let status = self.call_runtime(
+                self.runtime_abi.prime_slice_get_handle,
+                self.runtime_abi.prime_slice_get_handle_ty,
+                &mut call_args,
+                "slice_get_int_handle",
+            );
+            let loaded = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    slot,
+                    CString::new("slice_get_int_loaded").unwrap().as_ptr(),
+                )
+            };
+            let mut as_int_args = [loaded];
+            let loaded_int = self.call_runtime(
+                self.runtime_abi.prime_value_as_int,
+                self.runtime_abi.prime_value_as_int_ty,
+                &mut as_int_args,
+                "slice_get_int_value",
+            );
+            let fallback_ty = unsafe { LLVMTypeOf(fallback.llvm()) };
+            let loaded_cast = unsafe {
+                LLVMBuildIntCast(
+                    self.builder,
+                    loaded_int,
+                    fallback_ty,
+                    CString::new("slice_get_int_cast").unwrap().as_ptr(),
+                )
+            };
+            let ok_status =
+                unsafe { LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0) };
+            let is_ok = unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                    status,
+                    ok_status,
+                    CString::new("slice_get_int_ok").unwrap().as_ptr(),
+                )
+            };
+            let selected = unsafe {
+                LLVMBuildSelect(
+                    self.builder,
+                    is_ok,
+                    loaded_cast,
+                    fallback.llvm(),
+                    CString::new("slice_get_int_selected").unwrap().as_ptr(),
+                )
+            };
+            return Ok(Value::Int(IntValue::new(selected, None)));
+        }
+        let idx = idx_const
+            .ok_or_else(|| "slice_get_int index must be constant in build mode".to_string())?;
+        let value = slice.get(idx as usize);
+        match value {
+            Some(value) => self.expect_int(value).map(Value::Int),
+            None => Ok(Value::Int(fallback)),
+        }
+    }
+
     pub(super) fn builtin_slice_remove(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
         if args.len() != 2 {
             return Err("remove expects receiver and index".into());
@@ -921,11 +1020,39 @@ impl Compiler {
         value: Value,
     ) -> Result<(), String> {
         match base {
-            Value::Slice(slice) => {
+            Value::Slice(mut slice) => {
                 let int_value = self.expect_int(index)?;
-                let idx = int_value
-                    .constant()
-                    .ok_or_else(|| "index must be constant in build mode".to_string())?;
+                let idx_const = int_value.constant();
+                let mut handle = slice.handle;
+                if handle.is_none() && idx_const.is_none() {
+                    if let Ok(runtime) = self.build_runtime_handle(Value::Slice(slice.clone())) {
+                        slice.handle = Some(runtime);
+                        handle = Some(runtime);
+                    }
+                }
+                if let Some(handle) = handle {
+                    if let Some(idx) = idx_const {
+                        if idx < 0 {
+                            return Err("slice index cannot be negative".into());
+                        }
+                    }
+                    let idx_arg = if let Some(idx) = idx_const {
+                        unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) }
+                    } else {
+                        self.int_to_usize(&int_value, "slice_set_index")?
+                    };
+                    let value_handle = self.build_runtime_handle(value)?;
+                    let mut call_args = [handle, idx_arg, value_handle];
+                    self.call_runtime(
+                        self.runtime_abi.prime_slice_set_handle,
+                        self.runtime_abi.prime_slice_set_handle_ty,
+                        &mut call_args,
+                        "slice_set_handle",
+                    );
+                    return Ok(());
+                }
+                let idx =
+                    idx_const.ok_or_else(|| "index must be constant in build mode".to_string())?;
                 if idx < 0 {
                     return Err("slice index cannot be negative".into());
                 }
@@ -1097,14 +1224,330 @@ impl Compiler {
         }
     }
 
-    pub(super) fn builtin_runtime_only(
+    fn string_parts_for_runtime(
         &mut self,
-        feature: &str,
-        _args: Vec<Value>,
+        value: Value,
+        ctx: &str,
+    ) -> Result<(LLVMValueRef, LLVMValueRef), String> {
+        match value {
+            Value::Str(text) => {
+                let len =
+                    unsafe { LLVMConstInt(self.runtime_abi.usize_type, text.text.len() as u64, 0) };
+                Ok((text.llvm, len))
+            }
+            Value::FormatTemplate(template) => {
+                let bytes = self.render_format_template_bytes(template)?;
+                let text = String::from_utf8(bytes).map_err(|_| format!("{ctx} expects utf-8"))?;
+                self.build_runtime_bytes(&text, ctx)
+            }
+            Value::Reference(reference) => {
+                let inner = reference.cell.lock().unwrap().clone().into_value();
+                self.string_parts_for_runtime(inner, ctx)
+            }
+            _ => Err(format!("{ctx} expects string value")),
+        }
+    }
+
+    fn int32_for_runtime(&mut self, value: Value, ctx: &str) -> Result<LLVMValueRef, String> {
+        let int_value = self.expect_int(value)?;
+        Ok(unsafe {
+            LLVMBuildIntCast(
+                self.builder,
+                int_value.llvm(),
+                self.i32_type,
+                CString::new(ctx).unwrap().as_ptr(),
+            )
+        })
+    }
+
+    fn bool_for_runtime(&mut self, value: Value, ctx: &str) -> Result<LLVMValueRef, String> {
+        match value {
+            Value::Bool(flag) => Ok(self.bool_llvm_value(&flag)),
+            Value::Reference(reference) => {
+                let inner = reference.cell.lock().unwrap().clone().into_value();
+                self.bool_for_runtime(inner, ctx)
+            }
+            _ => Err(format!("{ctx} expects bool value")),
+        }
+    }
+
+    pub(super) fn builtin_gfx_open(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 3 {
+            return Err("gfx_open expects 3 arguments".into());
+        }
+        let height = self.int32_for_runtime(args.pop().unwrap(), "gfx_open_height")?;
+        let width = self.int32_for_runtime(args.pop().unwrap(), "gfx_open_width")?;
+        let (title, title_len) = self.string_parts_for_runtime(args.pop().unwrap(), "gfx_open")?;
+        let mut call_args = [title, title_len, width, height];
+        self.call_runtime(
+            self.runtime_abi.prime_gfx_open,
+            self.runtime_abi.prime_gfx_open_ty,
+            &mut call_args,
+            "gfx_open",
+        );
+        self.instantiate_enum_variant("Ok", vec![Value::Unit])
+    }
+
+    pub(super) fn builtin_gfx_clear(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 3 {
+            return Err("gfx_clear expects 3 arguments".into());
+        }
+        let b = self.int32_for_runtime(args.pop().unwrap(), "gfx_clear_b")?;
+        let g = self.int32_for_runtime(args.pop().unwrap(), "gfx_clear_g")?;
+        let r = self.int32_for_runtime(args.pop().unwrap(), "gfx_clear_r")?;
+        let mut call_args = [r, g, b];
+        self.call_runtime(
+            self.runtime_abi.prime_gfx_clear,
+            self.runtime_abi.prime_gfx_clear_ty,
+            &mut call_args,
+            "gfx_clear",
+        );
+        Ok(Value::Unit)
+    }
+
+    pub(super) fn builtin_gfx_rect(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 7 {
+            return Err("gfx_rect expects 7 arguments".into());
+        }
+        let b = self.int32_for_runtime(args.pop().unwrap(), "gfx_rect_b")?;
+        let g = self.int32_for_runtime(args.pop().unwrap(), "gfx_rect_g")?;
+        let r = self.int32_for_runtime(args.pop().unwrap(), "gfx_rect_r")?;
+        let height = self.int32_for_runtime(args.pop().unwrap(), "gfx_rect_height")?;
+        let width = self.int32_for_runtime(args.pop().unwrap(), "gfx_rect_width")?;
+        let y = self.int32_for_runtime(args.pop().unwrap(), "gfx_rect_y")?;
+        let x = self.int32_for_runtime(args.pop().unwrap(), "gfx_rect_x")?;
+        let mut call_args = [x, y, width, height, r, g, b];
+        self.call_runtime(
+            self.runtime_abi.prime_gfx_rect,
+            self.runtime_abi.prime_gfx_rect_ty,
+            &mut call_args,
+            "gfx_rect",
+        );
+        Ok(Value::Unit)
+    }
+
+    pub(super) fn builtin_gfx_sprite(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 8 {
+            return Err("gfx_sprite expects 8 arguments".into());
+        }
+        let b = self.int32_for_runtime(args.pop().unwrap(), "gfx_sprite_b")?;
+        let g = self.int32_for_runtime(args.pop().unwrap(), "gfx_sprite_g")?;
+        let r = self.int32_for_runtime(args.pop().unwrap(), "gfx_sprite_r")?;
+        let height = self.int32_for_runtime(args.pop().unwrap(), "gfx_sprite_height")?;
+        let width = self.int32_for_runtime(args.pop().unwrap(), "gfx_sprite_width")?;
+        let y = self.int32_for_runtime(args.pop().unwrap(), "gfx_sprite_y")?;
+        let x = self.int32_for_runtime(args.pop().unwrap(), "gfx_sprite_x")?;
+        let (path, path_len) = self.string_parts_for_runtime(args.pop().unwrap(), "gfx_sprite")?;
+        let mut call_args = [path, path_len, x, y, width, height, r, g, b];
+        self.call_runtime(
+            self.runtime_abi.prime_gfx_sprite,
+            self.runtime_abi.prime_gfx_sprite_ty,
+            &mut call_args,
+            "gfx_sprite",
+        );
+        self.instantiate_enum_variant("Ok", vec![Value::Unit])
+    }
+
+    pub(super) fn builtin_gfx_text(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 7 {
+            return Err("gfx_text expects 7 arguments".into());
+        }
+        let b = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_b")?;
+        let g = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_g")?;
+        let r = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_r")?;
+        let scale = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_scale")?;
+        let y = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_y")?;
+        let x = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_x")?;
+        let (text, text_len) = self.string_parts_for_runtime(args.pop().unwrap(), "gfx_text")?;
+        let mut call_args = [text, text_len, x, y, scale, r, g, b];
+        self.call_runtime(
+            self.runtime_abi.prime_gfx_text,
+            self.runtime_abi.prime_gfx_text_ty,
+            &mut call_args,
+            "gfx_text",
+        );
+        Ok(Value::Unit)
+    }
+
+    pub(super) fn builtin_gfx_text_int(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 8 {
+            return Err("gfx_text_int expects 8 arguments".into());
+        }
+        let b = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_int_b")?;
+        let g = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_int_g")?;
+        let r = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_int_r")?;
+        let scale = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_int_scale")?;
+        let y = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_int_y")?;
+        let x = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_int_x")?;
+        let value = self.int32_for_runtime(args.pop().unwrap(), "gfx_text_int_value")?;
+        let (label, label_len) =
+            self.string_parts_for_runtime(args.pop().unwrap(), "gfx_text_int")?;
+        let mut call_args = [label, label_len, value, x, y, scale, r, g, b];
+        self.call_runtime(
+            self.runtime_abi.prime_gfx_text_int,
+            self.runtime_abi.prime_gfx_text_int_ty,
+            &mut call_args,
+            "gfx_text_int",
+        );
+        Ok(Value::Unit)
+    }
+
+    pub(super) fn builtin_gfx_present(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        if !args.is_empty() {
+            return Err("gfx_present expects 0 arguments".into());
+        }
+        let mut call_args: [LLVMValueRef; 0] = [];
+        let open = self.call_runtime(
+            self.runtime_abi.prime_gfx_present,
+            self.runtime_abi.prime_gfx_present_ty,
+            &mut call_args,
+            "gfx_present",
+        );
+        Ok(Value::Bool(BoolValue::new(open, None)))
+    }
+
+    pub(super) fn builtin_gfx_key_down(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("gfx_key_down expects 1 argument".into());
+        }
+        let (key, key_len) = self.string_parts_for_runtime(args.pop().unwrap(), "gfx_key_down")?;
+        let mut call_args = [key, key_len];
+        let down = self.call_runtime(
+            self.runtime_abi.prime_gfx_key_down,
+            self.runtime_abi.prime_gfx_key_down_ty,
+            &mut call_args,
+            "gfx_key_down",
+        );
+        Ok(Value::Bool(BoolValue::new(down, None)))
+    }
+
+    pub(super) fn builtin_gfx_key_pressed(
+        &mut self,
+        mut args: Vec<Value>,
     ) -> Result<Value, String> {
-        Err(format!(
-            "{feature} built-ins are interpreter runtime-only for now; use `prime-lang run`"
-        ))
+        if args.len() != 1 {
+            return Err("gfx_key_pressed expects 1 argument".into());
+        }
+        let (key, key_len) =
+            self.string_parts_for_runtime(args.pop().unwrap(), "gfx_key_pressed")?;
+        let mut call_args = [key, key_len];
+        let pressed = self.call_runtime(
+            self.runtime_abi.prime_gfx_key_pressed,
+            self.runtime_abi.prime_gfx_key_pressed_ty,
+            &mut call_args,
+            "gfx_key_pressed",
+        );
+        Ok(Value::Bool(BoolValue::new(pressed, None)))
+    }
+
+    pub(super) fn builtin_gfx_should_close(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        if !args.is_empty() {
+            return Err("gfx_should_close expects 0 arguments".into());
+        }
+        let mut call_args: [LLVMValueRef; 0] = [];
+        let closed = self.call_runtime(
+            self.runtime_abi.prime_gfx_should_close,
+            self.runtime_abi.prime_gfx_should_close_ty,
+            &mut call_args,
+            "gfx_should_close",
+        );
+        Ok(Value::Bool(BoolValue::new(closed, None)))
+    }
+
+    pub(super) fn builtin_gfx_close(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        if !args.is_empty() {
+            return Err("gfx_close expects 0 arguments".into());
+        }
+        let mut call_args: [LLVMValueRef; 0] = [];
+        self.call_runtime(
+            self.runtime_abi.prime_gfx_close,
+            self.runtime_abi.prime_gfx_close_ty,
+            &mut call_args,
+            "gfx_close",
+        );
+        Ok(Value::Unit)
+    }
+
+    pub(super) fn builtin_audio_play(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("audio_play expects 2 arguments".into());
+        }
+        let looped = self.bool_for_runtime(args.pop().unwrap(), "audio_play_looped")?;
+        let (path, path_len) = self.string_parts_for_runtime(args.pop().unwrap(), "audio_play")?;
+        let mut call_args = [path, path_len, looped];
+        let handle = self.call_runtime(
+            self.runtime_abi.prime_audio_play,
+            self.runtime_abi.prime_audio_play_ty,
+            &mut call_args,
+            "audio_play",
+        );
+        self.instantiate_enum_variant("Ok", vec![Value::Int(IntValue::new(handle, None))])
+    }
+
+    pub(super) fn builtin_audio_stop(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("audio_stop expects 1 argument".into());
+        }
+        let handle = self.int32_for_runtime(args.pop().unwrap(), "audio_stop_handle")?;
+        let mut call_args = [handle];
+        let stopped = self.call_runtime(
+            self.runtime_abi.prime_audio_stop,
+            self.runtime_abi.prime_audio_stop_ty,
+            &mut call_args,
+            "audio_stop",
+        );
+        Ok(Value::Bool(BoolValue::new(stopped, None)))
+    }
+
+    pub(super) fn builtin_audio_stop_all(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        if !args.is_empty() {
+            return Err("audio_stop_all expects 0 arguments".into());
+        }
+        let mut call_args: [LLVMValueRef; 0] = [];
+        self.call_runtime(
+            self.runtime_abi.prime_audio_stop_all,
+            self.runtime_abi.prime_audio_stop_all_ty,
+            &mut call_args,
+            "audio_stop_all",
+        );
+        Ok(Value::Unit)
+    }
+
+    pub(super) fn builtin_audio_set_volume(
+        &mut self,
+        mut args: Vec<Value>,
+    ) -> Result<Value, String> {
+        if args.len() != 2 {
+            return Err("audio_set_volume expects 2 arguments".into());
+        }
+        let volume = self.int32_for_runtime(args.pop().unwrap(), "audio_volume")?;
+        let handle = self.int32_for_runtime(args.pop().unwrap(), "audio_volume_handle")?;
+        let mut call_args = [handle, volume];
+        let updated = self.call_runtime(
+            self.runtime_abi.prime_audio_set_volume,
+            self.runtime_abi.prime_audio_set_volume_ty,
+            &mut call_args,
+            "audio_set_volume",
+        );
+        Ok(Value::Bool(BoolValue::new(updated, None)))
+    }
+
+    pub(super) fn builtin_audio_is_playing(
+        &mut self,
+        mut args: Vec<Value>,
+    ) -> Result<Value, String> {
+        if args.len() != 1 {
+            return Err("audio_is_playing expects 1 argument".into());
+        }
+        let handle = self.int32_for_runtime(args.pop().unwrap(), "audio_is_playing_handle")?;
+        let mut call_args = [handle];
+        let playing = self.call_runtime(
+            self.runtime_abi.prime_audio_is_playing,
+            self.runtime_abi.prime_audio_is_playing_ty,
+            &mut call_args,
+            "audio_is_playing",
+        );
+        Ok(Value::Bool(BoolValue::new(playing, None)))
     }
 
     pub(super) fn builtin_now_ms(&mut self, args: Vec<Value>) -> Result<Value, String> {

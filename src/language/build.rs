@@ -2788,8 +2788,9 @@ impl BuildInterpreter {
                     Err(msg) => Ok(self.wrap_enum("Err", vec![BuildValue::String(msg)])),
                 }
             }
-            "gfx_open" | "gfx_clear" | "gfx_rect" | "gfx_sprite" | "gfx_text" | "gfx_present"
-            | "gfx_key_down" | "gfx_key_pressed" | "gfx_should_close" | "gfx_close" => {
+            "gfx_open" | "gfx_clear" | "gfx_rect" | "gfx_sprite" | "gfx_text"
+            | "gfx_text_int" | "gfx_present" | "gfx_key_down" | "gfx_key_pressed"
+            | "gfx_should_close" | "gfx_close" => {
                 Err("graphics built-ins are runtime-only; use `prime-lang run`".into())
             }
             "audio_play" | "audio_stop" | "audio_stop_all" | "audio_set_volume"
