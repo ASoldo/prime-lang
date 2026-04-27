@@ -1,5 +1,5 @@
 use image::ImageReader;
-use minifb::{Key, KeyRepeat, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, ScaleMode, Window, WindowOptions};
 use std::collections::HashMap;
 use std::env;
 use std::sync::{Mutex, MutexGuard};
@@ -76,16 +76,18 @@ pub(crate) fn open(title: &str, width: i32, height: i32) -> Result<(), String> {
     let runtime = if should_use_headless() {
         GraphicsRuntime::Headless(buffer)
     } else {
-        let window = Window::new(
+        let mut window = Window::new(
             title,
             width,
             height,
             WindowOptions {
-                resize: false,
+                resize: true,
+                scale_mode: ScaleMode::Center,
                 ..WindowOptions::default()
             },
         )
         .map_err(|err| format!("failed to open graphics window: {err}"))?;
+        window.set_background_color(3, 9, 19);
         GraphicsRuntime::Window(Box::new(WindowRuntime { window, buffer }))
     };
     *runtime_slot()? = Some(runtime);
