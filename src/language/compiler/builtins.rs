@@ -1097,6 +1097,16 @@ impl Compiler {
         }
     }
 
+    pub(super) fn builtin_runtime_only(
+        &mut self,
+        feature: &str,
+        _args: Vec<Value>,
+    ) -> Result<Value, String> {
+        Err(format!(
+            "{feature} built-ins are interpreter runtime-only for now; use `prime-lang run`"
+        ))
+    }
+
     pub(super) fn builtin_now_ms(&mut self, args: Vec<Value>) -> Result<Value, String> {
         if !args.is_empty() {
             return Err("now_ms expects 0 arguments".into());

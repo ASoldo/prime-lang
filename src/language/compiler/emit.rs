@@ -2572,6 +2572,16 @@ impl Compiler {
             "fs_write_bytes" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_fs_write_bytes(values)))
             }
+            "gfx_open" | "gfx_clear" | "gfx_rect" | "gfx_sprite" | "gfx_text" | "gfx_present"
+            | "gfx_key_down" | "gfx_key_pressed" | "gfx_should_close" | "gfx_close" => {
+                Some(self.invoke_builtin(args, |this, values| {
+                    this.builtin_runtime_only("graphics", values)
+                }))
+            }
+            "audio_play" | "audio_stop" | "audio_stop_all" | "audio_set_volume"
+            | "audio_is_playing" => Some(self.invoke_builtin(args, |this, values| {
+                this.builtin_runtime_only("audio", values)
+            })),
             "pin_mode" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_pin_mode(values)))
             }

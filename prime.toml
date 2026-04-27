@@ -24,6 +24,7 @@ members = [
   "workspace/demos/parallel_demo",
   "workspace/demos/fs_demo",
   "workspace/demos/time_demo",
+  "workspace/demos/tetris",
   "workspace/demos/iter_demo",
   "workspace/demos/input",
   "workspace/demos/pointer_demo",

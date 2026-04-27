@@ -841,6 +841,21 @@ pub fn keyword_completion_items(
         ("fs_read", "Built-in file helper"),
         ("fs_write", "Built-in file helper"),
         ("fs_write_bytes", "Built-in binary file helper"),
+        ("gfx_open", "Native graphics helper"),
+        ("gfx_clear", "Native graphics helper"),
+        ("gfx_rect", "Native graphics helper"),
+        ("gfx_sprite", "Native graphics helper"),
+        ("gfx_text", "Native graphics helper"),
+        ("gfx_present", "Native graphics helper"),
+        ("gfx_key_down", "Native graphics input helper"),
+        ("gfx_key_pressed", "Native graphics input helper"),
+        ("gfx_should_close", "Native graphics window helper"),
+        ("gfx_close", "Native graphics window helper"),
+        ("audio_play", "Native audio playback helper"),
+        ("audio_stop", "Native audio playback helper"),
+        ("audio_stop_all", "Native audio playback helper"),
+        ("audio_set_volume", "Native audio playback helper"),
+        ("audio_is_playing", "Native audio playback helper"),
         ("ptr", "Built-in pointer helper"),
         ("ptr_mut", "Built-in pointer helper"),
         ("cast", "Built-in cast helper"),
@@ -870,7 +885,27 @@ pub fn keyword_completion_items(
         ("abs", "Built-in math helper"),
     ];
     let embedded_target = target.map(|t| t.is_embedded()).unwrap_or(false);
-    const EMBEDDED_HOST_ONLY: &[&str] = &["fs_exists", "fs_read", "fs_write", "fs_write_bytes"];
+    const EMBEDDED_HOST_ONLY: &[&str] = &[
+        "fs_exists",
+        "fs_read",
+        "fs_write",
+        "fs_write_bytes",
+        "gfx_open",
+        "gfx_clear",
+        "gfx_rect",
+        "gfx_sprite",
+        "gfx_text",
+        "gfx_present",
+        "gfx_key_down",
+        "gfx_key_pressed",
+        "gfx_should_close",
+        "gfx_close",
+        "audio_play",
+        "audio_stop",
+        "audio_stop_all",
+        "audio_set_volume",
+        "audio_is_playing",
+    ];
     for (label, detail) in BUILTIN_FUNCS.iter().filter(|(name, _)| {
         prefix_matches(name, prefix)
             && !(embedded_target && EMBEDDED_HOST_ONLY.iter().any(|host_only| host_only == name))

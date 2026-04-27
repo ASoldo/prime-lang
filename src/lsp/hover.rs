@@ -536,6 +536,84 @@ fn builtin_function_docs(name: &str) -> Option<String> {
                 "fn fs_write_bytes(path: string, contents: []uint8) -> Result[(), string]"
             )
         )),
+        "gfx_open" => Some(format!(
+            "Native graphics helper\n{}",
+            code_block(
+                "prime",
+                "fn gfx_open(title: string, width: int32, height: int32) -> Result[(), string]"
+            )
+        )),
+        "gfx_clear" => Some(format!(
+            "Native graphics helper\n{}",
+            code_block("prime", "fn gfx_clear(r: int32, g: int32, b: int32) -> ()")
+        )),
+        "gfx_rect" => Some(format!(
+            "Native graphics helper\n{}",
+            code_block(
+                "prime",
+                "fn gfx_rect(x: int32, y: int32, width: int32, height: int32, r: int32, g: int32, b: int32) -> ()"
+            )
+        )),
+        "gfx_sprite" => Some(format!(
+            "Native graphics helper\n{}",
+            code_block(
+                "prime",
+                "fn gfx_sprite(path: string, x: int32, y: int32, width: int32, height: int32, r: int32, g: int32, b: int32) -> Result[(), string]"
+            )
+        )),
+        "gfx_text" => Some(format!(
+            "Native graphics helper\n{}",
+            code_block(
+                "prime",
+                "fn gfx_text(text: string, x: int32, y: int32, scale: int32, r: int32, g: int32, b: int32) -> ()"
+            )
+        )),
+        "gfx_present" => Some(format!(
+            "Native graphics helper\n{}",
+            code_block("prime", "fn gfx_present() -> bool")
+        )),
+        "gfx_key_down" => Some(format!(
+            "Native graphics input helper\n{}",
+            code_block("prime", "fn gfx_key_down(key: string) -> bool")
+        )),
+        "gfx_key_pressed" => Some(format!(
+            "Native graphics input helper\n{}",
+            code_block("prime", "fn gfx_key_pressed(key: string) -> bool")
+        )),
+        "gfx_should_close" => Some(format!(
+            "Native graphics window helper\n{}",
+            code_block("prime", "fn gfx_should_close() -> bool")
+        )),
+        "gfx_close" => Some(format!(
+            "Native graphics window helper\n{}",
+            code_block("prime", "fn gfx_close() -> ()")
+        )),
+        "audio_play" => Some(format!(
+            "Native audio playback helper\n{}",
+            code_block(
+                "prime",
+                "fn audio_play(path: string, looped: bool) -> Result[int32, string]"
+            )
+        )),
+        "audio_stop" => Some(format!(
+            "Native audio playback helper\n{}",
+            code_block("prime", "fn audio_stop(handle: int32) -> bool")
+        )),
+        "audio_stop_all" => Some(format!(
+            "Native audio playback helper\n{}",
+            code_block("prime", "fn audio_stop_all() -> ()")
+        )),
+        "audio_set_volume" => Some(format!(
+            "Native audio playback helper\n{}",
+            code_block(
+                "prime",
+                "fn audio_set_volume(handle: int32, volume_percent: int32) -> bool"
+            )
+        )),
+        "audio_is_playing" => Some(format!(
+            "Native audio playback helper\n{}",
+            code_block("prime", "fn audio_is_playing(handle: int32) -> bool")
+        )),
         "ptr" => Some(format!(
             "Built-in pointer helper\n{}\nCreates a raw pointer from an existing reference without changing ownership.",
             code_block("prime", "fn ptr[T](value: &T) -> *T")

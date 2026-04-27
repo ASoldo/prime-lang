@@ -3247,6 +3247,198 @@ impl Checker {
                     vec![TypeExpr::Unit, string_type()],
                 ))
             }
+            "gfx_open" => {
+                if args.len() != 3 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`gfx_open` expects 3 arguments (title, width, height)",
+                    ));
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![TypeExpr::Unit, string_type()],
+                    ));
+                }
+                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                self.check_expression(module, &args[1], Some(&int_type()), returns, env);
+                self.check_expression(module, &args[2], Some(&int_type()), returns, env);
+                Some(TypeExpr::Named(
+                    "Result".into(),
+                    vec![TypeExpr::Unit, string_type()],
+                ))
+            }
+            "gfx_clear" => {
+                if args.len() != 3 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`gfx_clear` expects 3 arguments (r, g, b)",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                for arg in args {
+                    self.check_expression(module, arg, Some(&int_type()), returns, env);
+                }
+                Some(TypeExpr::Unit)
+            }
+            "gfx_rect" => {
+                if args.len() != 7 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`gfx_rect` expects 7 arguments (x, y, width, height, r, g, b)",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                for arg in args {
+                    self.check_expression(module, arg, Some(&int_type()), returns, env);
+                }
+                Some(TypeExpr::Unit)
+            }
+            "gfx_sprite" => {
+                if args.len() != 8 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`gfx_sprite` expects 8 arguments (path, x, y, width, height, r, g, b)",
+                    ));
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![TypeExpr::Unit, string_type()],
+                    ));
+                }
+                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                for arg in args.iter().skip(1) {
+                    self.check_expression(module, arg, Some(&int_type()), returns, env);
+                }
+                Some(TypeExpr::Named(
+                    "Result".into(),
+                    vec![TypeExpr::Unit, string_type()],
+                ))
+            }
+            "gfx_text" => {
+                if args.len() != 7 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`gfx_text` expects 7 arguments (text, x, y, scale, r, g, b)",
+                    ));
+                    return Some(TypeExpr::Unit);
+                }
+                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                for arg in args.iter().skip(1) {
+                    self.check_expression(module, arg, Some(&int_type()), returns, env);
+                }
+                Some(TypeExpr::Unit)
+            }
+            "gfx_present" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`gfx_present` expects 0 arguments",
+                    ));
+                }
+                Some(bool_type())
+            }
+            "gfx_key_down" | "gfx_key_pressed" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`{}` expects 1 argument (key)", name),
+                    ));
+                    return Some(bool_type());
+                }
+                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                Some(bool_type())
+            }
+            "gfx_should_close" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`gfx_should_close` expects 0 arguments",
+                    ));
+                }
+                Some(bool_type())
+            }
+            "gfx_close" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`gfx_close` expects 0 arguments",
+                    ));
+                }
+                Some(TypeExpr::Unit)
+            }
+            "audio_play" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`audio_play` expects 2 arguments (path, looped)",
+                    ));
+                    return Some(TypeExpr::Named(
+                        "Result".into(),
+                        vec![int_type(), string_type()],
+                    ));
+                }
+                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                self.check_expression(module, &args[1], Some(&bool_type()), returns, env);
+                Some(TypeExpr::Named(
+                    "Result".into(),
+                    vec![int_type(), string_type()],
+                ))
+            }
+            "audio_stop" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`audio_stop` expects 1 argument (handle)",
+                    ));
+                    return Some(bool_type());
+                }
+                self.check_expression(module, &args[0], Some(&int_type()), returns, env);
+                Some(bool_type())
+            }
+            "audio_stop_all" => {
+                if !args.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`audio_stop_all` expects 0 arguments",
+                    ));
+                }
+                Some(TypeExpr::Unit)
+            }
+            "audio_set_volume" => {
+                if args.len() != 2 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`audio_set_volume` expects 2 arguments (handle, volume_percent)",
+                    ));
+                    return Some(bool_type());
+                }
+                self.check_expression(module, &args[0], Some(&int_type()), returns, env);
+                self.check_expression(module, &args[1], Some(&int_type()), returns, env);
+                Some(bool_type())
+            }
+            "audio_is_playing" => {
+                if args.len() != 1 {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`audio_is_playing` expects 1 argument (handle)",
+                    ));
+                    return Some(bool_type());
+                }
+                self.check_expression(module, &args[0], Some(&int_type()), returns, env);
+                Some(bool_type())
+            }
             "pin_mode" => {
                 if args.len() != 2 {
                     self.errors.push(TypeError::new(
@@ -4516,6 +4708,21 @@ impl Checker {
                 | "fs_read"
                 | "fs_write"
                 | "fs_write_bytes"
+                | "gfx_open"
+                | "gfx_clear"
+                | "gfx_rect"
+                | "gfx_sprite"
+                | "gfx_text"
+                | "gfx_present"
+                | "gfx_key_down"
+                | "gfx_key_pressed"
+                | "gfx_should_close"
+                | "gfx_close"
+                | "audio_play"
+                | "audio_stop"
+                | "audio_stop_all"
+                | "audio_set_volume"
+                | "audio_is_playing"
                 | "ptr"
                 | "ptr_mut"
                 | "cast"
@@ -4548,6 +4755,21 @@ impl Checker {
                 | "fs_read"
                 | "fs_write"
                 | "fs_write_bytes"
+                | "gfx_open"
+                | "gfx_clear"
+                | "gfx_rect"
+                | "gfx_sprite"
+                | "gfx_text"
+                | "gfx_present"
+                | "gfx_key_down"
+                | "gfx_key_pressed"
+                | "gfx_should_close"
+                | "gfx_close"
+                | "audio_play"
+                | "audio_stop"
+                | "audio_stop_all"
+                | "audio_set_volume"
+                | "audio_is_playing"
         )
     }
 
