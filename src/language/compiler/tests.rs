@@ -63,6 +63,41 @@ fn with_build_parallel<T>(f: impl FnOnce() -> T) -> T {
 }
 
 #[test]
+fn host_time_builtins_lower_to_runtime_calls() {
+    let source = r#"
+module tests::time;
+
+fn main() {
+  let int64 start = now_ms();
+  sleep_ms(16);
+  let int64 end = now_ms();
+  let int64 elapsed = end - start;
+}
+"#;
+    let module = parse_module("tests::time", PathBuf::from("time.prime"), source).expect("parse");
+    let program = Program {
+        modules: vec![module],
+    };
+    let mut compiler = Compiler::new();
+    compiler
+        .compile_program(&program)
+        .expect("host timing builtins should compile");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ir_path = dir.path().join("time.ll");
+    compiler.write_ir_to(&ir_path).expect("write ir");
+    let ir = std::fs::read_to_string(ir_path).expect("read ir");
+    assert!(
+        ir.matches("call i128 @prime_now_ms()").count() >= 2,
+        "expected now_ms to call the runtime clock:\n{ir}"
+    );
+    assert!(
+        ir.contains("call i32 @prime_delay_ms(i32 16)"),
+        "expected sleep_ms to call the runtime delay:\n{ir}"
+    );
+}
+
+#[test]
 fn build_snapshot_captures_basic_constants() {
     let mut compiler = Compiler::new();
     compiler.push_scope();

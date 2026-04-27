@@ -1514,7 +1514,7 @@ impl Compiler {
         if !args.is_empty() {
             return Err("now_ms expects 0 arguments".into());
         }
-        if self.target.is_esp32c3() {
+        if self.target.is_host() || self.target.is_esp32c3() {
             let mut call_args: [LLVMValueRef; 0] = [];
             let now = self.call_runtime(
                 self.runtime_abi.prime_now_ms,
@@ -1530,13 +1530,28 @@ impl Compiler {
     }
 
     pub(super) fn builtin_sleep_ms(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
-        if self.target.is_esp32c3() {
-            return self.builtin_delay_ms(args);
-        }
         if args.len() != 1 {
             return Err("sleep_ms expects 1 argument".into());
         }
         let millis = self.expect_int(args.pop().unwrap())?;
+        if self.target.is_host() || self.target.is_esp32c3() {
+            let millis_cast = unsafe {
+                LLVMBuildIntCast(
+                    self.builder,
+                    millis.llvm(),
+                    self.i32_type,
+                    CString::new("sleep_ms_arg").unwrap().as_ptr(),
+                )
+            };
+            let mut call_args = [millis_cast];
+            self.call_runtime(
+                self.runtime_abi.prime_delay_ms,
+                self.runtime_abi.prime_delay_ms_ty,
+                &mut call_args,
+                "sleep_ms",
+            );
+            return Ok(Value::Unit);
+        }
         let constant = millis
             .constant()
             .ok_or_else(|| "sleep_ms expects constant integer in build mode".to_string())?;
