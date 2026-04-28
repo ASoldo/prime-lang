@@ -1,6 +1,31 @@
 use super::*;
 
 impl Compiler {
+    pub(super) fn build_entry_alloca(&mut self, ty: LLVMTypeRef, name: &str) -> LLVMValueRef {
+        let name = CString::new(name).unwrap();
+        unsafe {
+            let current_block = LLVMGetInsertBlock(self.builder);
+            if current_block.is_null() {
+                return LLVMBuildAlloca(self.builder, ty, name.as_ptr());
+            }
+            let function = LLVMGetBasicBlockParent(current_block);
+            if function.is_null() {
+                return LLVMBuildAlloca(self.builder, ty, name.as_ptr());
+            }
+            let entry = LLVMGetFirstBasicBlock(function);
+            let slot_builder = LLVMCreateBuilderInContext(self.context);
+            let first_inst = LLVMGetFirstInstruction(entry);
+            if first_inst.is_null() {
+                LLVMPositionBuilderAtEnd(slot_builder, entry);
+            } else {
+                LLVMPositionBuilderBefore(slot_builder, first_inst);
+            }
+            let alloca = LLVMBuildAlloca(slot_builder, ty, name.as_ptr());
+            LLVMDisposeBuilder(slot_builder);
+            alloca
+        }
+    }
+
     pub(super) fn emit_out_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         self.print_value(value)?;
         if self.target.is_embedded() {

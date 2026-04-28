@@ -2474,6 +2474,9 @@ impl Compiler {
             "slice_get" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_slice_get(values)))
             }
+            "slice_get_int" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_slice_get_int(values)))
+            }
             "slice_remove" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_slice_remove(values)))
             }
@@ -2569,6 +2572,57 @@ impl Compiler {
             "fs_write" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_fs_write(values)))
             }
+            "fs_write_bytes" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_fs_write_bytes(values)))
+            }
+            "gfx_open" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_open(values)))
+            }
+            "gfx_clear" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_clear(values)))
+            }
+            "gfx_rect" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_rect(values)))
+            }
+            "gfx_sprite" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_sprite(values)))
+            }
+            "gfx_text" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_text(values)))
+            }
+            "gfx_text_int" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_text_int(values)))
+            }
+            "gfx_present" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_present(values)))
+            }
+            "gfx_key_down" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_key_down(values)))
+            }
+            "gfx_key_pressed" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_key_pressed(values)))
+            }
+            "gfx_should_close" => Some(
+                self.invoke_builtin(args, |this, values| this.builtin_gfx_should_close(values)),
+            ),
+            "gfx_close" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_close(values)))
+            }
+            "audio_play" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_audio_play(values)))
+            }
+            "audio_stop" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_audio_stop(values)))
+            }
+            "audio_stop_all" => {
+                Some(self.invoke_builtin(args, |this, values| this.builtin_audio_stop_all(values)))
+            }
+            "audio_set_volume" => Some(
+                self.invoke_builtin(args, |this, values| this.builtin_audio_set_volume(values)),
+            ),
+            "audio_is_playing" => Some(
+                self.invoke_builtin(args, |this, values| this.builtin_audio_is_playing(values)),
+            ),
             "pin_mode" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_pin_mode(values)))
             }
@@ -2661,10 +2715,17 @@ impl Compiler {
                         let then_eval = self.execute_block_contents(&if_expr.then_branch)?;
                         self.exit_scope()?;
                         match then_eval {
-                            BlockEval::Flow(flow @ FlowSignal::Return(_))
-                            | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                LLVMPositionBuilderAtEnd(self.builder, merge_block);
-                                return Ok(EvalOutcome::Flow(flow));
+                            BlockEval::Flow(FlowSignal::Return(_))
+                            | BlockEval::Flow(FlowSignal::Propagate(_)) => {
+                                let current_block = LLVMGetInsertBlock(self.builder);
+                                if current_block.is_null()
+                                    || LLVMGetBasicBlockTerminator(current_block).is_null()
+                                {
+                                    return Err(
+                                        "return/propagate in dynamic if branch did not terminate block"
+                                            .into(),
+                                    );
+                                }
                             }
                             BlockEval::Value(val) => {
                                 then_value = Some(val);
@@ -2693,10 +2754,18 @@ impl Compiler {
                                     let else_eval = self.execute_block_contents(block)?;
                                     self.exit_scope()?;
                                     match else_eval {
-                                        BlockEval::Flow(flow @ FlowSignal::Return(_))
-                                        | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                            LLVMPositionBuilderAtEnd(self.builder, merge_block);
-                                            return Ok(EvalOutcome::Flow(flow));
+                                        BlockEval::Flow(FlowSignal::Return(_))
+                                        | BlockEval::Flow(FlowSignal::Propagate(_)) => {
+                                            let current_block = LLVMGetInsertBlock(self.builder);
+                                            if current_block.is_null()
+                                                || LLVMGetBasicBlockTerminator(current_block)
+                                                    .is_null()
+                                            {
+                                                return Err(
+                                                    "return/propagate in dynamic if branch did not terminate block"
+                                                        .into(),
+                                                );
+                                            }
                                         }
                                         BlockEval::Value(val) => {
                                             else_value = Some(val);
@@ -2719,9 +2788,17 @@ impl Compiler {
                                 }
                                 ElseBranch::ElseIf(nested) => {
                                     match self.emit_if_expression(nested)? {
-                                        EvalOutcome::Flow(flow) => {
-                                            LLVMPositionBuilderAtEnd(self.builder, merge_block);
-                                            return Ok(EvalOutcome::Flow(flow));
+                                        EvalOutcome::Flow(_) => {
+                                            let current_block = LLVMGetInsertBlock(self.builder);
+                                            if current_block.is_null()
+                                                || LLVMGetBasicBlockTerminator(current_block)
+                                                    .is_null()
+                                            {
+                                                return Err(
+                                                    "flow in dynamic else-if branch did not terminate block"
+                                                        .into(),
+                                                );
+                                            }
                                         }
                                         EvalOutcome::Value(val) => {
                                             else_value = Some(val);
@@ -3766,6 +3843,9 @@ impl Compiler {
             (Value::Float(a), Value::Int(b)) => {
                 let converted = self.int_to_float(&b)?;
                 self.eval_float_binary(op, a, converted)
+            }
+            (Value::Str(a), Value::Str(b)) if matches!(op, BinaryOp::Add) => {
+                self.build_string_constant(format!("{}{}", a.text, b.text))
             }
             (Value::Str(a), Value::Str(b)) if matches!(op, BinaryOp::Eq | BinaryOp::NotEq) => {
                 let cmp = (*a.text == *b.text) == matches!(op, BinaryOp::Eq);

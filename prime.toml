@@ -24,6 +24,7 @@ members = [
   "workspace/demos/parallel_demo",
   "workspace/demos/fs_demo",
   "workspace/demos/time_demo",
+  "workspace/demos/tetris",
   "workspace/demos/iter_demo",
   "workspace/demos/input",
   "workspace/demos/pointer_demo",
@@ -31,6 +32,8 @@ members = [
   "workspace/demos/drop_demo",
   "workspace/demos/no_std_parity",
   "workspace/demos/bare_metal_embedded",
+  "workspace/plugins/diagram",
+  "workspace/plugins/diagram_demo",
   "workspace/tests/parity",
   "workspace/tests/build_input_demo",
   "workspace/tests/basic",
@@ -39,5 +42,6 @@ members = [
   "workspace/tests/macros",
   "workspace/tests/drop",
   "workspace/tests/fs_time_iter",
+  "workspace/tests/diagram_plugin",
   "workspace/libpkg_a",
 ]

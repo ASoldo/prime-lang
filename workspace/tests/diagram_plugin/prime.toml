@@ -1,0 +1,12 @@
+manifest_version = "3"
+
+[package]
+name = "tests::diagram_plugin"
+version = "0.1.0"
+
+[libraries]
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }
+prime_diagram = { name = "prime::diagram", path = "../../plugins/diagram/diagram.prime", visibility = "pub" }
+
+[tests]
+tests_diagram_plugin = { name = "tests::diagram_plugin", path = "diagram_plugin.prime", visibility = "pub" }

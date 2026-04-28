@@ -5,8 +5,10 @@ use crate::language::{
 use crate::project::Package;
 use crate::runtime::{
     async_runtime::AsyncRuntime,
+    audio,
     environment::{CleanupAction, DropRecord, Environment},
     error::{RuntimeError, RuntimeResult},
+    graphics,
     platform::{platform, std_builtins_enabled, std_disabled_message},
     value::{
         BoxValue, CancelTokenValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue,
@@ -457,7 +459,7 @@ impl Interpreter {
             }
             return self.call_in(args, &type_args[0]);
         }
-        let allows_type_args = name == "channel";
+        let allows_type_args = matches!(name, "channel" | "cast");
         if !allows_type_args && !type_args.is_empty() && self.is_builtin_name(name) {
             return Err(RuntimeError::Unsupported {
                 message: format!("`{}` does not accept type arguments", name),
@@ -488,7 +490,7 @@ impl Interpreter {
         self.module_stack.push(info.module.clone());
         let result = (|| {
             self.env.push_scope();
-            for (param, value) in info.def.params.iter().zip(args.into_iter()) {
+            for (param, value) in info.def.params.iter().zip(args) {
                 self.declare_with_drop(
                     &param.name,
                     value,
@@ -567,7 +569,7 @@ impl Interpreter {
         for captured in &closure.captures {
             self.declare_with_drop(&captured.name, captured.value.clone(), captured.mutable)?;
         }
-        for (param, value) in closure.params.iter().zip(args.into_iter()) {
+        for (param, value) in closure.params.iter().zip(args) {
             self.declare_with_drop(&param.name, value, param.mutability == Mutability::Mutable)?;
         }
         let result = match &closure.body {
@@ -1065,6 +1067,7 @@ impl Interpreter {
             "slice_push" => self.builtin_slice_push(args),
             "slice_len" => self.builtin_slice_len(args),
             "slice_get" => self.builtin_slice_get(args),
+            "slice_get_int" => self.builtin_slice_get_int(args),
             "map_new" => self.builtin_map_new(args),
             "map_insert" => self.builtin_map_insert(args),
             "map_get" => self.builtin_map_get(args),
@@ -1105,6 +1108,23 @@ impl Interpreter {
             "fs_exists" => self.builtin_fs_exists(args),
             "fs_read" => self.builtin_fs_read(args),
             "fs_write" => self.builtin_fs_write(args),
+            "fs_write_bytes" => self.builtin_fs_write_bytes(args),
+            "gfx_open" => self.builtin_gfx_open(args),
+            "gfx_clear" => self.builtin_gfx_clear(args),
+            "gfx_rect" => self.builtin_gfx_rect(args),
+            "gfx_sprite" => self.builtin_gfx_sprite(args),
+            "gfx_text" => self.builtin_gfx_text(args),
+            "gfx_text_int" => self.builtin_gfx_text_int(args),
+            "gfx_present" => self.builtin_gfx_present(args),
+            "gfx_key_down" => self.builtin_gfx_key_down(args),
+            "gfx_key_pressed" => self.builtin_gfx_key_pressed(args),
+            "gfx_should_close" => self.builtin_gfx_should_close(args),
+            "gfx_close" => self.builtin_gfx_close(args),
+            "audio_play" => self.builtin_audio_play(args),
+            "audio_stop" => self.builtin_audio_stop(args),
+            "audio_stop_all" => self.builtin_audio_stop_all(args),
+            "audio_set_volume" => self.builtin_audio_set_volume(args),
+            "audio_is_playing" => self.builtin_audio_is_playing(args),
             "pin_mode" => self.builtin_pin_mode(args),
             "digital_write" => self.builtin_digital_write(args),
             "delay_ms" => self.builtin_delay_ms(args),
@@ -1216,6 +1236,7 @@ impl Interpreter {
                 | "slice_push"
                 | "slice_len"
                 | "slice_get"
+                | "slice_get_int"
                 | "map_new"
                 | "map_insert"
                 | "map_get"
@@ -1249,6 +1270,23 @@ impl Interpreter {
                 | "fs_exists"
                 | "fs_read"
                 | "fs_write"
+                | "fs_write_bytes"
+                | "gfx_open"
+                | "gfx_clear"
+                | "gfx_rect"
+                | "gfx_sprite"
+                | "gfx_text"
+                | "gfx_text_int"
+                | "gfx_present"
+                | "gfx_key_down"
+                | "gfx_key_pressed"
+                | "gfx_should_close"
+                | "gfx_close"
+                | "audio_play"
+                | "audio_stop"
+                | "audio_stop_all"
+                | "audio_set_volume"
+                | "audio_is_playing"
                 | "pin_mode"
                 | "digital_write"
         )
@@ -1371,6 +1409,40 @@ impl Interpreter {
         let value = value.unwrap();
         let some = self.instantiate_enum("Option", "Some", vec![value])?;
         Ok(vec![some])
+    }
+
+    fn builtin_slice_get_int(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("slice_get_int", &args, 3)?;
+        let slice = Self::expect_slice("slice_get_int", args.remove(0))?;
+        let index = match args.remove(0) {
+            Value::Int(i) => i,
+            _ => {
+                return Err(RuntimeError::TypeMismatch {
+                    message: "slice_get_int expects integer index".into(),
+                });
+            }
+        };
+        let fallback = match args.remove(0) {
+            Value::Int(i) => i,
+            _ => {
+                return Err(RuntimeError::TypeMismatch {
+                    message: "slice_get_int expects integer fallback".into(),
+                });
+            }
+        };
+        if index < 0 {
+            return Ok(vec![Value::Int(fallback)]);
+        }
+        match slice.get(index as usize) {
+            Some(Value::Int(value)) => Ok(vec![Value::Int(value)]),
+            Some(other) => Err(RuntimeError::TypeMismatch {
+                message: format!(
+                    "slice_get_int expected int element, found {}",
+                    self.describe_value(&other)
+                ),
+            }),
+            None => Ok(vec![Value::Int(fallback)]),
+        }
     }
 
     fn builtin_map_new(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
@@ -1501,15 +1573,7 @@ impl Interpreter {
     fn expect_string_or_format(name: &str, value: Value) -> RuntimeResult<String> {
         match value {
             Value::String(s) => Ok(s),
-            Value::FormatTemplate(template) => {
-                let mut buf = String::new();
-                for segment in template.segments {
-                    if let FormatRuntimeSegment::Literal(lit) = segment {
-                        buf.push_str(&lit);
-                    }
-                }
-                Ok(buf)
-            }
+            Value::FormatTemplate(template) => Ok(Self::render_format_template_static(template)),
             Value::Reference(reference) => {
                 let cloned = reference.cell.lock().unwrap().clone();
                 Self::expect_string_or_format(name, cloned)
@@ -1517,6 +1581,30 @@ impl Interpreter {
             _ => Err(RuntimeError::TypeMismatch {
                 message: format!("{name} expects string"),
             }),
+        }
+    }
+
+    fn render_format_template_static(template: FormatTemplateValue) -> String {
+        let mut buf = String::new();
+        for segment in template.segments {
+            match segment {
+                FormatRuntimeSegment::Literal(lit) => buf.push_str(&lit),
+                FormatRuntimeSegment::Named(value) => buf.push_str(&value.to_string()),
+                FormatRuntimeSegment::Implicit => buf.push_str("{}"),
+            }
+        }
+        buf
+    }
+
+    fn value_as_string(value: Value) -> Option<String> {
+        match value {
+            Value::String(s) => Some(s),
+            Value::FormatTemplate(template) => Some(Self::render_format_template_static(template)),
+            Value::Reference(reference) => {
+                let cloned = reference.cell.lock().unwrap().clone();
+                Self::value_as_string(cloned)
+            }
+            _ => None,
         }
     }
 
@@ -2206,6 +2294,227 @@ impl Interpreter {
             Err(err) => {
                 let err_val =
                     self.instantiate_enum("Result", "Err", vec![Value::String(err.to_string())])?;
+                Ok(vec![err_val])
+            }
+        }
+    }
+
+    fn builtin_fs_write_bytes(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("fs_write_bytes")?;
+        self.expect_arity("fs_write_bytes", &args, 2)?;
+        let path = Self::expect_string_or_format("fs_write_bytes", args.remove(0))?;
+        let contents = Self::expect_slice("fs_write_bytes", args.remove(0))?;
+        let mut bytes = Vec::with_capacity(contents.len());
+        for idx in 0..contents.len() {
+            let Some(value) = contents.get(idx) else {
+                continue;
+            };
+            let byte = Self::expect_int_value("fs_write_bytes", value)?;
+            if !(0..=255).contains(&byte) {
+                return Err(RuntimeError::TypeMismatch {
+                    message: format!("fs_write_bytes expects bytes in range 0..=255, found {byte}"),
+                });
+            }
+            bytes.push(byte as u8);
+        }
+        match platform().fs_write_bytes(&path, &bytes) {
+            Ok(()) => {
+                let ok = self.instantiate_enum("Result", "Ok", vec![Value::Unit])?;
+                Ok(vec![ok])
+            }
+            Err(err) => {
+                let err_val =
+                    self.instantiate_enum("Result", "Err", vec![Value::String(err.to_string())])?;
+                Ok(vec![err_val])
+            }
+        }
+    }
+
+    fn builtin_gfx_open(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_open")?;
+        self.expect_arity("gfx_open", &args, 3)?;
+        let title = Self::expect_string_or_format("gfx_open", args.remove(0))?;
+        let width = self.expect_i32_value("gfx_open", args.remove(0))?;
+        let height = self.expect_i32_value("gfx_open", args.remove(0))?;
+        self.unit_result(graphics::open(&title, width, height))
+    }
+
+    fn builtin_gfx_clear(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_clear")?;
+        self.expect_arity("gfx_clear", &args, 3)?;
+        let r = self.expect_i32_value("gfx_clear", args.remove(0))?;
+        let g = self.expect_i32_value("gfx_clear", args.remove(0))?;
+        let b = self.expect_i32_value("gfx_clear", args.remove(0))?;
+        graphics::clear(r, g, b).map_err(|message| RuntimeError::Unsupported { message })?;
+        Ok(vec![Value::Unit])
+    }
+
+    fn builtin_gfx_rect(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_rect")?;
+        self.expect_arity("gfx_rect", &args, 7)?;
+        let x = self.expect_i32_value("gfx_rect", args.remove(0))?;
+        let y = self.expect_i32_value("gfx_rect", args.remove(0))?;
+        let width = self.expect_i32_value("gfx_rect", args.remove(0))?;
+        let height = self.expect_i32_value("gfx_rect", args.remove(0))?;
+        let r = self.expect_i32_value("gfx_rect", args.remove(0))?;
+        let g = self.expect_i32_value("gfx_rect", args.remove(0))?;
+        let b = self.expect_i32_value("gfx_rect", args.remove(0))?;
+        graphics::rect(x, y, width, height, r, g, b)
+            .map_err(|message| RuntimeError::Unsupported { message })?;
+        Ok(vec![Value::Unit])
+    }
+
+    fn builtin_gfx_sprite(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_sprite")?;
+        self.expect_arity("gfx_sprite", &args, 8)?;
+        let path = Self::expect_string_or_format("gfx_sprite", args.remove(0))?;
+        let x = self.expect_i32_value("gfx_sprite", args.remove(0))?;
+        let y = self.expect_i32_value("gfx_sprite", args.remove(0))?;
+        let width = self.expect_i32_value("gfx_sprite", args.remove(0))?;
+        let height = self.expect_i32_value("gfx_sprite", args.remove(0))?;
+        let r = self.expect_i32_value("gfx_sprite", args.remove(0))?;
+        let g = self.expect_i32_value("gfx_sprite", args.remove(0))?;
+        let b = self.expect_i32_value("gfx_sprite", args.remove(0))?;
+        self.unit_result(graphics::sprite(
+            &path,
+            graphics::RectSpec {
+                x,
+                y,
+                width,
+                height,
+            },
+            graphics::ColorSpec { r, g, b },
+        ))
+    }
+
+    fn builtin_gfx_text(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_text")?;
+        self.expect_arity("gfx_text", &args, 7)?;
+        let text = Self::expect_string_or_format("gfx_text", args.remove(0))?;
+        let x = self.expect_i32_value("gfx_text", args.remove(0))?;
+        let y = self.expect_i32_value("gfx_text", args.remove(0))?;
+        let scale = self.expect_i32_value("gfx_text", args.remove(0))?;
+        let r = self.expect_i32_value("gfx_text", args.remove(0))?;
+        let g = self.expect_i32_value("gfx_text", args.remove(0))?;
+        let b = self.expect_i32_value("gfx_text", args.remove(0))?;
+        graphics::text(&text, x, y, scale, r, g, b)
+            .map_err(|message| RuntimeError::Unsupported { message })?;
+        Ok(vec![Value::Unit])
+    }
+
+    fn builtin_gfx_text_int(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_text_int")?;
+        self.expect_arity("gfx_text_int", &args, 8)?;
+        let label = Self::expect_string_or_format("gfx_text_int", args.remove(0))?;
+        let value = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let x = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let y = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let scale = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let r = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let g = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let b = self.expect_i32_value("gfx_text_int", args.remove(0))?;
+        let text = format!("{label} {value}");
+        graphics::text(&text, x, y, scale, r, g, b)
+            .map_err(|message| RuntimeError::Unsupported { message })?;
+        Ok(vec![Value::Unit])
+    }
+
+    fn builtin_gfx_present(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_present")?;
+        self.expect_arity("gfx_present", &args, 0)?;
+        let open = graphics::present().map_err(|message| RuntimeError::Unsupported { message })?;
+        Ok(vec![Value::Bool(open)])
+    }
+
+    fn builtin_gfx_key_down(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_key_down")?;
+        self.expect_arity("gfx_key_down", &args, 1)?;
+        let key = Self::expect_string_or_format("gfx_key_down", args.remove(0))?;
+        let down =
+            graphics::key_down(&key).map_err(|message| RuntimeError::Unsupported { message })?;
+        Ok(vec![Value::Bool(down)])
+    }
+
+    fn builtin_gfx_key_pressed(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_key_pressed")?;
+        self.expect_arity("gfx_key_pressed", &args, 1)?;
+        let key = Self::expect_string_or_format("gfx_key_pressed", args.remove(0))?;
+        let pressed =
+            graphics::key_pressed(&key).map_err(|message| RuntimeError::Unsupported { message })?;
+        Ok(vec![Value::Bool(pressed)])
+    }
+
+    fn builtin_gfx_should_close(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_should_close")?;
+        self.expect_arity("gfx_should_close", &args, 0)?;
+        Ok(vec![Value::Bool(graphics::should_close())])
+    }
+
+    fn builtin_gfx_close(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("gfx_close")?;
+        self.expect_arity("gfx_close", &args, 0)?;
+        graphics::close();
+        Ok(vec![Value::Unit])
+    }
+
+    fn builtin_audio_play(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("audio_play")?;
+        self.expect_arity("audio_play", &args, 2)?;
+        let path = Self::expect_string_or_format("audio_play", args.remove(0))?;
+        let looped = Self::expect_bool("audio_play", args.remove(0))?;
+        self.int_result(audio::play(&path, looped))
+    }
+
+    fn builtin_audio_stop(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("audio_stop")?;
+        self.expect_arity("audio_stop", &args, 1)?;
+        let handle = self.expect_i32_value("audio_stop", args.remove(0))?;
+        Ok(vec![Value::Bool(audio::stop(handle))])
+    }
+
+    fn builtin_audio_stop_all(&mut self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("audio_stop_all")?;
+        self.expect_arity("audio_stop_all", &args, 0)?;
+        audio::stop_all();
+        Ok(vec![Value::Unit])
+    }
+
+    fn builtin_audio_set_volume(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("audio_set_volume")?;
+        self.expect_arity("audio_set_volume", &args, 2)?;
+        let handle = self.expect_i32_value("audio_set_volume", args.remove(0))?;
+        let volume = self.expect_i32_value("audio_set_volume", args.remove(0))?;
+        Ok(vec![Value::Bool(audio::set_volume(handle, volume))])
+    }
+
+    fn builtin_audio_is_playing(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins("audio_is_playing")?;
+        self.expect_arity("audio_is_playing", &args, 1)?;
+        let handle = self.expect_i32_value("audio_is_playing", args.remove(0))?;
+        Ok(vec![Value::Bool(audio::is_playing(handle))])
+    }
+
+    fn unit_result(&mut self, result: Result<(), String>) -> RuntimeResult<Vec<Value>> {
+        match result {
+            Ok(()) => {
+                let ok = self.instantiate_enum("Result", "Ok", vec![Value::Unit])?;
+                Ok(vec![ok])
+            }
+            Err(err) => {
+                let err_val = self.instantiate_enum("Result", "Err", vec![Value::String(err)])?;
+                Ok(vec![err_val])
+            }
+        }
+    }
+
+    fn int_result(&mut self, result: Result<i32, String>) -> RuntimeResult<Vec<Value>> {
+        match result {
+            Ok(value) => {
+                let ok = self.instantiate_enum("Result", "Ok", vec![Value::Int(value.into())])?;
+                Ok(vec![ok])
+            }
+            Err(err) => {
+                let err_val = self.instantiate_enum("Result", "Err", vec![Value::String(err)])?;
                 Ok(vec![err_val])
             }
         }
@@ -3638,7 +3947,17 @@ impl Interpreter {
     fn eval_binary(&self, op: BinaryOp, left: Value, right: Value) -> RuntimeResult<Value> {
         use BinaryOp::*;
         match op {
-            Add | Sub | Mul | Div | Rem => Self::eval_numeric(op, left, right),
+            Add => {
+                if let (Some(lhs), Some(rhs)) = (
+                    Self::value_as_string(left.clone()),
+                    Self::value_as_string(right.clone()),
+                ) {
+                    Ok(Value::String(format!("{lhs}{rhs}")))
+                } else {
+                    Self::eval_numeric(op, left, right)
+                }
+            }
+            Sub | Mul | Div | Rem => Self::eval_numeric(op, left, right),
             And => Ok(Value::Bool(left.as_bool() && right.as_bool())),
             Or => Ok(Value::Bool(left.as_bool() || right.as_bool())),
             BitAnd | BitOr | BitXor => self.eval_bitwise(op, left, right),

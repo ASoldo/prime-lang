@@ -53,7 +53,7 @@ impl Compiler {
         self.push_return_types(&return_types);
         let result = (|| {
             self.push_scope();
-            for (param, value) in func.params.iter().zip(evaluated_args.into_iter()) {
+            for (param, value) in func.params.iter().zip(evaluated_args) {
                 self.insert_var(&param.name, value, param.mutability == Mutability::Mutable)?;
             }
             let result = match &func.body {
@@ -524,18 +524,14 @@ impl Compiler {
         scope_index: usize,
     ) -> Result<(), String> {
         match value {
-            Value::Reference(reference) => {
-                if reference.mutable {
-                    if let Some(origin) = &reference.origin {
-                        self.begin_mut_borrow_in_scope(origin, scope_index)?;
-                    }
+            Value::Reference(reference) if reference.mutable => {
+                if let Some(origin) = &reference.origin {
+                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
                 }
             }
-            Value::Pointer(pointer) => {
-                if pointer.mutable {
-                    if let Some(origin) = &pointer.origin {
-                        self.begin_mut_borrow_in_scope(origin, scope_index)?;
-                    }
+            Value::Pointer(pointer) if pointer.mutable => {
+                if let Some(origin) = &pointer.origin {
+                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
                 }
             }
             Value::Boxed(_boxed) => {
@@ -556,18 +552,14 @@ impl Compiler {
 
     pub(super) fn release_reference_borrow(&mut self, value: &Value) {
         match value {
-            Value::Reference(reference) => {
-                if reference.mutable {
-                    if let Some(origin) = &reference.origin {
-                        self.end_mut_borrow(origin);
-                    }
+            Value::Reference(reference) if reference.mutable => {
+                if let Some(origin) = &reference.origin {
+                    self.end_mut_borrow(origin);
                 }
             }
-            Value::Pointer(pointer) => {
-                if pointer.mutable {
-                    if let Some(origin) = &pointer.origin {
-                        self.end_mut_borrow(origin);
-                    }
+            Value::Pointer(pointer) if pointer.mutable => {
+                if let Some(origin) = &pointer.origin {
+                    self.end_mut_borrow(origin);
                 }
             }
             Value::Boxed(_boxed) => {

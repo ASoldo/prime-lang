@@ -1,0 +1,27 @@
+//! Diagram plugin demo.
+module prime::diagram_demo;
+
+import core::types::prelude::{*};
+import prime::diagram::prelude::{*};
+
+fn main() {
+  let string input = "workspace/plugins/diagram/sample.pdiag";
+  let string svg = "workspace/plugins/diagram_demo/runtime_diagram.svg";
+  let string png = "workspace/plugins/diagram_demo/runtime_diagram.png";
+  match load_and_write(input, svg, png) {
+    Result::Ok(_) => out(`diagram written: {svg}, {png}`),
+    Result::Err(msg) => out(`diagram failed: {msg}`),
+  }
+
+  let string arch_input = "workspace/plugins/diagram/prime_lang_architecture.pdiag";
+  let string arch_svg = "workspace/plugins/diagram_demo/prime_lang_architecture.svg";
+  match load_diagram(arch_input) {
+    Result::Ok(architecture) => {
+      match write_svg(&architecture, arch_svg) {
+        Result::Ok(_) => out(`diagram written: {arch_svg}`),
+        Result::Err(msg) => out(`diagram failed: {msg}`),
+      }
+    },
+    Result::Err(msg) => out(`diagram failed: {msg}`),
+  }
+}

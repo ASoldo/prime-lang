@@ -176,11 +176,9 @@ impl Environment {
         scope_index: usize,
     ) -> Result<(), RuntimeError> {
         match value {
-            Value::Reference(reference) => {
-                if reference.mutable {
-                    if let Some(origin) = &reference.origin {
-                        self.begin_mut_borrow_in_scope(origin, scope_index)?;
-                    }
+            Value::Reference(reference) if reference.mutable => {
+                if let Some(origin) = &reference.origin {
+                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
                 }
             }
             Value::FormatTemplate(template) => {
@@ -197,11 +195,9 @@ impl Environment {
 
     fn release_reference_borrow(&mut self, value: &Value) {
         match value {
-            Value::Reference(reference) => {
-                if reference.mutable {
-                    if let Some(origin) = &reference.origin {
-                        self.end_mut_borrow(origin);
-                    }
+            Value::Reference(reference) if reference.mutable => {
+                if let Some(origin) = &reference.origin {
+                    self.end_mut_borrow(origin);
                 }
             }
             Value::FormatTemplate(template) => {

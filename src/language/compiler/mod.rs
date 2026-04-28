@@ -32,8 +32,8 @@ use llvm_sys::{
         LLVMBuildGlobalString, LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildIntCast,
         LLVMBuildLoad2, LLVMBuildMul, LLVMBuildNot, LLVMBuildOr, LLVMBuildPhi, LLVMBuildRet,
         LLVMBuildRetVoid, LLVMBuildSDiv, LLVMBuildSExt, LLVMBuildSIToFP, LLVMBuildSRem,
-        LLVMBuildStore, LLVMBuildStructGEP2, LLVMBuildSub, LLVMBuildSwitch, LLVMConstInt,
-        LLVMConstIntGetZExtValue, LLVMConstNull, LLVMConstPointerNull, LLVMConstReal,
+        LLVMBuildSelect, LLVMBuildStore, LLVMBuildStructGEP2, LLVMBuildSub, LLVMBuildSwitch,
+        LLVMConstInt, LLVMConstIntGetZExtValue, LLVMConstNull, LLVMConstPointerNull, LLVMConstReal,
         LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
         LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext, LLVMFloatTypeInContext,
         LLVMFunctionType, LLVMGetAllocatedType, LLVMGetBasicBlockParent,
@@ -1683,7 +1683,8 @@ impl Compiler {
                 }
                 BuildEffect::FsExists { .. }
                 | BuildEffect::FsRead { .. }
-                | BuildEffect::FsWrite { .. } => {
+                | BuildEffect::FsWrite { .. }
+                | BuildEffect::FsWriteBytes { .. } => {
                     // Recorded only for deterministic replays; nothing to apply in compiled artifacts.
                 }
                 BuildEffect::NowMs { value } => {

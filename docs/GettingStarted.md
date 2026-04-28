@@ -18,6 +18,7 @@ prime-lang --help
 prime-lang run workspace/demos/closures/closure_demo.prime
 prime-lang run workspace/demos/macro/macro_demo.prime
 prime-lang run workspace/demos/channel_demo/channel_demo.prime
+prime-lang run workspace/demos/tetris/tetris.prime
 ```
 
 ## Build a native binary (host)

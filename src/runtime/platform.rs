@@ -12,6 +12,7 @@ pub trait Platform: Send + Sync {
     fn fs_exists(&self, path: &str) -> bool;
     fn fs_read(&self, path: &str) -> Result<String, String>;
     fn fs_write(&self, path: &str, contents: &str) -> Result<(), String>;
+    fn fs_write_bytes(&self, path: &str, contents: &[u8]) -> Result<(), String>;
 }
 
 pub struct StdPlatform;
@@ -55,6 +56,10 @@ impl Platform for StdPlatform {
     fn fs_write(&self, path: &str, contents: &str) -> Result<(), String> {
         std::fs::write(path, contents).map_err(|err| err.to_string())
     }
+
+    fn fs_write_bytes(&self, path: &str, contents: &[u8]) -> Result<(), String> {
+        std::fs::write(path, contents).map_err(|err| err.to_string())
+    }
 }
 
 pub struct NoStdPlatform;
@@ -86,6 +91,10 @@ impl Platform for NoStdPlatform {
 
     fn fs_write(&self, _path: &str, _contents: &str) -> Result<(), String> {
         Err(std_disabled_message("fs_write"))
+    }
+
+    fn fs_write_bytes(&self, _path: &str, _contents: &[u8]) -> Result<(), String> {
+        Err(std_disabled_message("fs_write_bytes"))
     }
 }
 
@@ -146,7 +155,7 @@ unsafe extern "C" {
 
 impl Platform for Esp32Platform {
     fn now_ms(&self) -> i128 {
-        unsafe { prime_now_ms() as i128 }
+        unsafe { prime_now_ms() }
     }
 
     fn sleep_ms(&self, millis: i128) {
@@ -193,5 +202,9 @@ impl Platform for Esp32Platform {
 
     fn fs_write(&self, _path: &str, _contents: &str) -> Result<(), String> {
         Err(embedded_disabled_message("fs_write"))
+    }
+
+    fn fs_write_bytes(&self, _path: &str, _contents: &[u8]) -> Result<(), String> {
+        Err(embedded_disabled_message("fs_write_bytes"))
     }
 }

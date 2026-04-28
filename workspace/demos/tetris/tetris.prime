@@ -1,0 +1,858 @@
+//! Native Tetris demo for the Prime graphics runtime.
+module demos::tetris;
+
+import core::types::prelude::{*};
+
+const COLS: int32 = 10;
+
+const ROWS: int32 = 20;
+
+const BOARD_CELLS: int32 = 200;
+
+const CELL: int32 = 28;
+
+const BOARD_X: int32 = 24;
+
+const BOARD_Y: int32 = 24;
+
+const PANEL_X: int32 = 330;
+
+const SCREEN_W: int32 = 520;
+
+const SCREEN_H: int32 = 608;
+
+const BLOCK_PATH: string = "workspace/demos/tetris/assets/block.png";
+
+const MUSIC_PATH: string = "workspace/demos/tetris/assets/arcade-music-loop.wav";
+
+const CLEAR_PATH: string = "workspace/demos/tetris/assets/clear-line.wav";
+
+const CLEAR_FLASH_MS: int64 = 250;
+
+const CLEAR_SETTLE_MS: int64 = 500;
+
+const CLEAR_SETTLE_STEPS: int32 = 20;
+
+fn make_board() -> []int32 {
+  let mut []int32 board = [];
+  for _ in 0..BOARD_CELLS {
+    board.push(0);
+  }
+  board
+}
+
+fn make_row_flags() -> []int32 {
+  let mut []int32 flags = [];
+  for _ in 0..ROWS {
+    flags.push(0);
+  }
+  flags
+}
+
+fn board_get(board: []int32, x: int32, y: int32) -> int32 {
+  let mut int32 result = 1;
+  if x >= 0 && x < COLS && y < ROWS {
+    if y < 0 {
+      result = 0;
+    } else {
+      result = slice_get_int(board, y * COLS + x, 1);
+    }
+  }
+  result
+}
+
+fn board_set(board: []int32, x: int32, y: int32, value: int32) {
+  if x >= 0 && x < COLS && y >= 0 && y < ROWS {
+    board[y * COLS + x] = value;
+  }
+}
+
+fn reset_board(board: []int32) {
+  for y in 0..ROWS {
+    for x in 0..COLS {
+      board_set(board, x, y, 0);
+    }
+  }
+}
+
+fn reset_row_flags(flags: []int32) {
+  for y in 0..ROWS {
+    flags[y] = 0;
+  }
+}
+
+fn normalize_rotation(rotation: int32) -> int32 {
+  let mut int32 value = rotation % 4;
+  if value < 0 {
+    value = value + 4;
+  }
+  value
+}
+
+fn select_cell(index: int32, first: int32, second: int32, third: int32, fourth: int32) -> int32 {
+  let mut int32 value = first;
+  if index == 1 {
+    value = second;
+  }
+  if index == 2 {
+    value = third;
+  }
+  if index == 3 {
+    value = fourth;
+  }
+  value
+}
+
+fn cell_x(kind: int32, rotation: int32, index: int32) -> int32 {
+  let int32 rot = normalize_rotation(rotation);
+  let mut int32 value = 0;
+  if kind == 1 {
+    if rot == 0 || rot == 2 {
+      value = select_cell(index, -1, 0, 1, 2);
+    } else {
+      value = 1;
+    }
+  }
+  if kind == 2 {
+    value = select_cell(index, 0, 1, 0, 1);
+  }
+  if kind == 3 {
+    if rot == 0 || rot == 2 {
+      value = select_cell(index, -1, 0, 1, 0);
+    }
+    if rot == 1 {
+      value = select_cell(index, 0, 0, 0, 1);
+    }
+    if rot == 3 {
+      value = select_cell(index, 0, 0, 0, -1);
+    }
+  }
+  if kind == 4 {
+    if rot == 0 || rot == 2 {
+      value = select_cell(index, 0, 1, -1, 0);
+    } else {
+      value = select_cell(index, 0, 0, 1, 1);
+    }
+  }
+  if kind == 5 {
+    if rot == 0 || rot == 2 {
+      value = select_cell(index, -1, 0, 0, 1);
+    } else {
+      value = select_cell(index, 1, 1, 0, 0);
+    }
+  }
+  if kind == 6 {
+    if rot == 0 {
+      value = select_cell(index, -1, 0, 1, -1);
+    }
+    if rot == 1 {
+      value = select_cell(index, 0, 0, 0, 1);
+    }
+    if rot == 2 {
+      value = select_cell(index, -1, 0, 1, 1);
+    }
+    if rot == 3 {
+      value = select_cell(index, 0, 0, 0, -1);
+    }
+  }
+  if kind == 7 {
+    if rot == 0 {
+      value = select_cell(index, -1, 0, 1, 1);
+    }
+    if rot == 1 {
+      value = select_cell(index, 0, 0, 0, 1);
+    }
+    if rot == 2 {
+      value = select_cell(index, -1, 0, 1, -1);
+    }
+    if rot == 3 {
+      value = select_cell(index, 0, 0, 0, -1);
+    }
+  }
+  value
+}
+
+fn cell_y(kind: int32, rotation: int32, index: int32) -> int32 {
+  let int32 rot = normalize_rotation(rotation);
+  let mut int32 value = 0;
+  if kind == 1 {
+    if rot == 1 || rot == 3 {
+      value = select_cell(index, -1, 0, 1, 2);
+    }
+  }
+  if kind == 2 {
+    value = select_cell(index, 0, 0, 1, 1);
+  }
+  if kind == 3 {
+    if rot == 0 {
+      value = select_cell(index, 0, 0, 0, 1);
+    }
+    if rot == 1 || rot == 3 {
+      value = select_cell(index, -1, 0, 1, 0);
+    }
+    if rot == 2 {
+      value = select_cell(index, 0, 0, 0, -1);
+    }
+  }
+  if kind == 4 || kind == 5 {
+    if rot == 0 || rot == 2 {
+      value = select_cell(index, 0, 0, 1, 1);
+    } else {
+      value = select_cell(index, -1, 0, 0, 1);
+    }
+  }
+  if kind == 6 {
+    if rot == 0 {
+      value = select_cell(index, 0, 0, 0, 1);
+    }
+    if rot == 1 {
+      value = select_cell(index, -1, 0, 1, -1);
+    }
+    if rot == 2 {
+      value = select_cell(index, 0, 0, 0, -1);
+    }
+    if rot == 3 {
+      value = select_cell(index, -1, 0, 1, 1);
+    }
+  }
+  if kind == 7 {
+    if rot == 0 {
+      value = select_cell(index, 0, 0, 0, 1);
+    }
+    if rot == 1 {
+      value = select_cell(index, -1, 0, 1, 1);
+    }
+    if rot == 2 {
+      value = select_cell(index, 0, 0, 0, -1);
+    }
+    if rot == 3 {
+      value = select_cell(index, -1, 0, 1, -1);
+    }
+  }
+  value
+}
+
+fn can_move(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) -> bool {
+  let mut bool valid = true;
+  for index in 0..4 {
+    let int32 px = x + cell_x(kind, rotation, index);
+    let int32 py = y + cell_y(kind, rotation, index);
+    if px < 0 || px >= COLS || py >= ROWS {
+      valid = false;
+    }
+    if py >= 0 && board_get(board, px, py) != 0 {
+      valid = false;
+    }
+  }
+  valid
+}
+
+fn lock_piece(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) {
+  for index in 0..4 {
+    let int32 px = x + cell_x(kind, rotation, index);
+    let int32 py = y + cell_y(kind, rotation, index);
+    if py >= 0 {
+      board_set(board, px, py, kind);
+    }
+  }
+}
+
+fn row_full(board: []int32, row: int32) -> bool {
+  let mut bool full = true;
+  for x in 0..COLS {
+    if board_get(board, x, row) == 0 {
+      full = false;
+    }
+  }
+  full
+}
+
+fn row_marked(clear_rows: []int32, row: int32) -> bool {
+  slice_get_int(clear_rows, row, 0) != 0
+}
+
+fn mark_full_rows(board: []int32, clear_rows: []int32) -> int32 {
+  reset_row_flags(clear_rows);
+
+  let mut int32 cleared = 0;
+  for y in 0..ROWS {
+    if row_full(board, y) {
+      cleared = cleared + 1;
+      clear_rows[y] = 1;
+    }
+  }
+  cleared
+}
+
+fn cleared_rows_below(clear_rows: []int32, row: int32) -> int32 {
+  let mut int32 count = 0;
+  let mut int32 y = row + 1;
+  while y < ROWS {
+    if row_marked(clear_rows, y) {
+      count = count + 1;
+    }
+    y = y + 1;
+  }
+  count
+}
+
+fn apply_marked_clears(board: []int32, clear_rows: []int32) {
+  let mut int32 write = ROWS - 1;
+  let mut int32 read = ROWS - 1;
+  while read >= 0 {
+    if !row_marked(clear_rows, read) {
+      for x in 0..COLS {
+        board_set(board, x, write, board_get(board, x, read));
+      }
+      write = write - 1;
+    }
+    read = read - 1;
+  }
+  while write >= 0 {
+    for x in 0..COLS {
+      board_set(board, x, write, 0);
+    }
+    write = write - 1;
+  }
+  reset_row_flags(clear_rows);
+}
+
+fn piece_color(kind: int32) -> (int32, int32, int32) {
+  let mut int32 r = 70;
+  let mut int32 g = 96;
+  let mut int32 b = 130;
+  if kind == 1 {
+    r = 83;
+    g = 220;
+    b = 255;
+  }
+  if kind == 2 {
+    r = 255;
+    g = 211;
+    b = 77;
+  }
+  if kind == 3 {
+    r = 178;
+    g = 116;
+    b = 255;
+  }
+  if kind == 4 {
+    r = 68;
+    g = 231;
+    b = 141;
+  }
+  if kind == 5 {
+    r = 255;
+    g = 88;
+    b = 88;
+  }
+  if kind == 6 {
+    r = 79;
+    g = 142;
+    b = 255;
+  }
+  if kind == 7 {
+    r = 255;
+    g = 161;
+    b = 67;
+  }
+
+  let (int32, int32, int32) color = (r, g, b);
+  color
+}
+
+fn draw_cell(screen_x: int32, screen_y: int32, kind: int32, ghost: bool) {
+  let (base_r, base_g, base_b) = piece_color(kind);
+  let mut int32 r = base_r;
+  let mut int32 g = base_g;
+  let mut int32 b = base_b;
+  if ghost {
+    r = r / 5;
+    g = g / 5;
+    b = b / 5;
+  }
+  match gfx_sprite(BLOCK_PATH, screen_x + 2, screen_y + 2, CELL - 4, CELL - 4, r, g, b) {
+    Result::Ok(_) => {
+    },
+    Result::Err(_) => gfx_rect(screen_x + 2, screen_y + 2, CELL - 4, CELL - 4, r, g, b),
+  }
+  gfx_rect(screen_x + 2, screen_y + 2, CELL - 4, 2, 200, 238, 255);
+  gfx_rect(screen_x + 2, screen_y + 2, 2, CELL - 4, 112, 178, 255);
+  gfx_rect(screen_x + CELL - 4, screen_y + 2, 2, CELL - 4, 2, 8, 18);
+  gfx_rect(screen_x + 2, screen_y + CELL - 4, CELL - 4, 2, 2, 8, 18);
+}
+
+fn draw_white_cell(screen_x: int32, screen_y: int32) {
+  match gfx_sprite(BLOCK_PATH, screen_x + 2, screen_y + 2, CELL - 4, CELL - 4, 255, 255, 255) {
+    Result::Ok(_) => {
+    },
+    Result::Err(_) => gfx_rect(screen_x + 2, screen_y + 2, CELL - 4, CELL - 4, 255, 255, 255),
+  }
+  gfx_rect(screen_x + 2, screen_y + 2, CELL - 4, 2, 255, 255, 255);
+  gfx_rect(screen_x + 2, screen_y + 2, 2, CELL - 4, 255, 255, 255);
+  gfx_rect(screen_x + CELL - 4, screen_y + 2, 2, CELL - 4, 80, 112, 150);
+  gfx_rect(screen_x + 2, screen_y + CELL - 4, CELL - 4, 2, 80, 112, 150);
+}
+
+fn draw_piece(kind: int32, rotation: int32, x: int32, y: int32, ghost: bool) {
+  for index in 0..4 {
+    let int32 px = x + cell_x(kind, rotation, index);
+    let int32 py = y + cell_y(kind, rotation, index);
+    if py >= 0 {
+      draw_cell(BOARD_X + px * CELL, BOARD_Y + py * CELL, kind, ghost);
+    }
+  }
+}
+
+fn ghost_y(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) -> int32 {
+  let mut int32 drop_y = y;
+  while can_move(board, kind, rotation, x, drop_y + 1) {
+    drop_y = drop_y + 1;
+  }
+  drop_y
+}
+
+fn next_seed(seed: int32) -> int32 {
+  let mut int32 next = (seed * 1103515245 + 12345) % 2147483647;
+  if next < 0 {
+    next = 0 - next;
+  }
+  if next == 0 {
+    next = 17;
+  }
+  next
+}
+
+fn make_bag() -> []int32 {
+  let mut []int32 bag = [];
+  for kind in 1..8 {
+    bag.push(kind);
+  }
+  bag
+}
+
+fn refill_bag(bag: []int32, seed: int32) -> int32 {
+  for kind in 1..8 {
+    bag[kind - 1] = kind;
+  }
+
+  let mut int32 next = seed;
+  let mut int32 index = 6;
+  while index > 0 {
+    next = next_seed(next);
+    let int32 swap_index = next % (index + 1);
+    let int32 value = slice_get_int(bag, index, 1);
+    bag[index] = slice_get_int(bag, swap_index, 1);
+    bag[swap_index] = value;
+    index = index - 1;
+  }
+  next
+}
+
+fn draw_from_bag(bag: []int32, bag_index: int32, seed: int32) -> (int32, int32, int32) {
+  let mut int32 index = bag_index;
+  let mut int32 next = seed;
+  if index >= 7 {
+    next = refill_bag(bag, next);
+    index = 0;
+  }
+
+  let int32 kind = slice_get_int(bag, index, 1);
+  return kind, index + 1, next;
+}
+
+fn drop_interval(level: int32) -> int64 {
+  let mut int64 interval = 90;
+  if level <= 1 {
+    interval = 680;
+  }
+  if level == 2 {
+    interval = 625;
+  }
+  if level == 3 {
+    interval = 570;
+  }
+  if level == 4 {
+    interval = 515;
+  }
+  if level == 5 {
+    interval = 460;
+  }
+  if level == 6 {
+    interval = 405;
+  }
+  if level == 7 {
+    interval = 350;
+  }
+  if level == 8 {
+    interval = 295;
+  }
+  if level == 9 {
+    interval = 240;
+  }
+  if level == 10 {
+    interval = 185;
+  }
+  if level == 11 {
+    interval = 130;
+  }
+  interval
+}
+
+fn add_score(score: int32, level: int32, cleared: int32) -> int32 {
+  let mut int32 result = score;
+  if cleared == 1 {
+    result = score + 100 * level;
+  }
+  if cleared == 2 {
+    result = score + 300 * level;
+  }
+  if cleared == 3 {
+    result = score + 500 * level;
+  }
+  if cleared >= 4 {
+    result = score + 800 * level;
+  }
+  result
+}
+
+fn advance_clear_animation(board: []int32, clear_rows: []int32, clear_phase: int32, elapsed: int64, delta: int64) -> (int32, int64, bool) {
+  let mut int32 next_phase = clear_phase;
+  let mut int64 next_elapsed = elapsed + delta;
+  let mut bool finished = false;
+  if clear_phase == 1 && next_elapsed >= CLEAR_FLASH_MS {
+    next_phase = 2;
+    next_elapsed = 0;
+  }
+  if clear_phase == 2 && next_elapsed >= CLEAR_SETTLE_MS {
+    apply_marked_clears(board, clear_rows);
+    next_phase = 0;
+    next_elapsed = 0;
+    finished = true;
+  }
+  return next_phase, next_elapsed, finished;
+}
+
+fn settle_offset(distance: int32, elapsed: int64) -> int32 {
+  let mut int32 step = 0;
+  let mut int64 threshold = 0;
+  while threshold < elapsed && step < CLEAR_SETTLE_STEPS {
+    threshold = threshold + 25;
+    step = step + 1;
+  }
+  distance * CELL * step / CLEAR_SETTLE_STEPS
+}
+
+fn draw_board_base() {
+  gfx_clear(3, 9, 19);
+  gfx_rect(0, 0, SCREEN_W, SCREEN_H, 3, 9, 19);
+
+  let mut int32 gx = 0;
+  while gx < SCREEN_W {
+    gfx_rect(gx, 0, 1, SCREEN_H, 11, 29, 53);
+    gx = gx + CELL;
+  }
+
+  let mut int32 gy = 0;
+  while gy < SCREEN_H {
+    gfx_rect(0, gy, SCREEN_W, 1, 11, 29, 53);
+    gy = gy + CELL;
+  }
+  gfx_rect(BOARD_X - 4, BOARD_Y - 4, COLS * CELL + 8, ROWS * CELL + 8, 32, 124, 229);
+  gfx_rect(BOARD_X, BOARD_Y, COLS * CELL, ROWS * CELL, 5, 13, 26);
+  for y in 0..ROWS {
+    for x in 0..COLS {
+      gfx_rect(BOARD_X + x * CELL, BOARD_Y + y * CELL, CELL - 1, CELL - 1, 7, 19, 37);
+    }
+  }
+}
+
+fn draw_board(board: []int32) {
+  draw_board_base();
+  for y in 0..ROWS {
+    for x in 0..COLS {
+      let int32 kind = board_get(board, x, y);
+      if kind != 0 {
+        draw_cell(BOARD_X + x * CELL, BOARD_Y + y * CELL, kind, false);
+      }
+    }
+  }
+}
+
+fn draw_clearing_board(board: []int32, clear_rows: []int32, clear_phase: int32, elapsed: int64) {
+  draw_board_base();
+  if clear_phase == 1 {
+    for y in 0..ROWS {
+      for x in 0..COLS {
+        let int32 kind = board_get(board, x, y);
+        if kind != 0 {
+          if row_marked(clear_rows, y) {
+            draw_white_cell(BOARD_X + x * CELL, BOARD_Y + y * CELL);
+          } else {
+            draw_cell(BOARD_X + x * CELL, BOARD_Y + y * CELL, kind, false);
+          }
+        }
+      }
+    }
+  }
+  if clear_phase == 2 {
+    let mut int64 capped = elapsed;
+    if capped > CLEAR_SETTLE_MS {
+      capped = CLEAR_SETTLE_MS;
+    }
+    for y in 0..ROWS {
+      for x in 0..COLS {
+        let int32 kind = board_get(board, x, y);
+        if kind != 0 && !row_marked(clear_rows, y) {
+          let int32 distance = cleared_rows_below(clear_rows, y);
+          let int32 offset = settle_offset(distance, capped);
+          draw_cell(BOARD_X + x * CELL, BOARD_Y + y * CELL + offset, kind, false);
+        }
+      }
+    }
+  }
+}
+
+fn draw_preview_at(kind: int32, base_x: int32, base_y: int32) {
+  if kind != 0 {
+    for index in 0..4 {
+      let int32 px = cell_x(kind, 0, index);
+      let int32 py = cell_y(kind, 0, index);
+      draw_cell(base_x + px * CELL, base_y + py * CELL, kind, false);
+    }
+  }
+}
+
+fn draw_hud(score: int32, lines: int32, level: int32, hold_kind: int32, next_kind: int32, paused: bool, game_over: bool) {
+  gfx_text("PRIME TETRIS", PANEL_X, 34, 2, 214, 235, 255);
+  gfx_text_int("SCORE", score, PANEL_X, 92, 1, 125, 185, 255);
+  gfx_text_int("LINES", lines, PANEL_X, 120, 1, 125, 185, 255);
+  gfx_text_int("LEVEL", level, PANEL_X, 148, 1, 125, 185, 255);
+  gfx_text("HOLD", PANEL_X, 184, 1, 214, 235, 255);
+  draw_preview_at(hold_kind, PANEL_X + 54, 216);
+  gfx_text("NEXT", PANEL_X, 296, 1, 214, 235, 255);
+  draw_preview_at(next_kind, PANEL_X + 54, 328);
+  gfx_text("MOVE  ARROWS", PANEL_X, 424, 1, 93, 133, 181);
+  gfx_text("SOFT  DOWN", PANEL_X, 450, 1, 93, 133, 181);
+  gfx_text("DROP  SPACE", PANEL_X, 476, 1, 93, 133, 181);
+  gfx_text("HOLD  C", PANEL_X, 502, 1, 93, 133, 181);
+  gfx_text("PAUSE P", PANEL_X, 528, 1, 93, 133, 181);
+  if paused {
+    gfx_rect(BOARD_X + 37, BOARD_Y + 230, 206, 66, 3, 9, 19);
+    gfx_text("PAUSED", BOARD_X + 78, BOARD_Y + 252, 2, 255, 211, 77);
+  }
+  if game_over {
+    gfx_rect(BOARD_X + 28, BOARD_Y + 210, 224, 112, 3, 9, 19);
+    gfx_text("GAME OVER", BOARD_X + 54, BOARD_Y + 236, 2, 255, 88, 88);
+    gfx_text("PRESS R", BOARD_X + 82, BOARD_Y + 284, 1, 214, 235, 255);
+  }
+}
+
+fn main() {
+  match gfx_open("Prime Native Tetris", SCREEN_W, SCREEN_H) {
+    Result::Ok(_) => {
+    },
+    Result::Err(msg) => {
+      out(`graphics failed: {msg}`);
+    },
+  }
+  match audio_play(MUSIC_PATH, true) {
+    Result::Ok(handle) => {
+      audio_set_volume(handle, 42);
+    },
+    Result::Err(msg) => out(`audio disabled: {msg}`),
+  }
+
+  let mut []int32 board = make_board();
+  let mut []int32 clear_rows = make_row_flags();
+  let mut []int32 bag = make_bag();
+  let mut int32 seed = 73129;
+  let mut int32 bag_index = 7;
+  let (first_kind, first_bag_index, first_seed) = draw_from_bag(bag, bag_index, seed);
+  let mut int32 current = first_kind;
+  bag_index = first_bag_index;
+  seed = first_seed;
+  let (second_kind, second_bag_index, second_seed) = draw_from_bag(bag, bag_index, seed);
+  let mut int32 next_kind = second_kind;
+  bag_index = second_bag_index;
+  seed = second_seed;
+  let mut int32 hold_kind = 0;
+  let mut bool hold_ready = true;
+  let mut int32 piece_x = 4;
+  let mut int32 piece_y = 1;
+  let mut int32 rotation = 0;
+  let mut int32 score = 0;
+  let mut int32 lines = 0;
+  let mut int32 level = 1;
+  let mut int64 last_tick = now_ms();
+  let mut int64 fall_timer = 0;
+  let mut int32 clear_phase = 0;
+  let mut int64 clear_elapsed = 0;
+  let mut bool paused = false;
+  let mut bool game_over = false;
+  let mut bool running = true;
+  while running && !gfx_should_close() {
+    let int64 now = now_ms();
+    let int64 delta = now - last_tick;
+    last_tick = now;
+    if !paused && !game_over {
+      if clear_phase > 0 {
+        let (next_clear_phase, next_clear_elapsed, clear_finished) = advance_clear_animation(board, clear_rows, clear_phase, clear_elapsed, delta);
+        clear_phase = next_clear_phase;
+        clear_elapsed = next_clear_elapsed;
+        if clear_finished {
+          current = next_kind;
+          let (drawn_kind, drawn_bag_index, drawn_seed) = draw_from_bag(bag, bag_index, seed);
+          next_kind = drawn_kind;
+          bag_index = drawn_bag_index;
+          seed = drawn_seed;
+          piece_x = 4;
+          piece_y = 1;
+          rotation = 0;
+          fall_timer = 0;
+          hold_ready = true;
+          if !can_move(board, current, rotation, piece_x, piece_y) {
+            game_over = true;
+          }
+        }
+      } else {
+        fall_timer = fall_timer + delta;
+      }
+    }
+    if gfx_key_pressed("escape") {
+      running = false;
+    }
+    if gfx_key_pressed("p") {
+      paused = !paused;
+    }
+    if game_over && gfx_key_pressed("r") {
+      reset_board(board);
+      reset_row_flags(clear_rows);
+      bag_index = 7;
+      let (reset_current, reset_bag_index, reset_seed) = draw_from_bag(bag, bag_index, seed);
+      current = reset_current;
+      bag_index = reset_bag_index;
+      seed = reset_seed;
+      let (reset_next, reset_next_bag_index, reset_next_seed) = draw_from_bag(bag, bag_index, seed);
+      next_kind = reset_next;
+      bag_index = reset_next_bag_index;
+      seed = reset_next_seed;
+      hold_kind = 0;
+      hold_ready = true;
+      piece_x = 4;
+      piece_y = 1;
+      rotation = 0;
+      score = 0;
+      lines = 0;
+      level = 1;
+      fall_timer = 0;
+      clear_phase = 0;
+      clear_elapsed = 0;
+      game_over = false;
+    }
+    if !paused && !game_over && clear_phase == 0 {
+      if gfx_key_pressed("c") && hold_ready {
+        let int32 swap_kind = current;
+        if hold_kind == 0 {
+          hold_kind = swap_kind;
+          current = next_kind;
+          let (drawn_kind_after_hold, drawn_bag_index_after_hold, drawn_seed_after_hold) = draw_from_bag(bag, bag_index, seed);
+          next_kind = drawn_kind_after_hold;
+          bag_index = drawn_bag_index_after_hold;
+          seed = drawn_seed_after_hold;
+        } else {
+          current = hold_kind;
+          hold_kind = swap_kind;
+        }
+        piece_x = 4;
+        piece_y = 1;
+        rotation = 0;
+        fall_timer = 0;
+        hold_ready = false;
+        if !can_move(board, current, rotation, piece_x, piece_y) {
+          game_over = true;
+        }
+      }
+      if gfx_key_pressed("left") || gfx_key_pressed("a") {
+        if can_move(board, current, rotation, piece_x - 1, piece_y) {
+          piece_x = piece_x - 1;
+        }
+      }
+      if gfx_key_pressed("right") || gfx_key_pressed("d") {
+        if can_move(board, current, rotation, piece_x + 1, piece_y) {
+          piece_x = piece_x + 1;
+        }
+      }
+      if gfx_key_pressed("up") || gfx_key_pressed("x") {
+        let int32 desired = normalize_rotation(rotation + 1);
+        if can_move(board, current, desired, piece_x, piece_y) {
+          rotation = desired;
+        } else if can_move(board, current, desired, piece_x - 1, piece_y) {
+          rotation = desired;
+          piece_x = piece_x - 1;
+        } else if can_move(board, current, desired, piece_x + 1, piece_y) {
+          rotation = desired;
+          piece_x = piece_x + 1;
+        }
+      }
+      if gfx_key_pressed("space") {
+        piece_y = ghost_y(board, current, rotation, piece_x, piece_y);
+        fall_timer = drop_interval(level);
+      }
+      if gfx_key_down("down") || gfx_key_down("s") {
+        fall_timer = fall_timer + delta;
+      }
+      if fall_timer >= drop_interval(level) {
+        fall_timer = 0;
+        if can_move(board, current, rotation, piece_x, piece_y + 1) {
+          piece_y = piece_y + 1;
+        } else {
+          lock_piece(board, current, rotation, piece_x, piece_y);
+
+          let int32 cleared = mark_full_rows(board, clear_rows);
+          if cleared > 0 {
+            match audio_play(CLEAR_PATH, false) {
+              Result::Ok(handle) => {
+                audio_set_volume(handle, 70);
+              },
+              Result::Err(_) => {
+              },
+            }
+            lines = lines + cleared;
+            level = lines / 10 + 1;
+            score = add_score(score, level, cleared);
+            clear_phase = 1;
+            clear_elapsed = 0;
+          } else {
+            current = next_kind;
+            let (drawn_kind_after_lock, drawn_bag_index_after_lock, drawn_seed_after_lock) = draw_from_bag(bag, bag_index, seed);
+            next_kind = drawn_kind_after_lock;
+            bag_index = drawn_bag_index_after_lock;
+            seed = drawn_seed_after_lock;
+            piece_x = 4;
+            piece_y = 1;
+            rotation = 0;
+            hold_ready = true;
+            if !can_move(board, current, rotation, piece_x, piece_y) {
+              game_over = true;
+            }
+          }
+        }
+      }
+    }
+    if clear_phase == 0 {
+      draw_board(board);
+    } else {
+      draw_clearing_board(board, clear_rows, clear_phase, clear_elapsed);
+    }
+    if !game_over && clear_phase == 0 {
+      draw_piece(current, rotation, piece_x, ghost_y(board, current, rotation, piece_x, piece_y), true);
+      draw_piece(current, rotation, piece_x, piece_y, false);
+    }
+    draw_hud(score, lines, level, hold_kind, next_kind, paused, game_over);
+    running = gfx_present();
+    sleep_ms(16);
+  }
+  audio_stop_all();
+  gfx_close();
+}

@@ -47,6 +47,8 @@ pub struct RuntimeAbi {
     pub prime_slice_len_handle_ty: LLVMTypeRef,
     pub prime_slice_get_handle: LLVMValueRef,
     pub prime_slice_get_handle_ty: LLVMTypeRef,
+    pub prime_slice_set_handle: LLVMValueRef,
+    pub prime_slice_set_handle_ty: LLVMTypeRef,
     pub prime_slice_remove_handle: LLVMValueRef,
     pub prime_slice_remove_handle_ty: LLVMTypeRef,
     pub prime_map_new: LLVMValueRef,
@@ -141,6 +143,38 @@ pub struct RuntimeAbi {
     pub prime_now_ms_ty: LLVMTypeRef,
     pub prime_reset_reason: LLVMValueRef,
     pub prime_reset_reason_ty: LLVMTypeRef,
+    pub prime_gfx_open: LLVMValueRef,
+    pub prime_gfx_open_ty: LLVMTypeRef,
+    pub prime_gfx_clear: LLVMValueRef,
+    pub prime_gfx_clear_ty: LLVMTypeRef,
+    pub prime_gfx_rect: LLVMValueRef,
+    pub prime_gfx_rect_ty: LLVMTypeRef,
+    pub prime_gfx_sprite: LLVMValueRef,
+    pub prime_gfx_sprite_ty: LLVMTypeRef,
+    pub prime_gfx_text: LLVMValueRef,
+    pub prime_gfx_text_ty: LLVMTypeRef,
+    pub prime_gfx_text_int: LLVMValueRef,
+    pub prime_gfx_text_int_ty: LLVMTypeRef,
+    pub prime_gfx_present: LLVMValueRef,
+    pub prime_gfx_present_ty: LLVMTypeRef,
+    pub prime_gfx_key_down: LLVMValueRef,
+    pub prime_gfx_key_down_ty: LLVMTypeRef,
+    pub prime_gfx_key_pressed: LLVMValueRef,
+    pub prime_gfx_key_pressed_ty: LLVMTypeRef,
+    pub prime_gfx_should_close: LLVMValueRef,
+    pub prime_gfx_should_close_ty: LLVMTypeRef,
+    pub prime_gfx_close: LLVMValueRef,
+    pub prime_gfx_close_ty: LLVMTypeRef,
+    pub prime_audio_play: LLVMValueRef,
+    pub prime_audio_play_ty: LLVMTypeRef,
+    pub prime_audio_stop: LLVMValueRef,
+    pub prime_audio_stop_ty: LLVMTypeRef,
+    pub prime_audio_stop_all: LLVMValueRef,
+    pub prime_audio_stop_all_ty: LLVMTypeRef,
+    pub prime_audio_set_volume: LLVMValueRef,
+    pub prime_audio_set_volume_ty: LLVMTypeRef,
+    pub prime_audio_is_playing: LLVMValueRef,
+    pub prime_audio_is_playing_ty: LLVMTypeRef,
 }
 
 impl RuntimeAbi {
@@ -169,6 +203,7 @@ impl RuntimeAbi {
         let int_type = LLVMIntTypeInContext(context, 128);
         let float_type = LLVMDoubleTypeInContext(context);
         let usize_type = LLVMIntTypeInContext(context, pointer_width_bits);
+        let i32_type = LLVMInt32TypeInContext(context);
 
         let (prime_value_retain, prime_value_retain_ty) = declare_fn(
             module,
@@ -217,6 +252,12 @@ impl RuntimeAbi {
             "prime_slice_get_handle",
             status_type,
             &mut [handle_type, usize_type, LLVMPointerType(handle_type, 0)],
+        );
+        let (prime_slice_set_handle, prime_slice_set_handle_ty) = declare_fn(
+            module,
+            "prime_slice_set_handle",
+            status_type,
+            &mut [handle_type, usize_type, handle_type],
         );
         let (prime_slice_remove_handle, prime_slice_remove_handle_ty) = declare_fn(
             module,
@@ -453,43 +494,128 @@ impl RuntimeAbi {
         );
         let (prime_env_free, prime_env_free_ty) =
             declare_fn(module, "prime_env_free", void_type, &mut [handle_type]);
-        let (prime_delay_ms, prime_delay_ms_ty) = declare_fn(
-            module,
-            "prime_delay_ms",
-            status_type,
-            &mut [LLVMInt32TypeInContext(context)],
-        );
+        let (prime_delay_ms, prime_delay_ms_ty) =
+            declare_fn(module, "prime_delay_ms", status_type, &mut [i32_type]);
         let (prime_pin_mode, prime_pin_mode_ty) = declare_fn(
             module,
             "prime_pin_mode",
             status_type,
-            &mut [
-                LLVMInt32TypeInContext(context),
-                LLVMInt32TypeInContext(context),
-            ],
+            &mut [i32_type, i32_type],
         );
         let (prime_digital_write, prime_digital_write_ty) = declare_fn(
             module,
             "prime_digital_write",
             status_type,
+            &mut [i32_type, i32_type],
+        );
+        let (prime_digital_read, prime_digital_read_ty) =
+            declare_fn(module, "prime_digital_read", i32_type, &mut [i32_type]);
+        let (prime_now_ms, prime_now_ms_ty) = declare_fn(module, "prime_now_ms", int_type, &mut []);
+        let (_prime_reset_reason, _prime_reset_reason_ty) =
+            declare_fn(module, "prime_reset_reason", i32_type, &mut []);
+        let (prime_gfx_open, prime_gfx_open_ty) = declare_fn(
+            module,
+            "prime_gfx_open",
+            bool_type,
+            &mut [string_data_type, usize_type, i32_type, i32_type],
+        );
+        let (prime_gfx_clear, prime_gfx_clear_ty) = declare_fn(
+            module,
+            "prime_gfx_clear",
+            void_type,
+            &mut [i32_type, i32_type, i32_type],
+        );
+        let (prime_gfx_rect, prime_gfx_rect_ty) = declare_fn(
+            module,
+            "prime_gfx_rect",
+            void_type,
             &mut [
-                LLVMInt32TypeInContext(context),
-                LLVMInt32TypeInContext(context),
+                i32_type, i32_type, i32_type, i32_type, i32_type, i32_type, i32_type,
             ],
         );
-        let (prime_digital_read, prime_digital_read_ty) = declare_fn(
+        let (prime_gfx_sprite, prime_gfx_sprite_ty) = declare_fn(
             module,
-            "prime_digital_read",
-            LLVMInt32TypeInContext(context),
-            &mut [LLVMInt32TypeInContext(context)],
+            "prime_gfx_sprite",
+            bool_type,
+            &mut [
+                string_data_type,
+                usize_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+            ],
         );
-        let (prime_now_ms, prime_now_ms_ty) = declare_fn(module, "prime_now_ms", int_type, &mut []);
-        let (_prime_reset_reason, _prime_reset_reason_ty) = declare_fn(
+        let (prime_gfx_text, prime_gfx_text_ty) = declare_fn(
             module,
-            "prime_reset_reason",
-            LLVMInt32TypeInContext(context),
-            &mut [],
+            "prime_gfx_text",
+            void_type,
+            &mut [
+                string_data_type,
+                usize_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+            ],
         );
+        let (prime_gfx_text_int, prime_gfx_text_int_ty) = declare_fn(
+            module,
+            "prime_gfx_text_int",
+            void_type,
+            &mut [
+                string_data_type,
+                usize_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+                i32_type,
+            ],
+        );
+        let (prime_gfx_present, prime_gfx_present_ty) =
+            declare_fn(module, "prime_gfx_present", bool_type, &mut []);
+        let (prime_gfx_key_down, prime_gfx_key_down_ty) = declare_fn(
+            module,
+            "prime_gfx_key_down",
+            bool_type,
+            &mut [string_data_type, usize_type],
+        );
+        let (prime_gfx_key_pressed, prime_gfx_key_pressed_ty) = declare_fn(
+            module,
+            "prime_gfx_key_pressed",
+            bool_type,
+            &mut [string_data_type, usize_type],
+        );
+        let (prime_gfx_should_close, prime_gfx_should_close_ty) =
+            declare_fn(module, "prime_gfx_should_close", bool_type, &mut []);
+        let (prime_gfx_close, prime_gfx_close_ty) =
+            declare_fn(module, "prime_gfx_close", void_type, &mut []);
+        let (prime_audio_play, prime_audio_play_ty) = declare_fn(
+            module,
+            "prime_audio_play",
+            i32_type,
+            &mut [string_data_type, usize_type, bool_type],
+        );
+        let (prime_audio_stop, prime_audio_stop_ty) =
+            declare_fn(module, "prime_audio_stop", bool_type, &mut [i32_type]);
+        let (prime_audio_stop_all, prime_audio_stop_all_ty) =
+            declare_fn(module, "prime_audio_stop_all", void_type, &mut []);
+        let (prime_audio_set_volume, prime_audio_set_volume_ty) = declare_fn(
+            module,
+            "prime_audio_set_volume",
+            bool_type,
+            &mut [i32_type, i32_type],
+        );
+        let (prime_audio_is_playing, prime_audio_is_playing_ty) =
+            declare_fn(module, "prime_audio_is_playing", bool_type, &mut [i32_type]);
 
         Self {
             handle_type,
@@ -525,6 +651,8 @@ impl RuntimeAbi {
             prime_slice_len_handle_ty,
             prime_slice_get_handle,
             prime_slice_get_handle_ty,
+            prime_slice_set_handle,
+            prime_slice_set_handle_ty,
             prime_slice_remove_handle,
             prime_slice_remove_handle_ty,
             prime_map_new,
@@ -619,6 +747,38 @@ impl RuntimeAbi {
             prime_now_ms_ty,
             prime_reset_reason: _prime_reset_reason,
             prime_reset_reason_ty: _prime_reset_reason_ty,
+            prime_gfx_open,
+            prime_gfx_open_ty,
+            prime_gfx_clear,
+            prime_gfx_clear_ty,
+            prime_gfx_rect,
+            prime_gfx_rect_ty,
+            prime_gfx_sprite,
+            prime_gfx_sprite_ty,
+            prime_gfx_text,
+            prime_gfx_text_ty,
+            prime_gfx_text_int,
+            prime_gfx_text_int_ty,
+            prime_gfx_present,
+            prime_gfx_present_ty,
+            prime_gfx_key_down,
+            prime_gfx_key_down_ty,
+            prime_gfx_key_pressed,
+            prime_gfx_key_pressed_ty,
+            prime_gfx_should_close,
+            prime_gfx_should_close_ty,
+            prime_gfx_close,
+            prime_gfx_close_ty,
+            prime_audio_play,
+            prime_audio_play_ty,
+            prime_audio_stop,
+            prime_audio_stop_ty,
+            prime_audio_stop_all,
+            prime_audio_stop_all_ty,
+            prime_audio_set_volume,
+            prime_audio_set_volume_ty,
+            prime_audio_is_playing,
+            prime_audio_is_playing_ty,
         }
     }
 
@@ -657,6 +817,8 @@ impl RuntimeAbi {
             prime_slice_len_handle_ty: std::ptr::null_mut(),
             prime_slice_get_handle: std::ptr::null_mut(),
             prime_slice_get_handle_ty: std::ptr::null_mut(),
+            prime_slice_set_handle: std::ptr::null_mut(),
+            prime_slice_set_handle_ty: std::ptr::null_mut(),
             prime_slice_remove_handle: std::ptr::null_mut(),
             prime_slice_remove_handle_ty: std::ptr::null_mut(),
             prime_map_new: std::ptr::null_mut(),
@@ -751,6 +913,38 @@ impl RuntimeAbi {
             prime_now_ms_ty: std::ptr::null_mut(),
             prime_reset_reason: std::ptr::null_mut(),
             prime_reset_reason_ty: std::ptr::null_mut(),
+            prime_gfx_open: std::ptr::null_mut(),
+            prime_gfx_open_ty: std::ptr::null_mut(),
+            prime_gfx_clear: std::ptr::null_mut(),
+            prime_gfx_clear_ty: std::ptr::null_mut(),
+            prime_gfx_rect: std::ptr::null_mut(),
+            prime_gfx_rect_ty: std::ptr::null_mut(),
+            prime_gfx_sprite: std::ptr::null_mut(),
+            prime_gfx_sprite_ty: std::ptr::null_mut(),
+            prime_gfx_text: std::ptr::null_mut(),
+            prime_gfx_text_ty: std::ptr::null_mut(),
+            prime_gfx_text_int: std::ptr::null_mut(),
+            prime_gfx_text_int_ty: std::ptr::null_mut(),
+            prime_gfx_present: std::ptr::null_mut(),
+            prime_gfx_present_ty: std::ptr::null_mut(),
+            prime_gfx_key_down: std::ptr::null_mut(),
+            prime_gfx_key_down_ty: std::ptr::null_mut(),
+            prime_gfx_key_pressed: std::ptr::null_mut(),
+            prime_gfx_key_pressed_ty: std::ptr::null_mut(),
+            prime_gfx_should_close: std::ptr::null_mut(),
+            prime_gfx_should_close_ty: std::ptr::null_mut(),
+            prime_gfx_close: std::ptr::null_mut(),
+            prime_gfx_close_ty: std::ptr::null_mut(),
+            prime_audio_play: std::ptr::null_mut(),
+            prime_audio_play_ty: std::ptr::null_mut(),
+            prime_audio_stop: std::ptr::null_mut(),
+            prime_audio_stop_ty: std::ptr::null_mut(),
+            prime_audio_stop_all: std::ptr::null_mut(),
+            prime_audio_stop_all_ty: std::ptr::null_mut(),
+            prime_audio_set_volume: std::ptr::null_mut(),
+            prime_audio_set_volume_ty: std::ptr::null_mut(),
+            prime_audio_is_playing: std::ptr::null_mut(),
+            prime_audio_is_playing_ty: std::ptr::null_mut(),
         }
     }
 }
