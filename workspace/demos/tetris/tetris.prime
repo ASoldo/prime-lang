@@ -694,9 +694,9 @@ fn play_sound(path: string, volume: int32) {
 
 fn play_clear_sound(cleared: int32) {
   if cleared >= 4 {
-    play_sound(TETRIS_PATH, 85);
-  } else {
     play_sound(CLEAR_PATH, 70);
+  } else {
+    play_sound(TETRIS_PATH, 85);
   }
 }
 
