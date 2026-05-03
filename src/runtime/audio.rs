@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::File;
 use std::io::BufReader;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 struct RuntimeSlot(Mutex<Option<AudioRuntime>>);
@@ -121,8 +122,9 @@ fn silent_mode() -> bool {
 impl RealAudio {
     fn play(&mut self, path: &str, looped: bool) -> Result<i32, String> {
         self.cleanup_finished();
-        let file =
-            File::open(path).map_err(|err| format!("failed to open audio `{path}`: {err}"))?;
+        let resolved_path = resolve_asset_path(path);
+        let file = File::open(&resolved_path)
+            .map_err(|err| format!("failed to open audio `{path}`: {err}"))?;
         let decoder = Decoder::new(BufReader::new(file))
             .map_err(|err| format!("failed to decode audio `{path}`: {err}"))?;
         let sink = Sink::try_new(&self.handle)
@@ -180,6 +182,22 @@ impl RealAudio {
         }
         id
     }
+}
+
+fn resolve_asset_path(path: &str) -> PathBuf {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() || candidate.exists() {
+        return candidate.to_path_buf();
+    }
+    if let Ok(exe) = env::current_exe() {
+        for base in exe.ancestors().skip(1) {
+            let joined = base.join(candidate);
+            if joined.exists() {
+                return joined;
+            }
+        }
+    }
+    candidate.to_path_buf()
 }
 
 impl SilentAudio {

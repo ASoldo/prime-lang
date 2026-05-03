@@ -21,9 +21,12 @@ cargo run -- build workspace/demos/tetris/tetris.prime --name prime_tetris
 Controls:
 
 - Left/Right or A/D: move
-- Up/X: rotate
 - Down/S: soft drop
-- Space: hard drop
+- C or uConsole Y: hold
+- uConsole B: rotate counterclockwise
+- Up/X or uConsole A: rotate clockwise
+- Space or uConsole X: hard drop
+- Enter or uConsole Start: start/restart
 - P: pause
 - R: restart after game over
 - Esc/window close: quit

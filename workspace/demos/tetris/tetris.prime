@@ -33,6 +33,12 @@ const CLEAR_SETTLE_MS: int64 = 500;
 
 const CLEAR_SETTLE_STEPS: int32 = 20;
 
+const SCREEN_MENU: int32 = 0;
+
+const SCREEN_PLAY: int32 = 1;
+
+const SCREEN_GAME_OVER: int32 = 2;
+
 fn make_board() -> []int32 {
   let mut []int32 board = [];
   for _ in 0..BOARD_CELLS {
@@ -117,14 +123,17 @@ fn cell_x(kind: int32, rotation: int32, index: int32) -> int32 {
     value = select_cell(index, 0, 1, 0, 1);
   }
   if kind == 3 {
-    if rot == 0 || rot == 2 {
-      value = select_cell(index, -1, 0, 1, 0);
+    if rot == 0 {
+      value = select_cell(index, 0, -1, 0, 1);
     }
     if rot == 1 {
-      value = select_cell(index, 0, 0, 0, 1);
+      value = select_cell(index, 0, 0, 1, 0);
+    }
+    if rot == 2 {
+      value = select_cell(index, -1, 0, 1, 0);
     }
     if rot == 3 {
-      value = select_cell(index, 0, 0, 0, -1);
+      value = select_cell(index, 0, -1, 0, 0);
     }
   }
   if kind == 4 {
@@ -143,21 +152,21 @@ fn cell_x(kind: int32, rotation: int32, index: int32) -> int32 {
   }
   if kind == 6 {
     if rot == 0 {
-      value = select_cell(index, -1, 0, 1, -1);
+      value = select_cell(index, -1, -1, 0, 1);
     }
     if rot == 1 {
-      value = select_cell(index, 0, 0, 0, 1);
+      value = select_cell(index, 0, 1, 0, 0);
     }
     if rot == 2 {
       value = select_cell(index, -1, 0, 1, 1);
     }
     if rot == 3 {
-      value = select_cell(index, 0, 0, 0, -1);
+      value = select_cell(index, 0, 0, -1, 0);
     }
   }
   if kind == 7 {
     if rot == 0 {
-      value = select_cell(index, -1, 0, 1, 1);
+      value = select_cell(index, 1, -1, 0, 1);
     }
     if rot == 1 {
       value = select_cell(index, 0, 0, 0, 1);
@@ -166,7 +175,7 @@ fn cell_x(kind: int32, rotation: int32, index: int32) -> int32 {
       value = select_cell(index, -1, 0, 1, -1);
     }
     if rot == 3 {
-      value = select_cell(index, 0, 0, 0, -1);
+      value = select_cell(index, -1, 0, 0, 0);
     }
   }
   value
@@ -185,13 +194,16 @@ fn cell_y(kind: int32, rotation: int32, index: int32) -> int32 {
   }
   if kind == 3 {
     if rot == 0 {
-      value = select_cell(index, 0, 0, 0, 1);
+      value = select_cell(index, -1, 0, 0, 0);
     }
-    if rot == 1 || rot == 3 {
-      value = select_cell(index, -1, 0, 1, 0);
+    if rot == 1 {
+      value = select_cell(index, -1, 0, 0, 1);
     }
     if rot == 2 {
-      value = select_cell(index, 0, 0, 0, -1);
+      value = select_cell(index, 0, 0, 0, 1);
+    }
+    if rot == 3 {
+      value = select_cell(index, -1, 0, 0, 1);
     }
   }
   if kind == 4 || kind == 5 {
@@ -203,13 +215,13 @@ fn cell_y(kind: int32, rotation: int32, index: int32) -> int32 {
   }
   if kind == 6 {
     if rot == 0 {
-      value = select_cell(index, 0, 0, 0, 1);
+      value = select_cell(index, -1, 0, 0, 0);
     }
     if rot == 1 {
-      value = select_cell(index, -1, 0, 1, -1);
+      value = select_cell(index, -1, -1, 0, 1);
     }
     if rot == 2 {
-      value = select_cell(index, 0, 0, 0, -1);
+      value = select_cell(index, 0, 0, 0, 1);
     }
     if rot == 3 {
       value = select_cell(index, -1, 0, 1, 1);
@@ -217,16 +229,16 @@ fn cell_y(kind: int32, rotation: int32, index: int32) -> int32 {
   }
   if kind == 7 {
     if rot == 0 {
-      value = select_cell(index, 0, 0, 0, 1);
+      value = select_cell(index, -1, 0, 0, 0);
     }
     if rot == 1 {
       value = select_cell(index, -1, 0, 1, 1);
     }
     if rot == 2 {
-      value = select_cell(index, 0, 0, 0, -1);
+      value = select_cell(index, 0, 0, 0, 1);
     }
     if rot == 3 {
-      value = select_cell(index, -1, 0, 1, -1);
+      value = select_cell(index, -1, -1, 0, 1);
     }
   }
   value
@@ -648,6 +660,23 @@ fn draw_hud(score: int32, lines: int32, level: int32, hold_kind: int32, next_kin
   }
 }
 
+fn draw_menu() {
+  draw_board_base();
+  gfx_text("PRIME TETRIS", BOARD_X + 24, BOARD_Y + 168, 2, 214, 235, 255);
+  gfx_text("PRESS ENTER", BOARD_X + 55, BOARD_Y + 242, 1, 255, 211, 77);
+  gfx_text("ARROWS MOVE", BOARD_X + 55, BOARD_Y + 282, 1, 125, 185, 255);
+  gfx_text("X ROTATES", BOARD_X + 75, BOARD_Y + 308, 1, 125, 185, 255);
+}
+
+fn draw_game_over_screen(score: int32, lines: int32, level: int32) {
+  draw_board_base();
+  gfx_text("GAME OVER", BOARD_X + 54, BOARD_Y + 174, 2, 255, 88, 88);
+  gfx_text_int("SCORE", score, BOARD_X + 78, BOARD_Y + 248, 1, 214, 235, 255);
+  gfx_text_int("LINES", lines, BOARD_X + 78, BOARD_Y + 276, 1, 214, 235, 255);
+  gfx_text_int("LEVEL", level, BOARD_X + 78, BOARD_Y + 304, 1, 214, 235, 255);
+  gfx_text("ENTER RESTART", BOARD_X + 45, BOARD_Y + 368, 1, 255, 211, 77);
+}
+
 fn main() {
   match gfx_open("Prime Native Tetris", SCREEN_W, SCREEN_H) {
     Result::Ok(_) => {
@@ -690,12 +719,13 @@ fn main() {
   let mut int64 clear_elapsed = 0;
   let mut bool paused = false;
   let mut bool game_over = false;
+  let mut int32 screen = SCREEN_MENU;
   let mut bool running = true;
   while running && !gfx_should_close() {
     let int64 now = now_ms();
     let int64 delta = now - last_tick;
     last_tick = now;
-    if !paused && !game_over {
+    if screen == SCREEN_PLAY && !paused && !game_over {
       if clear_phase > 0 {
         let (next_clear_phase, next_clear_elapsed, clear_finished) = advance_clear_animation(board, clear_rows, clear_phase, clear_elapsed, delta);
         clear_phase = next_clear_phase;
@@ -713,6 +743,7 @@ fn main() {
           hold_ready = true;
           if !can_move(board, current, rotation, piece_x, piece_y) {
             game_over = true;
+            screen = SCREEN_GAME_OVER;
           }
         }
       } else {
@@ -722,10 +753,37 @@ fn main() {
     if gfx_key_pressed("escape") {
       running = false;
     }
-    if gfx_key_pressed("p") {
+    if screen == SCREEN_MENU && (gfx_key_pressed("enter") || gfx_key_pressed("space") || gfx_key_pressed("uconsole_start")) {
+      reset_board(board);
+      reset_row_flags(clear_rows);
+      bag_index = 7;
+      let (start_current, start_bag_index, start_seed) = draw_from_bag(bag, bag_index, seed);
+      current = start_current;
+      bag_index = start_bag_index;
+      seed = start_seed;
+      let (start_next, start_next_bag_index, start_next_seed) = draw_from_bag(bag, bag_index, seed);
+      next_kind = start_next;
+      bag_index = start_next_bag_index;
+      seed = start_next_seed;
+      hold_kind = 0;
+      hold_ready = true;
+      piece_x = 4;
+      piece_y = 1;
+      rotation = 0;
+      score = 0;
+      lines = 0;
+      level = 1;
+      fall_timer = 0;
+      clear_phase = 0;
+      clear_elapsed = 0;
+      paused = false;
+      game_over = false;
+      screen = SCREEN_PLAY;
+    }
+    if screen == SCREEN_PLAY && gfx_key_pressed("p") {
       paused = !paused;
     }
-    if game_over && gfx_key_pressed("r") {
+    if screen == SCREEN_GAME_OVER && (gfx_key_pressed("r") || gfx_key_pressed("enter") || gfx_key_pressed("space") || gfx_key_pressed("uconsole_start")) {
       reset_board(board);
       reset_row_flags(clear_rows);
       bag_index = 7;
@@ -748,10 +806,12 @@ fn main() {
       fall_timer = 0;
       clear_phase = 0;
       clear_elapsed = 0;
+      paused = false;
       game_over = false;
+      screen = SCREEN_PLAY;
     }
-    if !paused && !game_over && clear_phase == 0 {
-      if gfx_key_pressed("c") && hold_ready {
+    if screen == SCREEN_PLAY && !paused && !game_over && clear_phase == 0 {
+      if (gfx_key_pressed("c") || gfx_key_pressed("uconsole_y")) && hold_ready {
         let int32 swap_kind = current;
         if hold_kind == 0 {
           hold_kind = swap_kind;
@@ -771,6 +831,7 @@ fn main() {
         hold_ready = false;
         if !can_move(board, current, rotation, piece_x, piece_y) {
           game_over = true;
+          screen = SCREEN_GAME_OVER;
         }
       }
       if gfx_key_pressed("left") || gfx_key_pressed("a") {
@@ -783,7 +844,19 @@ fn main() {
           piece_x = piece_x + 1;
         }
       }
-      if gfx_key_pressed("up") || gfx_key_pressed("x") {
+      if gfx_key_pressed("uconsole_b") {
+        let int32 desired = normalize_rotation(rotation - 1);
+        if can_move(board, current, desired, piece_x, piece_y) {
+          rotation = desired;
+        } else if can_move(board, current, desired, piece_x - 1, piece_y) {
+          rotation = desired;
+          piece_x = piece_x - 1;
+        } else if can_move(board, current, desired, piece_x + 1, piece_y) {
+          rotation = desired;
+          piece_x = piece_x + 1;
+        }
+      }
+      if gfx_key_pressed("up") || gfx_key_pressed("x") || gfx_key_pressed("uconsole_a") {
         let int32 desired = normalize_rotation(rotation + 1);
         if can_move(board, current, desired, piece_x, piece_y) {
           rotation = desired;
@@ -795,7 +868,7 @@ fn main() {
           piece_x = piece_x + 1;
         }
       }
-      if gfx_key_pressed("space") {
+      if gfx_key_pressed("space") || gfx_key_pressed("uconsole_x") {
         piece_y = ghost_y(board, current, rotation, piece_x, piece_y);
         fall_timer = drop_interval(level);
       }
@@ -835,21 +908,30 @@ fn main() {
             hold_ready = true;
             if !can_move(board, current, rotation, piece_x, piece_y) {
               game_over = true;
+              screen = SCREEN_GAME_OVER;
             }
           }
         }
       }
     }
-    if clear_phase == 0 {
-      draw_board(board);
+    if screen == SCREEN_MENU {
+      draw_menu();
+      draw_hud(score, lines, level, hold_kind, next_kind, false, false);
+    } else if screen == SCREEN_GAME_OVER {
+      draw_game_over_screen(score, lines, level);
+      draw_hud(score, lines, level, hold_kind, next_kind, false, false);
     } else {
-      draw_clearing_board(board, clear_rows, clear_phase, clear_elapsed);
+      if clear_phase == 0 {
+        draw_board(board);
+      } else {
+        draw_clearing_board(board, clear_rows, clear_phase, clear_elapsed);
+      }
+      if !game_over && clear_phase == 0 {
+        draw_piece(current, rotation, piece_x, ghost_y(board, current, rotation, piece_x, piece_y), true);
+        draw_piece(current, rotation, piece_x, piece_y, false);
+      }
+      draw_hud(score, lines, level, hold_kind, next_kind, paused, game_over);
     }
-    if !game_over && clear_phase == 0 {
-      draw_piece(current, rotation, piece_x, ghost_y(board, current, rotation, piece_x, piece_y), true);
-      draw_piece(current, rotation, piece_x, piece_y, false);
-    }
-    draw_hud(score, lines, level, hold_kind, next_kind, paused, game_over);
     running = gfx_present();
     sleep_ms(16);
   }

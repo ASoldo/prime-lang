@@ -535,7 +535,11 @@ fn compile_runtime_abi_with_cargo(
     options: &BuildOptions,
 ) -> Result<PathBuf, String> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let triple = target.triple().unwrap_or("x86_64-unknown-linux-gnu");
+    let triple = target
+        .triple()
+        .map(str::to_string)
+        .or_else(rustc_host_triple)
+        .unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
     let cargo_dir = runtime_dir.join("cargo");
     fs::create_dir_all(&cargo_dir)
         .map_err(|err| format!("failed to create runtime cargo dir: {err}"))?;
@@ -599,7 +603,7 @@ crate-type = ["staticlib"]
     cmd.arg("build")
         .arg("--release")
         .arg("--target")
-        .arg(triple)
+        .arg(&triple)
         .arg("--manifest-path")
         .arg(cargo_dir.join("Cargo.toml"));
     if target.is_embedded() {
@@ -649,6 +653,32 @@ crate-type = ["staticlib"]
             output_lib.display()
         ))
     }
+}
+
+fn rustc_host_triple() -> Option<String> {
+    let output = Command::new("rustc").arg("-Vv").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    stdout.lines().find_map(|line| {
+        line.strip_prefix("host:")
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn llvm_config_command() -> Command {
+    if let Some(path) = env::var_os("PRIME_LLVM_CONFIG") {
+        return Command::new(path);
+    }
+    for var in ["LLVM_SYS_211_PREFIX", "LLVM_SYS_201_PREFIX"] {
+        if let Some(prefix) = env::var_os(var) {
+            return Command::new(PathBuf::from(prefix).join("bin/llvm-config"));
+        }
+    }
+    Command::new("llvm-config")
 }
 
 fn runtime_env_pairs(options: &BuildOptions) -> Vec<(&'static str, String)> {
@@ -1106,7 +1136,7 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
         cmd.arg(format!("-mtriple={triple}"));
     } else {
         // Ask llvm-config for the default triple; fall back to a standard host triple.
-        let llvm_triple = Command::new("llvm-config")
+        let llvm_triple = llvm_config_command()
             .arg("--host-target")
             .output()
             .ok()
@@ -1119,7 +1149,9 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
                     None
                 }
             });
-        let triple = llvm_triple.unwrap_or_else(|| "x86_64-pc-linux-gnu".to_string());
+        let triple = llvm_triple
+            .or_else(rustc_host_triple)
+            .unwrap_or_else(|| "x86_64-pc-linux-gnu".to_string());
         cmd.arg(format!("-mtriple={triple}"));
     }
     if target.is_esp32c3() {

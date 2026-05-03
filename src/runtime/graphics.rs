@@ -2,7 +2,15 @@ use image::ImageReader;
 use minifb::{Key, KeyRepeat, ScaleMode, Window, WindowOptions};
 use std::collections::HashMap;
 use std::env;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
+#[cfg(target_os = "linux")]
+use std::{
+    fs::File,
+    io::{ErrorKind, Read},
+    sync::Arc,
+    thread,
+};
 
 struct RuntimeSlot(Mutex<Option<GraphicsRuntime>>);
 
@@ -35,8 +43,20 @@ struct BufferRuntime {
     height: usize,
     buffer: Vec<u32>,
     sprites: HashMap<String, Sprite>,
+    gamepad: GamepadRuntime,
     frames: usize,
     max_frames: Option<usize>,
+}
+
+struct GamepadRuntime {
+    #[cfg(target_os = "linux")]
+    state: Option<Arc<Mutex<GamepadState>>>,
+}
+
+#[cfg(target_os = "linux")]
+struct GamepadState {
+    buttons: Vec<bool>,
+    pressed: Vec<bool>,
 }
 
 pub(crate) struct RectSpec {
@@ -70,6 +90,7 @@ pub(crate) fn open(title: &str, width: i32, height: i32) -> Result<(), String> {
         height,
         buffer: vec![0; width * height],
         sprites: HashMap::new(),
+        gamepad: GamepadRuntime::open(),
         frames: 0,
         max_frames: max_frames(),
     };
@@ -163,10 +184,16 @@ pub(crate) fn present() -> Result<bool, String> {
 }
 
 pub(crate) fn key_down(name: &str) -> Result<bool, String> {
+    if let Some(result) = gamepad_button_down(name) {
+        return result;
+    }
     with_window(name, |window, key| window.is_key_down(key))
 }
 
 pub(crate) fn key_pressed(name: &str) -> Result<bool, String> {
+    if let Some(result) = gamepad_button_pressed(name) {
+        return result;
+    }
     with_window(name, |window, key| {
         window.is_key_pressed(key, KeyRepeat::No)
     })
@@ -240,6 +267,162 @@ fn with_window(name: &str, op: impl FnOnce(&Window, Key) -> bool) -> Result<bool
     }
 }
 
+fn gamepad_button_down(name: &str) -> Option<Result<bool, String>> {
+    let buttons = gamepad_buttons_from_name(name)?;
+    Some(with_gamepad(|gamepad| {
+        buttons.iter().any(|button| gamepad.button_down(*button))
+    }))
+}
+
+fn gamepad_button_pressed(name: &str) -> Option<Result<bool, String>> {
+    let buttons = gamepad_buttons_from_name(name)?;
+    Some(with_gamepad(|gamepad| {
+        buttons.iter().any(|button| gamepad.button_pressed(*button))
+    }))
+}
+
+fn with_gamepad(op: impl FnOnce(&GamepadRuntime) -> bool) -> Result<bool, String> {
+    let slot = runtime_slot()?;
+    match slot.as_ref() {
+        Some(GraphicsRuntime::Window(runtime)) => Ok(op(&runtime.buffer.gamepad)),
+        Some(GraphicsRuntime::Headless(runtime)) => Ok(op(&runtime.gamepad)),
+        None => Err("graphics window is not open".to_string()),
+    }
+}
+
+fn gamepad_buttons_from_name(name: &str) -> Option<&'static [usize]> {
+    match name.to_ascii_lowercase().as_str() {
+        // ClockworkPI uConsole joystick mapping: x=b0, a=b1, b=b2, y=b3.
+        "uconsole_x" | "gamepad_x" | "pad_x" => Some(&[0]),
+        "uconsole_a" | "gamepad_a" | "pad_a" => Some(&[1]),
+        "uconsole_b" | "gamepad_b" | "pad_b" => Some(&[2]),
+        "uconsole_y" | "gamepad_y" | "pad_y" => Some(&[3]),
+        "uconsole_select" | "gamepad_select" | "pad_select" => Some(&[4, 6, 8]),
+        "uconsole_start" | "gamepad_start" | "pad_start" => Some(&[5, 7, 9]),
+        _ => None,
+    }
+}
+
+impl GamepadRuntime {
+    fn open() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self {
+                state: open_linux_gamepad(),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self {}
+        }
+    }
+
+    fn button_down(&self, button: usize) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let Some(state) = self.state.as_ref() else {
+                return false;
+            };
+            let Ok(state) = state.lock() else {
+                return false;
+            };
+            return state.buttons.get(button).copied().unwrap_or(false);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = button;
+            false
+        }
+    }
+
+    fn button_pressed(&self, button: usize) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let Some(state) = self.state.as_ref() else {
+                return false;
+            };
+            let Ok(mut state) = state.lock() else {
+                return false;
+            };
+            let pressed = state.pressed.get(button).copied().unwrap_or(false);
+            if pressed {
+                state.pressed[button] = false;
+            }
+            return pressed;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = button;
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_linux_gamepad() -> Option<Arc<Mutex<GamepadState>>> {
+    let paths = gamepad_paths();
+    for path in paths {
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
+        let state = Arc::new(Mutex::new(GamepadState {
+            buttons: vec![false; 64],
+            pressed: vec![false; 64],
+        }));
+        let reader_state = Arc::clone(&state);
+        let _ = thread::Builder::new()
+            .name("prime-gamepad-js".into())
+            .spawn(move || read_linux_joystick(file, reader_state));
+        return Some(state);
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn gamepad_paths() -> Vec<String> {
+    if let Ok(path) = env::var("PRIME_GAMEPAD_DEVICE") {
+        return vec![path];
+    }
+    vec![
+        "/dev/input/by-id/platform-noserial-joystick".into(),
+        "/dev/input/js0".into(),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_joystick(mut file: File, state: Arc<Mutex<GamepadState>>) {
+    const JS_EVENT_BUTTON: u8 = 0x01;
+    const JS_EVENT_INIT: u8 = 0x80;
+    loop {
+        let mut event = [0_u8; 8];
+        match file.read_exact(&mut event) {
+            Ok(()) => {
+                let value = i16::from_ne_bytes([event[4], event[5]]);
+                let event_type = event[6];
+                let number = event[7] as usize;
+                if event_type & JS_EVENT_BUTTON == 0 {
+                    continue;
+                }
+                let is_initial = event_type & JS_EVENT_INIT != 0;
+                let Ok(mut state) = state.lock() else {
+                    return;
+                };
+                if number >= state.buttons.len() {
+                    state.buttons.resize(number + 1, false);
+                    state.pressed.resize(number + 1, false);
+                }
+                let down = value != 0;
+                if down && !state.buttons[number] && !is_initial {
+                    state.pressed[number] = true;
+                }
+                state.buttons[number] = down;
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        }
+    }
+}
+
 fn runtime_slot() -> Result<MutexGuard<'static, Option<GraphicsRuntime>>, String> {
     RUNTIME
         .0
@@ -251,7 +434,8 @@ fn load_sprite(cache: &mut HashMap<String, Sprite>, path: &str) -> Result<Sprite
     if let Some(sprite) = cache.get(path) {
         return Ok(sprite.clone());
     }
-    let decoded = ImageReader::open(path)
+    let resolved_path = resolve_asset_path(path);
+    let decoded = ImageReader::open(&resolved_path)
         .map_err(|err| format!("failed to open sprite `{path}`: {err}"))?
         .decode()
         .map_err(|err| format!("failed to decode sprite `{path}`: {err}"))?
@@ -269,6 +453,22 @@ fn load_sprite(cache: &mut HashMap<String, Sprite>, path: &str) -> Result<Sprite
     };
     cache.insert(path.to_string(), sprite.clone());
     Ok(sprite)
+}
+
+fn resolve_asset_path(path: &str) -> PathBuf {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() || candidate.exists() {
+        return candidate.to_path_buf();
+    }
+    if let Ok(exe) = env::current_exe() {
+        for base in exe.ancestors().skip(1) {
+            let joined = base.join(candidate);
+            if joined.exists() {
+                return joined;
+            }
+        }
+    }
+    candidate.to_path_buf()
 }
 
 fn draw_rect(buffer: &mut BufferRuntime, x: i32, y: i32, width: i32, height: i32, color: u32) {
