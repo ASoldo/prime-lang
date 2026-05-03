@@ -644,8 +644,8 @@ fn draw_hud(score: int32, lines: int32, level: int32, hold_kind: int32, next_kin
   draw_preview_at(hold_kind, PANEL_X + 54, 216);
   gfx_text("NEXT", PANEL_X, 296, 1, 214, 235, 255);
   draw_preview_at(next_kind, PANEL_X + 54, 328);
-  gfx_text("A ROTATE", PANEL_X, 424, 1, 93, 133, 181);
-  gfx_text("B ROTATE BACK", PANEL_X, 450, 1, 93, 133, 181);
+  gfx_text("A/B ROTATE", PANEL_X, 424, 1, 93, 133, 181);
+  gfx_text("A RIGHT B LEFT", PANEL_X, 450, 1, 93, 133, 181);
   gfx_text("X HARD DROP", PANEL_X, 476, 1, 93, 133, 181);
   gfx_text("Y HOLD", PANEL_X, 502, 1, 93, 133, 181);
   gfx_text("START GO", PANEL_X, 528, 1, 93, 133, 181);
@@ -784,7 +784,7 @@ fn main() {
     if screen == SCREEN_PLAY && (gfx_key_pressed("p") || gfx_key_pressed("uconsole_select")) {
       paused = !paused;
     }
-    if screen == SCREEN_GAME_OVER && (gfx_key_pressed("r") || gfx_key_pressed("enter") || gfx_key_pressed("space") || gfx_key_pressed("uconsole_start")) {
+    if screen == SCREEN_GAME_OVER && (gfx_key_pressed("r") || gfx_key_pressed("enter") || gfx_key_pressed("space") || gfx_key_pressed("uconsole_start") || gfx_key_down("uconsole_start")) {
       reset_board(board);
       reset_row_flags(clear_rows);
       bag_index = 7;

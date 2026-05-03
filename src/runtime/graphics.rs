@@ -297,8 +297,8 @@ fn gamepad_buttons_from_name(name: &str) -> Option<&'static [usize]> {
         "uconsole_a" | "gamepad_a" | "pad_a" => Some(&[1]),
         "uconsole_b" | "gamepad_b" | "pad_b" => Some(&[2]),
         "uconsole_y" | "gamepad_y" | "pad_y" => Some(&[3]),
-        "uconsole_select" | "gamepad_select" | "pad_select" => Some(&[4, 6, 8]),
-        "uconsole_start" | "gamepad_start" | "pad_start" => Some(&[5, 7, 9]),
+        "uconsole_select" | "gamepad_select" | "pad_select" => Some(&[4, 6, 8, 10]),
+        "uconsole_start" | "gamepad_start" | "pad_start" => Some(&[5, 7, 9, 11]),
         _ => None,
     }
 }
