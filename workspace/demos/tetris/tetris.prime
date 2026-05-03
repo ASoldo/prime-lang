@@ -27,6 +27,10 @@ const MUSIC_PATH: string = "workspace/demos/tetris/assets/arcade-music-loop.wav"
 
 const CLEAR_PATH: string = "workspace/demos/tetris/assets/clear-line.wav";
 
+const TETRIS_PATH: string = "workspace/demos/tetris/assets/tetris.wav";
+
+const GAME_OVER_PATH: string = "workspace/demos/tetris/assets/game-over.wav";
+
 const CLEAR_FLASH_MS: int64 = 250;
 
 const CLEAR_SETTLE_MS: int64 = 500;
@@ -678,6 +682,30 @@ fn draw_game_over_screen(score: int32, lines: int32, level: int32) {
   gfx_text("START RESTART", BOARD_X + 45, BOARD_Y + 368, 1, 255, 211, 77);
 }
 
+fn play_sound(path: string, volume: int32) {
+  match audio_play(path, false) {
+    Result::Ok(handle) => {
+      audio_set_volume(handle, volume);
+    },
+    Result::Err(_) => {
+    },
+  }
+}
+
+fn play_clear_sound(cleared: int32) {
+  if cleared >= 4 {
+    play_sound(TETRIS_PATH, 85);
+  } else {
+    play_sound(CLEAR_PATH, 70);
+  }
+}
+
+fn enter_game_over() -> (bool, int32) {
+  play_sound(GAME_OVER_PATH, 90);
+  let (bool, int32) state = (true, SCREEN_GAME_OVER);
+  state
+}
+
 fn main() {
   match gfx_open("Prime Native Tetris", SCREEN_W, SCREEN_H) {
     Result::Ok(_) => {
@@ -743,8 +771,9 @@ fn main() {
           fall_timer = 0;
           hold_ready = true;
           if !can_move(board, current, rotation, piece_x, piece_y) {
-            game_over = true;
-            screen = SCREEN_GAME_OVER;
+            let (entered_game_over, game_over_screen) = enter_game_over();
+            game_over = entered_game_over;
+            screen = game_over_screen;
           }
         }
       } else {
@@ -831,8 +860,9 @@ fn main() {
         fall_timer = 0;
         hold_ready = false;
         if !can_move(board, current, rotation, piece_x, piece_y) {
-          game_over = true;
-          screen = SCREEN_GAME_OVER;
+          let (entered_game_over_after_hold, game_over_screen_after_hold) = enter_game_over();
+          game_over = entered_game_over_after_hold;
+          screen = game_over_screen_after_hold;
         }
       }
       if gfx_key_pressed("left") || gfx_key_pressed("a") {
@@ -885,13 +915,7 @@ fn main() {
 
           let int32 cleared = mark_full_rows(board, clear_rows);
           if cleared > 0 {
-            match audio_play(CLEAR_PATH, false) {
-              Result::Ok(handle) => {
-                audio_set_volume(handle, 70);
-              },
-              Result::Err(_) => {
-              },
-            }
+            play_clear_sound(cleared);
             lines = lines + cleared;
             level = lines / 10 + 1;
             score = add_score(score, level, cleared);
@@ -908,8 +932,9 @@ fn main() {
             rotation = 0;
             hold_ready = true;
             if !can_move(board, current, rotation, piece_x, piece_y) {
-              game_over = true;
-              screen = SCREEN_GAME_OVER;
+              let (entered_game_over_after_lock, game_over_screen_after_lock) = enter_game_over();
+              game_over = entered_game_over_after_lock;
+              screen = game_over_screen_after_lock;
             }
           }
         }
