@@ -644,11 +644,12 @@ fn draw_hud(score: int32, lines: int32, level: int32, hold_kind: int32, next_kin
   draw_preview_at(hold_kind, PANEL_X + 54, 216);
   gfx_text("NEXT", PANEL_X, 296, 1, 214, 235, 255);
   draw_preview_at(next_kind, PANEL_X + 54, 328);
-  gfx_text("MOVE  ARROWS", PANEL_X, 424, 1, 93, 133, 181);
-  gfx_text("SOFT  DOWN", PANEL_X, 450, 1, 93, 133, 181);
-  gfx_text("DROP  SPACE", PANEL_X, 476, 1, 93, 133, 181);
-  gfx_text("HOLD  C", PANEL_X, 502, 1, 93, 133, 181);
-  gfx_text("PAUSE P", PANEL_X, 528, 1, 93, 133, 181);
+  gfx_text("A ROTATE", PANEL_X, 424, 1, 93, 133, 181);
+  gfx_text("B ROTATE BACK", PANEL_X, 450, 1, 93, 133, 181);
+  gfx_text("X HARD DROP", PANEL_X, 476, 1, 93, 133, 181);
+  gfx_text("Y HOLD", PANEL_X, 502, 1, 93, 133, 181);
+  gfx_text("START GO", PANEL_X, 528, 1, 93, 133, 181);
+  gfx_text("SELECT PAUSE", PANEL_X, 554, 1, 93, 133, 181);
   if paused {
     gfx_rect(BOARD_X + 37, BOARD_Y + 230, 206, 66, 3, 9, 19);
     gfx_text("PAUSED", BOARD_X + 78, BOARD_Y + 252, 2, 255, 211, 77);
@@ -663,9 +664,9 @@ fn draw_hud(score: int32, lines: int32, level: int32, hold_kind: int32, next_kin
 fn draw_menu() {
   draw_board_base();
   gfx_text("PRIME TETRIS", BOARD_X + 24, BOARD_Y + 168, 2, 214, 235, 255);
-  gfx_text("PRESS ENTER", BOARD_X + 55, BOARD_Y + 242, 1, 255, 211, 77);
-  gfx_text("ARROWS MOVE", BOARD_X + 55, BOARD_Y + 282, 1, 125, 185, 255);
-  gfx_text("X ROTATES", BOARD_X + 75, BOARD_Y + 308, 1, 125, 185, 255);
+  gfx_text("PRESS START", BOARD_X + 55, BOARD_Y + 242, 1, 255, 211, 77);
+  gfx_text("A ROTATES", BOARD_X + 75, BOARD_Y + 282, 1, 125, 185, 255);
+  gfx_text("X DROPS", BOARD_X + 85, BOARD_Y + 308, 1, 125, 185, 255);
 }
 
 fn draw_game_over_screen(score: int32, lines: int32, level: int32) {
@@ -674,7 +675,7 @@ fn draw_game_over_screen(score: int32, lines: int32, level: int32) {
   gfx_text_int("SCORE", score, BOARD_X + 78, BOARD_Y + 248, 1, 214, 235, 255);
   gfx_text_int("LINES", lines, BOARD_X + 78, BOARD_Y + 276, 1, 214, 235, 255);
   gfx_text_int("LEVEL", level, BOARD_X + 78, BOARD_Y + 304, 1, 214, 235, 255);
-  gfx_text("ENTER RESTART", BOARD_X + 45, BOARD_Y + 368, 1, 255, 211, 77);
+  gfx_text("START RESTART", BOARD_X + 45, BOARD_Y + 368, 1, 255, 211, 77);
 }
 
 fn main() {
@@ -780,7 +781,7 @@ fn main() {
       game_over = false;
       screen = SCREEN_PLAY;
     }
-    if screen == SCREEN_PLAY && gfx_key_pressed("p") {
+    if screen == SCREEN_PLAY && (gfx_key_pressed("p") || gfx_key_pressed("uconsole_select")) {
       paused = !paused;
     }
     if screen == SCREEN_GAME_OVER && (gfx_key_pressed("r") || gfx_key_pressed("enter") || gfx_key_pressed("space") || gfx_key_pressed("uconsole_start")) {

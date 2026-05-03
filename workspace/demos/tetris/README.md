@@ -20,15 +20,13 @@ cargo run -- build workspace/demos/tetris/tetris.prime --name prime_tetris
 
 Controls:
 
-- Left/Right or A/D: move
-- Down/S: soft drop
-- C or uConsole Y: hold
+- uConsole Start: start/restart
+- uConsole A: rotate clockwise
 - uConsole B: rotate counterclockwise
-- Up/X or uConsole A: rotate clockwise
-- Space or uConsole X: hard drop
-- Enter or uConsole Start: start/restart
-- P: pause
-- R: restart after game over
+- uConsole X: hard drop
+- uConsole Y: hold
+- uConsole Select: pause/resume
+- Keyboard fallback: arrows/A/D move, Down/S soft drop, X/Up rotate, Space drop, C hold, Enter start, P pause, R restart
 - Esc/window close: quit
 
 For headless/silent smoke checks:
