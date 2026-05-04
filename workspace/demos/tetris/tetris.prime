@@ -31,6 +31,12 @@ const TETRIS_PATH: string = "workspace/demos/tetris/assets/tetris.wav";
 
 const GAME_OVER_PATH: string = "workspace/demos/tetris/assets/game-over.wav";
 
+const LOCK_PATH: string = "workspace/demos/tetris/assets/piece-lock.wav";
+
+const ROTATE_PATH: string = "workspace/demos/tetris/assets/rotate-whoosh.wav";
+
+const LEVEL_UP_PATH: string = "workspace/demos/tetris/assets/level-up.mp3";
+
 const CLEAR_FLASH_MS: int64 = 250;
 
 const CLEAR_SETTLE_MS: int64 = 500;
@@ -700,6 +706,18 @@ fn play_clear_sound(cleared: int32) {
   }
 }
 
+fn play_lock_sound() {
+  play_sound(LOCK_PATH, 70);
+}
+
+fn play_rotate_sound() {
+  play_sound(ROTATE_PATH, 45);
+}
+
+fn play_level_up_sound() {
+  play_sound(LEVEL_UP_PATH, 85);
+}
+
 fn enter_game_over() -> (bool, int32) {
   play_sound(GAME_OVER_PATH, 90);
   let (bool, int32) state = (true, SCREEN_GAME_OVER);
@@ -879,24 +897,30 @@ fn main() {
         let int32 desired = normalize_rotation(rotation - 1);
         if can_move(board, current, desired, piece_x, piece_y) {
           rotation = desired;
+          play_rotate_sound();
         } else if can_move(board, current, desired, piece_x - 1, piece_y) {
           rotation = desired;
           piece_x = piece_x - 1;
+          play_rotate_sound();
         } else if can_move(board, current, desired, piece_x + 1, piece_y) {
           rotation = desired;
           piece_x = piece_x + 1;
+          play_rotate_sound();
         }
       }
       if gfx_key_pressed("x") || gfx_key_pressed("uconsole_a") {
         let int32 desired = normalize_rotation(rotation + 1);
         if can_move(board, current, desired, piece_x, piece_y) {
           rotation = desired;
+          play_rotate_sound();
         } else if can_move(board, current, desired, piece_x - 1, piece_y) {
           rotation = desired;
           piece_x = piece_x - 1;
+          play_rotate_sound();
         } else if can_move(board, current, desired, piece_x + 1, piece_y) {
           rotation = desired;
           piece_x = piece_x + 1;
+          play_rotate_sound();
         }
       }
       if gfx_key_pressed("space") || gfx_key_pressed("up") || gfx_key_pressed("uconsole_x") {
@@ -912,12 +936,17 @@ fn main() {
           piece_y = piece_y + 1;
         } else {
           lock_piece(board, current, rotation, piece_x, piece_y);
+          play_lock_sound();
 
           let int32 cleared = mark_full_rows(board, clear_rows);
           if cleared > 0 {
             play_clear_sound(cleared);
             lines = lines + cleared;
+            let int32 previous_level = level;
             level = lines / 10 + 1;
+            if level > previous_level {
+              play_level_up_sound();
+            }
             score = add_score(score, level, cleared);
             clear_phase = 1;
             clear_elapsed = 0;
