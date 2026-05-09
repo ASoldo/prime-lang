@@ -35,7 +35,7 @@ const LOCK_PATH: string = "workspace/demos/tetris/assets/piece-lock.wav";
 
 const ROTATE_PATH: string = "workspace/demos/tetris/assets/rotate-whoosh.wav";
 
-const LEVEL_UP_PATH: string = "workspace/demos/tetris/assets/level-up.mp3";
+const LEVEL_UP_PATH: string = "workspace/demos/tetris/assets/level-up.wav";
 
 const CLEAR_FLASH_MS: int64 = 250;
 
