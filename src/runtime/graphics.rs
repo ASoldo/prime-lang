@@ -326,7 +326,7 @@ impl GamepadRuntime {
             let Ok(state) = state.lock() else {
                 return false;
             };
-            return state.buttons.get(button).copied().unwrap_or(false);
+            state.buttons.get(button).copied().unwrap_or(false)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -348,7 +348,7 @@ impl GamepadRuntime {
             if pressed {
                 state.pressed[button] = false;
             }
-            return pressed;
+            pressed
         }
         #[cfg(not(target_os = "linux"))]
         {
