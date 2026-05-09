@@ -720,6 +720,7 @@ fn play_level_up_sound() {
 
 fn enter_game_over() -> (bool, int32) {
   play_sound(GAME_OVER_PATH, 90);
+
   let (bool, int32) state = (true, SCREEN_GAME_OVER);
   state
 }
