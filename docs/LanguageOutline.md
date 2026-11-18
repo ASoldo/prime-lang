@@ -29,6 +29,32 @@ Replacing `Data(n) => n` with `Data(1) => 1` leaves other integers uncovered. Fo
 
 The checker tracks moves and mutable borrows. Direct `await` rejects an active mutable borrow and a task with a reference or pointer as its direct result type. Raw pointers have separate rules. The current checker does not prove arbitrary nested values safe to transfer between threads.
 
+## Imports, collections and ownership
+
+In a package with a path dependency on the [core library](CoreLibrary.md), `import core;` brings its exported prelude into scope. Select individual names with `import core::prelude::{Option, Result};`. Other libraries can export named functions for selector imports, as in `import pkg::lib::{banner, promote, describe};` in the [basic tests](../workspace/tests/basic/basic.prime).
+
+This entry module prints `6` and then `4`. A map lookup yields an `Option` so the caller can handle a missing key. Moving the slice transfers its ownership to `active`. The sum is accumulated in a mutable integer binding.
+
+```prime
+module example;
+import core::prelude::{Option};
+
+fn main() {
+  let []int32 values = [2, 4];
+  let []int32 active = move values;
+  let Map[string, int32] scores = #{ "red": 4 };
+  let mut int32 total = 0;
+  for value in active { total = total + value; }
+  out(total);
+  match scores["red"] {
+    Option::Some(score) => out(score),
+    Option::None => out("missing"),
+  }
+}
+```
+
+Try adding `out(values.len());` after the move. Checking the program reports the use of the moved binding. The [iterator demo](../workspace/demos/iter_demo/iter_demo.prime) walks map entries, the [heap demo](../workspace/demos/heap_features/heap_features.prime) moves a box and a slice, and the [borrow demo](../workspace/demos/borrow/borrow_demo.prime) scopes mutable references through loops and branches.
+
 ## Host filesystem
 
 `fs_exists(path)` tests whether a path exists. `fs_read(path)` returns UTF-8 text in `Result[string, string]`. `fs_write(path, contents)` writes UTF-8 text and `fs_write_bytes(path, bytes)` writes a `[]uint8`. Both return `Result[(), string]`. Failures carry the error message. The interpreter and native executable resolve relative paths in their process working directory at execution time. Building an application emits these calls. Filesystem calls require a host target with std support and are rejected in `no_std` modules.

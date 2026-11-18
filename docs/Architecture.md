@@ -19,3 +19,26 @@ The language server uses the Rust frontend for source analysis. Tree-sitter supp
 | The CLI regression for `await_timeout(sleep_task(10000), 0)?` passes checking, prints `timeout` under the interpreter and reaches `E0NATIVETRY` during host code generation. The embedded fallback can assume `Ok` for an unresolved tag. [CLI regression](../tests/check_cli.rs) · [Postfix propagation](../src/language/compiler/emit.rs) | Compile once, exercise both variants with different runtime inputs, and compare return values and subsequent side effects with the interpreter. Unsupported cases should report the source of the operation. |
 | The emitter declares LLVM parameter widths separately from the Rust exports. For example, a timer task accepts an i128 delay and returns a handle. [ABI declarations](../src/language/runtime_abi.rs) · [ABI definitions](../src/runtime/abi.rs) | Exercise changed signatures through linked code on each affected target. Check the payload, status and handle lifetime, including on a 32-bit target. |
 | The checker rejects direct references returned through await, while nested captures and aggregate values have incomplete transfer checks. [Async ownership](AsyncAwait.md) | For a newly supported capture shape, test ownership through nesting and verify either a precise diagnostic or the same observable behavior in interpreted and native execution. |
+
+### A mutable parameter across a call
+
+On x86_64 at `af313d8`, this program passes checking and prints `7` in the interpreter. The host binary prints `6`. The assignment through the parameter must be visible to the caller after the function returns.
+
+```prime
+module example;
+fn bump(n: &mut int32) { *n = *n + 1; }
+fn main() {
+  let mut int32 n = 6;
+  bump(&mut n);
+  out(n);
+}
+```
+
+Save it as `example.prime` in a fresh directory and run:
+
+```sh
+prime-lang check example.prime
+prime-lang run example.prime
+prime-lang build example.prime --name example
+./.build.prime/example/example
+```

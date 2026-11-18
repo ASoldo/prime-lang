@@ -24,7 +24,7 @@ Create and edit your own first program in [Getting Started](docs/GettingStarted.
 
 | To try | Start here |
 | --- | --- |
-| Modules, ownership and pattern matching | [Language outline](docs/LanguageOutline.md) and [pattern demo](workspace/demos/patterns/pattern_demo.prime) |
+| Modules, ownership and pattern matching | [Imports, collections and ownership](docs/LanguageOutline.md#imports-collections-and-ownership) and [pattern demo](workspace/demos/patterns/pattern_demo.prime) |
 | Error handling with `Result`, `try` and `?` | [Error handling demo](workspace/demos/error_handling/error_handling_demo.prime) |
 | Tasks, channels, timeouts and cancellation | [Async semantics and target limits](docs/AsyncAwait.md) |
 | Text and byte file I/O at execution time | [Host filesystem](docs/LanguageOutline.md#host-filesystem) and [file demo](workspace/demos/fs_demo/fs_demo.prime) |
@@ -32,7 +32,7 @@ Create and edit your own first program in [Getting Started](docs/GettingStarted.
 | Graphics and audio | [Tetris](workspace/demos/tetris/tetris.prime), [graphics](docs/GraphicsRuntime.md) and [audio](docs/AudioRuntime.md) |
 | Follow interpreted function calls and locate runtime errors | [Interpreter tracing](docs/Debugging.md) |
 | Type diagnostics, JSON output and frozen dependencies | [Checking a program](docs/Checking.md) |
-| Editor setup, workspace docs and CI | [Development workflow](docs/Development.md) |
+| Editor setup, workspace docs and CI | [Neovim and file icons](docs/GettingStarted.md#neovim) and [development workflow](docs/Development.md) |
 | How a checked program executes | [Architecture](docs/Architecture.md), [compiler flow](docs/CompilerFlow.md) and [runtime ABI](docs/RuntimeFFI.md) |
 
 Use `prime-lang --help` for command syntax, `prime-lang docs --list` for built-in topics or `prime-lang docs --query match` for control-flow examples.

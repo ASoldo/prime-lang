@@ -58,11 +58,31 @@ PRIME_AUDIO_SILENT=1 PRIME_GFX_HEADLESS=1 PRIME_GFX_MAX_FRAMES=3 \
 
 ESP32 blink needs a cross toolchain to build and a wired board to observe its GPIO and UART. Use the [embedded build instructions](../README.md#embedded--esp32-xtensa-quickstart) with `--no-flash` to verify firmware packaging.
 
-## Editor (LSP + tree-sitter)
+## Neovim
 
-- LSP server entrypoint: `prime-lang lsp` (stdio).
-- Tree-sitter grammar: `tree-sitter/prime/grammar.js`.
-- AstroNvim example config lives at `lazy/astronvim/plugins/prime-lang.lua`.
+With `prime-lang` on PATH, add this to your Neovim 0.12 `init.lua`. Open a `.prime` file under a package containing `prime.toml`. Use `:checkhealth vim.lsp` to inspect the client and its root.
+
+```lua
+vim.filetype.add({ extension = { prime = "prime" } })
+vim.lsp.config("prime_lang", {
+  cmd = { "prime-lang", "lsp" },
+  filetypes = { "prime" },
+  root_markers = { "prime.toml", ".git" },
+})
+vim.lsp.enable("prime_lang")
+```
+
+If you use `mini.icons`, add these two entries to its setup options. They associate the extension and detected filetype with the same glyph. Displaying the glyph requires a terminal font that contains it.
+
+```lua
+local prime_icon = { glyph = "", hl = "MiniIconsCyan" }
+require("mini.icons").setup({
+  extension = { prime = prime_icon },
+  filetype = { prime = prime_icon },
+})
+```
+
+The [AstroNvim config](../lazy/astronvim/plugins/prime-lang.lua) also maps definition, references, rename and macro expansion. Its Tree-sitter setup resolves `tree-sitter/prime` relative to Neovim’s working directory and calls the plugin’s `get_parser_configs()` API. Use a compatible plugin version and open Neovim from the checkout root for that setup. [Editor grammar](../tree-sitter/prime/grammar.js)
 
 ## Comments and docs
 
