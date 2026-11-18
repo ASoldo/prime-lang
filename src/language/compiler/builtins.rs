@@ -1222,11 +1222,15 @@ impl Compiler {
         op: TcpBuiltin,
         mut args: Vec<Value>,
     ) -> Result<Value, String> {
-        if args.len() != usize::from(op.parameter().is_some()) {
+        if args.len() != op.parameters().len() {
             return Err(format!("wrong arity for {name}"));
         }
         let mut operands = match op {
-            TcpBuiltin::Listen | TcpBuiltin::NextHeader => {
+            TcpBuiltin::NextFrame => {
+                let (ptr, len) = self.string_parts_for_runtime(args.remove(0), name)?;
+                vec![ptr, len, self.int32_for_runtime(args.remove(0), name)?]
+            }
+            TcpBuiltin::Listen => {
                 vec![self.int32_for_runtime(args.remove(0), name)?]
             }
             TcpBuiltin::ReceiveUntil | TcpBuiltin::StartsWith | TcpBuiltin::Write => {
@@ -1238,7 +1242,7 @@ impl Compiler {
         let abi = &self.runtime_abi;
         let (function, ty) = match op {
             TcpBuiltin::Listen => (abi.prime_tcp_listen, abi.prime_tcp_listen_ty),
-            TcpBuiltin::NextHeader => (abi.prime_tcp_next_header, abi.prime_tcp_next_header_ty),
+            TcpBuiltin::NextFrame => (abi.prime_tcp_next_frame, abi.prime_tcp_next_frame_ty),
             TcpBuiltin::Accept => (abi.prime_tcp_accept, abi.prime_tcp_accept_ty),
             TcpBuiltin::ReceiveUntil => {
                 (abi.prime_tcp_receive_until, abi.prime_tcp_receive_until_ty)

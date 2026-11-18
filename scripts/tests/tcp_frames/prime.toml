@@ -1,0 +1,8 @@
+manifest_version = "3"
+
+[module]
+name = "telemetry"
+path = "telemetry.prime"
+
+[libraries]
+core_types = { name = "core::types", path = "../../../workspace/core/types.prime", visibility = "pub" }

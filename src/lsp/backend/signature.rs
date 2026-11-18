@@ -68,17 +68,23 @@ pub(super) fn signature_help_from_modules(
     ctx: &CallContext,
 ) -> Option<SignatureHelp> {
     if let Some(op) = TcpBuiltin::lookup(&ctx.name) {
-        let parameter = op.parameter_label().map(|label| ParameterInformation {
-            label: ParameterLabel::Simple(label),
-            documentation: None,
-        });
+        let parameters: Vec<_> = op
+            .parameter_labels()
+            .map(|label| ParameterInformation {
+                label: ParameterLabel::Simple(label),
+                documentation: None,
+            })
+            .collect();
         return Some(SignatureHelp {
             active_signature: Some(0),
-            active_parameter: parameter.as_ref().map(|_| 0),
+            active_parameter: parameters
+                .len()
+                .checked_sub(1)
+                .map(|last| ctx.arg_index.min(last) as u32),
             signatures: vec![SignatureInformation {
                 label: op.signature(),
                 documentation: None,
-                parameters: Some(parameter.into_iter().collect()),
+                parameters: Some(parameters),
                 active_parameter: None,
             }],
         });

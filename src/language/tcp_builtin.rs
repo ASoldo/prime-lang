@@ -5,7 +5,7 @@ use crate::target::BuildTarget;
 pub(crate) enum TcpBuiltin {
     Listen,
     Accept,
-    NextHeader,
+    NextFrame,
     ReceiveUntil,
     StartsWith,
     Write,
@@ -17,7 +17,7 @@ impl TcpBuiltin {
     pub const ALL: [Self; 8] = [
         Self::Listen,
         Self::Accept,
-        Self::NextHeader,
+        Self::NextFrame,
         Self::ReceiveUntil,
         Self::StartsWith,
         Self::Write,
@@ -40,7 +40,7 @@ impl TcpBuiltin {
         match self {
             Self::Listen => "tcp_listen",
             Self::Accept => "tcp_accept",
-            Self::NextHeader => "tcp_next_header",
+            Self::NextFrame => "tcp_next_frame",
             Self::ReceiveUntil => "tcp_receive_until",
             Self::StartsWith => "tcp_starts_with",
             Self::Write => "tcp_write",
@@ -49,27 +49,28 @@ impl TcpBuiltin {
         }
     }
 
-    pub fn parameter(self) -> Option<(&'static str, TypeExpr)> {
+    pub fn parameters(self) -> &'static [(&'static str, &'static str)] {
         match self {
-            Self::NextHeader => Some(("limit", TypeExpr::named("int32"))),
-            Self::Listen => Some(("port", TypeExpr::named("int32"))),
-            Self::ReceiveUntil => Some(("delimiter", TypeExpr::named("string"))),
-            Self::StartsWith => Some(("prefix", TypeExpr::named("string"))),
-            Self::Write => Some(("text", TypeExpr::named("string"))),
-            Self::Accept | Self::Disconnect | Self::Close => None,
+            Self::Listen => &[("port", "int32")],
+            Self::NextFrame => &[("delimiter", "string"), ("limit", "int32")],
+            Self::ReceiveUntil => &[("delimiter", "string")],
+            Self::StartsWith => &[("prefix", "string")],
+            Self::Write => &[("text", "string")],
+            Self::Accept | Self::Disconnect | Self::Close => &[],
         }
     }
 
-    pub fn parameter_label(self) -> Option<String> {
-        self.parameter()
-            .map(|(name, ty)| format!("{name}: {}", ty.canonical_name()))
+    pub fn parameter_labels(self) -> impl Iterator<Item = String> {
+        self.parameters()
+            .iter()
+            .map(|(name, ty)| format!("{name}: {ty}"))
     }
 
     pub fn signature(self) -> String {
         format!(
             "fn {}({}) -> {}",
             self.name(),
-            self.parameter_label().unwrap_or_default(),
+            self.parameter_labels().collect::<Vec<_>>().join(", "),
             self.result().canonical_name()
         )
     }

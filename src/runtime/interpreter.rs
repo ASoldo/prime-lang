@@ -2480,15 +2480,16 @@ impl Interpreter {
         mut args: Vec<Value>,
     ) -> RuntimeResult<Vec<Value>> {
         require_std_builtins(name)?;
-        self.expect_arity(name, &args, usize::from(op.parameter().is_some()))?;
+        self.expect_arity(name, &args, op.parameters().len())?;
         let value = match op {
             TcpBuiltin::Listen => {
                 let port = self.expect_i32_value(name, args.remove(0))?;
                 Value::Int(self.tcp.listen(port).into())
             }
-            TcpBuiltin::NextHeader => {
+            TcpBuiltin::NextFrame => {
+                let delimiter = Self::expect_string_or_format(name, args.remove(0))?;
                 let limit = self.expect_i32_value(name, args.remove(0))?;
-                Value::Bool(self.tcp.next_header(limit))
+                Value::Bool(self.tcp.next_frame(&delimiter, limit))
             }
             TcpBuiltin::Accept => Value::Bool(self.tcp.accept()),
             TcpBuiltin::ReceiveUntil => Value::Bool(

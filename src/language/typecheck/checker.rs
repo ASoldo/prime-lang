@@ -2968,17 +2968,20 @@ impl Checker {
                 );
                 return None;
             }
-            let parameter = op.parameter();
-            let count = usize::from(parameter.is_some());
+            let parameters = op.parameters();
+            let count = parameters.len();
             if args.len() != count {
                 self.errors.push(TypeError::new(
                     &module.path,
                     span,
                     format!("`{name}` expects {count} arguments"),
                 ));
-            } else if let Some((_, ty)) = parameter {
-                let actual = self.check_expression(module, &args[0], Some(&ty), returns, env);
-                self.ensure_type(module, expr_span(&args[0]), &ty, actual.as_ref());
+            } else {
+                for (arg, &(_, name)) in args.iter().zip(parameters) {
+                    let ty = TypeExpr::named(name);
+                    let actual = self.check_expression(module, arg, Some(&ty), returns, env);
+                    self.ensure_type(module, expr_span(arg), &ty, actual.as_ref());
+                }
             }
             return Some(op.result());
         }

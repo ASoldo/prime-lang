@@ -157,8 +157,8 @@ pub struct RuntimeAbi {
     pub prime_tcp_listen_ty: LLVMTypeRef,
     pub prime_tcp_accept: LLVMValueRef,
     pub prime_tcp_accept_ty: LLVMTypeRef,
-    pub prime_tcp_next_header: LLVMValueRef,
-    pub prime_tcp_next_header_ty: LLVMTypeRef,
+    pub prime_tcp_next_frame: LLVMValueRef,
+    pub prime_tcp_next_frame_ty: LLVMTypeRef,
     pub prime_tcp_receive_until: LLVMValueRef,
     pub prime_tcp_receive_until_ty: LLVMTypeRef,
     pub prime_tcp_starts_with: LLVMValueRef,
@@ -589,8 +589,12 @@ impl RuntimeAbi {
             declare_fn(module, "prime_tcp_listen", i32_type, &mut [i32_type]);
         let (prime_tcp_accept, prime_tcp_accept_ty) =
             declare_fn(module, "prime_tcp_accept", bool_type, &mut []);
-        let (prime_tcp_next_header, prime_tcp_next_header_ty) =
-            declare_fn(module, "prime_tcp_next_header", bool_type, &mut [i32_type]);
+        let (prime_tcp_next_frame, prime_tcp_next_frame_ty) = declare_fn(
+            module,
+            "prime_tcp_next_frame",
+            bool_type,
+            &mut [string_data_type, usize_type, i32_type],
+        );
         let (prime_tcp_receive_until, prime_tcp_receive_until_ty) = declare_fn(
             module,
             "prime_tcp_receive_until",
@@ -893,8 +897,8 @@ impl RuntimeAbi {
             prime_tcp_listen_ty,
             prime_tcp_accept,
             prime_tcp_accept_ty,
-            prime_tcp_next_header,
-            prime_tcp_next_header_ty,
+            prime_tcp_next_frame,
+            prime_tcp_next_frame_ty,
             prime_tcp_receive_until,
             prime_tcp_receive_until_ty,
             prime_tcp_starts_with,
@@ -1097,8 +1101,8 @@ impl RuntimeAbi {
             prime_tcp_listen_ty: std::ptr::null_mut(),
             prime_tcp_accept: std::ptr::null_mut(),
             prime_tcp_accept_ty: std::ptr::null_mut(),
-            prime_tcp_next_header: std::ptr::null_mut(),
-            prime_tcp_next_header_ty: std::ptr::null_mut(),
+            prime_tcp_next_frame: std::ptr::null_mut(),
+            prime_tcp_next_frame_ty: std::ptr::null_mut(),
             prime_tcp_receive_until: std::ptr::null_mut(),
             prime_tcp_receive_until_ty: std::ptr::null_mut(),
             prime_tcp_starts_with: std::ptr::null_mut(),

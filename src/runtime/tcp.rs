@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const HEADER_CAPACITY: usize = 4;
+const FRAME_CAPACITY: usize = 4;
 const LIMIT: usize = 4096;
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -23,46 +23,47 @@ fn append_until(frame: &mut Vec<u8>, bytes: &[u8], delimiter: &[u8]) -> bool {
     false
 }
 
-struct PendingHeader {
+struct PendingFrame {
     socket: TcpStream,
     frame: Vec<u8>,
     deadline: Instant,
 }
 
-enum HeaderState {
+enum FrameState {
     Pending,
     Complete,
     Closed,
 }
 
-impl PendingHeader {
-    fn poll(&mut self) -> HeaderState {
+impl PendingFrame {
+    fn poll(&mut self, delimiter: &[u8]) -> FrameState {
         let mut buf = [0; 512];
         while self.frame.len() < LIMIT && Instant::now() < self.deadline {
             let len = buf.len().min(LIMIT - self.frame.len());
             match self.socket.read(&mut buf[..len]) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if append_until(&mut self.frame, &buf[..n], b"\r\n\r\n") {
-                        return HeaderState::Complete;
+                    if append_until(&mut self.frame, &buf[..n], delimiter) {
+                        return FrameState::Complete;
                     }
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    return HeaderState::Pending;
+                    return FrameState::Pending;
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
         }
-        HeaderState::Closed
+        FrameState::Closed
     }
 }
 
 #[derive(Default)]
 pub struct TcpServer {
     listener: Option<TcpListener>,
-    pending: Vec<PendingHeader>,
-    header_admissions: i32,
+    frame_delimiter: Option<String>,
+    pending: Vec<PendingFrame>,
+    frame_admissions: i32,
     client: Option<TcpStream>,
     received: Vec<u8>,
 }
@@ -109,26 +110,32 @@ impl TcpServer {
         false
     }
 
-    // Select the next complete header as the current client for starts_with/write.
-    pub fn next_header(&mut self, limit: i32) -> bool {
-        self.disconnect();
+    // Select the next complete frame as the current client for starts_with/write.
+    pub fn next_frame(&mut self, delimiter: &str, limit: i32) -> bool {
         let Some(listener) = &self.listener else {
             return false;
         };
-        if !(1..=256).contains(&limit) {
+        if delimiter.is_empty() || delimiter.len() > LIMIT || !(1..=256).contains(&limit) {
             return false;
         }
 
+        match &self.frame_delimiter {
+            Some(chosen) if chosen != delimiter => return false,
+            None => self.frame_delimiter = Some(delimiter.to_owned()),
+            _ => {}
+        }
+        self.client = None;
+        self.received.clear();
         let mut idle_deadline = Instant::now() + ACCEPT_TIMEOUT;
         loop {
-            while self.pending.len() < HEADER_CAPACITY && self.header_admissions < limit {
+            while self.pending.len() < FRAME_CAPACITY && self.frame_admissions < limit {
                 match listener.accept() {
                     Ok((socket, _)) => {
-                        self.header_admissions += 1;
+                        self.frame_admissions += 1;
                         let now = Instant::now();
                         idle_deadline = now + ACCEPT_TIMEOUT;
                         if socket.set_nonblocking(true).is_ok() {
-                            self.pending.push(PendingHeader {
+                            self.pending.push(PendingFrame {
                                 socket,
                                 frame: Vec::new(),
                                 deadline: now + IO_TIMEOUT,
@@ -143,12 +150,12 @@ impl TcpServer {
 
             let mut i = 0;
             while i < self.pending.len() {
-                match self.pending[i].poll() {
-                    HeaderState::Pending => i += 1,
-                    HeaderState::Closed => {
+                match self.pending[i].poll(delimiter.as_bytes()) {
+                    FrameState::Pending => i += 1,
+                    FrameState::Closed => {
                         self.pending.remove(i);
                     }
-                    HeaderState::Complete => {
+                    FrameState::Complete => {
                         let ready = self.pending.remove(i);
                         if ready.socket.set_nonblocking(false).is_ok() {
                             self.client = Some(ready.socket);
@@ -160,7 +167,7 @@ impl TcpServer {
             }
 
             if self.pending.is_empty()
-                && (self.header_admissions >= limit || Instant::now() >= idle_deadline)
+                && (self.frame_admissions >= limit || Instant::now() >= idle_deadline)
             {
                 return false;
             }

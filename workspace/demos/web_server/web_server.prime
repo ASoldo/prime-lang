@@ -22,7 +22,7 @@ fn serve(port: int32, limit: int32) {
     let int32 bound = tcp_listen(port);
     if bound > 0 {
       out(`LISTEN {bound}`);
-      while tcp_next_header(limit) {
+      while tcp_next_frame("\r\n\r\n", limit) {
         handle_client();
       }
       tcp_close();

@@ -104,37 +104,66 @@ def expire_partial(port):
             raise RuntimeError("incomplete timed-out header received a response")
 
 
-def exercise(command, cwd, env, paths):
+@contextlib.contextmanager
+def server_session(command, cwd, env, inputs):
     # A terminal makes the CLI's port announcement visible before server exit.
     master, slave = pty.openpty()
     with contextlib.ExitStack() as stack:
         stack.callback(os.close, master)
         stack.callback(os.close, slave)
-        server = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
+        stdin = stack.enter_context(tempfile.TemporaryFile())
+        stdin.write(inputs)
+        stdin.seek(0)
+        server = subprocess.Popen(command, cwd=cwd, env=env, stdin=stdin,
                                   stdout=slave, stderr=slave)
         try:
-            server.stdin.write(f"0\n{len(paths) + 10}\n".encode())
-            server.stdin.close()
-            port = listening_port(master)
-            overlap(port)
-            with connect(port) as conn:
-                conn.sendall(b"GET /health HTTP/1.1")
-                conn.shutdown(socket.SHUT_WR)
-                if conn.recv(1):
-                    raise RuntimeError("truncated header received a response")
-            with connect(port) as conn:
-                conn.sendall(b"x" * 4096)
-                if conn.recv(1):
-                    raise RuntimeError("oversized header received a response")
-            for i, path in enumerate(paths):
-                request(port, path, "1.0" if i % 2 else "1.1")
-            expire_partial(port)
-            fill_and_reuse(port)
+            yield master
             if server.wait(timeout=3) != 0:
                 raise RuntimeError(f"server exited with {server.returncode}")
         finally:
             server.kill()
             server.wait()
+
+
+def exercise(command, cwd, env, paths):
+    with server_session(command, cwd, env, f"0\n{len(paths) + 10}\n".encode()) as master:
+        port = listening_port(master)
+        overlap(port)
+        with connect(port) as conn:
+            conn.sendall(b"GET /health HTTP/1.1")
+            conn.shutdown(socket.SHUT_WR)
+            if conn.recv(1):
+                raise RuntimeError("truncated header received a response")
+        with connect(port) as conn:
+            conn.sendall(b"x" * 4096)
+            if conn.recv(1):
+                raise RuntimeError("oversized header received a response")
+        for i, path in enumerate(paths):
+            request(port, path, "1.0" if i % 2 else "1.1")
+        expire_partial(port)
+        fill_and_reuse(port)
+
+
+def exercise_telemetry(command, cwd, env):
+    delimiters = [b"<END>", "§.".encode()]
+    inputs = b"".join(b"x" * 4097 + b"\n" + delim + b"\n" for delim in delimiters)
+    with server_session(command, cwd, env, inputs) as master:
+        for delim in delimiters:
+            port = listening_port(master)
+            with connect(port) as slow:
+                # The delimiter starts at byte 512, splitting even its UTF-8 encoding.
+                slow.sendall(b"TEMP !".ljust(511, b"x") + delim[:1])
+                with connect(port) as fast:
+                    fast.sendall(b"TEMP 21" + delim)
+                    expect_ack(fast)
+                slow.sendall(delim[1:])
+                expect_ack(slow)
+
+
+def expect_ack(conn):
+    with conn.makefile("rb") as reader:
+        if reader.read(5) != b"ACK\n":
+            raise RuntimeError("expected telemetry acknowledgement and EOF")
 
 
 def check_rejections(cli, cwd, env):
@@ -145,11 +174,12 @@ def check_rejections(cli, cwd, env):
     entry = project / "main.prime"
     for call, expected in [('tcp_accept(1)', 'expects 0 arguments'),
                            ('tcp_write(42)', 'string'),
-                           ('tcp_next_header()', 'expects 1 argument'),
-                           ('tcp_next_header("bad")', 'int32'),
-                           ('tcp_next_header(0)', 'requires the host std runtime'),
+                           ('tcp_next_frame(1)', 'expects 2 arguments'),
+                           ('tcp_next_frame("|", "bad")', 'int32'),
+                           ('tcp_next_frame(0, 1)', 'string'),
+                           ('tcp_next_frame("|", 1)', 'requires the host std runtime'),
                            ('tcp_listen(0)', 'requires the host std runtime')]:
-        if call == 'tcp_next_header(0)':
+        if call == 'tcp_next_frame("|", 1)':
             with manifest.open('a') as output:
                 output.write('no_std = true\n')
         entry.write_text(f"module probe;\nfn main() {{ {call}; }}\n")
@@ -182,6 +212,12 @@ def main():
         binary = cwd / ".build.prime/prime_web/prime_web"
         exercise([binary], cwd, env, paths)
         exercise([binary], cwd, env, paths[1:] + paths[:1])
+        telemetry = ROOT / "scripts/tests/tcp_frames/telemetry.prime"
+        exercise_telemetry([cli, "run", telemetry], cwd, env)
+        subprocess.run([cli, "build", telemetry, "--name", "telemetry"], cwd=cwd, env=env,
+                       stdin=subprocess.DEVNULL, check=True, timeout=600)
+        exercise_telemetry([cwd / ".build.prime/telemetry/telemetry"], cwd, env)
+    print("Passed telemetry with two runtime delimiters, split reads and listener reset in run and native.")
     print(f"Passed overlap, saturation, reuse, expiry and {COUNT} route requests per run; interpreter and two runs of one native binary exited cleanly.")
 
 

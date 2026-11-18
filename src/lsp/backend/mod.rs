@@ -550,27 +550,27 @@ mod tests {
         use crate::target::BuildTarget;
         use tower_lsp_server::ls_types::HoverContents;
 
-        let text = "module main; fn main() { tcp_listen(0); tcp_next_header(8); tcp_write(\"hello\"); tcp_close(); }";
+        let text = "module main; fn main() { tcp_listen(0); tcp_next_frame(\"|\", 8); tcp_write(\"hello\"); tcp_close(); }";
         let tokens = lex(text).expect("tokenize");
         let completions =
             keyword_completion_items(Some("tcp_"), false, true, &BuildTarget::host(), false);
-        for (name, signature, parameter) in [
+        for (name, signature, labels) in [
             (
                 "tcp_listen",
                 "fn tcp_listen(port: int32) -> int32",
-                Some("port: int32"),
+                &["port: int32"][..],
             ),
             (
                 "tcp_write",
                 "fn tcp_write(text: string) -> bool",
-                Some("text: string"),
+                &["text: string"][..],
             ),
             (
-                "tcp_next_header",
-                "fn tcp_next_header(limit: int32) -> bool",
-                Some("limit: int32"),
+                "tcp_next_frame",
+                "fn tcp_next_frame(delimiter: string, limit: int32) -> bool",
+                &["delimiter: string", "limit: int32"][..],
             ),
-            ("tcp_close", "fn tcp_close() -> ()", None),
+            ("tcp_close", "fn tcp_close() -> ()", &[][..]),
         ] {
             let item = completions
                 .iter()
@@ -591,12 +591,19 @@ mod tests {
             let info = &help.signatures[0];
             assert_eq!(info.label, signature);
             let params = info.parameters.as_ref().unwrap();
-            assert_eq!(params.len(), usize::from(parameter.is_some()));
-            if let Some(label) = parameter {
-                assert_eq!(params[0].label, ParameterLabel::Simple(label.into()));
+            assert_eq!(params.len(), labels.len());
+            for (param, &label) in params.iter().zip(labels) {
+                assert_eq!(param.label, ParameterLabel::Simple(label.into()));
             }
-            assert_eq!(help.active_parameter, parameter.map(|_| 0));
+            assert_eq!(help.active_parameter, labels.first().map(|_| 0));
         }
+        let second = call_context(text, text.find(", 8").unwrap() + 2).unwrap();
+        assert_eq!(
+            signature_help_from_modules(&[], &second)
+                .unwrap()
+                .active_parameter,
+            Some(1)
+        );
         assert!(
             keyword_completion_items(Some("tcp_"), false, true, &BuildTarget::host(), true)
                 .is_empty()

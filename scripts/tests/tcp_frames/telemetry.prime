@@ -1,0 +1,34 @@
+//! Read a pair of delimited telemetry records on each loopback listener.
+module telemetry;
+
+import core::types;
+
+fn session() {
+  let int32 port = tcp_listen(0);
+  out(`LISTEN {port}`);
+  match in[string]("Oversized delimiter: ") {
+    Result::Ok(oversized) => {
+      if tcp_next_frame("", 2) || tcp_next_frame(oversized, 2) {
+        out("accepted invalid delimiter");
+      }
+    },
+    Result::Err(_) => out("missing test input"),
+  }
+  match in[string]("Record delimiter: ") {
+    Result::Ok(delimiter) => {
+      while tcp_next_frame(delimiter, 2) {
+        if !tcp_next_frame("!", 2) && tcp_starts_with("TEMP ") {
+          tcp_write("ACK\n");
+        }
+        tcp_disconnect();
+      }
+    },
+    Result::Err(_) => out("missing delimiter"),
+  }
+  tcp_close();
+}
+
+fn main() {
+  session();
+  session();
+}

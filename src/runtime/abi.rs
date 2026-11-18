@@ -4045,9 +4045,12 @@ mod host {
         TCP.with_borrow_mut(|tcp| tcp.listen(port))
     }
 
-    #[unsafe(export_name = "prime_tcp_next_header")]
-    pub unsafe extern "C" fn prime_tcp_next_header(limit: i32) -> bool {
-        TCP.with_borrow_mut(|tcp| tcp.next_header(limit))
+    #[unsafe(export_name = "prime_tcp_next_frame")]
+    pub unsafe extern "C" fn prime_tcp_next_frame(ptr: *const u8, len: usize, limit: i32) -> bool {
+        let Some(delimiter) = read_host_str(ptr, len) else {
+            return false;
+        };
+        TCP.with_borrow_mut(|tcp| tcp.next_frame(delimiter, limit))
     }
 
     #[unsafe(export_name = "prime_tcp_accept")]
