@@ -19,7 +19,18 @@ impl Compiler {
                 captures,
                 ..
             } => self.emit_closure_literal(params, body, ret, captures, expected),
-            _ => self.emit_expression(expr),
+            _ => {
+                let result = self.emit_expression(expr)?;
+                if self.target.is_embedded()
+                    && let Some(ty @ TypeExpr::Named(name, _)) = expected
+                    && let EvalOutcome::Value(value) = &result
+                    && matches!(value.value(), Value::Enum(e) if e.enum_name == *name)
+                    && let Some(handle) = value.runtime_handle()
+                {
+                    self.handle_types.insert(handle, ty.clone());
+                }
+                Ok(result)
+            }
         }
     }
 
@@ -3321,7 +3332,7 @@ impl Compiler {
         let mut incoming = Vec::new();
 
         for (idx, arm) in match_expr.arms.iter().enumerate() {
-            let (expected_tag, bindings) = match &arm.pattern {
+            let (expected_tag, bindings, field_types) = match &arm.pattern {
                 Pattern::EnumVariant {
                     variant, bindings, ..
                 } => {
@@ -3329,9 +3340,11 @@ impl Compiler {
                     if tag.is_none() {
                         return Ok(None);
                     }
-                    (tag, Some(bindings))
+                    let field_types =
+                        self.enum_variants[variant].field_types_for(self.handle_types.get(&handle));
+                    (tag, Some(bindings), field_types)
                 }
-                Pattern::Wildcard => (None, None),
+                Pattern::Wildcard => (None, None, Vec::new()),
                 _ => return Ok(None),
             };
 
@@ -3391,7 +3404,10 @@ impl Compiler {
                             .get(&handle)
                             .is_some_and(|fields| fields.contains(&(tag, field_idx)))
                     {
-                        self.string_handles.insert(field_handle);
+                        self.handle_types
+                            .insert(field_handle, TypeExpr::named("string"));
+                    } else if let Some(ty) = field_types.get(field_idx) {
+                        self.handle_types.insert(field_handle, ty.clone());
                     }
                     let reference = ReferenceValue {
                         cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
@@ -3531,9 +3547,7 @@ impl Compiler {
                 for (index, field) in variant.values.iter().enumerate() {
                     let is_string = match field {
                         Value::Str(_) => true,
-                        Value::Reference(r) => {
-                            r.handle.is_some_and(|h| self.string_handles.contains(&h))
-                        }
+                        Value::Reference(r) => r.handle.is_some_and(|h| self.is_string_handle(h)),
                         _ => false,
                     };
                     if is_string {
@@ -3629,7 +3643,7 @@ impl Compiler {
                         );
                     }
                     if tag_value == ok_tag.variant_index {
-                        if ok_tag.fields == 0 {
+                        if ok_tag.fields.is_empty() {
                             return Ok(EvalOutcome::Value(self.evaluated(Value::Unit)));
                         }
                         let mut get_args = [runtime_value.handle, unsafe {
@@ -4833,11 +4847,11 @@ impl Compiler {
                 ));
             }
         }
-        if info.fields != values.len() {
+        if info.fields.len() != values.len() {
             return Err(format!(
                 "Variant `{}` expects {} values, got {}",
                 variant,
-                info.fields,
+                info.fields.len(),
                 values.len()
             ));
         }
@@ -4866,11 +4880,11 @@ impl Compiler {
             .get(variant)
             .ok_or_else(|| format!("Unknown enum variant {}", variant))?;
         self.ensure_item_visible(&info.module, info.visibility, &info.enum_name, "enum")?;
-        if info.fields != values.len() {
+        if info.fields.len() != values.len() {
             return Err(format!(
                 "Variant `{}` expects {} values, got {}",
                 variant,
-                info.fields,
+                info.fields.len(),
                 values.len()
             ));
         }

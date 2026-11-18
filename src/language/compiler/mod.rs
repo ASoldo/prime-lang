@@ -123,7 +123,7 @@ pub struct Compiler {
     // Embedded handles carry no runtime type tag. Preserve known string fields
     // so pattern bindings can render the selected payload without reading it as an int.
     enum_string_fields: HashMap<LLVMValueRef, HashSet<(u32, usize)>>,
-    string_handles: HashSet<LLVMValueRef>,
+    handle_types: HashMap<LLVMValueRef, TypeExpr>,
     interfaces: HashMap<String, InterfaceEntry>,
     impls: HashSet<ImplKey>,
     consts: Vec<(String, ConstDef)>,
@@ -1249,10 +1249,32 @@ impl StructValue {
 #[derive(Clone)]
 struct EnumVariantInfo {
     enum_name: String,
-    fields: usize,
+    type_params: Vec<String>,
+    fields: Vec<TypeExpr>,
     module: String,
     visibility: Visibility,
     variant_index: u32,
+}
+
+impl EnumVariantInfo {
+    fn field_types_for(&self, enum_type: Option<&TypeExpr>) -> Vec<TypeExpr> {
+        let Some(TypeExpr::Named(name, args)) = enum_type else {
+            return Vec::new();
+        };
+        if name != &self.enum_name || args.len() != self.type_params.len() {
+            return Vec::new();
+        }
+        let substitutions = self
+            .type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        self.fields
+            .iter()
+            .map(|ty| ty.substitute(&substitutions))
+            .collect()
+    }
 }
 
 #[derive(Clone)]
@@ -1622,7 +1644,7 @@ impl Compiler {
                 functions: HashMap::new(),
                 enum_variants: HashMap::new(),
                 enum_string_fields: HashMap::new(),
-                string_handles: HashSet::new(),
+                handle_types: HashMap::new(),
                 interfaces: HashMap::new(),
                 impls: HashSet::new(),
                 consts: Vec::new(),
@@ -2125,7 +2147,7 @@ impl Compiler {
         }
         self.reset_module();
         self.enum_string_fields.clear();
-        self.string_handles.clear();
+        self.handle_types.clear();
         self.force_runtime_handles = self.target.is_embedded();
         self.host_task_entry = None;
         self.pending_runtime = None;
@@ -2164,7 +2186,8 @@ impl Compiler {
                                 variant.name.clone(),
                                 EnumVariantInfo {
                                     enum_name: def.name.clone(),
-                                    fields: variant.fields.len(),
+                                    type_params: def.type_params.clone(),
+                                    fields: variant.fields.iter().map(|f| f.ty.clone()).collect(),
                                     module: module.name.clone(),
                                     visibility: def.visibility,
                                     variant_index: idx as u32,

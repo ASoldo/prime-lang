@@ -122,6 +122,10 @@ impl Compiler {
         );
     }
 
+    pub(super) fn is_string_handle(&self, handle: LLVMValueRef) -> bool {
+        matches!(self.handle_types.get(&handle), Some(TypeExpr::Named(name, args)) if name == "string" && args.is_empty())
+    }
+
     pub(super) fn print_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         let mut value = value;
         let runtime_handle = if self.target.is_embedded() {
@@ -137,7 +141,7 @@ impl Compiler {
             match &owned {
                 Value::Reference(reference) => {
                     if let Some(handle) = reference.handle {
-                        if self.string_handles.contains(&handle) {
+                        if self.is_string_handle(handle) {
                             self.emit_runtime_print(handle);
                             return Ok(());
                         }

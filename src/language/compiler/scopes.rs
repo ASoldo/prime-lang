@@ -219,7 +219,7 @@ impl Compiler {
                 BuildEnumVariant {
                     enum_name: info.enum_name.clone(),
                     variant_index: info.variant_index,
-                    fields: info.fields,
+                    fields: info.fields.len(),
                 },
             );
         }

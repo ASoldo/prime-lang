@@ -733,6 +733,81 @@ fn async_demo_compiles() {
 }
 
 #[test]
+fn esp32_blink_emits_the_joined_workers() {
+    let package = load_package(Path::new("workspace/demos/esp32_blink/esp32_blink.prime"))
+        .expect("load the blink demo");
+    let mut compiler = Compiler::with_target(BuildTarget::Triple(
+        crate::target::ESP32_XTENSA_ESPIDF_TRIPLE.into(),
+    ));
+    compiler
+        .compile_program(&package.program)
+        .expect("compile blink");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("blink.ll");
+    compiler.write_ir_to(&path).expect("write blink IR");
+    let ir = std::fs::read_to_string(path).expect("read blink IR");
+
+    // Embedded async blocks are deferred. Dropping the task returned by join
+    // used to leave only sends and the wildcard arm in the firmware.
+    for message in [
+        "async result probe ok ",
+        "probe recv via spawn/join: ",
+        "pool reuse worker: recv_task got Some(",
+    ] {
+        assert!(ir.contains(message), "missing worker output: {message}");
+    }
+}
+
+#[test]
+fn embedded_nested_channel_result_preserves_the_error_string() {
+    let source = r#"
+module tests::nested_channel;
+enum Option[T] { Some(T), None }
+enum Result[T, E] { Err(E), Ok(T) }
+fn main() {
+  let (tx, rx) = channel[Result[int32, string]]();
+  let worker = spawn async {
+    let Option[Result[int32, string]] received = await recv_task(rx);
+    match received {
+      Some(res) => match res {
+        Ok(n) => Result::Ok(n + 1),
+        Err(msg) => Result::Err(msg),
+      },
+      None => Result::Err("closed"),
+    }
+  };
+  let _ = send(tx, Result::Err("test-error"));
+  close(tx);
+  match await join(worker) {
+    Err(msg) => out(msg),
+    Ok(n) => out(n),
+  }
+}
+"#;
+    let program = Program {
+        modules: vec![
+            parse_module("tests::nested_channel", PathBuf::from("main.prime"), source)
+                .expect("parse nested channel"),
+        ],
+    };
+    let mut compiler = Compiler::with_target(BuildTarget::Triple(
+        crate::target::ESP32_XTENSA_ESPIDF_TRIPLE.into(),
+    ));
+    compiler
+        .compile_program(&program)
+        .expect("compile nested channel");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("channel.ll");
+    compiler.write_ir_to(&path).expect("write channel IR");
+    let ir = std::fs::read_to_string(path).expect("read channel IR");
+    assert_eq!(
+        ir.matches("call void @prime_print(ptr %enum_get").count(),
+        1,
+        "only the forwarded string field should print directly"
+    );
+}
+
+#[test]
 fn async_match_returns_the_selected_enum_and_payload() {
     use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
 
@@ -936,7 +1011,8 @@ fn recv_timeout_handles_closed_status() {
             "Some".into(),
             EnumVariantInfo {
                 enum_name: "Option".into(),
-                fields: 1,
+                type_params: vec!["T".into()],
+                fields: vec![TypeExpr::named("T")],
                 module: "builtins".into(),
                 visibility: Visibility::Public,
                 variant_index: 0,
@@ -946,7 +1022,8 @@ fn recv_timeout_handles_closed_status() {
             "None".into(),
             EnumVariantInfo {
                 enum_name: "Option".into(),
-                fields: 0,
+                type_params: vec!["T".into()],
+                fields: vec![],
                 module: "builtins".into(),
                 visibility: Visibility::Public,
                 variant_index: 1,
