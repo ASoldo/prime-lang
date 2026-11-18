@@ -1999,35 +1999,313 @@ mod embedded {
         0
     }
 
-    // Register offsets for classic ESP32 (Xtensa). Kept tiny so we don't pull in IDF.
-    #[cfg(target_arch = "xtensa")]
-    const DR_REG_GPIO_BASE: u32 = 0x3ff44000;
-    #[cfg(target_arch = "xtensa")]
-    const GPIO_OUT_W1TS_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x0008) as *mut u32;
-    #[cfg(target_arch = "xtensa")]
-    const GPIO_OUT_W1TC_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x000c) as *mut u32;
-    #[cfg(target_arch = "xtensa")]
-    const GPIO_ENABLE_W1TS_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x0024) as *mut u32;
-    #[cfg(target_arch = "xtensa")]
-    const GPIO_ENABLE_W1TC_REG: *mut u32 = (DR_REG_GPIO_BASE + 0x0028) as *mut u32;
-    #[cfg(target_arch = "xtensa")]
-    const GPIO_IN_REG: *const u32 = (DR_REG_GPIO_BASE + 0x0038) as *const u32;
+    // Classic ESP32 only. Register names and offsets follow ESP-IDF's
+    // components/soc/esp32 (gpio_periph.c, rtc_io_periph.c and register/soc/).
+    #[cfg(any(target_arch = "xtensa", test))]
+    mod esp32_gpio {
+        use super::PrimeStatus;
+        use core::ptr::{read_volatile, write_volatile};
 
-    #[cfg(target_arch = "xtensa")]
-    const DR_REG_IO_MUX_BASE: u32 = 0x3ff49000;
-    // IO mux registers for common pins.
-    #[cfg(target_arch = "xtensa")]
-    const IO_MUX_GPIO0_REG: *mut u32 = (DR_REG_IO_MUX_BASE + 0x44) as *mut u32;
-    #[cfg(target_arch = "xtensa")]
-    const IO_MUX_GPIO2_REG: *mut u32 = (DR_REG_IO_MUX_BASE + 0x40) as *mut u32;
-    #[cfg(target_arch = "xtensa")]
-    const IO_MUX_GPIO4_REG: *mut u32 = (DR_REG_IO_MUX_BASE + 0x48) as *mut u32;
-    #[cfg(target_arch = "xtensa")]
-    const IO_MUX_GPIO5_REG: *mut u32 = (DR_REG_IO_MUX_BASE + 0x4c) as *mut u32;
-    #[cfg(target_arch = "xtensa")]
-    const MCU_SEL_MASK: u32 = 0b111 << 12;
-    #[cfg(target_arch = "xtensa")]
-    const FUNC_GPIO: u32 = 0b010;
+        const MUX_OFFSETS: [u8; 40] = [
+            0x44, 0x88, 0x40, 0x84, 0x48, 0x6c, 0x60, 0x64, // 0..7
+            0x68, 0x54, 0x58, 0x5c, 0x34, 0x38, 0x30, 0x3c, // 8..15
+            0x4c, 0x50, 0x70, 0x74, 0x78, 0x7c, 0x80, 0x8c, // 16..23
+            0, 0x24, 0x28, 0x2c, 0, 0, 0, 0, // 24..31 (zero = absent)
+            0x1c, 0x20, 0x14, 0x18, 0x04, 0x08, 0x0c, 0x10, // 32..39
+        ];
+        const GPIO_OUT_W1TS: [usize; 2] = [0x08, 0x14];
+        const GPIO_OUT_W1TC: [usize; 2] = [0x0c, 0x18];
+        const GPIO_ENABLE_W1TS: [usize; 2] = [0x24, 0x30];
+        const GPIO_ENABLE_W1TC: [usize; 2] = [0x28, 0x34];
+        const GPIO_IN: [usize; 2] = [0x3c, 0x40];
+        const GPIO_PIN0: usize = 0x88;
+        const PAD_DRIVER: u32 = 1 << 2;
+        const GPIO_FUNC0_OUT_SEL_CFG: usize = 0x530;
+        const SIG_GPIO_OUT_IDX: u32 = 256;
+        const GPIO_FUNC_OEN_SEL: u32 = 1 << 10;
+        const MCU_SEL: u32 = 7 << 12;
+        const PIN_FUNC_GPIO: u32 = 2 << 12;
+        const FUN_IE: u32 = 1 << 9;
+        const FUN_PU: u32 = 1 << 8;
+        const FUN_PD: u32 = 1 << 7;
+
+        pub(super) struct Registers {
+            gpio: *mut u32,
+            io_mux: *mut u32,
+            rtc_io: *mut u32,
+        }
+
+        #[cfg(target_arch = "xtensa")]
+        pub(super) const REGISTERS: Registers = Registers {
+            gpio: 0x3ff4_4000 as *mut u32,
+            io_mux: 0x3ff4_9000 as *mut u32,
+            rtc_io: 0x3ff4_8400 as *mut u32,
+        };
+
+        // GPIO20 exists only on PICO-V3 and PICO-V3-02. ESP-IDF distinguishes
+        // PICO-V3 from PICO-D4 (same package ID) by silicon major revision 3.
+        #[cfg(target_arch = "xtensa")]
+        unsafe fn has_gpio20() -> bool {
+            let data3 = read_volatile(0x3ff5_a00c as *const u32);
+            let package = ((data3 >> 9) & 7) | ((data3 & (1 << 2)) << 1);
+            package == 6
+                || (package == 5
+                    && data3 & (1 << 15) != 0
+                    && read_volatile(0x3ff5_a014 as *const u32) & (1 << 20) != 0
+                    && read_volatile(0x3ff6_607c as *const u32) & (1 << 31) != 0)
+        }
+
+        pub(super) struct Pin {
+            number: usize,
+            mux_offset: usize,
+        }
+
+        impl Pin {
+            fn lookup(number: i32, gpio20_available: bool) -> Option<Self> {
+                let number = number as usize;
+                let mux_offset = *MUX_OFFSETS.get(number)? as usize;
+                if mux_offset == 0 || (number == 20 && !gpio20_available) {
+                    return None;
+                }
+                Some(Self { number, mux_offset })
+            }
+
+            #[cfg(target_arch = "xtensa")]
+            pub(super) fn from_number(number: i32) -> Option<Self> {
+                Self::lookup(number, number == 20 && unsafe { has_gpio20() })
+            }
+
+            fn mask(&self) -> u32 {
+                1 << (self.number % 32)
+            }
+
+            // RTC mux selection and pull resistors share registers on several
+            // pads. Each entry gives the offset, mux bit and pull-up mask.
+            // Where present, pull-down is the next higher bit.
+            fn rtc_pad(&self) -> Option<(usize, u32, u32)> {
+                let (offset, mux_bit, pull_up) = match self.number {
+                    4 => (0x94, 19, 1 << 27),
+                    0 => (0x98, 19, 1 << 27),
+                    2 => (0x9c, 19, 1 << 27),
+                    15 => (0xa0, 19, 1 << 27),
+                    13 => (0xa4, 19, 1 << 27),
+                    12 => (0xa8, 19, 1 << 27),
+                    14 => (0xac, 19, 1 << 27),
+                    27 => (0xb0, 19, 1 << 27),
+                    25 => (0x84, 17, 1 << 27),
+                    26 => (0x88, 17, 1 << 27),
+                    32 => (0x8c, 17, 1 << 22),
+                    33 => (0x8c, 18, 1 << 27),
+                    34..=35 => (0x80, 29 - (self.number - 34), 0),
+                    36..=39 => (0x7c, 27 - (self.number - 36), 0),
+                    _ => return None,
+                };
+                Some((offset, 1 << mux_bit, pull_up))
+            }
+        }
+
+        unsafe fn modify(reg: *mut u32, clear: u32, set: u32) {
+            write_volatile(reg, (read_volatile(reg) & !clear) | set);
+        }
+
+        impl Registers {
+            pub(super) unsafe fn pin_mode(&self, pin: &Pin, mode: i32) -> PrimeStatus {
+                if mode != 0 && (mode != 1 || pin.number >= 34) {
+                    return PrimeStatus::Invalid;
+                }
+                let output = mode == 1;
+                let bank = pin.number / 32;
+                if !output {
+                    write_volatile(
+                        self.gpio.wrapping_byte_add(GPIO_ENABLE_W1TC[bank]),
+                        pin.mask(),
+                    );
+                }
+                let mut mux_clear = MCU_SEL;
+                let mut mux_set = PIN_FUNC_GPIO | FUN_IE; // keep the pad readable when driving it
+                if let Some((offset, select, pull_up)) = pin.rtc_pad() {
+                    // Clear RTC ownership. On classic ESP32 the RTC pad controls
+                    // the pulls even when its digital function is selected.
+                    let pull = if output { 0 } else { pull_up };
+                    modify(
+                        self.rtc_io.wrapping_byte_add(offset),
+                        select | (pull << 1),
+                        pull,
+                    );
+                } else if !output {
+                    mux_clear |= FUN_PD;
+                    mux_set |= FUN_PU;
+                }
+                if pin.number < 34 {
+                    // Route the output latch and GPIO_ENABLE, both non-inverted.
+                    write_volatile(
+                        self.gpio
+                            .wrapping_byte_add(GPIO_FUNC0_OUT_SEL_CFG + 4 * pin.number),
+                        SIG_GPIO_OUT_IDX | GPIO_FUNC_OEN_SEL,
+                    );
+                    modify(
+                        self.gpio.wrapping_byte_add(GPIO_PIN0 + 4 * pin.number),
+                        PAD_DRIVER,
+                        0,
+                    );
+                }
+                modify(
+                    self.io_mux.wrapping_byte_add(pin.mux_offset),
+                    mux_clear,
+                    mux_set,
+                );
+                if output {
+                    write_volatile(
+                        self.gpio.wrapping_byte_add(GPIO_ENABLE_W1TS[bank]),
+                        pin.mask(),
+                    );
+                }
+                PrimeStatus::Ok
+            }
+
+            pub(super) unsafe fn write(&self, pin: &Pin, level: i32) -> PrimeStatus {
+                if pin.number >= 34 {
+                    return PrimeStatus::Invalid;
+                }
+                let regs = if level != 0 {
+                    GPIO_OUT_W1TS
+                } else {
+                    GPIO_OUT_W1TC
+                };
+                write_volatile(
+                    self.gpio.wrapping_byte_add(regs[pin.number / 32]),
+                    pin.mask(),
+                );
+                PrimeStatus::Ok
+            }
+
+            pub(super) unsafe fn read(&self, pin: &Pin) -> i32 {
+                let sample = read_volatile(self.gpio.wrapping_byte_add(GPIO_IN[pin.number / 32]));
+                i32::from(sample & pin.mask() != 0)
+            }
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+
+            // Back the three MMIO ranges with separate word arrays so each test
+            // exercises the same volatile reads and writes as the firmware.
+            struct FakeMmio {
+                gpio: [u32; 0x600 / 4],
+                mux: [u32; 0x90 / 4],
+                rtc: [u32; 0xb4 / 4],
+            }
+
+            impl FakeMmio {
+                fn new() -> Self {
+                    Self {
+                        gpio: [0; 0x600 / 4],
+                        mux: [0; 0x90 / 4],
+                        rtc: [0; 0xb4 / 4],
+                    }
+                }
+
+                fn registers(&mut self) -> Registers {
+                    Registers {
+                        gpio: self.gpio.as_mut_ptr(),
+                        io_mux: self.mux.as_mut_ptr(),
+                        rtc_io: self.rtc.as_mut_ptr(),
+                    }
+                }
+            }
+
+            #[test]
+            fn gpio2_samples_the_pad_after_each_write() {
+                let pin = Pin::lookup(2, false).unwrap();
+                let mut regs = FakeMmio::new();
+                regs.rtc[0x9c / 4] = (1 << 19) | (1 << 27);
+                regs.mux[0x40 / 4] = (7 << 12) | (3 << 10);
+                regs.gpio[0x538 / 4] = 0xfff; // inverted peripheral output and enable
+                regs.gpio[0x90 / 4] = 1 << 2; // open drain
+                unsafe {
+                    assert_eq!(regs.registers().pin_mode(&pin, 1), PrimeStatus::Ok);
+                    assert_eq!(regs.rtc[0x9c / 4], 1 << 27);
+                    assert_eq!(regs.mux[0x40 / 4], (2 << 12) | (3 << 10) | (1 << 9));
+                    assert_eq!(regs.gpio[0x538 / 4], 256 | (1 << 10));
+                    assert_eq!(regs.gpio[0x90 / 4], 0);
+                    assert_eq!(regs.gpio[0x24 / 4], 4);
+                    for (level, command_reg) in [(0, 0x0c), (1, 0x08), (0, 0x0c)] {
+                        regs.gpio[command_reg / 4] = 0;
+                        assert_eq!(regs.registers().write(&pin, level), PrimeStatus::Ok);
+                        assert_eq!(regs.gpio[command_reg / 4], 4);
+                        regs.gpio[0x3c / 4] = (level as u32) << 2;
+                        assert_eq!(regs.registers().read(&pin), level);
+                    }
+                    // The strap sample and output latch can both disagree with the pad.
+                    regs.gpio[0x38 / 4] = 4;
+                    regs.gpio[0x04 / 4] = 4;
+                    assert_eq!(regs.registers().read(&pin), 0);
+                }
+            }
+
+            #[test]
+            fn upper_bank_uses_local_bits_and_rejects_input_only_outputs() {
+                let mut regs = FakeMmio::new();
+                for number in 32..40 {
+                    let pin = Pin::lookup(number, false).unwrap();
+                    let mask = 1 << (number - 32);
+                    unsafe {
+                        assert_eq!(regs.registers().pin_mode(&pin, 0), PrimeStatus::Ok);
+                        assert_eq!(regs.gpio[0x34 / 4], mask);
+                        regs.gpio[0x40 / 4] = mask;
+                        assert_eq!(regs.registers().read(&pin), 1);
+                        if number < 34 {
+                            assert_eq!(regs.registers().pin_mode(&pin, 1), PrimeStatus::Ok);
+                            assert_eq!(regs.gpio[0x30 / 4], mask);
+                            assert_eq!(regs.registers().write(&pin, 1), PrimeStatus::Ok);
+                            assert_eq!(regs.gpio[0x14 / 4], mask);
+                            assert_eq!(regs.registers().write(&pin, 0), PrimeStatus::Ok);
+                            assert_eq!(regs.gpio[0x18 / 4], mask);
+                        } else {
+                            regs.gpio[0x14 / 4] = 0;
+                            regs.gpio[0x30 / 4] = 0;
+                            assert_eq!(regs.registers().pin_mode(&pin, 1), PrimeStatus::Invalid);
+                            assert_eq!(regs.registers().write(&pin, 1), PrimeStatus::Invalid);
+                            assert_eq!(regs.gpio[0x14 / 4], 0);
+                            assert_eq!(regs.gpio[0x30 / 4], 0);
+                        }
+                    }
+                }
+                assert_eq!(regs.gpio[0x08 / 4], 0);
+                assert_eq!(regs.gpio[0x24 / 4], 0);
+            }
+
+            #[test]
+            fn only_bonded_pins_configure_their_own_mux_and_pulls() {
+                for number in [-1, 20, 24, 28, 29, 30, 31, 40, i32::MAX] {
+                    assert!(Pin::lookup(number, false).is_none());
+                }
+                assert_eq!(Pin::lookup(20, true).unwrap().mux_offset, 0x78);
+                let mut regs = FakeMmio::new();
+                regs.mux[0x6c / 4] = (1 << 7) | (1 << 6);
+                regs.rtc[0x8c / 4] = (1 << 17) | (1 << 18) | (1 << 23);
+                regs.rtc[0x7c / 4] = u32::MAX;
+                unsafe {
+                    let pin = Pin::lookup(5, false).unwrap();
+                    assert_eq!(regs.registers().pin_mode(&pin, 7), PrimeStatus::Invalid);
+                    assert_eq!(regs.registers().pin_mode(&pin, 0), PrimeStatus::Ok);
+                    assert_eq!(
+                        regs.mux[0x6c / 4],
+                        (2 << 12) | (1 << 9) | (1 << 8) | (1 << 6)
+                    );
+                    assert_eq!(regs.mux[0x4c / 4], 0); // GPIO16, not GPIO5
+                    let pin = Pin::lookup(32, false).unwrap();
+                    assert_eq!(regs.registers().pin_mode(&pin, 0), PrimeStatus::Ok);
+                    assert_eq!(regs.rtc[0x8c / 4], (1 << 18) | (1 << 22));
+                    let pin = Pin::lookup(39, false).unwrap();
+                    assert_eq!(regs.registers().pin_mode(&pin, 0), PrimeStatus::Ok);
+                    assert_eq!(regs.rtc[0x7c / 4], !(1 << 24));
+                    assert_eq!(regs.mux[0x10 / 4], (2 << 12) | (1 << 9));
+                }
+            }
+        }
+    }
 
     #[cfg(target_arch = "xtensa")]
     #[inline]
@@ -2099,60 +2377,28 @@ mod embedded {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_pin_mode(pin: i32, mode: i32) -> PrimeStatus {
         log_hello_once();
-        // Mode 1 -> output, Mode 0 -> input.
-        if mode != 0 && mode != 1 {
+        let Some(pin) = esp32_gpio::Pin::from_number(pin) else {
             return PrimeStatus::Invalid;
-        }
-        if pin < 0 || pin > 33 {
-            return PrimeStatus::Invalid;
-        }
-        route_gpio(pin);
-
-        let mask = 1u32 << (pin as u32);
-        if mode == 1 {
-            // Enable output driver for the pin.
-            core::ptr::write_volatile(GPIO_ENABLE_W1TS_REG, mask);
-        } else {
-            // Disable output driver (input only).
-            core::ptr::write_volatile(GPIO_ENABLE_W1TC_REG, mask);
-            // Enable pull-up, disable pull-down for supported pins so buttons can be read without external resistors.
-            if let Some(reg_ptr) = mux_reg(pin) {
-                let mut val = core::ptr::read_volatile(reg_ptr);
-                // Clear pull-down (bit 6), set pull-up (bit 7).
-                val &= !(1 << 6);
-                val |= 1 << 7;
-                core::ptr::write_volatile(reg_ptr, val);
-            }
-        }
-        PrimeStatus::Ok
+        };
+        esp32_gpio::REGISTERS.pin_mode(&pin, mode)
     }
 
     #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_digital_write(pin: i32, level: i32) -> PrimeStatus {
-        if pin < 0 || pin > 33 {
+        let Some(pin) = esp32_gpio::Pin::from_number(pin) else {
             return PrimeStatus::Invalid;
-        }
-        route_gpio(pin);
-        let mask = 1u32 << (pin as u32);
-        if level != 0 {
-            core::ptr::write_volatile(GPIO_OUT_W1TS_REG, mask);
-        } else {
-            core::ptr::write_volatile(GPIO_OUT_W1TC_REG, mask);
-        }
-        PrimeStatus::Ok
+        };
+        esp32_gpio::REGISTERS.write(&pin, level)
     }
 
     #[cfg(target_arch = "xtensa")]
     #[unsafe(export_name = "prime_digital_read")]
     pub unsafe extern "C" fn prime_digital_read(pin: i32) -> i32 {
-        if pin < 0 || pin > 39 {
+        let Some(pin) = esp32_gpio::Pin::from_number(pin) else {
             return -1;
-        }
-        route_gpio(pin);
-        let mask = 1u32 << (pin as u32);
-        let value = core::ptr::read_volatile(GPIO_IN_REG);
-        if (value & mask) != 0 { 1 } else { 0 }
+        };
+        esp32_gpio::REGISTERS.read(&pin)
     }
 
     #[cfg(all(target_arch = "riscv32", target_os = "none"))]
@@ -2168,29 +2414,6 @@ mod embedded {
     #[unsafe(export_name = "prime_digital_read")]
     pub unsafe extern "C" fn prime_digital_read_host(_pin: i32) -> i32 {
         0
-    }
-
-    #[cfg(target_arch = "xtensa")]
-    #[inline]
-    fn mux_reg(pin: i32) -> Option<*mut u32> {
-        match pin {
-            0 => Some(IO_MUX_GPIO0_REG),
-            2 => Some(IO_MUX_GPIO2_REG),
-            4 => Some(IO_MUX_GPIO4_REG),
-            5 => Some(IO_MUX_GPIO5_REG),
-            _ => None,
-        }
-    }
-
-    #[cfg(target_arch = "xtensa")]
-    #[inline]
-    fn route_gpio(pin: i32) {
-        if let Some(reg_ptr) = mux_reg(pin) {
-            let mut val = unsafe { core::ptr::read_volatile(reg_ptr) };
-            val &= !MCU_SEL_MASK;
-            val |= FUNC_GPIO << 12;
-            unsafe { core::ptr::write_volatile(reg_ptr, val) };
-        }
     }
 
     #[cfg(target_arch = "xtensa")]
