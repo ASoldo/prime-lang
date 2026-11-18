@@ -29,6 +29,8 @@ prime-lang build answer.prime --name answer
 
 The compiled executable prints `42`. The [stdin guide](Inline.md) shows how to use the same source with `check -`, `run --trace -` and `build -`.
 
+## Build a text program offline
+
 With an installed CLI, text, core-library, filesystem and TCP programs need only the Rust toolchain, LLVM and the C linker to build their native runtime. For example, run this in an empty directory with an empty Cargo registry while offline.
 
 ```sh

@@ -45,6 +45,14 @@ class GettingStarted(unittest.TestCase):
                 lines = interpret.splitlines()
                 self.assertEqual((work / "answer.prime").read_text(), "\n".join(lines[1:-1]) + "\n")
 
+    def test_offline_text_program(self):
+        (self.scratch / "prime-lang").symlink_to(shutil.which(self.cli))
+        self.env["PATH"] = str(self.scratch) + os.pathsep + self.env["PATH"]
+        text = (ROOT / "docs/GettingStarted.md").read_text()
+        section = text.split("## Build a text program offline\n", 1)[1].split("\n## ", 1)[0]
+        command, = re.findall(r"^```sh\n([\s\S]*?)\n```$", section, re.MULTILINE)
+        self.assertEqual(self.execute("sh", "-ec", command, cwd=self.scratch).splitlines()[-1], "hello")
+
     def test_builtin_quick_start(self):
         # Run the three commands as printed by the installed CLI.
         for name in ("workspace", "prime.toml"):
