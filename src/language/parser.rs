@@ -1060,6 +1060,7 @@ impl Parser {
         };
 
         Ok(FunctionDef {
+            source_path: self.path.as_path().into(),
             name: name.name,
             name_span: name.span,
             type_params,

@@ -3160,6 +3160,7 @@ mod tests {
             span: s,
         }));
         let def = FunctionDef {
+            source_path: std::path::Path::new("test.prime").into(),
             name: "drop".into(),
             name_span: s,
             type_params: Vec::new(),

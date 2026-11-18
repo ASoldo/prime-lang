@@ -102,3 +102,28 @@ fn reports_failing_expression_and_call_sites_in_both_modes() {
     );
     assert_eq!(run(root, true).stderr, traced.stderr);
 }
+
+#[test]
+fn generated_function_points_to_its_macro_definition_file() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    fs::write(
+        root.join("demo.prime"),
+        "module demo; import lib; ~make(); fn main() { out(answer()); }",
+    )
+    .unwrap();
+    let lib = "library lib;\n// café ☕\npub macro make() { fn answer() -> int32 { 42 } }";
+    fs::write(root.join("lib.prime"), lib).unwrap();
+    let output = run(root, true);
+    assert!(output.status.success(), "{output:?}");
+    let events = records(&output);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1]["function"], "answer");
+    assert_eq!(
+        events[1]["path"],
+        json!(root.join("lib.prime").canonicalize().unwrap())
+    );
+    let start = lib.find("answer").unwrap();
+    assert_eq!(events[1]["start"], start);
+    assert_eq!(events[1]["end"], start + "answer".len());
+}

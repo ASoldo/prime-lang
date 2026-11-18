@@ -238,6 +238,8 @@ pub struct MacroArg {
 
 #[derive(Clone, Debug)]
 pub struct FunctionDef {
+    /// Origin of the declaration, retained when an item macro expands in another module.
+    pub source_path: Arc<std::path::Path>,
     pub name: String,
     pub name_span: Span,
     pub type_params: Vec<String>,

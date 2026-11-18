@@ -277,7 +277,7 @@ impl Interpreter {
             self.module_stack.push(module_name.clone());
             let value = {
                 let result = self.eval_expression(&const_def.value).map_err(|err| {
-                    self.frame_error(err, &module_name, &const_def.name, const_def.span)
+                    self.frame_error(err, &module_name, &const_def.name, const_def.span, None)
                 });
                 self.module_stack.pop();
                 match result? {
@@ -477,6 +477,7 @@ impl Interpreter {
         module: &str,
         name: &str,
         fallback: Span,
+        source_path: Option<&std::path::Path>,
     ) -> RuntimeError {
         if !self.diagnose {
             return error;
@@ -484,8 +485,16 @@ impl Interpreter {
         RuntimeError::Frame {
             source: Box::new(error),
             function: format!("{module}::{name}"),
-            path: self.source_path(module).display().to_string(),
-            span: self.error_span.take().unwrap_or(fallback),
+            path: source_path
+                .unwrap_or_else(|| self.source_path(module))
+                .display()
+                .to_string(),
+            // Substituted macro expressions may originate outside this declaration.
+            span: self
+                .error_span
+                .take()
+                .filter(|s| fallback.start <= s.start && s.end <= fallback.end)
+                .unwrap_or(fallback),
         }
     }
 
@@ -546,7 +555,7 @@ impl Interpreter {
             TraceEvent::Call {
                 module: &info.module,
                 function: &info.def.name,
-                path: &self.source_path(&info.module).to_string_lossy(),
+                path: &info.def.source_path.to_string_lossy(),
                 depth: self.module_stack.len(),
                 start: span.start,
                 end: span.end,
@@ -616,8 +625,15 @@ impl Interpreter {
             Ok(values)
         })();
         self.module_stack.pop();
-        result
-            .map_err(|err| self.frame_error(err, &info.module, &info.def.name, info.def.name_span))
+        result.map_err(|err| {
+            self.frame_error(
+                err,
+                &info.module,
+                &info.def.name,
+                info.def.span,
+                Some(&info.def.source_path),
+            )
+        })
     }
 
     fn call_closure_value(
@@ -627,7 +643,7 @@ impl Interpreter {
     ) -> RuntimeResult<Value> {
         self.eval_closure_body(closure, args)
             .map_err(|error| match &closure.origin {
-                Some((module, span)) => self.frame_error(error, module, "<closure>", *span),
+                Some((module, span)) => self.frame_error(error, module, "<closure>", *span, None),
                 None => error,
             })
     }
