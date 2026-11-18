@@ -1,6 +1,9 @@
 [package]
 name = "prime-lang"
 version = "0.1.0"
+description = "Prime language interpreter, LLVM compiler and language server"
+repository = "https://github.com/ASoldo/prime-lang"
+readme = "README.md"
 edition = "2024"
 rust-version = "1.91"
 
