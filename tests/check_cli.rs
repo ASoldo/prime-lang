@@ -303,9 +303,9 @@ fn unsupported_runtime_try_reports_operator_location_and_target() {
 // é
 enum Result[T, E] { Ok(T), Err(E) }
 fn guarded() -> Result[int32, string] {
-  let task = async { let Result[int32, string] r = Ok(7); r };
-  let Result[int32, string] nested = await_timeout(task, 1000)?;
-  nested
+  let task = async { box_new(7) };
+  let Box[int32] boxed = await_timeout(task, 1000)?;
+  Ok(0)
 }
 fn main() { match guarded() { Ok(n) => out(n), Err(msg) => out(msg) } }
 "#;
@@ -336,8 +336,92 @@ fn main() { match guarded() { Ok(n) => out(n), Err(msg) => out(msg) } }
         diagnostic["message"]
             .as_str()
             .unwrap()
-            .contains("does not support Ok payload")
+            .contains("Ok payload cannot reconstruct `Box[int32]`")
     );
+}
+
+#[test]
+fn propagation_checks_the_error_type_of_the_nearest_boundary() {
+    let dir = tempdir().unwrap();
+    let source = r#"module demo;
+enum Result[T, E] { Err(E), Ok(T) }
+fn leaf() -> Result[int32, int32] { Err(42) }
+fn outer() -> Result[int32, string] {
+  let Result[int32, int32] local = try { leaf()? };
+  let n = local?;
+  Ok(n)
+}
+fn main() {}
+"#;
+    fs::write(dir.path().join("demo.prime"), source).unwrap();
+    let checked = report(&check(dir.path(), &["demo.prime", "--format=json"], 1));
+    let diagnostics = checked["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    let start = source.rfind('?').unwrap();
+    assert_eq!(diagnostics[0]["span"], json!({"start":start,"end":start+1}));
+    assert_eq!(
+        diagnostics[0]["message"],
+        "expected `string`, found `int32`"
+    );
+}
+
+#[test]
+fn embedded_runtime_try_identifies_unrepresentable_payloads() {
+    let dir = tempdir().unwrap();
+    let target = "riscv32imc-unknown-none-elf";
+    fs::write(dir.path().join("prime.toml"), format!(
+        "[package]\nname='demo'\n[module]\nname='demo'\npath='demo.prime'\nno_std=true\n[build]\ntarget='{target}'"
+    )).unwrap();
+    for (ok_ty, ok, err_ty, err, reason) in [
+        (
+            "Pair",
+            "Pair { a: 1, b: 2 }",
+            "int32",
+            "3",
+            "Ok payload cannot represent `Pair` with 2 fields",
+        ),
+        (
+            "int32",
+            "2",
+            "float64",
+            "1.5",
+            "Err payload cannot box `float64`",
+        ),
+        ("bool", "true", "int32", "3", "Ok payload cannot box `bool`"),
+    ] {
+        let source = format!(
+            r#"module demo;
+enum Result[T, E] {{ Err(E), Ok(T) }}
+struct Pair {{ a: int32; b: int32; }}
+fn choose(take: bool) -> Result[{ok_ty}, {err_ty}] {{
+  if take {{ Ok({ok}) }} else {{ Err({err}) }}
+}}
+fn read(take: bool) -> Result[int32, {err_ty}] {{
+  let {ok_ty} got = choose(take)?;
+  Ok(0)
+}}
+fn main() {{ let mut bool take = true; let r = read(take); }}
+"#
+        );
+        fs::write(dir.path().join("demo.prime"), &source).unwrap();
+        check(dir.path(), &["demo.prime", "--format=json"], 0);
+        let output = Command::new(env!("CARGO_BIN_EXE_prime-lang"))
+            .current_dir(dir.path())
+            .env_remove("PRIME_TARGET")
+            .args(["build", "demo.prime", "--no-flash", "--codegen-format=json"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let diagnostic: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(diagnostic["code"], "E0NATIVETRY");
+        assert_eq!(diagnostic["target"], target);
+        let start = source.find('?').unwrap();
+        assert_eq!(diagnostic["span"], json!({"start":start, "end":start+1}));
+        assert!(
+            diagnostic["message"].as_str().unwrap().contains(reason),
+            "{diagnostic}"
+        );
+    }
 }
 
 #[test]

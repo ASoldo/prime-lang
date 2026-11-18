@@ -43,7 +43,7 @@ impl Compiler {
         )
     }
 
-    fn task_field(&mut self, handle: LLVMValueRef, index: usize) -> LLVMValueRef {
+    pub(super) fn task_field(&mut self, handle: LLVMValueRef, index: usize) -> LLVMValueRef {
         let index = unsafe { LLVMConstInt(self.runtime_abi.usize_type, index as u64, 0) };
         self.call_runtime(
             self.runtime_abi.prime_enum_get,
@@ -154,12 +154,7 @@ impl Compiler {
                 origin: None,
                 handle: Some(handle),
             }),
-            Value::Enum(e) => Value::Enum(EnumValue {
-                enum_name: e.enum_name.clone(),
-                variant: "<runtime>".into(),
-                variant_index: 0,
-                values: Vec::new(),
-            }),
+            Value::Enum(e) => Value::runtime_enum(e.enum_name.clone()),
             Value::Task(task) => {
                 Value::Task(Box::new(TaskValue::with_handle(handle, task.kind.clone())))
             }
@@ -382,13 +377,7 @@ impl Compiler {
             self.runtime_release(payload);
         }
         Ok(EvalOutcome::Value(
-            EvaluatedValue::from_value(Value::Enum(EnumValue {
-                enum_name: "Result".into(),
-                variant: "<runtime>".into(),
-                values: Vec::new(),
-                variant_index: 0,
-            }))
-            .with_runtime(result),
+            EvaluatedValue::from_value(Value::runtime_enum("Result")).with_runtime(result),
         ))
     }
 

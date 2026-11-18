@@ -6,7 +6,7 @@ impl Compiler {
             self.runtime_abi.prime_value_retain,
             self.runtime_abi.prime_value_retain_ty,
             &mut [handle],
-            "retain_token",
+            "retained_value",
         )
     }
 
@@ -123,12 +123,16 @@ impl Compiler {
                 if owner.lifetime.strong_count() > 0 {
                     return true;
                 }
-                for (after_loop, branch) in &owner.early_exits {
+                for (destination, branch) in &owner.early_exits {
                     if *branch != terminator
-                        && self
+                        && (self
                             .loop_controls
                             .iter()
-                            .any(|c| c.break_block == *after_loop)
+                            .any(|c| c.break_block == *destination)
+                            || self
+                                .exits
+                                .iter()
+                                .any(|exit| exit.join == Some(*destination)))
                     {
                         LLVMPositionBuilderBefore(self.builder, *branch);
                         self.clear_token_slot(owner.slot);

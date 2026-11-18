@@ -21,7 +21,7 @@ impl CheckedProgram<'_> {
 #[derive(Default)]
 pub struct CheckedFacts {
     pub(crate) integers: crate::language::integer::CheckedIntegers,
-    pub(crate) try_payloads: HashMap<ExprId, TypeExpr>,
+    pub(crate) try_results: HashMap<ExprId, TypeExpr>,
     pub(crate) matches: HashMap<ExprId, CheckedMatch>,
 }
 

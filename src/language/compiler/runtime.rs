@@ -602,9 +602,19 @@ impl Compiler {
                 Ok(slice)
             }
             Value::Enum(enum_value) => {
+                if let Some(runtime) = enum_value.runtime {
+                    return Ok(self.retain_handle(runtime.handle));
+                }
+                if enum_value.variant == "<runtime>" {
+                    return Err(format!("missing runtime handle for enum `{}`", enum_value.enum_name));
+                }
                 let mut elements = Vec::new();
                 for v in enum_value.values {
-                    elements.push(self.build_runtime_handle(v)?);
+                    let handle = match v {
+                        Value::Struct(_) | Value::Tuple(_) => self.task_value_handle(&v.into())?,
+                        _ => self.build_runtime_handle(v)?,
+                    };
+                    elements.push(handle);
                 }
                 let tag = unsafe {
                     LLVMConstInt(

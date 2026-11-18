@@ -1,0 +1,60 @@
+module runtime_result;
+
+enum Result[T, E] { Err(E), Ok(T) }
+struct Reading { value: int32; }
+struct Marker { label: string; }
+impl Drop for Marker {
+  fn drop(self: &mut Marker) { out(self.label); }
+}
+
+fn choose(n: int32) -> Result[Result[Reading, string], string] {
+  let Result[Reading, string] inner = if n == 1 { Err("inner") } else { Ok(Reading { value: n + 40 }) };
+  if n == 0 { Err("outer") } else { Ok(inner) }
+}
+
+fn read(n: int32) -> Result[int32, string] {
+  let Marker scope = Marker { label: "drop read" };
+  let held = cancel_token();
+  if is_cancelled(held) { out("token allocation failed"); }
+  defer out("leave read");
+  let Result[Reading, string] inner = choose(n)?;
+  let Reading reading = inner?;
+  defer out("read ok");
+  Ok(reading.value)
+}
+
+fn probe(n: int32) {
+  let Result[int32, string] caught = try {
+    defer out("leave try");
+    let int32 value = read(n)?;
+    out("try ok");
+    value
+  };
+  let next = cancel_token();
+  if is_cancelled(next) { out("token leaked"); }
+  match caught {
+    Err(error) => out(error),
+    Ok(number) => out(number),
+  }
+}
+
+fn guarded(n: int32) -> Result[int32, string] {
+  let token = cancel_token();
+  if n == 0 { cancel(token); }
+  let task = async {
+    let Result[int32, string] r = if n == 1 { Err("task error") } else { Ok(n + 10) };
+    r
+  };
+  let inner = await_cancel(task, token)?;
+  let int32 value = inner?;
+  Ok(value)
+}
+
+fn main() {
+  let mut int32 n = 0;
+  while n < 3 {
+    probe(n);
+    match guarded(n) { Err(e) => out(e), Ok(v) => out(v) }
+    n = n + 1;
+  }
+}

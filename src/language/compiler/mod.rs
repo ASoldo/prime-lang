@@ -76,6 +76,7 @@ mod flow;
 mod integers;
 use flow::{ExitBoundary, ExitKind};
 mod resolve;
+mod result;
 mod runtime;
 mod scopes;
 
@@ -195,6 +196,16 @@ enum Value {
 }
 
 impl Value {
+    fn runtime_enum(name: impl Into<String>) -> Self {
+        Self::Enum(EnumValue {
+            enum_name: name.into(),
+            variant: "<runtime>".into(),
+            variant_index: 0,
+            values: Vec::new(),
+            runtime: None,
+        })
+    }
+
     fn from_runtime_payload(handle: LLVMValueRef) -> Self {
         Self::Reference(ReferenceValue {
             slot: None,
@@ -234,6 +245,8 @@ struct ClosureInfo {
 
 #[derive(Clone)]
 struct EnumValue {
+    // Dynamic enums keep their ABI value when nested inside a plain Value.
+    runtime: Option<RuntimeValue>,
     enum_name: String,
     variant: String,
     values: Vec<Value>,
@@ -743,19 +756,17 @@ impl EvaluatedValue {
     }
 
     fn runtime_handle(&self) -> Option<LLVMValueRef> {
-        self.runtime.map(|rt| rt.handle)
+        self.runtime_info().map(|rt| rt.handle)
+    }
+
+    fn runtime_info(&self) -> Option<RuntimeValue> {
+        match &self.value {
+            Value::Enum(e) => e.runtime,
+            _ => self.runtime,
+        }
     }
 
     fn into_value(self) -> Value {
-        self.value
-    }
-
-    fn into_enum_field(self) -> Value {
-        if matches!(&self.value, Value::Enum(e) if e.variant == "<runtime>")
-            && let Some(handle) = self.runtime_handle()
-        {
-            return Value::from_runtime_payload(handle);
-        }
         self.value
     }
 
@@ -768,10 +779,17 @@ impl EvaluatedValue {
     }
 
     fn set_runtime(&mut self, handle: LLVMValueRef) {
-        self.runtime = Some(RuntimeValue {
+        self.set_runtime_info(RuntimeValue {
             handle,
             lookup_found: None,
         });
+    }
+
+    fn set_runtime_info(&mut self, runtime: RuntimeValue) {
+        match &mut self.value {
+            Value::Enum(e) => e.runtime = Some(runtime),
+            _ => self.runtime = Some(runtime),
+        }
     }
 
     fn with_runtime(mut self, handle: LLVMValueRef) -> Self {
@@ -1538,12 +1556,7 @@ impl Compiler {
         if self.target.is_host() {
             let template = match kind {
                 TaskResultKind::RuntimeUnit => Value::Unit,
-                TaskResultKind::RuntimeOption => Value::Enum(EnumValue {
-                    enum_name: "Option".into(),
-                    variant: "<runtime>".into(),
-                    values: Vec::new(),
-                    variant_index: 0,
-                }),
+                TaskResultKind::RuntimeOption => Value::runtime_enum("Option"),
                 _ => return Err("unexpected task kind for runtime await".into()),
             };
             return self.join_host_task(task_handle, &template);
@@ -1608,12 +1621,7 @@ impl Compiler {
         };
         let mut value = match kind {
             TaskResultKind::RuntimeUnit => self.evaluated(Value::Unit),
-            TaskResultKind::RuntimeOption => self.evaluated(Value::Enum(EnumValue {
-                enum_name: "Option".into(),
-                variant: "<runtime>".into(),
-                values: Vec::new(),
-                variant_index: 0,
-            })),
+            TaskResultKind::RuntimeOption => self.evaluated(Value::runtime_enum("Option")),
             TaskResultKind::Host(_) | TaskResultKind::Ready => {
                 return Err("non-embedded task routed through runtime await".into());
             }
@@ -1860,6 +1868,7 @@ impl Compiler {
                     converted.push(self.build_value_to_value(value, channels)?);
                 }
                 Ok(Value::Enum(EnumValue {
+                    runtime: None,
                     enum_name,
                     variant,
                     values: converted,

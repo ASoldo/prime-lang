@@ -219,6 +219,48 @@ class C3TokenOwners(C3Program):
         )
 
 
+class C3RuntimeResult(C3Program):
+    module = "runtime_result"
+    build_env = {"PRIME_RT_CANCEL_TOKEN_SLOTS": "1"}
+    source = (FIXTURE.parent / "runtime_result/main.prime").read_text()
+    expected_output = (
+        b"leave read\ndrop read\nleave try\nouter\ncancelled\n"
+        b"leave read\ndrop read\nleave try\ninner\ntask error\n"
+        b"read ok\nleave read\ndrop read\ntry ok\nleave try\n42\n12\n"
+    )
+
+    def test_nested_propagation_and_cleanups(self):
+        self.assert_output(self.observe_print())
+
+
+class C3LiveResult(C3Program):
+    module = "runtime_result"
+    source = C3RuntimeResult.source.split("fn main()")[0] + """
+        fn keep(n: int32) -> Result[int32, string] {
+          let saved = choose(n);
+          let mut int32 i = 2;
+          while i < 170 {
+            let temporary = choose(7 + i % 2);
+            i = i + 1;
+          }
+          let Result[Reading, string] inner = saved?;
+          let Reading reading = inner?;
+          Ok(reading.value)
+        }
+        fn main() {
+          let mut int32 n = 0;
+          while n < 3 {
+            match keep(n) { Err(e) => out(e), Ok(v) => out(v) }
+            n = n + 1;
+          }
+        }
+    """
+    expected_output = b"outer\ninner\n42\n"
+
+    def test_result_survives_later_allocations(self):
+        self.assert_output(self.observe_print())
+
+
 class C3Integers(C3Program):
     source = """module c3_strings;
         fn add_word(x: int64) -> int64 { x + 4294967296 }

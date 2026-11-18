@@ -2055,7 +2055,11 @@ impl Checker {
                 if let Some(expected) = expected {
                     if let TypeExpr::Named(name, args) = expected {
                         if name == "Result" && args.len() == 2 {
+                            let outer = env
+                                .try_error
+                                .replace((env.capture_stack.len(), args[1].clone()));
                             self.check_block(module, block, Some(&args[0]), returns, env);
+                            env.try_error = outer;
                             return Some(expected.clone());
                         }
                     }
@@ -2071,8 +2075,31 @@ impl Checker {
                 let ty = self.check_expression(module, expr, None, returns, env);
                 if let Some(TypeExpr::Named(name, args)) = ty {
                     if name == "Result" && !args.is_empty() {
-                        self.facts.try_payloads.insert(*id, args[0].clone());
-                        return Some(args[0].clone());
+                        // Propagation forwards the original Err handle; the
+                        // destination must interpret its field with the same type.
+                        let destination = match &env.try_error {
+                            Some((depth, ty)) if *depth == env.capture_stack.len() => Some(ty),
+                            _ if env.capture_stack.is_empty() => match returns {
+                                [TypeExpr::Named(name, params)] if name == "Result" => {
+                                    params.get(1)
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let (Some(expected), Some(error)) = (destination, args.get(1)) {
+                            self.ensure_type(
+                                module,
+                                Span::new(span.end.saturating_sub(1), span.end),
+                                expected,
+                                Some(error),
+                            );
+                        }
+                        let success = args[0].clone();
+                        self.facts
+                            .try_results
+                            .insert(*id, TypeExpr::Named(name, args));
+                        return Some(success);
                     }
                 }
                 self.errors.push(TypeError::new(
@@ -6393,6 +6420,7 @@ struct FnEnv {
     capture_stack: Vec<ClosureCaptureContext>,
     publish_captures: bool,
     task_returns: Option<Vec<(Span, TypeExpr)>>,
+    try_error: Option<(usize, TypeExpr)>,
 }
 
 #[derive(Clone)]
@@ -6425,6 +6453,7 @@ impl FnEnv {
             capture_stack: Vec::new(),
             publish_captures: true,
             task_returns: None,
+            try_error: None,
         }
     }
 

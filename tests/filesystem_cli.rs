@@ -243,6 +243,60 @@ fn main() {
 }
 
 #[test]
+fn aggregate_result_payloads_follow_runtime_input_in_one_executable() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path();
+    let cli = Path::new(env!("CARGO_BIN_EXE_prime-lang"));
+    let shared = include_str!("../scripts/tests/fixtures/runtime_result/main.prime");
+    let (functions, _) = shared.split_once("fn main()").unwrap();
+    let source = format!(
+        "{functions}{}",
+        r#"
+struct Pair { z: int32; a: int32; }
+fn pair(ok: bool) -> Result[Pair, string] {
+  if ok { Ok(Pair { z: 9, a: 3 }) } else { Err("pair") }
+}
+fn fields(ok: bool) -> Result[int32, string] {
+  let Pair direct = pair(ok)?;
+  let task = async { Pair { z: 8, a: 2 } };
+  let Pair waited = await_timeout(task, 10000)?;
+  let nested = async { let Result[(int32, int32), string] r = Ok((5, 4)); r };
+  let Result[(int32, int32), string] result = await_timeout(nested, 10000)?;
+  let (x, y) = result?;
+  Ok(direct.z * 100000 + direct.a * 10000 + waited.z * 1000 + waited.a * 100 + x * 10 + y)
+}
+fn main() {
+  let bool ok = fs_exists("input");
+  let int32 n = if ok { 2 } else { 0 };
+  probe(n);
+  match guarded(n) { Err(e) => out(e), Ok(v) => out(v) }
+  match fields(ok) { Ok(v) => out(v), Err(msg) => out(msg) }
+}
+"#
+    );
+    fs::write(dir.join("result.prime"), source).unwrap();
+    execute(cli, dir, &["build", "result.prime", "--name", "result"]);
+    let native = dir.join(".build.prime/result/result");
+    for (input, expected) in [
+        (
+            false,
+            "leave read\ndrop read\nleave try\nouter\ncancelled\npair\n",
+        ),
+        (
+            true,
+            "read ok\nleave read\ndrop read\ntry ok\nleave try\n42\n12\n938254\n",
+        ),
+    ] {
+        if input {
+            fs::write(dir.join("input"), "").unwrap();
+        }
+        let interpreted = execute(cli, dir, &["run", "result.prime"]);
+        assert_eq!(interpreted, expected);
+        assert_eq!(execute(&native, dir, &[]), interpreted);
+    }
+}
+
+#[test]
 fn fs_demo_returns_after_a_failed_write() {
     let tmp = tempdir().unwrap();
     let dir = tmp.path();

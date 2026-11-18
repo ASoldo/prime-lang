@@ -1096,18 +1096,12 @@ impl Compiler {
                 "lookup_option",
             );
             self.runtime_release(payload);
-            Ok(EvaluatedValue {
-                value: Value::Enum(EnumValue {
-                    enum_name: "Option".into(),
-                    variant: "<runtime>".into(),
-                    values: Vec::new(),
-                    variant_index: 0,
-                }),
-                runtime: Some(RuntimeValue {
-                    handle,
-                    lookup_found: Some(found),
-                }),
-            })
+            let mut value = EvaluatedValue::from_value(Value::runtime_enum("Option"));
+            value.set_runtime_info(RuntimeValue {
+                handle,
+                lookup_found: Some(found),
+            });
+            Ok(value)
         }
     }
 
@@ -2312,12 +2306,7 @@ impl Compiler {
                 )
             };
             self.pending_runtime = Some(option_loaded);
-            return Ok(Value::Enum(EnumValue {
-                enum_name: "Option".into(),
-                variant: "<runtime>".into(),
-                values: Vec::new(),
-                variant_index: 0,
-            }));
+            return Ok(Value::runtime_enum("Option"));
         }
         match receiver.recv() {
             Some(value) => self.instantiate_enum_variant("Some", vec![value]),

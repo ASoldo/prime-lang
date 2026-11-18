@@ -65,7 +65,7 @@ Try adding `out(values.len());` after the move. Checking the program reports the
 
 The installed CLI includes the runtime sources and builds its matching archive under `.build.prime/runtime` or `$CARGO_TARGET_DIR/prime-runtime`.
 
-In a host function that returns `Result`, postfix `?` tests the runtime tag. Success continues with the payload. Failure returns the original `Err` to the caller, running the cleanups registered along that path. Inside `try`, failure exits the nearest enclosing `try` in the same function. A `return` in a runtime match arm exits the function, including `return;` in `main`.
+In a native function that returns `Result`, postfix `?` tests the runtime tag using the declaration order of `Ok` and `Err`. Success continues with the payload. Failure returns the original `Err` to the caller, running the cleanups registered along that path. The error type must match the receiving function or local `try`. Inside `try`, failure exits the nearest enclosing `try` in the same function. A `return` in a runtime match arm exits the function, including `return;` in `main`.
 
 ```prime
 fn read_config() -> Result[string, string] {
@@ -74,7 +74,7 @@ fn read_config() -> Result[string, string] {
 }
 ```
 
-Native runtime `?` supports unit, string, boolean, numeric and rune success payloads. Use an explicit `match` for aggregate success payloads, for propagation out of a closure or async block itself, and for runtime-selected variants on embedded targets. Conditional match-arm returns support zero or one return value. A loop’s `break` or `continue` across a `try` with runtime propagation is unsupported. When compiling a spawned filesystem call, leave the experimental `PRIME_BUILD_PARALLEL` snapshot evaluator disabled.
+On the host, runtime `?` can unwrap unit, strings, booleans, numbers, runes, enums (including nested `Result` values), tuples and structs with named fields of supported types. On ESP32 and ESP32-C3, both payloads must fit the embedded ABI. It boxes unit, strings, integers and runes, and can nest `Result` values and records of at most one field. For example, two successive `?` operators can unwrap `Result[Result[int32, string], string]` on either target. Heap containers, references, promoted struct fields and propagation out of a closure or async block itself have no runtime `?` lowering. A local `try` supplies its own boundary. Conditional match-arm returns support zero or one return value. A loop’s `break` or `continue` across a `try` with runtime propagation is unsupported. When compiling a spawned filesystem call, leave the experimental `PRIME_BUILD_PARALLEL` snapshot evaluator disabled.
 
 ## Scope exit
 

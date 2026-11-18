@@ -41,7 +41,7 @@ match result {
 }
 ```
 
-This prints `timeout` while the 150 ms timer is pending. With enough time, the task returns `7`. In a host function returning `Result`, `let int32 n = await_timeout(delayed_value(), 2)?;` propagates the original timeout error or continues with the integer. A local `try` can catch the same failure. Use `match` when the task returns an aggregate such as a nested `Result`. A task supplies one consumable result. A second guarded wait after a successful join returns `Err("task missing result")`.
+This prints `timeout` while the 150 ms timer is pending. With enough time, the task returns `7`. In a host function returning `Result`, `let int32 n = await_timeout(delayed_value(), 2)?;` propagates the original timeout error or continues with the integer. A local `try` can catch the same failure. When the task produces a nested `Result`, the first `?` unwraps the wait and a second `?` tests the task’s own result. A struct success carries its field values in the same order for task transfer and `?` decoding. See the [native payload limits](LanguageOutline.md). A task supplies one consumable result. A second guarded wait after a successful join returns `Err("task missing result")`.
 
 ## Execution and ownership
 

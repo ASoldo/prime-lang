@@ -37,8 +37,7 @@ impl Compiler {
             } => self.emit_closure_literal(params, body, ret, captures, expected),
             _ => {
                 let result = self.emit_expression(expr)?;
-                if self.target.is_embedded()
-                    && let Some(ty @ TypeExpr::Named(name, _)) = expected
+                if let Some(ty @ TypeExpr::Named(name, _)) = expected
                     && let EvalOutcome::Value(value) = &result
                     && matches!(value.value(), Value::Enum(e) if e.enum_name == *name)
                     && let Some(handle) = value.runtime_handle()
@@ -553,7 +552,7 @@ impl Compiler {
                     };
                     if let Some(guard) = guard {
                         let flow = self.emit_while_let_body(header, guard, &stmt.body)?;
-                        if flow.is_some() && candidate.runtime.is_some() {
+                        if flow.is_some() && candidate.runtime_info().is_some() {
                             return Err("conditional return or propagation in a runtime lookup loop is unsupported".into());
                         }
                         return Ok(flow);
@@ -712,7 +711,7 @@ impl Compiler {
         candidate: &EvaluatedValue,
         pattern: &'a Pattern,
     ) -> Result<Option<PatternGuard<'a>>, String> {
-        let Some(runtime) = candidate.runtime else {
+        let Some(runtime) = candidate.runtime_info() else {
             return Ok(None);
         };
         let handle = runtime.handle;
@@ -793,8 +792,8 @@ impl Compiler {
             if let Some(ty) = ty {
                 self.handle_types.insert(handle, ty);
             }
-            let payload = Value::from_runtime_payload(handle);
-            self.insert_var(name, payload.into(), false)?;
+            let payload = self.decode_match_field(handle)?;
+            self.insert_var(name, payload, false)?;
         }
         Ok(())
     }
@@ -902,7 +901,7 @@ impl Compiler {
                 let result = match result {
                     BlockEval::Value(value) => {
                         let wrapped =
-                            self.instantiate_enum_variant("Ok", vec![value.into_enum_field()])?;
+                            self.instantiate_enum_variant("Ok", vec![value.into_value()])?;
                         BlockEval::Value(self.evaluated(wrapped))
                     }
                     other => other,
@@ -1311,7 +1310,12 @@ impl Compiler {
         for (name, value, mutable) in captures {
             self.insert_var(name, value.clone(), *mutable)?;
         }
-        let result = self.execute_block_contents(block)?;
+        // Embedded deferred tasks emit into the caller's LLVM function. A ?
+        // inside the task must never jump to the caller's Result boundary.
+        self.push_return_types(&[]);
+        let result = self.execute_block_contents(block);
+        self.pop_return_types();
+        let result = result?;
         self.exit_scope()?;
         match result {
             BlockEval::Value(val) => Ok(val),
@@ -1616,13 +1620,8 @@ impl Compiler {
         );
         // Wrap in EvaluatedValue with runtime handle
         Ok(EvalOutcome::Value(
-            self.evaluated(Value::Enum(EnumValue {
-                enum_name: "Result".into(),
-                variant: "<runtime>".into(),
-                values: Vec::new(),
-                variant_index: 0,
-            }))
-            .with_runtime(result_handle),
+            self.evaluated(Value::runtime_enum("Result"))
+                .with_runtime(result_handle),
         ))
     }
 
@@ -1727,13 +1726,8 @@ impl Compiler {
         self.enum_string_fields
             .insert(handle, HashSet::from([(err_tag, 0)]));
         EvalOutcome::Value(
-            self.evaluated(Value::Enum(EnumValue {
-                enum_name: "Result".into(),
-                variant: "<runtime>".into(),
-                values: Vec::new(),
-                variant_index: 0,
-            }))
-            .with_runtime(handle),
+            self.evaluated(Value::runtime_enum("Result"))
+                .with_runtime(handle),
         )
     }
 
@@ -2786,13 +2780,7 @@ impl Compiler {
             TypeExpr::Named("Result".into(), vec![success, TypeExpr::named("string")]),
         );
         Ok(EvalOutcome::Value(
-            EvaluatedValue::from_value(Value::Enum(EnumValue {
-                enum_name: "Result".into(),
-                variant: "<runtime>".into(),
-                values: Vec::new(),
-                variant_index: 0,
-            }))
-            .with_runtime(handle),
+            EvaluatedValue::from_value(Value::runtime_enum("Result")).with_runtime(handle),
         ))
     }
 
@@ -3178,6 +3166,13 @@ impl Compiler {
             }
             return Ok(joined);
         }
+        if matches!((then_val.value(), else_val.value()), (Value::Enum(a), Value::Enum(b)) if a.enum_name == b.enum_name)
+        {
+            return self.merge_match_values(
+                &[(then_val, then_block), (else_val, else_block)],
+                merge_block,
+            );
+        }
         let builder = self.builder;
         let build_phi = |ty: LLVMTypeRef, name: &str| unsafe {
             let first_instr = LLVMGetFirstInstruction(merge_block);
@@ -3190,14 +3185,8 @@ impl Compiler {
             LLVMPositionBuilderAtEnd(builder, merge_block);
             phi
         };
-        let EvaluatedValue {
-            value: then_value,
-            runtime: then_runtime,
-        } = then_val;
-        let EvaluatedValue {
-            value: else_value,
-            runtime: else_runtime,
-        } = else_val;
+        let then_value = then_val.into_value();
+        let else_value = else_val.into_value();
         match (then_value, else_value) {
             (Value::Int(a), Value::Int(b)) => {
                 let mut vals = [a.llvm(), b.llvm()];
@@ -3268,80 +3257,6 @@ impl Compiler {
                     LLVMAddIncoming(phi, values.as_mut_ptr(), blocks.as_mut_ptr(), 2);
                 }
                 Ok(self.copy_token(phi).into())
-            }
-            (Value::Enum(a), Value::Enum(b)) => {
-                if a.enum_name != b.enum_name {
-                    return Err(format!(
-                        "Dynamic if expression not supported for branch values {} and {}",
-                        self.describe_value(&Value::Enum(a)),
-                        self.describe_value(&Value::Enum(b))
-                    ));
-                }
-                if self.runtime_handles_enabled()
-                    || then_runtime.is_some()
-                    || else_runtime.is_some()
-                {
-                    let a_handle = then_runtime
-                        .map(|rt| rt.handle)
-                        .or_else(|| unsafe {
-                            let terminator = LLVMGetLastInstruction(then_block);
-                            if terminator.is_null() {
-                                LLVMPositionBuilderAtEnd(builder, then_block);
-                            } else {
-                                LLVMPositionBuilderBefore(builder, terminator);
-                            }
-                            let handle = self.build_runtime_handle(Value::Enum(a.clone())).ok();
-                            LLVMPositionBuilderAtEnd(builder, merge_block);
-                            handle
-                        })
-                        .ok_or_else(|| {
-                            "Dynamic if expression not supported for enum without runtime handle"
-                                .to_string()
-                        })?;
-                    let b_handle = else_runtime
-                        .map(|rt| rt.handle)
-                        .or_else(|| unsafe {
-                            let terminator = LLVMGetLastInstruction(else_block);
-                            if terminator.is_null() {
-                                LLVMPositionBuilderAtEnd(builder, else_block);
-                            } else {
-                                LLVMPositionBuilderBefore(builder, terminator);
-                            }
-                            let handle = self.build_runtime_handle(Value::Enum(b.clone())).ok();
-                            LLVMPositionBuilderAtEnd(builder, merge_block);
-                            handle
-                        })
-                        .ok_or_else(|| {
-                            "Dynamic if expression not supported for enum without runtime handle"
-                                .to_string()
-                        })?;
-                    let phi = build_phi(self.runtime_abi.handle_type, "if_enum_phi");
-                    let mut vals = [a_handle, b_handle];
-                    let mut blocks = [then_block, else_block];
-                    unsafe {
-                        LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);
-                    }
-                    if let Some(ty) = self
-                        .handle_types
-                        .get(&a_handle)
-                        .or_else(|| self.handle_types.get(&b_handle))
-                        .cloned()
-                    {
-                        self.handle_types.insert(phi, ty);
-                    }
-                    self.pending_runtime = Some(phi);
-                    return Ok(self.evaluated(Value::Enum(EnumValue {
-                        enum_name: a.enum_name.clone(),
-                        variant: "<runtime>".into(),
-                        values: Vec::new(),
-                        variant_index: a.variant_index,
-                    })));
-                }
-                Err(format!(
-                    "Dynamic if expression not supported for branch values {} and {}",
-                    self.describe_value(&Value::Enum(a)),
-                    self.describe_value(&Value::Enum(b))
-                ))
             }
             (Value::Reference(a), Value::Reference(b)) => {
                 if let (Some(ha), Some(hb)) = (a.handle, b.handle) {
@@ -3814,17 +3729,13 @@ impl Compiler {
             } else if let Some(ty) = fields.get(idx) {
                 self.handle_types.insert(field, ty.clone());
             }
-            let value = self.decode_enum_field(field)?;
-            self.insert_var(
-                name,
-                EvaluatedValue::from_value(value).with_runtime(field),
-                false,
-            )?;
+            let value = self.decode_match_field(field)?;
+            self.insert_var(name, value, false)?;
         }
         Ok(())
     }
 
-    fn decode_enum_field(&mut self, field: LLVMValueRef) -> Result<Value, String> {
+    pub(super) fn decode_enum_field(&mut self, field: LLVMValueRef) -> Result<Value, String> {
         // Runtime enum fields are boxed. Arithmetic and equality need the
         // actual checked scalar kind, while strings retain their handle.
         let payload = Value::from_runtime_payload(field);
@@ -3955,119 +3866,6 @@ impl Compiler {
         if !strings.is_empty() {
             self.enum_string_fields.insert(handle, strings);
         }
-    }
-
-    fn try_diagnostic(&mut self, span: Span, reason: &str) -> String {
-        self.error_location = self.module_stack.last().map(|module| CodegenLocation {
-            module: module.clone(),
-            span: Span::new(span.end.saturating_sub(1), span.end),
-            code: "E0NATIVETRY",
-        });
-        format!("native runtime Result propagation {reason}; use `match` to handle Ok and Err")
-    }
-
-    pub(super) fn eval_try_operator(
-        &mut self,
-        value: EvaluatedValue,
-        id: ExprId,
-        span: Span,
-    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
-        let handle = match value.value() {
-            Value::Enum(e) if e.enum_name == "Result" => match e.variant.as_str() {
-                "Ok" => {
-                    let payload = match e.values.as_slice() {
-                        [] => Value::Unit,
-                        [one] => one.clone(),
-                        many => Value::Tuple(many.to_vec()),
-                    };
-                    return Ok(EvalOutcome::Value(payload.into()));
-                }
-                "Err" => return Ok(EvalOutcome::Flow(FlowSignal::Propagate(value))),
-                _ => value.runtime_handle(),
-            },
-            Value::Reference(r) => r.handle,
-            _ => None,
-        }
-        .ok_or("? operator expects Result value in build mode")?;
-
-        if !self.target.is_host() || !self.can_propagate_result() {
-            return Err(self.try_diagnostic(
-                span,
-                "requires a host Result-returning function or try block",
-            ));
-        }
-        if self
-            .enum_variants
-            .iter()
-            .any(|(name, v)| v.enum_name == "Result" && !matches!(name.as_str(), "Ok" | "Err"))
-        {
-            return Err(self.try_diagnostic(span, "requires a two-variant Result"));
-        }
-        let ok = self.enum_variants.get("Ok").ok_or("missing Result::Ok")?;
-        let ok_tag = ok.variant_index;
-        let ty = self
-            .checked
-            .as_ref()
-            .and_then(|facts| facts.try_payloads.get(&id))
-            .cloned()
-            .or_else(|| {
-                ok.field_types_for(self.handle_types.get(&handle))
-                    .into_iter()
-                    .next()
-            })
-            .ok_or_else(|| self.try_diagnostic(span, "requires a known Ok payload type"))?;
-        if !matches!(ty, TypeExpr::Unit) && self.type_code_for(&ty).is_err() {
-            return Err(self.try_diagnostic(
-                span,
-                &format!("does not support Ok payload `{}`", ty.canonical_name()),
-            ));
-        }
-        let tag = self.call_runtime(
-            self.runtime_abi.prime_enum_tag,
-            self.runtime_abi.prime_enum_tag_ty,
-            &mut [handle],
-            "try_tag",
-        );
-        let success = self.match_block(c"try_ok");
-        let failure = self.match_block(c"try_err");
-        unsafe {
-            let is_ok = LLVMBuildICmp(
-                self.builder,
-                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
-                tag,
-                LLVMConstInt(LLVMTypeOf(tag), ok_tag.into(), 0),
-                c"try_is_ok".as_ptr(),
-            );
-            LLVMBuildCondBr(self.builder, is_ok, success, failure);
-            LLVMPositionBuilderAtEnd(self.builder, failure);
-        }
-        // Carry the original enum (including its error payload) across the edge.
-        let error = EvaluatedValue::from_value(Value::Enum(EnumValue {
-            enum_name: "Result".into(),
-            variant: "<runtime>".into(),
-            variant_index: 0,
-            values: Vec::new(),
-        }))
-        .with_runtime(handle);
-        self.branch_to_exit(FlowSignal::Propagate(error))?;
-        unsafe {
-            LLVMPositionBuilderAtEnd(self.builder, success);
-        }
-        if ty == TypeExpr::Unit {
-            return Ok(EvalOutcome::Value(Value::Unit.into()));
-        }
-        let payload = self.call_runtime(
-            self.runtime_abi.prime_enum_get,
-            self.runtime_abi.prime_enum_get_ty,
-            &mut [handle, unsafe {
-                LLVMConstNull(self.runtime_abi.usize_type)
-            }],
-            "try_payload",
-        );
-        self.handle_types.insert(payload, ty);
-        Ok(EvalOutcome::Value(
-            EvaluatedValue::from_value(self.decode_enum_field(payload)?).with_runtime(payload),
-        ))
     }
 
     pub(super) fn match_pattern(
@@ -5229,11 +5027,12 @@ impl Compiler {
         let mut evaluated = Vec::new();
         for expr in values {
             match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => evaluated.push(value.into_enum_field()),
+                EvalOutcome::Value(value) => evaluated.push(value.into_value()),
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
             }
         }
         Ok(EvalOutcome::Value(self.evaluated(Value::Enum(EnumValue {
+            runtime: None,
             enum_name: info.enum_name.clone(),
             variant: variant.to_string(),
             values: evaluated,
@@ -5260,6 +5059,7 @@ impl Compiler {
             ));
         }
         Ok(Value::Enum(EnumValue {
+            runtime: None,
             enum_name: info.enum_name.clone(),
             variant: variant.to_string(),
             values,

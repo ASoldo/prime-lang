@@ -30,6 +30,8 @@ The interpreter uses an in-process runtime. Native code calls C-compatible symbo
 | `prime_delay_ms` | `i32` milliseconds | `PrimeStatus` |
 | `prime_recv_timeout` | Receiver handle, `i128` milliseconds, output pointer | `PrimeStatus` |
 
+Native `?` reads the variant with `prime_enum_tag`. Only the success edge calls `prime_enum_get(handle, 0)` for the payload. Tuples inside a Result use positional enum records. Struct records use field-name order, the same representation used for task results. A nested Result retains its own tag and payload handle. The embedded enum ABI stores one payload per record.
+
 The host runtime uses OS threads. The embedded runtime uses statically initialized pools and a target-specific clock. Closing a channel preserves its queued values. After those values have been read, the channel releases its slot. [Embedded timers and channels](EmbeddedTimers.md)
 
 Host interpreter and async errors can propagate through task results. The embedded runtime aborts or loops on panic. [Async semantics and restrictions](AsyncAwait.md)

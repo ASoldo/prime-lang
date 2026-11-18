@@ -12,7 +12,7 @@ pub(super) struct ExitBoundary {
     scope_depth: usize,
     call_depth: usize,
     function: LLVMValueRef,
-    join: Option<LLVMBasicBlockRef>,
+    pub(super) join: Option<LLVMBasicBlockRef>,
     incoming: Vec<(EvaluatedValue, LLVMBasicBlockRef)>,
 }
 
@@ -45,9 +45,6 @@ impl Compiler {
     }
 
     pub(super) fn branch_to_exit(&mut self, flow: FlowSignal) -> Result<(), String> {
-        if !self.target.is_host() {
-            return Err("conditional return or propagation requires a host target".into());
-        }
         let propagate = matches!(flow, FlowSignal::Propagate(_));
         let idx = self.exit_index(propagate).ok_or(
             "conditional return or propagation requires an enclosing native function or try block",
@@ -76,7 +73,10 @@ impl Compiler {
             self.exits[idx]
                 .incoming
                 .push((value, LLVMGetInsertBlock(self.builder)));
-            LLVMBuildBr(self.builder, join);
+            let branch = LLVMBuildBr(self.builder, join);
+            for owner in &mut self.token_owners {
+                owner.early_exits.push((join, branch));
+            }
         }
         Ok(())
     }
