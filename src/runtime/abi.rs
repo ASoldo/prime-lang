@@ -2576,6 +2576,13 @@ mod abi_graphics_runtime;
     target_arch = "xtensa",
     all(target_arch = "riscv32", target_os = "none"),
 )))]
+#[path = "tcp.rs"]
+pub(crate) mod tcp;
+
+#[cfg(not(any(
+    target_arch = "xtensa",
+    all(target_arch = "riscv32", target_os = "none"),
+)))]
 mod host {
     use super::{abi_audio_runtime as audio_runtime, abi_graphics_runtime as graphics_runtime};
     use std::collections::BTreeMap;
@@ -3759,6 +3766,54 @@ mod host {
             state_clone.complete(option_handle);
         });
         task_to_handle(state)
+    }
+
+    thread_local! {
+        static TCP: std::cell::RefCell<super::tcp::TcpServer> = Default::default();
+    }
+
+    #[unsafe(export_name = "prime_tcp_listen")]
+    pub unsafe extern "C" fn prime_tcp_listen(port: i32) -> i32 {
+        TCP.with_borrow_mut(|tcp| tcp.listen(port))
+    }
+
+    #[unsafe(export_name = "prime_tcp_accept")]
+    pub unsafe extern "C" fn prime_tcp_accept() -> bool {
+        TCP.with_borrow_mut(|tcp| tcp.accept())
+    }
+
+    #[unsafe(export_name = "prime_tcp_receive_until")]
+    pub unsafe extern "C" fn prime_tcp_receive_until(ptr: *const u8, len: usize) -> bool {
+        let Some(text) = read_host_str(ptr, len) else {
+            return false;
+        };
+        TCP.with_borrow_mut(|tcp| tcp.receive_until(text))
+    }
+
+    #[unsafe(export_name = "prime_tcp_starts_with")]
+    pub unsafe extern "C" fn prime_tcp_starts_with(ptr: *const u8, len: usize) -> bool {
+        let Some(text) = read_host_str(ptr, len) else {
+            return false;
+        };
+        TCP.with_borrow_mut(|tcp| tcp.starts_with(text))
+    }
+
+    #[unsafe(export_name = "prime_tcp_write")]
+    pub unsafe extern "C" fn prime_tcp_write(ptr: *const u8, len: usize) -> bool {
+        let Some(text) = read_host_str(ptr, len) else {
+            return false;
+        };
+        TCP.with_borrow_mut(|tcp| tcp.write(text))
+    }
+
+    #[unsafe(export_name = "prime_tcp_disconnect")]
+    pub unsafe extern "C" fn prime_tcp_disconnect() {
+        TCP.with_borrow_mut(|tcp| tcp.disconnect())
+    }
+
+    #[unsafe(export_name = "prime_tcp_close")]
+    pub unsafe extern "C" fn prime_tcp_close() {
+        TCP.with_borrow_mut(|tcp| tcp.close())
     }
 
     #[unsafe(export_name = "prime_gfx_open")]

@@ -1,4 +1,5 @@
 use super::*;
+use crate::language::tcp_builtin::TcpBuiltin;
 
 #[path = "match_coverage.rs"]
 mod match_coverage;
@@ -2409,6 +2410,32 @@ impl Checker {
             );
             return None;
         }
+        if let Some(op) = TcpBuiltin::lookup(name) {
+            if self.current_no_std || self.target.is_embedded() || !cfg!(feature = "std-builtins") {
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        span,
+                        format!("`{name}` requires the host std runtime"),
+                    )
+                    .with_code("E0NS"),
+                );
+                return None;
+            }
+            let parameter = op.parameter();
+            let count = usize::from(parameter.is_some());
+            if args.len() != count {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    span,
+                    format!("`{name}` expects {count} arguments"),
+                ));
+            } else if let Some(ty) = parameter {
+                let actual = self.check_expression(module, &args[0], Some(&ty), returns, env);
+                self.ensure_type(module, expr_span(&args[0]), &ty, actual.as_ref());
+            }
+            return Some(op.result());
+        }
         match name {
             "out" => {
                 if args.is_empty() {
@@ -4758,6 +4785,9 @@ impl Checker {
     }
 
     fn is_builtin_name(&self, name: &str) -> bool {
+        if TcpBuiltin::lookup(name).is_some() {
+            return true;
+        }
         matches!(
             name,
             "out"

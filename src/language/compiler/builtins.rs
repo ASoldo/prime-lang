@@ -1,4 +1,5 @@
 use super::*;
+use crate::language::tcp_builtin::TcpBuiltin;
 
 impl Compiler {
     pub(super) fn reference_handle(
@@ -1230,6 +1231,32 @@ impl Compiler {
             }
             Value::Reference(reference) => {
                 let inner = reference.cell.lock().unwrap().clone().into_value();
+                if matches!(inner, Value::Unit)
+                    && let Some(handle) = reference.handle
+                {
+                    // Runtime enum payloads (including in[string]) borrow their bytes
+                    // from the live handle for the duration of the host call.
+                    let ptr_ty = self.runtime_abi.string_data_type;
+                    let len_ty = self.runtime_abi.usize_type;
+                    let ptr_slot = self.build_entry_alloca(ptr_ty, "string_ptr");
+                    let len_slot = self.build_entry_alloca(len_ty, "string_len");
+                    unsafe {
+                        LLVMBuildStore(self.builder, LLVMConstNull(ptr_ty), ptr_slot);
+                        LLVMBuildStore(self.builder, LLVMConstNull(len_ty), len_slot);
+                    }
+                    self.call_runtime(
+                        self.runtime_abi.prime_value_as_string,
+                        self.runtime_abi.prime_value_as_string_ty,
+                        &mut [handle, ptr_slot, len_slot],
+                        "value_as_string",
+                    );
+                    return Ok(unsafe {
+                        (
+                            LLVMBuildLoad2(self.builder, ptr_ty, ptr_slot, c"string_ptr".as_ptr()),
+                            LLVMBuildLoad2(self.builder, len_ty, len_slot, c"string_len".as_ptr()),
+                        )
+                    });
+                }
                 self.string_parts_for_runtime(inner, ctx)
             }
             _ => Err(format!("{ctx} expects string value")),
@@ -1257,6 +1284,43 @@ impl Compiler {
             }
             _ => Err(format!("{ctx} expects bool value")),
         }
+    }
+
+    pub(super) fn builtin_tcp(
+        &mut self,
+        name: &str,
+        op: TcpBuiltin,
+        mut args: Vec<Value>,
+    ) -> Result<Value, String> {
+        if args.len() != usize::from(op.parameter().is_some()) {
+            return Err(format!("wrong arity for {name}"));
+        }
+        let mut operands = match op {
+            TcpBuiltin::Listen => vec![self.int32_for_runtime(args.remove(0), name)?],
+            TcpBuiltin::ReceiveUntil | TcpBuiltin::StartsWith | TcpBuiltin::Write => {
+                let (ptr, len) = self.string_parts_for_runtime(args.remove(0), name)?;
+                vec![ptr, len]
+            }
+            _ => Vec::new(),
+        };
+        let abi = &self.runtime_abi;
+        let (function, ty) = match op {
+            TcpBuiltin::Listen => (abi.prime_tcp_listen, abi.prime_tcp_listen_ty),
+            TcpBuiltin::Accept => (abi.prime_tcp_accept, abi.prime_tcp_accept_ty),
+            TcpBuiltin::ReceiveUntil => {
+                (abi.prime_tcp_receive_until, abi.prime_tcp_receive_until_ty)
+            }
+            TcpBuiltin::StartsWith => (abi.prime_tcp_starts_with, abi.prime_tcp_starts_with_ty),
+            TcpBuiltin::Write => (abi.prime_tcp_write, abi.prime_tcp_write_ty),
+            TcpBuiltin::Disconnect => (abi.prime_tcp_disconnect, abi.prime_tcp_disconnect_ty),
+            TcpBuiltin::Close => (abi.prime_tcp_close, abi.prime_tcp_close_ty),
+        };
+        let result = self.call_runtime(function, ty, &mut operands, name);
+        Ok(match op {
+            TcpBuiltin::Listen => Value::Int(IntValue::new(result, None)),
+            TcpBuiltin::Disconnect | TcpBuiltin::Close => Value::Unit,
+            _ => Value::Bool(BoolValue::new(result, None)),
+        })
     }
 
     pub(super) fn builtin_gfx_open(&mut self, mut args: Vec<Value>) -> Result<Value, String> {

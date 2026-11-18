@@ -1,4 +1,5 @@
 use super::*;
+use crate::language::tcp_builtin::TcpBuiltin;
 
 struct PatternGuard<'a> {
     condition: LLVMValueRef,
@@ -466,7 +467,10 @@ impl Compiler {
                                 function,
                                 CString::new("while_after").unwrap().as_ptr(),
                             );
-                            LLVMBuildBr(self.builder, cond_block);
+                            // The first condition has already been emitted. Use its value
+                            // here, then evaluate it again only on the loop back edge.
+                            let first = self.bool_llvm_value(&cond_value);
+                            LLVMBuildCondBr(self.builder, first, body_block, after_block);
                             LLVMPositionBuilderAtEnd(self.builder, cond_block);
                             let cond_value = match self.emit_expression(expr)? {
                                 EvalOutcome::Value(value) => value.into_value(),
@@ -2493,6 +2497,11 @@ impl Compiler {
         name: &str,
         args: &[Expr],
     ) -> Option<Result<EvalOutcome<EvaluatedValue>, String>> {
+        if let Some(op) = TcpBuiltin::lookup(name) {
+            return Some(
+                self.invoke_builtin(args, |this, values| this.builtin_tcp(name, op, values)),
+            );
+        }
         match name {
             "box_new" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_box_new(values)))

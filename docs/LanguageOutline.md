@@ -37,7 +37,7 @@ Each scope registers cleanups as bindings and `defer` statements are evaluated. 
 
 `async { expr }` creates a `Task[T]`. `await task` consumes its result. `sleep_task` and `recv_task` return tasks. Channels preserve FIFO order for queued messages. Guarded waits can observe a timeout or explicit cancellation. The [async specification](AsyncAwait.md) gives the signatures, precedence and restrictions.
 
-The host supports operating-system threads, files, graphics and audio. ESP32 uses fixed-capacity runtime storage and architecture-specific timing. Host conformance results and an ESP32 firmware build establish different properties. The [embedded timer tests](EmbeddedTimers.md) exercise the RV32IMC ABI against a controlled clock. Token reclamation and timing on physical boards remain open.
+The host supports operating-system threads, files, graphics, audio and bounded loopback TCP. The [TCP built-ins and HTTP example](LoopbackWebServer.md) describe the live interpreter and native calls. ESP32 uses fixed-capacity runtime storage and architecture-specific timing. Host conformance results and an ESP32 firmware build establish different properties. The [embedded timer tests](EmbeddedTimers.md) exercise the RV32IMC ABI against a controlled clock. Token reclamation and timing on physical boards remain open.
 
 ## Macros, source positions and tools
 

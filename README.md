@@ -40,6 +40,8 @@ ESP32 uses a separate, bounded runtime. The Xtensa demos exercise channels, task
 
 ### Example Programs
 
+- Run the [loopback HTTP server](docs/LoopbackWebServer.md) with the interpreter or as a native executable. It serves `GET /health` and closes after a selected number of connections.
+
 - `workspace/app/main.prime` – Feature tour: modules, structs/enums, interfaces, ownership, and UI-ish printing.
 - `pattern_demo.prime` – Match/if/while/for destructuring across tuples, maps, structs, slices.
 - `error_handling_demo.prime` – `Result`, `try {}`, and `?` propagation.

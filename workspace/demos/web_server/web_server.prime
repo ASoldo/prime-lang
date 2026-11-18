@@ -1,0 +1,52 @@
+//! A finite, sequential HTTP demo on IPv4 loopback.
+module demos::web_server;
+
+import core::types;
+
+fn handle_client() {
+  if tcp_receive_until("\r\n\r\n") {
+    let bool healthy = tcp_starts_with("GET /health HTTP/1.1\r\n") || tcp_starts_with("GET /health HTTP/1.0\r\n");
+    if healthy {
+      if !tcp_write("HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nok\n") {
+        out("write failed");
+      }
+    } else {
+      if !tcp_write("HTTP/1.1 404 Not Found\r\nContent-Length: 10\r\nConnection: close\r\n\r\nnot found\n") {
+        out("write failed");
+      }
+    }
+  }
+  tcp_disconnect();
+}
+
+fn serve(port: int32, limit: int32) {
+  if limit >= 1 && limit <= 256 {
+    let int32 bound = tcp_listen(port);
+    if bound > 0 {
+      out(`LISTEN {bound}`);
+      let mut int32 served = 0;
+      while tcp_accept() {
+        handle_client();
+        served = served + 1;
+        if served >= limit {
+          break;
+        }
+      }
+      tcp_close();
+    } else {
+      out("listen failed");
+    }
+  } else {
+    out("connection limit must be 1..256");
+  }
+}
+
+fn main() {
+  match in[int32]("Port (0 for automatic): ") {
+    Result::Ok(port) => match in[int32]("Connection limit: ") {
+      Result::Ok(limit) => serve(port, limit),
+      Result::Err(_) => out("invalid limit"),
+    },
+    Result::Err(_) => out("invalid port"),
+  }
+}

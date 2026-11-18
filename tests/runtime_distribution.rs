@@ -18,6 +18,7 @@ fn host_package_can_move_with_its_sources_and_lockfile() {
     fs::remove_dir_all(cache).unwrap();
 
     for (name, source) in [
+        ("tcp.rs", include_bytes!("../src/runtime/tcp.rs").as_slice()),
         ("abi.rs", include_bytes!("../src/runtime/abi.rs").as_slice()),
         (
             "audio.rs",

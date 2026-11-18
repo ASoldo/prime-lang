@@ -24,6 +24,7 @@ cargo test --manifest-path tree-sitter/prime/Cargo.toml --locked -- --nocapture
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 ./scripts/check_examples.sh
 python3 scripts/stress_demos.py --rounds 3
+python3 scripts/test_web_server.py "$PRIME_BIN"
 
 # Some Prime tests write files relative to their working directory.
 cp -R workspace prime.toml "$scratch/"

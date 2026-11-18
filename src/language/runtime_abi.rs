@@ -149,6 +149,20 @@ pub struct RuntimeAbi {
     pub prime_now_ms_ty: LLVMTypeRef,
     pub prime_reset_reason: LLVMValueRef,
     pub prime_reset_reason_ty: LLVMTypeRef,
+    pub prime_tcp_listen: LLVMValueRef,
+    pub prime_tcp_listen_ty: LLVMTypeRef,
+    pub prime_tcp_accept: LLVMValueRef,
+    pub prime_tcp_accept_ty: LLVMTypeRef,
+    pub prime_tcp_receive_until: LLVMValueRef,
+    pub prime_tcp_receive_until_ty: LLVMTypeRef,
+    pub prime_tcp_starts_with: LLVMValueRef,
+    pub prime_tcp_starts_with_ty: LLVMTypeRef,
+    pub prime_tcp_write: LLVMValueRef,
+    pub prime_tcp_write_ty: LLVMTypeRef,
+    pub prime_tcp_disconnect: LLVMValueRef,
+    pub prime_tcp_disconnect_ty: LLVMTypeRef,
+    pub prime_tcp_close: LLVMValueRef,
+    pub prime_tcp_close_ty: LLVMTypeRef,
     pub prime_gfx_open: LLVMValueRef,
     pub prime_gfx_open_ty: LLVMTypeRef,
     pub prime_gfx_clear: LLVMValueRef,
@@ -537,6 +551,32 @@ impl RuntimeAbi {
         let (prime_now_ms, prime_now_ms_ty) = declare_fn(module, "prime_now_ms", int_type, &mut []);
         let (_prime_reset_reason, _prime_reset_reason_ty) =
             declare_fn(module, "prime_reset_reason", i32_type, &mut []);
+        let (prime_tcp_listen, prime_tcp_listen_ty) =
+            declare_fn(module, "prime_tcp_listen", i32_type, &mut [i32_type]);
+        let (prime_tcp_accept, prime_tcp_accept_ty) =
+            declare_fn(module, "prime_tcp_accept", bool_type, &mut []);
+        let (prime_tcp_receive_until, prime_tcp_receive_until_ty) = declare_fn(
+            module,
+            "prime_tcp_receive_until",
+            bool_type,
+            &mut [string_data_type, usize_type],
+        );
+        let (prime_tcp_starts_with, prime_tcp_starts_with_ty) = declare_fn(
+            module,
+            "prime_tcp_starts_with",
+            bool_type,
+            &mut [string_data_type, usize_type],
+        );
+        let (prime_tcp_write, prime_tcp_write_ty) = declare_fn(
+            module,
+            "prime_tcp_write",
+            bool_type,
+            &mut [string_data_type, usize_type],
+        );
+        let (prime_tcp_disconnect, prime_tcp_disconnect_ty) =
+            declare_fn(module, "prime_tcp_disconnect", void_type, &mut []);
+        let (prime_tcp_close, prime_tcp_close_ty) =
+            declare_fn(module, "prime_tcp_close", void_type, &mut []);
         let (prime_gfx_open, prime_gfx_open_ty) = declare_fn(
             module,
             "prime_gfx_open",
@@ -777,6 +817,20 @@ impl RuntimeAbi {
             prime_now_ms_ty,
             prime_reset_reason: _prime_reset_reason,
             prime_reset_reason_ty: _prime_reset_reason_ty,
+            prime_tcp_listen,
+            prime_tcp_listen_ty,
+            prime_tcp_accept,
+            prime_tcp_accept_ty,
+            prime_tcp_receive_until,
+            prime_tcp_receive_until_ty,
+            prime_tcp_starts_with,
+            prime_tcp_starts_with_ty,
+            prime_tcp_write,
+            prime_tcp_write_ty,
+            prime_tcp_disconnect,
+            prime_tcp_disconnect_ty,
+            prime_tcp_close,
+            prime_tcp_close_ty,
             prime_gfx_open,
             prime_gfx_open_ty,
             prime_gfx_clear,
@@ -949,6 +1003,20 @@ impl RuntimeAbi {
             prime_now_ms_ty: std::ptr::null_mut(),
             prime_reset_reason: std::ptr::null_mut(),
             prime_reset_reason_ty: std::ptr::null_mut(),
+            prime_tcp_listen: std::ptr::null_mut(),
+            prime_tcp_listen_ty: std::ptr::null_mut(),
+            prime_tcp_accept: std::ptr::null_mut(),
+            prime_tcp_accept_ty: std::ptr::null_mut(),
+            prime_tcp_receive_until: std::ptr::null_mut(),
+            prime_tcp_receive_until_ty: std::ptr::null_mut(),
+            prime_tcp_starts_with: std::ptr::null_mut(),
+            prime_tcp_starts_with_ty: std::ptr::null_mut(),
+            prime_tcp_write: std::ptr::null_mut(),
+            prime_tcp_write_ty: std::ptr::null_mut(),
+            prime_tcp_disconnect: std::ptr::null_mut(),
+            prime_tcp_disconnect_ty: std::ptr::null_mut(),
+            prime_tcp_close: std::ptr::null_mut(),
+            prime_tcp_close_ty: std::ptr::null_mut(),
             prime_gfx_open: std::ptr::null_mut(),
             prime_gfx_open_ty: std::ptr::null_mut(),
             prime_gfx_clear: std::ptr::null_mut(),

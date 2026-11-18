@@ -8,6 +8,7 @@ pub mod macro_expander;
 pub mod parser;
 pub mod runtime_abi;
 pub mod span;
+pub(crate) mod tcp_builtin;
 pub mod token;
 pub mod typecheck;
 pub mod types;

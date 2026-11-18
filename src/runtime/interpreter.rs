@@ -1,3 +1,4 @@
+use crate::language::tcp_builtin::TcpBuiltin;
 use crate::language::{
     ast::*,
     types::{Mutability, TypeAnnotation, TypeExpr},
@@ -50,6 +51,7 @@ pub struct Interpreter {
     module_stack: Vec<String>,
     bootstrapped: bool,
     target: BuildTarget,
+    tcp: crate::runtime::abi::tcp::TcpServer,
     async_runtime: AsyncRuntime,
 }
 
@@ -134,6 +136,7 @@ impl Interpreter {
             module_stack: Vec::new(),
             bootstrapped: false,
             target,
+            tcp: Default::default(),
             async_runtime: AsyncRuntime::new(),
         }
     }
@@ -777,6 +780,7 @@ impl Interpreter {
             module_stack: Vec::new(),
             bootstrapped: true,
             target: self.target.clone(),
+            tcp: Default::default(),
             async_runtime: self.async_runtime.clone(),
         }
     }
@@ -1058,6 +1062,9 @@ impl Interpreter {
         args: Vec<Value>,
         type_args: &[TypeExpr],
     ) -> Option<RuntimeResult<Vec<Value>>> {
+        if let Some(op) = TcpBuiltin::lookup(name) {
+            return Some(self.builtin_tcp(name, op, args));
+        }
         let result = match name {
             "box_new" => self.builtin_box_new(args),
             "box_get" => self.builtin_box_get(args),
@@ -1226,6 +1233,9 @@ impl Interpreter {
     }
 
     fn is_builtin_name(&self, name: &str) -> bool {
+        if TcpBuiltin::lookup(name).is_some() {
+            return true;
+        }
         matches!(
             name,
             "box_new"
@@ -2329,6 +2339,44 @@ impl Interpreter {
                 Ok(vec![err_val])
             }
         }
+    }
+
+    fn builtin_tcp(
+        &mut self,
+        name: &str,
+        op: TcpBuiltin,
+        mut args: Vec<Value>,
+    ) -> RuntimeResult<Vec<Value>> {
+        require_std_builtins(name)?;
+        self.expect_arity(name, &args, usize::from(op.parameter().is_some()))?;
+        let value = match op {
+            TcpBuiltin::Listen => {
+                let port = self.expect_i32_value(name, args.remove(0))?;
+                Value::Int(self.tcp.listen(port).into())
+            }
+            TcpBuiltin::Accept => Value::Bool(self.tcp.accept()),
+            TcpBuiltin::ReceiveUntil => Value::Bool(
+                self.tcp
+                    .receive_until(&Self::expect_string_or_format(name, args.remove(0))?),
+            ),
+            TcpBuiltin::StartsWith => Value::Bool(
+                self.tcp
+                    .starts_with(&Self::expect_string_or_format(name, args.remove(0))?),
+            ),
+            TcpBuiltin::Write => Value::Bool(
+                self.tcp
+                    .write(&Self::expect_string_or_format(name, args.remove(0))?),
+            ),
+            TcpBuiltin::Disconnect => {
+                self.tcp.disconnect();
+                Value::Unit
+            }
+            TcpBuiltin::Close => {
+                self.tcp.close();
+                Value::Unit
+            }
+        };
+        Ok(vec![value])
     }
 
     fn builtin_gfx_open(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {

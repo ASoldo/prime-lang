@@ -4,6 +4,7 @@ use crate::language::ast::{
     MatchExpr, Pattern, RangeExpr, Statement, StructLiteralField, StructLiteralKind, UnaryOp,
 };
 use crate::language::span::Span;
+use crate::language::tcp_builtin::TcpBuiltin;
 use crate::language::types::{Mutability, TypeAnnotation, TypeExpr};
 use crate::runtime::platform::std_disabled_message;
 use crate::runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric};
@@ -2785,6 +2786,7 @@ impl BuildInterpreter {
                     Err(msg) => Ok(self.wrap_enum("Err", vec![BuildValue::String(msg)])),
                 }
             }
+            name if TcpBuiltin::lookup(name).is_some() => Err(format!("{name} requires the live host std runtime")),
             "gfx_open" | "gfx_clear" | "gfx_rect" | "gfx_sprite" | "gfx_text"
             | "gfx_text_int" | "gfx_present" | "gfx_key_down" | "gfx_key_pressed"
             | "gfx_should_close" | "gfx_close" => {
