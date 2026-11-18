@@ -7,13 +7,29 @@
 
 On Linux the host runtime also needs a C linker, pkg-config, ALSA and X11/Wayland development headers. The [CI workflow](../.github/workflows/ci.yml) lists the Ubuntu packages. The example inventory requires Python 3.11 or newer.
 
-## Your first program
+## First run
 
-From the repository root, install the CLI. With rustup's default layout, the binary goes in `~/.cargo/bin` on your PATH.
+From the repository root, install with `cargo install --locked --path .`. With rustup’s default layout the executable goes in `~/.cargo/bin`. Put that directory on PATH, then try:
 
 ```sh
-cargo install --locked --path .
+prime-lang <<'PRIME'
+out(6 * 7);
+PRIME
 ```
+
+The interpreter prints `42`. In a fresh directory, save the same source and build it:
+
+```sh
+cat > answer.prime <<'PRIME'
+out(6 * 7);
+PRIME
+prime-lang build answer.prime --name answer
+./.build.prime/answer/answer
+```
+
+The compiled executable prints `42`. The [stdin guide](Inline.md) shows how to use the same source with `check -`, `run --trace -` and `build -`.
+
+## Create a package
 
 In a directory of your choice, create a new package named `hello`. The scaffold writes a manifest and an entry module.
 
@@ -43,11 +59,11 @@ prime-lang build main.prime --name score
 ./.build.prime/score/score
 ```
 
-To see which Prime functions the interpreter enters, run `prime-lang run --trace main.prime`. The trace goes to stderr and the score goes to stdout. [Reading a trace](Debugging.md)
+To see which Prime functions the interpreter enters, run `prime-lang run --trace main.prime`. The trace goes to stderr and the score goes to stdout. Tools consuming these records can retrieve the installed CLI’s JSON Schemas with `prime-lang schema trace` and `prime-lang schema check`. [Reading a trace](Debugging.md) · [Check reports](Checking.md)
 
 ## Try a bundled demo
 
-Return to the checkout root for the bundled examples. The channel example in the [README](../README.md#first-run) runs without input or assets. The [web server](LoopbackWebServer.md) reads its port and request count from stdin and serves real requests on loopback.
+Return to the checkout root for the bundled examples. Run `prime-lang run workspace/demos/channel_demo/channel_demo.prime` to send three integers and print their sum, `6`. The [web server](LoopbackWebServer.md) reads its port and request count from stdin and serves real requests on loopback.
 
 [Tetris](../workspace/demos/tetris/tetris.prime) reads media paths relative to the checkout root. A short run on a host without a display or sound device is:
 
@@ -104,7 +120,7 @@ auto-reloads the page as docs regenerate on save.
 
 ## Reproduce the guide checks
 
-From the checkout root, build the CLI and exercise the guide in a temporary consumer package. The tests run the scaffold, the edited source and the channel commands printed by the built-in quick start. They compare interpreter and executable output with the expected text.
+From the checkout root, build the CLI and exercise the guide in a temporary consumer package. The tests execute the heredoc and saved-file examples in both guides, then run the scaffold, the edited source and the channel commands printed by the built-in quick start. They compare interpreter and executable output with the expected text.
 
 ```sh
 cargo build --locked --bin prime-lang

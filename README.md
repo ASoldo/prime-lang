@@ -4,21 +4,25 @@ Prime is an expression-oriented language with a tree-walking interpreter, an LLV
 
 ## First run
 
-From a source checkout with Rust, LLVM and the native development libraries installed, run the channel demo. It sends three integers, closes the sender and prints their sum, `6`. [Host prerequisites](docs/GettingStarted.md#prerequisites)
+Install the CLI from the checkout root with `cargo install --locked --path .`. With `prime-lang` on PATH, send it one line of Prime. [Host prerequisites](docs/GettingStarted.md#prerequisites)
 
 ```sh
-cargo install --locked --path .
-prime-lang run workspace/demos/channel_demo/channel_demo.prime
+prime-lang <<'PRIME'
+out(6 * 7);
+PRIME
 ```
 
-To see the same program compiled, build it and execute the result from the repository root.
+The interpreter prints `42`. In a fresh directory, save the same source and build it:
 
 ```sh
-prime-lang build workspace/demos/channel_demo/channel_demo.prime --name channel_demo
-./.build.prime/channel_demo/channel_demo
+cat > answer.prime <<'PRIME'
+out(6 * 7);
+PRIME
+prime-lang build answer.prime --name answer
+./.build.prime/answer/answer
 ```
 
-Create and edit your own first program in [Getting Started](docs/GettingStarted.md).
+The executable also prints `42`. Continue with a [package of your own](docs/GettingStarted.md#create-a-package), or [check and compile source directly from stdin](docs/Inline.md).
 
 ## Explore the language
 
@@ -41,7 +45,7 @@ Run Tetris from the checkout root so its relative PNG and WAV paths resolve. Int
 
 ## Working with a checkout
 
-The workspace manifest lists packages. Each member's `prime.toml` maps module names to source paths. Use a `module` with `fn main()` as an entry point, a `library` to export items, and a `test` module for Prime tests. For example, the channel demo imports `core::types`, whose prelude exports `Option` and `Result`. [Member manifest](workspace/demos/channel_demo/prime.toml) · [Core library](workspace/core/types.prime)
+The workspace manifest lists packages. Each member's `prime.toml` maps module names to source paths. Use a `module` with `fn main()` as an entry point, a `library` to export items, and a `test` module for Prime tests. For example, the channel demo imports `core::types`, whose prelude exports `Option` and `Result`. [Member manifest](workspace/demos/channel_demo/prime.toml) · [Portable core and compatibility imports](docs/CoreLibrary.md)
 
 From the checkout root:
 

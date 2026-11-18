@@ -1,7 +1,9 @@
 """Execute the guide's first Prime program in a fresh consumer package."""
 import os
 from pathlib import Path
+import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -26,6 +28,22 @@ class GettingStarted(unittest.TestCase):
     def execute(self, *args, cwd):
         return subprocess.run(args, cwd=cwd, env=self.env, check=True,
                               stdout=subprocess.PIPE, text=True, timeout=300).stdout
+
+    def test_heredoc_and_saved_source(self):
+        cli = shutil.which(self.cli)
+        self.assertIsNotNone(cli, self.cli)
+        (self.scratch / "prime-lang").symlink_to(cli)
+        self.env["PATH"] = str(self.scratch) + os.pathsep + self.env["PATH"]
+        for guide in (ROOT / "README.md", ROOT / "docs/GettingStarted.md"):
+            with self.subTest(guide=guide.name):
+                work = self.scratch / guide.stem
+                work.mkdir()
+                section = guide.read_text().split("## First run\n", 1)[1].split("\n## ", 1)[0]
+                interpret, build = re.findall(r"^```sh\n([\s\S]*?)\n```$", section, re.MULTILINE)
+                self.assertEqual(self.execute("sh", "-ec", interpret, cwd=work), "42\n")
+                self.assertEqual(self.execute("sh", "-ec", build, cwd=work).splitlines()[-1], "42")
+                lines = interpret.splitlines()
+                self.assertEqual((work / "answer.prime").read_text(), "\n".join(lines[1:-1]) + "\n")
 
     def test_builtin_quick_start(self):
         # Run the three commands as printed by the installed CLI.
