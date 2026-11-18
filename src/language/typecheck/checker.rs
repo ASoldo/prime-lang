@@ -3072,7 +3072,7 @@ impl Checker {
             return None;
         }
         if let Some(op) = TcpBuiltin::lookup(name) {
-            if !TcpBuiltin::available(&self.target, self.current_no_std) {
+            if !op.available(&self.target, self.current_no_std) {
                 self.errors.push(
                     TypeError::new(
                         &module.path,
@@ -3093,7 +3093,7 @@ impl Checker {
                 ));
             } else {
                 for (arg, &(_, name)) in args.iter().zip(parameters) {
-                    let ty = TypeExpr::named(name);
+                    let ty = TcpBuiltin::ty(name);
                     let actual = self.check_expression(module, arg, Some(&ty), returns, env);
                     self.ensure_type(module, expr_span(arg), &ty, actual.as_ref());
                 }

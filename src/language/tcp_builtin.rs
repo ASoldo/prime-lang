@@ -3,6 +3,7 @@ use crate::target::BuildTarget;
 
 #[derive(Clone, Copy)]
 pub(crate) enum TcpBuiltin {
+    Socket(crate::runtime::abi::net::Op),
     Listen,
     Accept,
     NextFrame,
@@ -14,7 +15,7 @@ pub(crate) enum TcpBuiltin {
 }
 
 impl TcpBuiltin {
-    pub const ALL: [Self; 8] = [
+    const DEMO: [Self; 8] = [
         Self::Listen,
         Self::Accept,
         Self::NextFrame,
@@ -25,19 +26,34 @@ impl TcpBuiltin {
         Self::Close,
     ];
 
-    pub fn available(target: &BuildTarget, no_std: bool) -> bool {
-        cfg!(feature = "std-builtins") && !no_std && !target.is_embedded()
+    pub fn available(self, target: &BuildTarget, no_std: bool) -> bool {
+        cfg!(feature = "std-builtins")
+            && !no_std
+            && match self {
+                Self::Socket(_) => target.is_host(),
+                _ => !target.is_embedded(),
+            }
+    }
+
+    pub fn all() -> impl Iterator<Item = Self> {
+        Self::DEMO.into_iter().chain(
+            crate::runtime::abi::net::Op::ALL
+                .iter()
+                .copied()
+                .map(Self::Socket),
+        )
     }
 
     pub fn lookup(name: &str) -> Option<Self> {
-        if !name.starts_with("tcp_") {
+        if !name.starts_with("tcp_") && !name.starts_with("net_") {
             return None;
         }
-        Self::ALL.into_iter().find(|op| op.name() == name)
+        Self::all().find(|op| op.name() == name)
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::Socket(op) => op.name(),
             Self::Listen => "tcp_listen",
             Self::Accept => "tcp_accept",
             Self::NextFrame => "tcp_next_frame",
@@ -51,6 +67,7 @@ impl TcpBuiltin {
 
     pub fn parameters(self) -> &'static [(&'static str, &'static str)] {
         match self {
+            Self::Socket(op) => op.parameters(),
             Self::Listen => &[("port", "int32")],
             Self::NextFrame => &[("delimiter", "string"), ("limit", "int32")],
             Self::ReceiveUntil => &[("delimiter", "string")],
@@ -75,8 +92,20 @@ impl TcpBuiltin {
         )
     }
 
+    pub fn ty(name: &str) -> TypeExpr {
+        match name {
+            "[]uint8" => TypeExpr::Slice(Box::new(TypeExpr::named("uint8"))),
+            "()" => TypeExpr::Unit,
+            _ => TypeExpr::named(name),
+        }
+    }
+
     pub fn result(self) -> TypeExpr {
         match self {
+            Self::Socket(op) => TypeExpr::Named(
+                "Result".into(),
+                vec![Self::ty(op.success()), TypeExpr::named("string")],
+            ),
             Self::Listen => TypeExpr::named("int32"),
             Self::Disconnect | Self::Close => TypeExpr::Unit,
             _ => TypeExpr::named("bool"),

@@ -350,8 +350,14 @@ fn resolve_import_module<'a>(
 
 fn builtin_function_docs(name: &str) -> Option<String> {
     if let Some(op) = TcpBuiltin::lookup(name) {
+        let description = match op {
+            TcpBuiltin::Socket(_) => {
+                "Host TCP/UDP socket API. Endpoints use numeric IP addresses and ports. Socket waits take a positive timeout in milliseconds."
+            }
+            _ => "Host std loopback TCP",
+        };
         return Some(format!(
-            "Host std loopback TCP\n{}",
+            "{description}\n{}",
             code_block("prime", &op.signature())
         ));
     }

@@ -889,18 +889,16 @@ pub fn keyword_completion_items(
         ("max", "Built-in math helper"),
         ("abs", "Built-in math helper"),
     ];
-    if TcpBuiltin::available(target, no_std) {
-        for op in TcpBuiltin::ALL
-            .into_iter()
-            .filter(|op| prefix_matches(op.name(), prefix))
-        {
-            items.push(CompletionItem {
-                label: op.name().into(),
-                kind: Some(CompletionItemKind::FUNCTION),
-                detail: Some(op.signature()),
-                ..Default::default()
-            });
-        }
+    for op in TcpBuiltin::all()
+        .filter(|op| op.available(target, no_std))
+        .filter(|op| prefix_matches(op.name(), prefix))
+    {
+        items.push(CompletionItem {
+            label: op.name().into(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some(op.signature()),
+            ..Default::default()
+        });
     }
     let embedded_target = target.is_embedded();
     const EMBEDDED_HOST_ONLY: &[&str] = &[

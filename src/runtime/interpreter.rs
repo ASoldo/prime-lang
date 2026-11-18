@@ -39,7 +39,11 @@ fn require_std_builtins(op: &str) -> RuntimeResult<()> {
     }
 }
 
+#[path = "net_interpreter.rs"]
+mod net_interpreter;
+
 pub struct Interpreter {
+    network: Arc<crate::runtime::abi::net::Network>,
     integers: Arc<CheckedIntegers>,
     package: Package,
     env: Environment,
@@ -175,6 +179,7 @@ impl Interpreter {
             bootstrapped: false,
             target,
             tcp: Default::default(),
+            network: Default::default(),
             async_runtime: AsyncRuntime::new(),
         }
     }
@@ -913,6 +918,7 @@ impl Interpreter {
             bootstrapped: true,
             target: self.target.clone(),
             tcp: Default::default(),
+            network: self.network.clone(),
             async_runtime: self.async_runtime.clone(),
         }
     }
@@ -2482,6 +2488,7 @@ impl Interpreter {
         require_std_builtins(name)?;
         self.expect_arity(name, &args, op.parameters().len())?;
         let value = match op {
+            TcpBuiltin::Socket(op) => return self.builtin_socket(op, &args),
             TcpBuiltin::Listen => {
                 let port = self.expect_i32_value(name, args.remove(0))?;
                 Value::Int(self.tcp.listen(port).into())

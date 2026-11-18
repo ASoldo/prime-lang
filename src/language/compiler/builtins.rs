@@ -1442,6 +1442,7 @@ impl Compiler {
         };
         let abi = &self.runtime_abi;
         let (function, ty) = match op {
+            TcpBuiltin::Socket(_) => unreachable!("socket operations use the handle ABI"),
             TcpBuiltin::Listen => (abi.prime_tcp_listen, abi.prime_tcp_listen_ty),
             TcpBuiltin::NextFrame => (abi.prime_tcp_next_frame, abi.prime_tcp_next_frame_ty),
             TcpBuiltin::Accept => (abi.prime_tcp_accept, abi.prime_tcp_accept_ty),

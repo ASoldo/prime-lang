@@ -153,6 +153,8 @@ pub struct RuntimeAbi {
     pub prime_now_ms_ty: LLVMTypeRef,
     pub prime_reset_reason: LLVMValueRef,
     pub prime_reset_reason_ty: LLVMTypeRef,
+    pub prime_net_call: LLVMValueRef,
+    pub prime_net_call_ty: LLVMTypeRef,
     pub prime_tcp_listen: LLVMValueRef,
     pub prime_tcp_listen_ty: LLVMTypeRef,
     pub prime_tcp_accept: LLVMValueRef,
@@ -585,6 +587,20 @@ impl RuntimeAbi {
         let (prime_now_ms, prime_now_ms_ty) = declare_fn(module, "prime_now_ms", int_type, &mut []);
         let (_prime_reset_reason, _prime_reset_reason_ty) =
             declare_fn(module, "prime_reset_reason", i32_type, &mut []);
+        let (prime_net_call, prime_net_call_ty) = declare_fn(
+            module,
+            "prime_net_call",
+            handle_type,
+            &mut [
+                i32_type,
+                handle_type,
+                handle_type,
+                handle_type,
+                handle_type,
+                i32_type,
+                i32_type,
+            ],
+        );
         let (prime_tcp_listen, prime_tcp_listen_ty) =
             declare_fn(module, "prime_tcp_listen", i32_type, &mut [i32_type]);
         let (prime_tcp_accept, prime_tcp_accept_ty) =
@@ -893,6 +909,8 @@ impl RuntimeAbi {
             prime_now_ms_ty,
             prime_reset_reason: _prime_reset_reason,
             prime_reset_reason_ty: _prime_reset_reason_ty,
+            prime_net_call,
+            prime_net_call_ty,
             prime_tcp_listen,
             prime_tcp_listen_ty,
             prime_tcp_accept,
@@ -1097,6 +1115,8 @@ impl RuntimeAbi {
             prime_now_ms_ty: std::ptr::null_mut(),
             prime_reset_reason: std::ptr::null_mut(),
             prime_reset_reason_ty: std::ptr::null_mut(),
+            prime_net_call: std::ptr::null_mut(),
+            prime_net_call_ty: std::ptr::null_mut(),
             prime_tcp_listen: std::ptr::null_mut(),
             prime_tcp_listen_ty: std::ptr::null_mut(),
             prime_tcp_accept: std::ptr::null_mut(),

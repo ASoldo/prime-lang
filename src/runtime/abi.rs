@@ -2619,6 +2619,13 @@ pub use embedded::*;
     target_arch = "xtensa",
     all(target_arch = "riscv32", target_os = "none"),
 )))]
+#[path = "net.rs"]
+pub(crate) mod net;
+
+#[cfg(not(any(
+    target_arch = "xtensa",
+    all(target_arch = "riscv32", target_os = "none")
+)))]
 #[path = "tcp.rs"]
 pub(crate) mod tcp;
 
@@ -4015,6 +4022,10 @@ mod host {
             state_clone.complete(option_handle);
         });
         task_to_handle(state)
+    }
+
+    mod net_abi {
+        include!("net_abi.rs");
     }
 
     thread_local! {

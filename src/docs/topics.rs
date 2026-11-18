@@ -301,6 +301,21 @@ join(handle);"#,
         ],
     },
     Topic {
+        key: "host-sockets",
+        title: "Host TCP and UDP sockets",
+        category: "Built-ins",
+        summary: "Exchange byte slices over numeric IPv4 and IPv6 endpoints using a host std module in run or native build.",
+        aliases: &["sockets", "tcp", "udp"],
+        sections: &[TopicSection {
+            title: "Bind and inspect an ephemeral endpoint",
+            snippet: r#"match net_udp_bind("127.0.0.1:0") {
+  Ok(socket) => { out(net_local_endpoint(socket)); out(net_close(socket)); },
+  Err(message) => out(message),
+}"#,
+            explanation: "Use net_udp_send_to and net_udp_recv_from for individual datagrams. Receive replaces a []uint8 slice and returns the sender. Empty datagrams succeed. Oversized datagrams are consumed with an error. Use net_tcp_listen, net_tcp_accept and net_tcp_connect for streams, net_peer_endpoint for their peers, and net_tcp_read and net_tcp_write for byte counts. TCP reads return zero on EOF and writes can be partial. Socket waits require positive millisecond timeouts. Close each handle with net_close. The receive limit is 1 through 65535 bytes.",
+        }],
+    },
+    Topic {
         key: "builtins-fs-time-iter",
         title: "Built-ins: fs, time, iterators",
         category: "Built-ins",

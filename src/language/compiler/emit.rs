@@ -2743,21 +2743,27 @@ impl Compiler {
         )
     }
 
-    fn emit_filesystem_call(
+    fn emit_host_handle_call(
         &mut self,
         name: &str,
         args: &[Expr],
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         if self.target.is_embedded() || !cfg!(feature = "std-builtins") {
-            return Err(format!("{name} requires the host std filesystem"));
+            return Err(format!("{name} requires the host std runtime"));
         }
         self.ensure_runtime_symbols();
         let abi = self.runtime_abi;
-        let (function, signature, arity) = match name {
-            "fs_exists" => (abi.prime_fs_exists, abi.prime_fs_exists_ty, 1),
-            "fs_read" => (abi.prime_fs_read, abi.prime_fs_read_ty, 1),
-            "fs_write" => (abi.prime_fs_write, abi.prime_fs_write_ty, 2),
-            "fs_write_bytes" => (abi.prime_fs_write_bytes, abi.prime_fs_write_bytes_ty, 2),
+        let socket = TcpBuiltin::lookup(name);
+        let (function, signature, arity) = match (name, socket) {
+            (_, Some(TcpBuiltin::Socket(op))) => (
+                abi.prime_net_call,
+                abi.prime_net_call_ty,
+                op.parameters().len(),
+            ),
+            ("fs_exists", _) => (abi.prime_fs_exists, abi.prime_fs_exists_ty, 1),
+            ("fs_read", _) => (abi.prime_fs_read, abi.prime_fs_read_ty, 1),
+            ("fs_write", _) => (abi.prime_fs_write, abi.prime_fs_write_ty, 2),
+            ("fs_write_bytes", _) => (abi.prime_fs_write_bytes, abi.prime_fs_write_bytes_ty, 2),
             _ => unreachable!(),
         };
         if args.len() != arity {
@@ -2772,6 +2778,11 @@ impl Compiler {
             };
             let handle = self.string_or_slice_operand(value, &mut temporaries)?;
             operands.push(handle);
+        }
+        if let Some(TcpBuiltin::Socket(op)) = socket {
+            // Fixed argument slots avoid allocating an argument array inside Prime loops.
+            operands.resize(4, unsafe { LLVMConstNull(abi.handle_type) });
+            operands.insert(0, unsafe { LLVMConstInt(self.i32_type, op as u64, 0) });
         }
         if name != "fs_exists" {
             for variant in ["Ok", "Err"] {
@@ -2791,7 +2802,9 @@ impl Compiler {
                 Value::Bool(BoolValue::new(handle, None)).into(),
             ));
         }
-        let success = if name == "fs_read" {
+        let success = if let Some(TcpBuiltin::Socket(op)) = socket {
+            TcpBuiltin::ty(op.success())
+        } else if name == "fs_read" {
             TypeExpr::named("string")
         } else {
             TypeExpr::Unit
@@ -2811,9 +2824,10 @@ impl Compiler {
         args: &[Expr],
     ) -> Option<Result<EvalOutcome<EvaluatedValue>, String>> {
         if let Some(op) = TcpBuiltin::lookup(name) {
-            return Some(
-                self.invoke_builtin(args, |this, values| this.builtin_tcp(name, op, values)),
-            );
+            return Some(match op {
+                TcpBuiltin::Socket(_) => self.emit_host_handle_call(name, args),
+                _ => self.invoke_builtin(args, |this, values| this.builtin_tcp(name, op, values)),
+            });
         }
         match name {
             "box_new" => {
@@ -2941,7 +2955,7 @@ impl Compiler {
             }
             "now_ms" => Some(self.invoke_builtin(args, |this, values| this.builtin_now_ms(values))),
             "fs_exists" | "fs_read" | "fs_write" | "fs_write_bytes" => {
-                Some(self.emit_filesystem_call(name, args))
+                Some(self.emit_host_handle_call(name, args))
             }
             "gfx_open" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_open(values)))

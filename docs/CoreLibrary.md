@@ -65,6 +65,8 @@ record crc 10673
 
 ## Host services and embedded limits
 
-The host runtime provides the filesystem built-ins `fs_exists(path)`, `fs_read(path)`, `fs_write(path, contents)` and `fs_write_bytes(path, bytes)` with the default `std-builtins` feature. Reads return `Result[string, string]` and writes return `Result[(), string]`. The host also provides bounded IPv4 loopback TCP built-ins for sequential connections and concurrent reads of delimiter-terminated frames on one listener. [Loopback server limits](LoopbackWebServer.md)
+The host runtime provides the filesystem built-ins `fs_exists(path)`, `fs_read(path)`, `fs_write(path, contents)` and `fs_write_bytes(path, bytes)` with the default `std-builtins` feature. Reads return `Result[string, string]` and writes return `Result[(), string]`. The host provides explicit TCP and UDP socket handles with numeric IPv4 and IPv6 endpoints, byte slices, and per-call timeouts. [Host socket API](HostSockets.md)
+
+The host also provides bounded IPv4 loopback TCP built-ins for sequential connections and concurrent reads of delimiter-terminated frames on one listener. [Loopback server limits](LoopbackWebServer.md)
 
 A `no_std` module can import libraries marked `no_std`. The checker rejects host filesystem calls there. Embedded channels, tasks and timers use target-specific runtime support and fixed-capacity storage. Checking or interpreting a module on the host exercises a different execution path from building firmware or running it on a board. [Embedded pipeline](EmbeddedPipeline.md)

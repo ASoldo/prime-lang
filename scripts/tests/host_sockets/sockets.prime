@@ -1,0 +1,82 @@
+module sockets;
+
+enum Option[T] { None, Some(T) }
+enum Result[T,E] { Err(E), Ok(T) }
+
+fn tcp(bind_at: string, dest: string) -> Result[(),string] {
+  let int32 listener = net_tcp_listen(bind_at)?;
+  match net_tcp_accept(listener, 10) {
+    Ok(_) => { return Err("expected accept timeout"); },
+    Err(_) => (),
+  }
+  let string local = net_local_endpoint(listener)?;
+  fs_write("ready", local)?;
+  let int32 client = net_tcp_connect(dest, 2000)?;
+  let string peer = net_peer_endpoint(client)?;
+  if peer != dest { return Err("wrong peer"); }
+  let int32 incoming = net_tcp_accept(listener, 2000)?;
+  net_close(listener)?;
+  let mut []uint8 bytes = [0, 255];
+  net_tcp_write(client, bytes, 2000)?;
+  let int32 one = net_tcp_read(incoming, bytes, 1, 2000)?;
+  if one != 1 || bytes.len() != 1 { return Err("short read"); }
+  match bytes.get(0) {
+    Some(byte) => { if byte != 248 { return Err("incorrect TCP byte"); } },
+    None => { return Err("missing TCP byte"); },
+  }
+  net_tcp_write(client, bytes, 2000)?;
+  net_tcp_read(client, bytes, 1, 2000)?;
+  net_tcp_write(incoming, bytes, 2000)?;
+  let int32 eof = net_tcp_read(incoming, bytes, 1, 2000)?;
+  if eof != 0 || bytes.len() != 0 { return Err("expected EOF"); }
+  net_close(client)?;
+  net_close(incoming)?;
+  match net_close(incoming) {
+    Err(_) => Ok(()),
+    Ok(_) => Err("double close succeeded"),
+  }
+}
+
+fn udp(bind_at: string, dest: string) -> Result[(),string] {
+  let int32 server = net_udp_bind(bind_at)?;
+  let int32 client = net_udp_bind(bind_at)?;
+  let string local = net_local_endpoint(server)?;
+  let mut []uint8 bytes = [0, 255];
+  match net_udp_recv_from(server, bytes, 2, 15) {
+    Ok(_) => { return Err("expected deadline"); },
+    Err(_) => (),
+  }
+  fs_write("ready", local)?;
+  net_udp_send_to(client, dest, bytes, 2000)?;
+  let string peer = net_udp_recv_from(client, bytes, 2, 2000)?;
+  if peer != dest { return Err("wrong source"); }
+  net_udp_send_to(client, peer, bytes, 2000)?;
+  match net_udp_recv_from(server, bytes, 1, 2000) {
+    Ok(_) => { return Err("expected oversize error"); },
+    Err(_) => (),
+  }
+  if bytes.len() != 2 { return Err("oversize changed buffer"); }
+  let string sender = net_udp_recv_from(server, bytes, 2, 2000)?;
+  net_udp_send_to(server, sender, bytes, 2000)?;
+  let string empty_sender = net_udp_recv_from(server, bytes, 2, 2000)?;
+  net_udp_send_to(server, empty_sender, bytes, 2000)?;
+  net_close(server)?;
+  let int32 replacement = net_udp_bind(local)?;
+  match net_close(server) {
+    Ok(_) => { return Err("stale handle closed replacement"); },
+    Err(_) => (),
+  }
+  net_close(replacement)?;
+  net_close(client)
+}
+
+fn session() -> Result[(),string] {
+  let int32 protocol = in[int32]("")?;
+  let string local = in[string]("")?;
+  let string dest = in[string]("")?;
+  if protocol == 1 { tcp(local, dest) } else { udp(local, dest) }
+}
+
+fn main() {
+  match session() { Ok(_) => out("PASS"), Err(e) => out(e) }
+}

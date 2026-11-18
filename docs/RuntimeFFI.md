@@ -27,6 +27,7 @@ The interpreter uses an in-process runtime. Native code calls C-compatible symbo
 | `prime_integer_check` | Boolean condition, pointer to UTF-8 diagnostic bytes, target-width byte length | Returns on success. On failure the host reports the error and exits, and firmware stops. |
 | `prime_sleep_task` | `i128` milliseconds | Opaque task handle |
 | `prime_result_new` (host) | Payload handle, selected variant tag and declared Ok tag (both `u32`) | Result handle containing a copy of the payload and the corresponding display label |
+| `prime_net_call` (host) | Operation ID, four borrowed argument handles padded with null, declared Ok and Err variant tags | Result handle. Receive operations replace the caller’s byte slice on success. [Host socket API](HostSockets.md) |
 | `prime_delay_ms` | `i32` milliseconds | `PrimeStatus` |
 | `prime_recv_timeout` | Receiver handle, `i128` milliseconds, output pointer | `PrimeStatus` |
 
@@ -40,7 +41,7 @@ Host interpreter and async errors can propagate through task results. The embedd
 
 After LLVM emits the object, `prime-lang build` inspects its undefined symbols. References to `prime_gfx_*` enable graphics and references to `prime_audio_*` enable audio. Both are enabled for Tetris. An unused declaration or a string containing a symbol name adds no dependency. A function whose body is present in the object can require media even if the program never calls it.
 
-The base runtime has a dependency-free Cargo manifest and lockfile. It provides text, core operations, filesystem and TCP. The three media combinations enable their respective Cargo features. Linux links ALSA for the combinations with audio. File and stdin builds use the same selection.
+The base runtime has a dependency-free Cargo manifest and lockfile. It provides text, core operations, filesystem, TCP and UDP. The three media combinations enable their respective Cargo features. Linux links ALSA for the combinations with audio. File and stdin builds use the same selection.
 
 The CLI carries the sources and locks when moved away from the repository. Each runtime combination has a separate Cargo target directory and build lock under `$CARGO_TARGET_DIR/prime-runtime`, or `.build.prime/runtime` when the variable is unset. Two builds of the same combination share the cache and hold its lock through native linking. Builds using different combinations can run concurrently.
 

@@ -550,10 +550,9 @@ mod tests {
         use crate::target::BuildTarget;
         use tower_lsp_server::ls_types::HoverContents;
 
-        let text = "module main; fn main() { tcp_listen(0); tcp_next_frame(\"|\", 8); tcp_write(\"hello\"); tcp_close(); }";
+        let text = "module main; fn main() { tcp_listen(0); tcp_next_frame(\"|\", 8); tcp_write(\"hello\"); tcp_close(); net_udp_recv_from(s, buf, 4, 10); }";
         let tokens = lex(text).expect("tokenize");
-        let completions =
-            keyword_completion_items(Some("tcp_"), false, true, &BuildTarget::host(), false);
+        let completions = keyword_completion_items(None, false, true, &BuildTarget::host(), false);
         for (name, signature, labels) in [
             (
                 "tcp_listen",
@@ -571,6 +570,16 @@ mod tests {
                 &["delimiter: string", "limit: int32"][..],
             ),
             ("tcp_close", "fn tcp_close() -> ()", &[][..]),
+            (
+                "net_udp_recv_from",
+                "fn net_udp_recv_from(socket: int32, output: []uint8, limit: int32, timeout_ms: int32) -> Result[string,string]",
+                &[
+                    "socket: int32",
+                    "output: []uint8",
+                    "limit: int32",
+                    "timeout_ms: int32",
+                ][..],
+            ),
         ] {
             let item = completions
                 .iter()

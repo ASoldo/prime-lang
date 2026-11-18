@@ -8,6 +8,8 @@ use std::{
 /// The CLI carries the same sources that Cargo tracks when compiling it.
 /// Keep each sibling next to abi.rs so its relative module paths work.
 const BASE_SOURCES: &[(&str, &[u8])] = &[
+    ("net.rs", include_bytes!("../net.rs")),
+    ("net_abi.rs", include_bytes!("../net_abi.rs")),
     ("tcp.rs", include_bytes!("../tcp.rs")),
     ("abi.rs", include_bytes!("../abi.rs")),
 ];
