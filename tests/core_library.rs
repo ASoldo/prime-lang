@@ -307,3 +307,65 @@ pub enum Result[T, E] { Ok(T), Err(E), }
         }
     }
 }
+
+#[test]
+fn bundled_byte_readers_use_runtime_input_in_both_backends() {
+    use std::{io::Write, process::Stdio};
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path();
+    let source = r#"module consumer;
+import core::{Result, read_u16_le, read_u32_le, crc16_ccitt_false};
+
+fn main() {
+  let mut []uint8 record = [52, 18, 0];
+  match in[int32]("") {
+    Ok(last) => record.push(cast[uint8](last)),
+    Err(_) => {},
+  }
+  let int32 offset = match in[int32]("") { Ok(n) => n, Err(_) => 0, };
+  let mut uint16 word = 0;
+  let mut uint32 wide = 0;
+  if read_u16_le(&record, offset, &mut word) { out(word); } else { out("short"); }
+  if read_u32_le(&record, offset, &mut wide) { out(wide); } else { out("short"); }
+  out(crc16_ccitt_false(&record));
+  let []uint8 empty = [];
+  if read_u16_le(&empty, 0, &mut word) { out("unexpected"); } else { out("empty"); }
+  out(crc16_ccitt_false(&empty));
+}"#;
+    let report = check(dir, source, true);
+    assert!(report["paths"].to_string().contains("<bundled>/core.prime"));
+    cli(dir, &["build", "main.prime", "--name", "fields"], true);
+    let native = dir.join(".build.prime/fields/fields");
+
+    for (input, expected) in [
+        ("255\n0", "4660\n4278194740\n20779"),
+        ("254\n0", "4660\n4261417524\n16650"),
+        ("255\n2", "65280\nshort\n20779"),
+        ("bad\n2", "short\nshort\n45288"),
+        ("255\n-1", "short\nshort\n20779"),
+        ("255\n2147483647", "short\nshort\n20779"),
+    ] {
+        let mut interpreter = Command::new(env!("CARGO_BIN_EXE_prime-lang"));
+        interpreter.args(["run", "main.prime"]);
+        for mut command in [interpreter, Command::new(&native)] {
+            let mut child = command
+                .current_dir(dir)
+                .env_remove("PRIME_TARGET")
+                .env_remove("PRIME_TEST_INPUTS")
+                .env_remove("PRIME_TEST_INPUTS_FILE")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            writeln!(child.stdin.take().unwrap(), "{input}").unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "{command:?}: {output:?}");
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{expected}\nempty\n65535\n"),
+                "{command:?} with {input:?}"
+            );
+        }
+    }
+}

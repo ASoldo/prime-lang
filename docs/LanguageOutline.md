@@ -35,7 +35,7 @@ The checker tracks moves and mutable borrows. A named function can receive a mut
 
 ## Imports, collections and ownership
 
-In a package with a path dependency on the [core library](CoreLibrary.md), `import core;` brings its exported prelude into scope. Select individual names with `import core::prelude::{Option, Result};`. Other libraries can export named functions for selector imports, as in `import pkg::lib::{banner, promote, describe};` in the [basic tests](../workspace/tests/basic/basic.prime).
+The installed CLI bundles the [core library](CoreLibrary.md), including checked little-endian field readers and CRC-16/CCITT-FALSE. `import core;` brings its exported prelude into scope. Select individual names with `import core::prelude::{Option, Result};`. Other libraries can export named functions for selector imports, as in `import pkg::lib::{banner, promote, describe};` in the [basic tests](../workspace/tests/basic/basic.prime).
 
 This entry module prints `6` and then `4`. A map lookup yields an `Option` so the caller can handle a missing key. Moving the slice transfers its ownership to `active`. The sum is accumulated in a mutable integer binding.
 

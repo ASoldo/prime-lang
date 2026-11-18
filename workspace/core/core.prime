@@ -1,4 +1,4 @@
-//! Portable Prime types and iteration interfaces.
+//! Portable types, iteration interfaces and binary record helpers.
 library core;
 
 export prelude { Option, Result, Iterator, Iterable };
@@ -23,4 +23,59 @@ pub interface Iterator[T] {
 /// Types that can produce an iterator-friendly collection.
 pub interface Iterable[T] {
   fn iter(self: Self) -> []T;
+}
+
+// Read from the most significant byte down so every intermediate fits in uint32.
+fn read_le(data: &[]uint8, offset: int32, width: int32) -> (bool, uint32) {
+  let mut bool complete = offset >= 0 && offset <= data.len() - width;
+  let mut uint32 value = 0;
+  let mut int32 remaining = width;
+  while complete && remaining > 0 {
+    remaining = remaining - 1;
+    match data[offset + remaining] {
+      Some(byte) => { value = value * 256 + cast[uint32](byte); },
+      None => { complete = false; },
+    }
+  }
+  (complete, value)
+}
+
+/// Store a two-byte field and return true when both bytes are available.
+pub fn read_u16_le(data: &[]uint8, offset: int32, field: &mut uint16) -> bool {
+  let (ok, value) = read_le(data, offset, 2);
+  if ok { *field = cast[uint16](value); }
+  ok
+}
+
+/// Store a four-byte field and return true when all four bytes are available.
+pub fn read_u32_le(data: &[]uint8, offset: int32, field: &mut uint32) -> bool {
+  let (ok, value) = read_le(data, offset, 4);
+  if ok { *field = value; }
+  ok
+}
+
+/// CRC-16/CCITT-FALSE over the complete byte slice.
+pub fn crc16_ccitt_false(data: &[]uint8) -> uint16 {
+  let mut uint32 crc = 65535;
+  let mut int32 index = 0;
+  while index < data.len() {
+    match data[index] {
+      Some(byte) => {
+        crc = crc ^ (cast[uint32](byte) * 256);
+        let mut int32 bit = 0;
+        while bit < 8 {
+          let uint32 shifted = (crc * 2) & 65535;
+          if crc >= 32768 {
+            crc = shifted ^ 4129;
+          } else {
+            crc = shifted;
+          }
+          bit = bit + 1;
+        }
+      },
+      None => {},
+    }
+    index = index + 1;
+  }
+  cast[uint16](crc)
 }

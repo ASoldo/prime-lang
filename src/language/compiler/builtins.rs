@@ -897,6 +897,15 @@ impl Compiler {
                         return self.known_lookup_option(slice.get(i));
                     }
                 }
+                if self.target.is_embedded() && slice.handle.is_none() {
+                    let items = slice.items.lock().unwrap();
+                    if items.is_empty() {
+                        return self.known_lookup_option(None);
+                    }
+                    if items.iter().all(|item| matches!(item, Value::Int(_))) {
+                        return self.embedded_integer_lookup(&items, &index);
+                    }
+                }
                 let owned = slice.handle.is_none();
                 let handle = self.build_runtime_handle(Value::Slice(slice))?;
                 let index = self.int_to_usize(&index, "get_index")?;
@@ -939,6 +948,117 @@ impl Compiler {
             }
             _ => return Err("get expects slice or map".into()),
         };
+        let found = unsafe {
+            LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                status,
+                LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0),
+                c"lookup_found".as_ptr(),
+            )
+        };
+        self.lookup_option(found, slot)
+    }
+
+    // Embedded slices with a compiler-known shape can contain runtime integer
+    // values. Keep these in native storage: the bare-metal slice ABI has no heap.
+    fn embedded_integer_lookup(
+        &mut self,
+        items: &[Value],
+        index: &IntValue,
+    ) -> Result<EvaluatedValue, String> {
+        use llvm_sys::core::{
+            LLVMAddGlobal, LLVMBuildInsertValue, LLVMBuildZExt, LLVMConstStringInContext2,
+            LLVMGetUndef, LLVMSetGlobalConstant, LLVMSetInitializer,
+        };
+        let index = self.int_to_runtime_int(index, "slice_index")?;
+        let bytes: Option<Vec<u8>> = items
+            .iter()
+            .map(|item| {
+                let Value::Int(value) = item else { return None };
+                u8::try_from(value.constant()?).ok()
+            })
+            .collect();
+        unsafe {
+            let zero = LLVMConstInt(self.i32_type, 0, 0);
+            let (storage, array, element) = if let Some(bytes) = bytes {
+                // Constant records live in flash, with one byte per element.
+                let data =
+                    LLVMConstStringInContext2(self.context, bytes.as_ptr().cast(), bytes.len(), 1);
+                let array = LLVMTypeOf(data);
+                let storage = LLVMAddGlobal(self.module, array, c"record_bytes".as_ptr());
+                LLVMSetLinkage(storage, LLVMLinkage::LLVMPrivateLinkage);
+                LLVMSetInitializer(storage, data);
+                LLVMSetGlobalConstant(storage, 1);
+                (storage, array, LLVMInt8TypeInContext(self.context))
+            } else {
+                let element = self.runtime_abi.int_type;
+                let array = LLVMArrayType2(element, items.len() as u64);
+                let storage = self.build_entry_alloca(array, "slice_items");
+                let mut values = LLVMGetUndef(array);
+                for (i, item) in items.iter().enumerate() {
+                    let Value::Int(value) = item else {
+                        unreachable!()
+                    };
+                    let value = self.int_to_runtime_int(value, "slice_item")?;
+                    values = LLVMBuildInsertValue(
+                        self.builder,
+                        values,
+                        value,
+                        i as u32,
+                        c"slice_values".as_ptr(),
+                    );
+                }
+                LLVMBuildStore(self.builder, values, storage);
+                (storage, array, element)
+            };
+            let ty = self.runtime_abi.int_type;
+            // An unsigned comparison also rejects negative indices. Select a safe
+            // address before the load, even when the resulting Option is None.
+            let found = LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntULT,
+                index,
+                LLVMConstInt(ty, items.len() as u64, 0),
+                c"in_bounds".as_ptr(),
+            );
+            let safe = LLVMBuildSelect(
+                self.builder,
+                found,
+                index,
+                LLVMConstNull(ty),
+                c"safe_index".as_ptr(),
+            );
+            let mut indices = [zero, safe];
+            let ptr = LLVMBuildInBoundsGEP2(
+                self.builder,
+                array,
+                storage,
+                indices.as_mut_ptr(),
+                2,
+                c"item_ptr".as_ptr(),
+            );
+            let item = LLVMBuildLoad2(self.builder, element, ptr, c"slice_value".as_ptr());
+            let item = LLVMBuildZExt(self.builder, item, ty, c"slice_int".as_ptr());
+            let boxed = self.build_runtime_handle(Value::Int(IntValue::new(item, None)))?;
+            let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "option_field");
+            let payload = LLVMBuildSelect(
+                self.builder,
+                found,
+                boxed,
+                self.null_handle_ptr(),
+                c"option_payload".as_ptr(),
+            );
+            LLVMBuildStore(self.builder, payload, slot);
+            self.lookup_option(found, slot)
+        }
+    }
+
+    fn lookup_option(
+        &mut self,
+        found: LLVMValueRef,
+        slot: LLVMValueRef,
+    ) -> Result<EvaluatedValue, String> {
         unsafe {
             // A failed lookup leaves the output slot untouched. It was initialized
             // to null so it is safe to release after copying a successful payload.
@@ -956,13 +1076,6 @@ impl Compiler {
                 return Ok(Value::from_runtime_payload(payload).into());
             };
             let (some, none) = (some.variant_index, none.variant_index);
-            let found = LLVMBuildICmp(
-                self.builder,
-                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
-                status,
-                LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0),
-                c"lookup_found".as_ptr(),
-            );
             let len = llvm_sys::core::LLVMBuildZExt(
                 self.builder,
                 found,

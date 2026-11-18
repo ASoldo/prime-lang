@@ -154,6 +154,53 @@ class C3Strings(C3Program):
             self.assertEqual(self.read_string(handle), str(value).encode())
 
 
+class C3RecordBytes(C3Program):
+    module = "record_bytes"
+    source = (FIXTURE.parents[3] / "workspace/demos/no_std_parity/record_bytes.prime").read_text()
+    expected_output = b"record u16 4660\nrecord u32 4278194740\nrecord short rejected\nrecord crc 10673\n"
+
+    def test_portable_core(self):
+        self.assert_output(self.observe_print())
+
+
+class C3RecordBounds(C3Program):
+    source = """module c3_strings;
+        import core::{Option, read_u16_le, read_u32_le, crc16_ccitt_false};
+        fn probe(data: &[]uint8, offset: int32) {
+            let mut uint16 word = 25;
+            let mut uint32 wide = 26;
+            if read_u16_le(data, offset, &mut word) { out(word); } else { out("short"); }
+            if read_u32_le(data, offset, &mut wide) { out(wide); } else { out("short"); }
+        }
+        fn main() {
+            let mut int32 offset = 0;
+            let mut uint8 byte = 255;
+            let []uint8 bytes = [byte, 255, byte, 255];
+            probe(&bytes, offset);
+            probe(&bytes, offset + 1);
+            probe(&bytes, offset - 1);
+            probe(&bytes, offset + 2147483647);
+            match bytes[offset - 1] { Some(_) => out("unexpected"), None => out("negative"), }
+            match bytes[offset + 4] { Some(_) => out("unexpected"), None => out("past end"), }
+            let mut uint32 saved = 0;
+            out(read_u32_le(&bytes, offset, &mut saved));
+            let []uint8 payload = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20];
+            out(crc16_ccitt_false(&payload));
+            out(read_u32_le(&bytes, offset + 1, &mut saved));
+            out(saved);
+            let []uint8 empty = [];
+            probe(&empty, offset);
+            out(crc16_ccitt_false(&empty));
+        }"""
+    expected_output = (
+        b"65535\n4294967295\n65535\nshort\nshort\nshort\nshort\nshort\n"
+        b"negative\npast end\ntrue\n7275\nfalse\n4294967295\nshort\nshort\n65535\n"
+    )
+
+    def test_dynamic_bytes_and_offsets(self):
+        self.assert_output(self.observe_print())
+
+
 class C3TokenOwners(C3Program):
     module = "task_ownership"
     source = (FIXTURE.parent / "task_ownership/main.prime").read_text()
