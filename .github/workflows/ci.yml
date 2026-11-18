@@ -53,8 +53,11 @@ jobs:
         run: |
           rustup target add riscv32imc-unknown-none-elf
           python3 -m venv "$RUNNER_TEMP/prime-emulator"
-          "$RUNNER_TEMP/prime-emulator/bin/pip" install unicorn==2.1.4
+          "$RUNNER_TEMP/prime-emulator/bin/pip" install unicorn==2.1.4 jsonschema==4.25.1
           PATH="/usr/lib/llvm-21/bin:$PATH" "$RUNNER_TEMP/prime-emulator/bin/python" scripts/test_embedded_timers.py
+      - name: Validate agent output contracts
+        if: matrix.runner == 'ubuntu-24.04'
+        run: '"$RUNNER_TEMP/prime-emulator/bin/python" scripts/test_cli_schemas.py target/debug/prime-lang'
       - name: Exercise Prime string results on emulated RV32IMC
         if: matrix.runner == 'ubuntu-24.04'
         run: |
