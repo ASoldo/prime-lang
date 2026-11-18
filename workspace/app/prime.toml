@@ -14,3 +14,5 @@ libpkg_lib = { name = "libpkg::lib", path = "../libpkg_a" }
 
 [libraries]
 core_types = { name = "core::types", path = "../core/types.prime", visibility = "pub" }
+core = { name = "core", path = "../core/core.prime", visibility = "pub", no_std = true }
+app_model = { name = "app::model", path = "model.prime", visibility = "pub", no_std = true }

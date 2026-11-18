@@ -121,16 +121,26 @@ impl TypeRegistry {
             .and_then(|symbols| symbols.consts.get(name).cloned())
     }
 
+    // A named public type import refers to the original declaration.
+    fn type_origin<'a>(&'a self, module: &'a str, name: &'a str) -> (&'a str, &'a str) {
+        self.module_symbols(module)
+            .and_then(|symbols| symbols.public_types.get(name))
+            .map_or((module, name), |(module, name)| (module, name))
+    }
+
     fn find_struct_in_module(&self, module: &str, name: &str) -> Option<&StructInfo> {
+        let (module, name) = self.type_origin(module, name);
         self.structs.get(name).filter(|info| info._module == module)
     }
 
     fn find_enum_in_module(&self, module: &str, name: &str) -> Option<&EnumInfo> {
+        let (module, name) = self.type_origin(module, name);
         self.enums.get(name).filter(|info| info.module == module)
     }
 }
 
 struct ModuleSymbols {
+    public_types: HashMap<String, (String, String)>,
     functions: HashMap<FunctionKey, FunctionInfo>,
     consts: HashMap<String, ConstInfo>,
     interfaces: HashMap<String, InterfaceInfo>,
@@ -140,6 +150,7 @@ struct ModuleSymbols {
 impl ModuleSymbols {
     fn new() -> Self {
         Self {
+            public_types: HashMap::new(),
             functions: HashMap::new(),
             consts: HashMap::new(),
             interfaces: HashMap::new(),

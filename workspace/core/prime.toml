@@ -6,3 +6,5 @@ version = "0.1.0"
 
 [libraries]
 core_types = { name = "core::types", path = "types.prime", visibility = "pub", no_std = true }
+core = { name = "core", path = "core.prime", visibility = "pub", no_std = true }
+app_model = { name = "app::model", path = "../app/model.prime", visibility = "pub", no_std = true }

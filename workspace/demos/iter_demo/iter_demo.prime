@@ -4,7 +4,7 @@
 //! loops over iterator helpers (`map_keys`, `map_values`).
 module demos::iter_demo;
 
-import core::types;
+import core;
 
 /// Runs the iterator demo.
 fn main() {

@@ -9,5 +9,5 @@ name = "demos::iter_demo"
 path = "iter_demo.prime"
 visibility = "pub"
 
-[libraries]
-core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }
+[dependencies]
+core = { path = "../../core" }

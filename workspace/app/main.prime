@@ -6,7 +6,8 @@
 //! string helpers.
 module app::main;
 
-import core::types::prelude::{*};
+import core;
+import app::model;
 import libpkg_a::lib::{example};
 
 /// How many steps the training countdown runs.

@@ -1,5 +1,5 @@
 use crate::language::{
-    ast::{ImportPath, Module, Program},
+    ast::{ImportPath, Module, ModuleKind, Program, Visibility},
     errors::SyntaxError,
     parser::parse_module,
 };
@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::manifest::{ManifestError, PackageManifest};
+use super::manifest::{ManifestError, ModuleInfo, ModuleVisibility, PackageManifest};
 
 #[derive(Debug, Clone)]
 pub struct ModuleUnit {
@@ -117,11 +117,15 @@ impl ModuleLoader {
     }
 
     fn load(&mut self, path: &Path) -> Result<(), PackageError> {
-        self.load_module(path)?;
+        self.load_module(path, None)?;
         Ok(())
     }
 
-    fn load_module(&mut self, path: &Path) -> Result<(), PackageError> {
+    fn load_module(
+        &mut self,
+        path: &Path,
+        source_library: Option<&ModuleInfo>,
+    ) -> Result<(), PackageError> {
         let canonical = canonicalize(path).map_err(|error| PackageError::Io {
             path: path.to_path_buf(),
             error,
@@ -143,7 +147,8 @@ impl ModuleLoader {
         match parse_module(&module_name, canonical.clone(), &source) {
             Ok(mut module) => {
                 if let Some(manifest) = &self.manifest {
-                    module.no_std = manifest.module_no_std(&module.name);
+                    module.no_std = source_library
+                        .map_or_else(|| manifest.module_no_std(&module.name), |lib| lib.no_std);
                 }
                 let imports = module.imports.clone();
                 if let Some(err) = library_main_error(&module) {
@@ -154,11 +159,25 @@ impl ModuleLoader {
                     });
                     return Ok(());
                 }
+                let owner = self.public_import_owner(&module)?;
                 self.modules.push(ModuleUnit { module });
 
                 for import in imports {
-                    let resolved = self.resolve_import_path(&canonical, &import.path)?;
-                    self.load_module(&resolved)?;
+                    let path = import.canonical_path();
+                    let name = path.strip_suffix("::prelude").unwrap_or(&path);
+                    if import.visibility == Visibility::Public
+                        && self
+                            .manifest
+                            .as_ref()
+                            .is_some_and(|m| m.module_path(name).is_none())
+                        && let Some(lib) = owner.as_ref().and_then(|m| m.local_library(name))
+                        && lib.visibility == ModuleVisibility::Public
+                    {
+                        self.load_module(&lib.path, Some(lib))?;
+                    } else {
+                        let resolved = self.resolve_import_path(&canonical, &import.path)?;
+                        self.load_module(&resolved, None)?;
+                    }
                 }
             }
             Err(errs) => {
@@ -171,6 +190,39 @@ impl ModuleLoader {
         }
 
         Ok(())
+    }
+
+    // Direct file mappings expose a library without adding its manifest to the
+    // consumer's dependency graph. Consult its own library table for a named
+    // public import missing from the consumer. Keep dependency resolution in
+    // the original manifest, including its lockfile and lookup precedence.
+    fn public_import_owner(
+        &self,
+        module: &Module,
+    ) -> Result<Option<PackageManifest>, PackageError> {
+        let Some(entry) = &self.manifest else {
+            return Ok(None);
+        };
+        if entry.module_kind(&module.name) != Some(ModuleKind::Library)
+            || !module.imports.iter().any(|i| {
+                let path = i.canonical_path();
+                i.visibility == Visibility::Public
+                    && entry
+                        .module_path(path.strip_suffix("::prelude").unwrap_or(&path))
+                        .is_none()
+            })
+        {
+            return Ok(None);
+        }
+        let Some(path) = find_manifest(&module.path).filter(|p| *p != entry.path) else {
+            return Ok(None);
+        };
+        PackageManifest::load(&path)
+            .map(Some)
+            .map_err(|err| PackageError::Manifest {
+                path,
+                message: manifest_error_message(err),
+            })
     }
 
     fn resolve_import_path(

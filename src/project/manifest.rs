@@ -368,6 +368,12 @@ impl PackageManifest {
             .find_map(|m| m.modules.get(&name).or_else(|| m.tests.get(&name)))
     }
 
+    pub(super) fn local_library(&self, name: &str) -> Option<&ModuleInfo> {
+        self.modules
+            .get(name)
+            .filter(|module| module.kind == ModuleKind::Library)
+    }
+
     pub fn module_path(&self, name: &str) -> Option<PathBuf> {
         self.module(name).map(|module| module.path.clone())
     }

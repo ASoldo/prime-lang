@@ -24,6 +24,9 @@ pub fn check_program_typed<'a>(
     for module in &program.modules {
         collect_definitions(&mut registry, module);
     }
+    for module in &program.modules {
+        collect_public_type_imports(&mut registry, module);
+    }
     let mut checker = Checker {
         registry,
         facts: CheckedFacts::default(),
@@ -51,6 +54,49 @@ pub fn check_program_typed<'a>(
         }
     }
     Err(errors)
+}
+
+fn collect_public_type_imports(registry: &mut TypeRegistry, module: &Module) {
+    for import in &module.imports {
+        let (Visibility::Public, Some(selectors)) = (import.visibility, &import.selectors) else {
+            continue;
+        };
+        let path = import.canonical_path();
+        let owner = path.strip_suffix("::prelude").unwrap_or(&path);
+        for selector in selectors {
+            let ImportSelector::Name { name, alias, .. } = selector else {
+                continue;
+            };
+            let visibility = registry
+                .structs
+                .get(name)
+                .filter(|info| info._module == owner)
+                .map(|info| info.def.visibility)
+                .or_else(|| {
+                    registry
+                        .enums
+                        .get(name)
+                        .filter(|info| info.module == owner)
+                        .map(|info| info.def.visibility)
+                })
+                .or_else(|| {
+                    registry
+                        .module_symbols(owner)?
+                        .interfaces
+                        .get(name)
+                        .map(|info| info.def.visibility)
+                });
+            if visibility == Some(Visibility::Public) {
+                registry
+                    .module_symbols_mut(&module.name)
+                    .public_types
+                    .insert(
+                        alias.as_ref().unwrap_or(name).clone(),
+                        (owner.to_owned(), name.clone()),
+                    );
+            }
+        }
+    }
 }
 
 fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
@@ -320,7 +366,9 @@ impl Checker {
                         ImportSelector::Name { name, alias, span } => {
                             let local_name = alias.clone().unwrap_or_else(|| name.clone());
                             if let Some(existing) = scope.selected.get(&local_name) {
-                                if existing.module == module_name && existing.name == *name {
+                                if self.registry.type_origin(&existing.module, &existing.name)
+                                    == self.registry.type_origin(&module_name, name)
+                                {
                                     continue;
                                 }
                                 self.errors.push(TypeError::new(
@@ -377,7 +425,9 @@ impl Checker {
                             ImportSelector::Name { name, alias, span } => {
                                 let local_name = alias.clone().unwrap_or_else(|| name.clone());
                                 if let Some(existing) = scope.selected.get(&local_name) {
-                                    if existing.module == module_name && existing.name == name {
+                                    if self.registry.type_origin(&existing.module, &existing.name)
+                                        == self.registry.type_origin(&module_name, &name)
+                                    {
                                         continue;
                                     }
                                     self.errors.push(TypeError::new(
@@ -492,7 +542,12 @@ impl Checker {
             ));
             return false;
         }
-        if let Some(interface) = symbols.interfaces.get(name) {
+        let (owner, type_name) = self.registry.type_origin(module_name, name);
+        if let Some(interface) = self
+            .registry
+            .module_symbols(owner)
+            .and_then(|symbols| symbols.interfaces.get(type_name))
+        {
             if self.can_access(module_name, interface.def.visibility) {
                 return true;
             }

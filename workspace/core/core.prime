@@ -1,0 +1,26 @@
+//! Portable Prime types and iteration interfaces.
+library core;
+
+export prelude { Option, Result, Iterator, Iterable };
+
+/// A value that may be present (`Some`) or absent (`None`).
+pub enum Option[T] {
+  Some(T),
+  None,
+}
+
+/// A computation result (`Ok`) or an error (`Err`).
+pub enum Result[T, E] {
+  Ok(T),
+  Err(E),
+}
+
+/// Minimal iterator interface (pull-based).
+pub interface Iterator[T] {
+  fn next(self: Self) -> Option[T];
+}
+
+/// Types that can produce an iterator-friendly collection.
+pub interface Iterable[T] {
+  fn iter(self: Self) -> []T;
+}
