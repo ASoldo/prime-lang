@@ -27,21 +27,26 @@ printf '8080\n2\n' | ./.build.prime/prime_web/prime_web
 
 Prime reads one header block terminated by CRLF CRLF. An exact request line of `GET /health HTTP/1.0` or `GET /health HTTP/1.1` followed by CRLF receives `200 OK` and the body `ok\n`. All other complete header blocks receive `404 Not Found` and `not found\n`. Both responses specify the body length in bytes and close the connection. Header fields are ignored. Request bodies, persistent connections, pipelining, TLS and HTTP/2 are outside this development example.
 
-The server handles one connection at a time and closes the listener after 1–256 accepted connections or ten seconds without a connection. Each accepted connection counts toward the limit, including a read failure. A complete header block must fit in 4096 bytes and arrive within two seconds of starting the read. The server closes incomplete requests without a response. Writes also have a two-second deadline.
+The server can assemble four headers concurrently. For example, leave a connection open after sending `GET /elsewhere HTTP/1.1\r\n`, issue the health request on a second connection, then send the final `\r\n` on the first. The second connection receives its 200 before the first receives its 404. Prime selects the route and writes one response at a time.
+
+Each admitted connection gets two seconds from acceptance to supply the entire header, including its terminator, in at most 4096 bytes. Receiving another fragment does not extend that deadline. EOF, a read error, expiry or exhausting the buffer without a terminator closes the connection without a response. When all four slots are occupied, additional connections wait in the OS listener backlog until a slot opens, subject to OS backlog limits. Writes have a separate two-second deadline.
+
+Every admission counts towards the session limit of 1–256, including failed reads. On reaching the limit the server drains admitted clients, then closes the listener. When waiting for new clients it also exits after ten seconds of inactivity.
 
 ## Host TCP built-ins
 
-The interpreter and the native ABI use the same loopback transport. Each execution thread has a single listener, client and receive buffer. The example uses all three on the main thread. The checker reports `E0NS` for these operations in a no-std module or on an embedded target.
+The interpreter and the native ABI use the same loopback transport. Each server has a single listener and current client. The concurrent operation also holds partially assembled headers with their sockets. The example calls the operations on the main thread. The LSP exposes their signatures in completions, hover and signature help on the host. The checker reports `E0NS` for these operations in a no-std module or on an embedded target.
 
 | Call | Result |
 | --- | --- |
 | `tcp_listen(port: int32) -> int32` | Bind an IPv4 loopback listener. Return the assigned port, or −1 on failure (including an invalid port or existing listener). |
 | `tcp_accept() -> bool` | Close any previous client and wait up to ten seconds. Return true on accepting a client. |
+| `tcp_next_header(limit: int32) -> bool` | Close the current client, then multiplex header reads until a CRLF CRLF block is ready. On success, select that client and its header for `tcp_starts_with` and `tcp_write`. Pass the same total admission limit on each call. Return false on drain, idle timeout, invalid limit, absent listener or listener failure. |
 | `tcp_receive_until(delimiter: string) -> bool` | Capture up to 4096 bytes through the first nonempty delimiter. Return false and clear the buffer on timeout, EOF before the delimiter, overflow or error. Bytes read past the delimiter are discarded. |
 | `tcp_starts_with(prefix: string) -> bool` | Compare UTF-8 prefix bytes against the last successful receive on this connection. |
 | `tcp_write(text: string) -> bool` | Write up to 4096 UTF-8 bytes. Return true when all bytes have been written. A failed write may have sent a prefix. |
 | `tcp_disconnect()` | Drop the client and clear the receive buffer. |
-| `tcp_close()` | Drop the listener, client and buffer. |
+| `tcp_close()` | Drop the listener, current and pending clients, buffers and admission count. |
 
 ## Reproduce the loopback check
 
@@ -50,4 +55,4 @@ cargo build --locked --bin prime-lang
 python3 scripts/test_web_server.py target/debug/prime-lang
 ```
 
-The check reads an OS-assigned port from each server's terminal, sends ordinary HTTP/1.0 and HTTP/1.1 requests, checks the complete responses and EOF, and waits for process exit. It sends 64 requests to the interpreter, then runs the same native executable twice with different route orders, 64 requests each time. It also checks diagnostics for invalid argument types, wrong arity and no-std use.
+The check uses ordinary loopback sockets and verifies the full responses and EOF in the interpreter and two runs of the same native executable. Each run covers a slow partial header alongside a successful health check, four occupied slots and a waiting fifth request, truncated and oversized headers, a partial request that expires despite receiving more bytes, 64 route requests, and process exit with the admission budget exhausted. It also checks argument and no-std diagnostics.

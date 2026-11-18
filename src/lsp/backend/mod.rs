@@ -550,7 +550,7 @@ mod tests {
         use crate::target::BuildTarget;
         use tower_lsp_server::ls_types::HoverContents;
 
-        let text = "module main; fn main() { tcp_listen(0); tcp_write(\"hello\"); tcp_close(); }";
+        let text = "module main; fn main() { tcp_listen(0); tcp_next_header(8); tcp_write(\"hello\"); tcp_close(); }";
         let tokens = lex(text).expect("tokenize");
         let completions =
             keyword_completion_items(Some("tcp_"), false, true, &BuildTarget::host(), false);
@@ -564,6 +564,11 @@ mod tests {
                 "tcp_write",
                 "fn tcp_write(text: string) -> bool",
                 Some("text: string"),
+            ),
+            (
+                "tcp_next_header",
+                "fn tcp_next_header(limit: int32) -> bool",
+                Some("limit: int32"),
             ),
             ("tcp_close", "fn tcp_close() -> ()", None),
         ] {

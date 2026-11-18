@@ -1,16 +1,68 @@
-//! Bounded, single-client IPv4 loopback transport for host Prime programs.
+//! Bounded IPv4 loopback transport for host Prime programs.
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const HEADER_CAPACITY: usize = 4;
 const LIMIT: usize = 4096;
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
 
+// Return true once the delimiter is complete, including across read boundaries.
+fn append_until(frame: &mut Vec<u8>, bytes: &[u8], delimiter: &[u8]) -> bool {
+    let start = frame.len().saturating_sub(delimiter.len() - 1);
+    frame.extend_from_slice(bytes);
+    if let Some(i) = frame[start..]
+        .windows(delimiter.len())
+        .position(|s| s == delimiter)
+    {
+        frame.truncate(start + i + delimiter.len());
+        return true;
+    }
+    false
+}
+
+struct PendingHeader {
+    socket: TcpStream,
+    frame: Vec<u8>,
+    deadline: Instant,
+}
+
+enum HeaderState {
+    Pending,
+    Complete,
+    Closed,
+}
+
+impl PendingHeader {
+    fn poll(&mut self) -> HeaderState {
+        let mut buf = [0; 512];
+        while self.frame.len() < LIMIT && Instant::now() < self.deadline {
+            let len = buf.len().min(LIMIT - self.frame.len());
+            match self.socket.read(&mut buf[..len]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if append_until(&mut self.frame, &buf[..n], b"\r\n\r\n") {
+                        return HeaderState::Complete;
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    return HeaderState::Pending;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        HeaderState::Closed
+    }
+}
+
 #[derive(Default)]
 pub struct TcpServer {
     listener: Option<TcpListener>,
+    pending: Vec<PendingHeader>,
+    header_admissions: i32,
     client: Option<TcpStream>,
     received: Vec<u8>,
 }
@@ -57,6 +109,65 @@ impl TcpServer {
         false
     }
 
+    // Select the next complete header as the current client for starts_with/write.
+    pub fn next_header(&mut self, limit: i32) -> bool {
+        self.disconnect();
+        let Some(listener) = &self.listener else {
+            return false;
+        };
+        if !(1..=256).contains(&limit) {
+            return false;
+        }
+
+        let mut idle_deadline = Instant::now() + ACCEPT_TIMEOUT;
+        loop {
+            while self.pending.len() < HEADER_CAPACITY && self.header_admissions < limit {
+                match listener.accept() {
+                    Ok((socket, _)) => {
+                        self.header_admissions += 1;
+                        let now = Instant::now();
+                        idle_deadline = now + ACCEPT_TIMEOUT;
+                        if socket.set_nonblocking(true).is_ok() {
+                            self.pending.push(PendingHeader {
+                                socket,
+                                frame: Vec::new(),
+                                deadline: now + IO_TIMEOUT,
+                            });
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => break,
+                    Err(_) => return false,
+                }
+            }
+
+            let mut i = 0;
+            while i < self.pending.len() {
+                match self.pending[i].poll() {
+                    HeaderState::Pending => i += 1,
+                    HeaderState::Closed => {
+                        self.pending.remove(i);
+                    }
+                    HeaderState::Complete => {
+                        let ready = self.pending.remove(i);
+                        if ready.socket.set_nonblocking(false).is_ok() {
+                            self.client = Some(ready.socket);
+                            self.received = ready.frame;
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            if self.pending.is_empty()
+                && (self.header_admissions >= limit || Instant::now() >= idle_deadline)
+            {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     // Capture a single delimited frame. Discard trailing bytes from the last read.
     pub fn receive_until(&mut self, delimiter: &str) -> bool {
         self.received.clear();
@@ -80,13 +191,7 @@ impl TcpServer {
             if n == 0 {
                 break;
             }
-            let start = self.received.len().saturating_sub(delimiter.len() - 1);
-            self.received.extend_from_slice(&buf[..n]);
-            if let Some(i) = self.received[start..]
-                .windows(delimiter.len())
-                .position(|s| s == delimiter.as_bytes())
-            {
-                self.received.truncate(start + i + delimiter.len());
+            if append_until(&mut self.received, &buf[..n], delimiter.as_bytes()) {
                 return true;
             }
         }

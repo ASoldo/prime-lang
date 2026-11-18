@@ -5,6 +5,7 @@ use crate::target::BuildTarget;
 pub(crate) enum TcpBuiltin {
     Listen,
     Accept,
+    NextHeader,
     ReceiveUntil,
     StartsWith,
     Write,
@@ -13,9 +14,10 @@ pub(crate) enum TcpBuiltin {
 }
 
 impl TcpBuiltin {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Listen,
         Self::Accept,
+        Self::NextHeader,
         Self::ReceiveUntil,
         Self::StartsWith,
         Self::Write,
@@ -38,6 +40,7 @@ impl TcpBuiltin {
         match self {
             Self::Listen => "tcp_listen",
             Self::Accept => "tcp_accept",
+            Self::NextHeader => "tcp_next_header",
             Self::ReceiveUntil => "tcp_receive_until",
             Self::StartsWith => "tcp_starts_with",
             Self::Write => "tcp_write",
@@ -48,6 +51,7 @@ impl TcpBuiltin {
 
     pub fn parameter(self) -> Option<(&'static str, TypeExpr)> {
         match self {
+            Self::NextHeader => Some(("limit", TypeExpr::named("int32"))),
             Self::Listen => Some(("port", TypeExpr::named("int32"))),
             Self::ReceiveUntil => Some(("delimiter", TypeExpr::named("string"))),
             Self::StartsWith => Some(("prefix", TypeExpr::named("string"))),

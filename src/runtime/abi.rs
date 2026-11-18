@@ -4045,6 +4045,11 @@ mod host {
         TCP.with_borrow_mut(|tcp| tcp.listen(port))
     }
 
+    #[unsafe(export_name = "prime_tcp_next_header")]
+    pub unsafe extern "C" fn prime_tcp_next_header(limit: i32) -> bool {
+        TCP.with_borrow_mut(|tcp| tcp.next_header(limit))
+    }
+
     #[unsafe(export_name = "prime_tcp_accept")]
     pub unsafe extern "C" fn prime_tcp_accept() -> bool {
         TCP.with_borrow_mut(|tcp| tcp.accept())

@@ -1226,7 +1226,9 @@ impl Compiler {
             return Err(format!("wrong arity for {name}"));
         }
         let mut operands = match op {
-            TcpBuiltin::Listen => vec![self.int32_for_runtime(args.remove(0), name)?],
+            TcpBuiltin::Listen | TcpBuiltin::NextHeader => {
+                vec![self.int32_for_runtime(args.remove(0), name)?]
+            }
             TcpBuiltin::ReceiveUntil | TcpBuiltin::StartsWith | TcpBuiltin::Write => {
                 let (ptr, len) = self.string_parts_for_runtime(args.remove(0), name)?;
                 vec![ptr, len]
@@ -1236,6 +1238,7 @@ impl Compiler {
         let abi = &self.runtime_abi;
         let (function, ty) = match op {
             TcpBuiltin::Listen => (abi.prime_tcp_listen, abi.prime_tcp_listen_ty),
+            TcpBuiltin::NextHeader => (abi.prime_tcp_next_header, abi.prime_tcp_next_header_ty),
             TcpBuiltin::Accept => (abi.prime_tcp_accept, abi.prime_tcp_accept_ty),
             TcpBuiltin::ReceiveUntil => {
                 (abi.prime_tcp_receive_until, abi.prime_tcp_receive_until_ty)

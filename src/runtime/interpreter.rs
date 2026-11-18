@@ -2486,6 +2486,10 @@ impl Interpreter {
                 let port = self.expect_i32_value(name, args.remove(0))?;
                 Value::Int(self.tcp.listen(port).into())
             }
+            TcpBuiltin::NextHeader => {
+                let limit = self.expect_i32_value(name, args.remove(0))?;
+                Value::Bool(self.tcp.next_header(limit))
+            }
             TcpBuiltin::Accept => Value::Bool(self.tcp.accept()),
             TcpBuiltin::ReceiveUntil => Value::Bool(
                 self.tcp
