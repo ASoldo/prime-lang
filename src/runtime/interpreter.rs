@@ -3232,7 +3232,7 @@ impl Interpreter {
     fn eval_arguments(&mut self, args: &[Expr]) -> RuntimeResult<EvalOutcome<Vec<Value>>> {
         let mut values = Vec::with_capacity(args.len());
         for expr in args {
-            match self.eval_expression(expr)? {
+            match self.eval_expression(forwarded_mut_reference(expr).unwrap_or(expr))? {
                 EvalOutcome::Value(value) => values.push(value),
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
             }
@@ -3758,6 +3758,9 @@ impl Interpreter {
                     origin: Some(ident.name.clone()),
                 })))
             }
+            _ if mutable => Err(RuntimeError::TypeMismatch {
+                message: "mutable borrow requires addressable storage".into(),
+            }),
             _ => match self.eval_expression(expr)? {
                 EvalOutcome::Value(value) => match value {
                     Value::Sender(_) | Value::Receiver(_) | Value::JoinHandle(_) => {

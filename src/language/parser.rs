@@ -2164,9 +2164,10 @@ impl Parser {
             });
         }
         if self.matches(TokenKind::Ampersand) {
+            let start = self.previous_span().unwrap().start;
             let mutable = self.matches(TokenKind::Mut);
             let expr = self.parse_unary()?;
-            let span = expr_span(&expr);
+            let span = Span::new(start, self.last_span_end(start));
             return Ok(Expr::Reference {
                 mutable,
                 expr: Box::new(expr),

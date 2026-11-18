@@ -633,9 +633,11 @@ fn calibrate_station(name: string) {
             },
             TopicSection {
                 title: "Raw pointers from references",
-                snippet: r#"fn boost_hp(target: &mut Player, delta: int32) {
-  let ptr = ptr_mut(&mut target.hp);
+                snippet: r#"fn boosted_hp(target: &Player, delta: int32) -> int32 {
+  let mut int32 hp = target.hp;
+  let ptr = ptr_mut(&mut hp);
   *ptr = *ptr + delta;
+  *ptr
 }
 
 fn read_hp(target: &Player) -> int32 {

@@ -9,7 +9,7 @@ impl Compiler {
     ) -> Result<Vec<EvaluatedValue>, String> {
         let mut evaluated_args = Vec::new();
         for expr in args {
-            match self.emit_expression(expr)? {
+            match self.emit_expression(forwarded_mut_reference(expr).unwrap_or(expr))? {
                 EvalOutcome::Value(value) => evaluated_args.push(value),
                 EvalOutcome::Flow(flow) => {
                     return Err(format!(

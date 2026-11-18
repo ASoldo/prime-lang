@@ -11,7 +11,7 @@ PROGRAM = """module example;
 import core::prelude::{Result};
 
 fn bump(n: &mut int32) { *n = *n + 1; }
-fn twice(n: &mut int32) { bump(n); bump(n); }
+fn twice(n: &mut int32) { bump(&mut *n); bump(n); }
 fn add_local(r: &mut int32) {
   let mut int32 n = 1;
   bump(&mut n);
@@ -59,10 +59,12 @@ class MutableReferences(unittest.TestCase):
         for key in ("PRIME_TEST_INPUTS", "PRIME_TEST_INPUTS_FILE", "PRIME_TARGET"):
             self.env.pop(key, None)
 
-    def execute(self, *args, data="", success=True):
+    def execute(self, *args, data="", success=True, error=None):
         result = subprocess.run(args, cwd=self.work, env=self.env, input=data, text=True,
                                 capture_output=True, timeout=300)
         self.assertEqual(result.returncode == 0, success, result)
+        if error is not None:
+            self.assertIn(error, result.stderr)
         return result.stdout
 
     def check_and_build(self, source):
@@ -85,6 +87,58 @@ class MutableReferences(unittest.TestCase):
         self.check_and_build(PROGRAM)
         self.compare("6\n", "7\n8\n10\n14\n16\nfalse\n")
         self.compare("-11\n", "-10\n-9\n-7\n-3\n-3\ntrue\n")
+
+    def test_explicit_reborrow_updates_original_binding(self):
+        self.check_and_build("""module example;
+            fn bump(n: &mut int32) { *n = *n + 1; }
+            fn relay(r: &mut int32) { bump(&mut *r); }
+            fn main() { let mut int32 n = 6; relay(&mut n); out(n); }
+        """)
+        self.compare("", "7\n")
+
+    def test_unsupported_mutable_places_are_located_before_execution(self):
+        header = """module example;
+// UTF-8 byte offsets: č
+struct Pair { field: int32; }
+pub interface Update { fn replace(self: &mut Pair, other: &mut Pair); }
+impl Update for Pair { fn replace(self: &mut Pair, other: &mut Pair) { *other = Pair{7}; } }
+fn bump(n: &mut int32) { *n = *n + 1; }
+fn both(x: &mut int32, y: &mut int32) {}
+fn inspect(x: &mut int32, y: &int32) {}
+"""
+        for function, place, message in (
+            ("fn main() { let mut Pair pair = Pair{field: 6}; bump(&mut pair.field); }",
+             "&mut pair.field", "cannot mutably borrow a struct field"),
+            ("const X = { let mut Pair p = Pair{field: 6}; bump(&mut p.field); p.field };",
+             "&mut p.field", "cannot mutably borrow a struct field"),
+            ("fn relay(r: &mut int32) { let child = &mut *r; bump(child); }",
+             "&mut *r", "a mutable reborrow requires a direct"),
+            ("fn relay(r: &int32) { bump(&mut *r); }",
+             "&mut *r", "expected a mutable reference"),
+            ("fn main() { let mut int32 n = 6; let p = ptr_mut(&mut n); bump(&mut *p); }",
+             "&mut *p", "expected a mutable reference"),
+            ("fn relay(r: &mut int32) { inspect(&mut *r, &*r); }",
+             "&*r", "already mutably borrowed"),
+            ("fn relay(r: &mut Pair) { r.replace(&mut *r); }",
+             "&mut *r", "already mutably borrowed"),
+            ("fn relay(r: &mut int32) { both(r, &mut *r); }",
+             "&mut *r", "already mutably borrowed"),
+            ("fn main() { let mut []int32 items = [6]; bump(&mut items[0]); }",
+             "&mut items[0]", "cannot take a reference to a temporary value"),
+        ):
+            with self.subTest(function=function):
+                source = header + function
+                if "fn main()" not in function:
+                    source += "\nfn main() {}"
+                self.source.write_text(source)
+                report = json.loads(self.execute(self.cli, "check", self.source, "--format", "json", success=False))
+                diagnostic, = report["diagnostics"]
+                self.assertEqual(diagnostic["phase"], "type")
+                self.assertIn(message, diagnostic["message"])
+                span = diagnostic["span"]
+                self.assertEqual(source.encode()[span["start"]:span["end"]].decode(), place)
+                for mode in ("run", "build"):
+                    self.execute(self.cli, mode, self.source, success=False, error=message)
 
     def test_exclusive_borrow_in_call(self):
         for body in (

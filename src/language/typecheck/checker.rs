@@ -5,6 +5,8 @@ use crate::language::tcp_builtin::TcpBuiltin;
 #[path = "match_coverage.rs"]
 mod match_coverage;
 
+const MUTABLE_PLACE_ERROR: &str = "E0MUTPLACE";
+
 pub fn check_program(expanded: &ExpandedProgram) -> Result<(), Vec<TypeError>> {
     check_program_with_options(expanded, &TypecheckOptions::default())
 }
@@ -1196,11 +1198,22 @@ impl Checker {
 
     fn check_const(&mut self, module: &Module, def: &ConstDef, imports: &ImportScope) {
         let expected = def.ty.as_ref().map(|annotation| &annotation.ty);
-        // The registry has no inferred types for unannotated constant dependencies.
+        let mut env = FnEnv::new(module.path.clone(), Vec::new(), imports.clone());
         if expected.is_none() && !is_literal_initializer(&def.value) {
+            // Types of unannotated constant dependencies are unresolved. Still
+            // validate borrow places, without publishing partial lowering facts.
+            env.publish_captures = false;
+            let start = self.errors.len();
+            let facts = std::mem::take(&mut self.facts);
+            let folded = std::mem::take(&mut self.folded_integers);
+            self.check_expression(module, &def.value, None, &[], &mut env);
+            self.facts = facts;
+            self.folded_integers = folded;
+            self.errors
+                .extract_if(start.., |e| e.code.as_deref() != Some(MUTABLE_PLACE_ERROR))
+                .for_each(drop);
             return;
         }
-        let mut env = FnEnv::new(module.path.clone(), Vec::new(), imports.clone());
         let ty = self.check_expression(module, &def.value, expected, &[], &mut env);
         if let Some(expected) = expected {
             self.ensure_type(module, def.span, expected, ty.as_ref());
@@ -1991,12 +2004,28 @@ impl Checker {
                         env.ensure_mut_borrow_allowed(module, *span, &target, &mut self.errors);
                     }
                 }
-                if reference_may_dangle(expr) {
-                    self.errors.push(TypeError::new(
-                        &module.path,
-                        *span,
+                let error = match (*mutable, expr.as_ref()) {
+                    (true, Expr::FieldAccess { .. }) => Some(
+                        "cannot mutably borrow a struct field; update the containing struct through its binding",
+                    ),
+                    (true, Expr::Deref { .. }) => Some(
+                        "a mutable reborrow requires a direct named-function argument of the form `&mut *r`, where `r` is a mutable reference",
+                    ),
+                    (_, place) if reference_may_dangle(place) => Some(
                         "cannot take a reference to a temporary value; assign it to a binding first",
-                    ));
+                    ),
+                    (true, Expr::Identifier(_)) | (false, _) => None,
+                    (true, _) => {
+                        Some("cannot mutably borrow this expression; a mutable binding is required")
+                    }
+                };
+                if let Some(message) = error {
+                    let err = TypeError::new(&module.path, *span, message);
+                    self.errors.push(if *mutable {
+                        err.with_code(MUTABLE_PLACE_ERROR)
+                    } else {
+                        err
+                    });
                 }
                 self.check_expression(module, expr, None, returns, env)
                     .map(|inner| TypeExpr::Reference {
@@ -2099,7 +2128,10 @@ impl Checker {
                 }
                 env.begin_capture(true);
                 let inner = self.check_expression(module, expr, None, returns, env);
-                *captures.write().unwrap() = Some(self.check_task_captures(module, *span, env));
+                let names = self.check_task_captures(module, *span, env);
+                if env.publish_captures {
+                    *captures.write().unwrap() = Some(names);
+                }
                 if let Some(ty) = &inner {
                     self.check_task_transfer(module, env, *span, ty, "spawn result");
                 }
@@ -2129,7 +2161,10 @@ impl Checker {
                 let outer_returns = env.task_returns.replace(Vec::new());
                 let tail = self.check_block(module, block, expected_inner, returns, env);
                 let explicit = std::mem::replace(&mut env.task_returns, outer_returns).unwrap();
-                *captures.write().unwrap() = Some(self.check_task_captures(module, *span, env));
+                let names = self.check_task_captures(module, *span, env);
+                if env.publish_captures {
+                    *captures.write().unwrap() = Some(names);
+                }
                 let inner = tail
                     .or_else(|| explicit.first().map(|(_, ty)| ty.clone()))
                     .unwrap_or(TypeExpr::Unit);
@@ -2293,7 +2328,9 @@ impl Checker {
                         });
                     }
                 }
-                if let Ok(mut guard) = captures.write() {
+                if env.publish_captures
+                    && let Ok(mut guard) = captures.write()
+                {
                     guard.clear();
                     guard.extend(captured_vars);
                 }
@@ -2631,16 +2668,26 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
+        let receiver = match callee {
+            Expr::FieldAccess { base, .. } => match base.as_ref() {
+                Expr::Identifier(id) if self.resolve_module_name(env, &id.name).is_some() => None,
+                receiver => Some(receiver),
+            },
+            _ => None,
+        };
         let mut references = HashMap::new();
-        for arg in args {
+        for arg in receiver.into_iter().chain(args) {
             if let Some((target, mutable)) = call_reference_target(arg, env) {
                 let previous = references.insert(target.clone(), mutable);
                 if previous.is_some_and(|was_mutable| was_mutable || mutable) {
-                    self.errors.push(TypeError::new(
-                        &module.path,
-                        expr_span(arg),
-                        format!("`{target}` is already mutably borrowed in this call"),
-                    ));
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            expr_span(arg),
+                            format!("`{target}` is already mutably borrowed in this call"),
+                        )
+                        .with_code(MUTABLE_PLACE_ERROR),
+                    );
                 }
             }
         }
@@ -4333,6 +4380,34 @@ impl Checker {
         }
     }
 
+    fn check_named_argument(
+        &mut self,
+        module: &Module,
+        arg: &Expr,
+        param: &TypeExpr,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) {
+        if let Some(reference) = forwarded_mut_reference(arg) {
+            let actual = self.check_expression(module, reference, None, returns, env);
+            if matches!(actual, Some(TypeExpr::Reference { mutable: true, .. })) {
+                self.ensure_type(module, expr_span(arg), param, actual.as_ref());
+            } else {
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        expr_span(arg),
+                        "cannot mutably reborrow this binding; expected a mutable reference",
+                    )
+                    .with_code(MUTABLE_PLACE_ERROR),
+                );
+            }
+        } else {
+            let actual = self.check_expression(module, arg, Some(param), returns, env);
+            self.check_ownership_coercion(module, env, expr_span(arg), param, actual.as_ref());
+        }
+    }
+
     fn check_function_call(
         &mut self,
         module: &Module,
@@ -4359,8 +4434,7 @@ impl Checker {
             ));
         }
         for (expr, param) in args.iter().zip(instantiated.params.iter()) {
-            let actual = self.check_expression(module, expr, Some(&param.ty), returns, env);
-            self.check_ownership_coercion(module, env, expr_span(expr), &param.ty, actual.as_ref());
+            self.check_named_argument(module, expr, &param.ty, returns, env);
         }
         self.select_call_result(module, span, &instantiated.returns, expected)
     }
@@ -4405,8 +4479,7 @@ impl Checker {
             ));
         }
         for (expr, param) in args.iter().zip(instantiated.params.iter().skip(1)) {
-            let actual = self.check_expression(module, expr, Some(&param.ty), returns, env);
-            self.check_ownership_coercion(module, env, expr_span(expr), &param.ty, actual.as_ref());
+            self.check_named_argument(module, expr, &param.ty, returns, env);
         }
         self.select_call_result(module, span, &instantiated.returns, expected)
     }
@@ -6315,6 +6388,7 @@ struct FnEnv {
     active_mut_borrows: HashMap<String, Vec<BorrowRecord>>,
     imports: ImportScope,
     capture_stack: Vec<ClosureCaptureContext>,
+    publish_captures: bool,
     task_returns: Option<Vec<(Span, TypeExpr)>>,
 }
 
@@ -6346,6 +6420,7 @@ impl FnEnv {
             active_mut_borrows: HashMap::new(),
             imports,
             capture_stack: Vec::new(),
+            publish_captures: true,
             task_returns: None,
         }
     }
@@ -7266,6 +7341,9 @@ fn call_reference_target(expr: &Expr, env: &FnEnv) -> Option<(String, bool)> {
     match expr {
         Expr::Reference { mutable, expr, .. } => match expr.as_ref() {
             Expr::Identifier(ident) => Some((ident.name.clone(), *mutable)),
+            Expr::Deref { expr, .. } => {
+                call_reference_target(expr, env).map(|(target, _)| (target, *mutable))
+            }
             _ => None,
         },
         Expr::Identifier(ident) => {

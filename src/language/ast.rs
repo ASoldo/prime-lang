@@ -661,6 +661,23 @@ pub struct MapLiteralEntry {
     pub value: Expr,
 }
 
+/// A named call can pass `&mut *r` by forwarding the existing reference `r`.
+/// Every evaluator must pass the reference itself, including its backing storage.
+pub(crate) fn forwarded_mut_reference(arg: &Expr) -> Option<&Expr> {
+    if let Expr::Reference {
+        mutable: true,
+        expr,
+        ..
+    } = arg
+        && let Expr::Deref { expr, .. } = expr.as_ref()
+        && matches!(expr.as_ref(), Expr::Identifier(_))
+    {
+        Some(expr)
+    } else {
+        None
+    }
+}
+
 /// UTF-8 byte range assigned by the parser.
 pub(crate) fn expr_span(expr: &Expr) -> Span {
     match expr {

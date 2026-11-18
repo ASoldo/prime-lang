@@ -2,6 +2,7 @@ use crate::language::ast::{
     AssignStmt, BinaryOp, Block, CaptureMode, CapturedVar, ClosureBody, Expr, FormatSegment,
     FormatStringLiteral, FunctionDef, FunctionParam, Identifier, IfCondition, IfExpr, Literal,
     MatchExpr, Pattern, RangeExpr, Statement, StructLiteralField, StructLiteralKind, UnaryOp,
+    forwarded_mut_reference,
 };
 use crate::language::integer::{CheckedIntegers, IntegerOp, Scalar, value_site};
 use crate::language::span::Span;
@@ -909,6 +910,7 @@ impl BuildInterpreter {
                         mutable: *mutable,
                     }))
                 }
+                _ if *mutable => Err("mutable borrow requires addressable storage".into()),
                 _ => {
                     let value = self.eval_expr_mut(expr)?;
                     Ok(BuildValue::Reference(BuildReference {
@@ -2546,7 +2548,7 @@ impl BuildInterpreter {
                 evaluated.push(recv);
             }
             for arg in args {
-                evaluated.push(self.eval_expr_mut(arg)?);
+                evaluated.push(self.eval_expr_mut(forwarded_mut_reference(arg).unwrap_or(arg))?);
             }
             return self.call_user_function(name, &receiver_value, evaluated, type_args);
         }

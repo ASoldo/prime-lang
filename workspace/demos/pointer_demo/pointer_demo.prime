@@ -1,6 +1,6 @@
 //! Pointer helpers demo.
 //!
-//! Demonstrates taking raw pointers to fields (`ptr`, `ptr_mut`) and
+//! Demonstrates building raw pointers from references (`ptr`, `ptr_mut`) and
 //! dereferencing them. Use this style carefully: pointer operations bypass some
 //! of the safety that references provide.
 module demos::pointer_demo;
@@ -26,12 +26,18 @@ fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
   }
 }
 
-/// Uses `ptr_mut` to update `player.hp` through a raw pointer.
+/// Computes the new hp through a raw pointer, then replaces the player.
 fn heal_with_pointer(player: &mut Player, delta: int32) -> int32 {
-  let mut Player local = *player;
-  let ptr = ptr_mut(&mut local.hp);
+  let Player snapshot = *player;
+  let mut int32 hp = snapshot.hp;
+  let ptr = ptr_mut(&mut hp);
   *ptr = *ptr + delta;
-  *player = local;
+  *player = Player{
+    Transform{ snapshot.position, snapshot.velocity },
+    Stats{ *ptr, snapshot.stamina },
+    snapshot.name,
+    snapshot.level,
+  };
   *ptr
 }
 

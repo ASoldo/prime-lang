@@ -31,7 +31,7 @@ fn value(packet: Packet) -> int32 {
 
 Replacing `Data(n) => n` with `Data(1) => 1` leaves other integers uncovered. For nested patterns, the checker considers combinations of fields together. A qualified pattern must belong to the enum being matched.
 
-The checker tracks moves and mutable borrows. Direct `await` rejects an active mutable borrow and a task with a reference or pointer as its direct result type. Raw pointers have separate rules. The current checker does not prove arbitrary nested values safe to transfer between threads.
+The checker tracks moves and mutable borrows. A named function can receive a mutable reference `r` as `f(r)` or `f(&mut *r)`. The explicit reborrow must be a direct argument and its operand must be a named mutable reference. Mutable borrows of fields and indexed elements are rejected. Direct `await` rejects an active mutable borrow and a task with a reference or pointer as its direct result type. Raw pointers have separate rules. The current checker does not prove arbitrary nested values safe to transfer between threads.
 
 ## Imports, collections and ownership
 

@@ -3435,6 +3435,7 @@ impl Compiler {
                     .into(),
                 ))
             }
+            _ if mutable => Err("mutable borrow requires addressable storage".into()),
             _ => match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => Ok(EvalOutcome::Value(
                     Value::Reference(ReferenceValue {
