@@ -550,10 +550,7 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool, trace: bool) {
                 Interpreter::with_target(expanded_package, run_options.target.clone());
             if let Err(err) = interpreter.run_with_trace(trace) {
                 if trace {
-                    TraceEvent::RuntimeError {
-                        message: &err.to_string(),
-                    }
-                    .emit();
+                    TraceEvent::from(&err).emit();
                 } else {
                     report_runtime_error(&err);
                 }

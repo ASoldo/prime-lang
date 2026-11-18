@@ -1,4 +1,5 @@
 //! Versioned records for the interpreter's stderr trace.
+use crate::runtime::error::RuntimeError;
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -14,11 +15,47 @@ pub enum TraceEvent<'a> {
         end: usize,
     },
     RuntimeError {
-        message: &'a str,
+        message: String,
+        frames: Vec<TraceFrame<'a>>,
     },
     Warning {
         message: &'a str,
     },
+}
+
+#[derive(Serialize)]
+pub struct TraceFrame<'a> {
+    path: &'a str,
+    function: &'a str,
+    start: usize,
+    end: usize,
+}
+
+impl<'a> From<&'a RuntimeError> for TraceEvent<'a> {
+    fn from(error: &'a RuntimeError) -> Self {
+        let mut frames = Vec::new();
+        let mut current = error;
+        while let RuntimeError::Frame {
+            source,
+            function,
+            path,
+            span,
+        } = current
+        {
+            frames.push(TraceFrame {
+                path,
+                function,
+                start: span.start,
+                end: span.end,
+            });
+            current = source;
+        }
+        frames.reverse();
+        Self::RuntimeError {
+            message: error.to_string(),
+            frames,
+        }
+    }
 }
 
 impl TraceEvent<'_> {

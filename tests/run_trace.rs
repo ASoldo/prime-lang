@@ -73,6 +73,7 @@ fn reports_failing_expression_and_call_sites_in_both_modes() {
     let plain = run(root, false);
     assert_eq!(plain.status.code(), Some(1), "{plain:?}");
     assert_eq!(plain.stdout, b"7\n");
+    let mut frames = Vec::new();
     let mut message = "Runtime panic: integer division by zero".to_string();
     for (name, expr) in [
         ("quotient", "42 / x"),
@@ -81,6 +82,12 @@ fn reports_failing_expression_and_call_sites_in_both_modes() {
     ] {
         let start = source.rfind(expr).unwrap();
         let path = path.canonicalize().unwrap();
+        frames.push(json!({
+            "path": path,
+            "function": format!("demo::{name}"),
+            "start": start,
+            "end": start + expr.len(),
+        }));
         message.push_str(&format!(
             "\n  at demo::{name} ({}, bytes {start}..{})",
             path.display(),
@@ -98,7 +105,7 @@ fn reports_failing_expression_and_call_sites_in_both_modes() {
     assert_eq!(events.len(), 4);
     assert_eq!(
         events[3],
-        json!({"schema_version":1, "event":"runtime_error", "message":message})
+        json!({"schema_version":1, "event":"runtime_error", "message":message, "frames":frames})
     );
     assert_eq!(run(root, true).stderr, traced.stderr);
 }
