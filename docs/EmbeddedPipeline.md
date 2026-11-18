@@ -23,8 +23,8 @@ flowchart TD
   OBJ --> LINK["Link"]
   LINK --> ELF["esp32_blink (ELF)"]
   ELF --> OBJCOPY["esptool elf2image -> .bin"]
-  OBJCOPY --> FLASH["esptool flash 0x10000"]
-  FLASH --> DEVICE["ESP32 UART @115200"]
+  OBJCOPY --> FLASH["Optional esptool write-flash at the application offset"]
+  FLASH --> DEVICE["Selected ESP32 serial port"]
 ```
 
 ## Classic ESP32
@@ -41,4 +41,26 @@ The host interpreter can run the [no_std parity fixture](../workspace/demos/no_s
 
 Install the stable Rust target with `rustup target add riscv32imc-unknown-none-elf`. Use an RV32IMC C linker and supply a C3 linker script (`build.toolchain.ld_script`) and any required startup object (`build.toolchain.startup_obj`). The script selects the entry point. Prime uses an LLVM RISC-V triple with the M and C extensions and links with the ILP32 ABI. Xtensa uses its own startup symbol and Espressif Rust toolchain.
 
-For flashing, Prime requires a successful `esptool elf2image` conversion. During a no-flash build a configured objcopy can produce a raw binary if conversion fails. The CLI reports that fallback. The [embedded timers document](EmbeddedTimers.md) describes emulator coverage and outstanding board-specific checks.
+## Flashing an application
+
+With `build.flash.enabled = true`, Prime writes the application image produced by this build's successful `elf2image` conversion. The board must already have a compatible bootloader and partition table for an application-only update. Set `build.flash.address` to the start of the intended application partition. It defaults to `"0x10000"` and accepts a hexadecimal or decimal byte offset aligned to 64 KiB. The image must fit the partition and the board's flash. Prime rejects a zero or misaligned offset and writes extending beyond esptool's 16 MiB address range for these targets. [ESP-IDF partition layout](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-guides/partition-tables.html#offset-size) · [esptool flash addressing](https://docs.espressif.com/projects/esptool/en/latest/esp32/troubleshooting.html#flash-and-external-memory-support-limitations)
+
+Prime takes the serial port from `build.flash.port`, then `PRIME_ESP_PORT`. When both are unset it omits `--port`, so esptool uses `ESPTOOL_PORT` or searches connected ports. The checked-in blink manifest sets `port` explicitly. The baud rate comes from `build.flash.baud`, then `PRIME_ESP_BAUD`, and defaults to 460800. The esptool executable comes from `PRIME_ESPTOOL`, then `build.toolchain.esptool`, and defaults to `esptool` on PATH. [esptool serial options](https://docs.espressif.com/projects/esptool/en/latest/esp32/esptool/basic-options.html)
+
+Image conversion uses the short options shared by esptool 4 and 5. Flashing uses the esptool 5 command `write-flash`. For a C3 with default image settings and an explicitly selected port, the commands are as follows (artifact paths abbreviated).
+
+```text
+esptool --chip esp32c3 elf2image -fm dio -ff 40m -fs 4MB -o app.bin app
+esptool --chip esp32c3 --port PORT --baud 460800 write-flash -z 0x10000 app.bin
+```
+
+To provision components along with the application, supply the binary paths explicitly. Either variable can be used independently. Relative paths resolve against the directory where you run `prime-lang build`. Use binaries built for the same chip and partition layout as the application. Prime uses these offsets for the standard ESP-IDF layout. [Classic ESP32 boot offset](https://docs.espressif.com/projects/esptool/en/latest/esp32/esptool/flash-modes.html) · [ESP32-C3 flash layout](https://docs.espressif.com/projects/esptool/en/latest/esp32c3/esptool/flashing-firmware.html)
+
+| Optional image | Environment variable | Classic ESP32 | ESP32-C3 |
+| --- | --- | --- | --- |
+| Bootloader | `PRIME_ESP_BOOTLOADER` | `0x1000` | `0x0` |
+| Partition table | `PRIME_ESP_PARTITIONS` | `0x8000` | `0x8000` |
+
+Prime checks that each supplied path names a readable, nonempty regular file before starting `write-flash`. The bootloader must fit below the table at `0x8000` and the table must fit its 4 KiB sector. A board with a custom table offset requires its own provisioning layout.
+
+For build verification, pass `--no-flash`. It overrides an enabled manifest, skips serial port selection and component checks, and still runs the offline image conversion. If conversion fails, a configured objcopy can produce a raw binary for inspection. Only successful esptool conversion produces a candidate for flashing. Board boot and runtime checks are separate from packaging. [Embedded timer verification](EmbeddedTimers.md)

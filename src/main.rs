@@ -1105,60 +1105,80 @@ fn maybe_objcopy_and_flash(bin_path: &Path, build_options: &BuildOptions) -> Res
         return Ok(());
     }
     let esptool = resolve_esptool(build_options);
-    let bin_image = bin_path.with_extension("bin");
-    // Prefer generating a proper ESP image header with elf2image; fall back to objcopy if unavailable.
+    let mut bin_image = bin_path.with_extension("bin");
+    if bin_image == bin_path {
+        bin_image = bin_path.with_added_extension("bin");
+    }
+    // A converter that exits successfully without producing output must not reuse a stale image.
+    match fs::remove_file(&bin_image) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(format!("Could not replace {}: {err}", bin_image.display())),
+    }
+    let chip = if build_options.target.is_esp32c3() {
+        "esp32c3"
+    } else {
+        "esp32"
+    };
     let elf2image_output = Command::new(&esptool)
-        .arg("--chip")
-        .arg(if build_options.target.is_esp32c3() {
-            "esp32c3"
-        } else {
-            "esp32"
-        })
-        .arg("elf2image")
-        .arg("--flash_mode")
-        .arg("dio")
-        .arg("--flash_freq")
-        .arg("40m")
-        .arg("--flash_size")
-        .arg("4MB")
-        .arg("-o")
+        .args([
+            "--chip",
+            chip,
+            "elf2image",
+            "-fm",
+            "dio",
+            "-ff",
+            "40m",
+            "-fs",
+            "4MB",
+            "-o",
+        ])
         .arg(&bin_image)
         .arg(bin_path)
         .output();
-    let conversion_error = match elf2image_output {
-        Ok(output) if output.status.success() => None,
-        Ok(output) => Some(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
-        Err(err) => Some(err.to_string()),
+    let image_size = match elf2image_output {
+        Ok(output) if output.status.success() => flash_file_size(&bin_image, "elf2image output"),
+        Ok(output) => Err(format!(
+            "{}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )),
+        Err(err) => Err(err.to_string()),
     };
-    if let Some(reason) = conversion_error {
-        if build_options.flash.enabled {
+    let reason = match image_size {
+        Ok(size) if build_options.flash.enabled => {
+            return flash_esp32(&bin_image, size, build_options, &esptool, chip);
+        }
+        Ok(_) => return Ok(()),
+        Err(reason) if build_options.flash.enabled => {
             return Err(format!(
                 "esptool could not generate a flashable image: {reason}"
             ));
         }
-        let objcopy = build_options.toolchain.objcopy.clone()
-            .or_else(|| env::var("PRIME_RISCV_OBJCOPY").ok())
-            .ok_or_else(|| format!("could not generate a binary image: {reason}; configure build.toolchain.objcopy for a raw binary"))?;
-        let output = Command::new(&objcopy)
-            .args(["-O", "binary"])
-            .arg(bin_path)
-            .arg(&bin_image)
-            .output()
-            .map_err(|err| format!("Failed to run objcopy: {err}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "objcopy failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        eprintln!(
-            "Created raw binary {} with objcopy (elf2image: {reason})",
-            bin_image.display()
-        );
+        Err(reason) => reason,
+    };
+    let objcopy = build_options.toolchain.objcopy.clone()
+        .or_else(|| env::var("PRIME_RISCV_OBJCOPY").ok())
+        .ok_or_else(|| format!(
+            "could not generate a binary image: {reason}; configure build.toolchain.objcopy for a raw binary"
+        ))?;
+    let output = Command::new(&objcopy)
+        .args(["-O", "binary"])
+        .arg(bin_path)
+        .arg(&bin_image)
+        .output()
+        .map_err(|err| format!("Failed to run objcopy: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "objcopy failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
-    if build_options.flash.enabled {
-        flash_esp32(&bin_image, build_options)?;
-    }
+    eprintln!(
+        "Created raw binary {} with objcopy (elf2image: {reason})",
+        bin_image.display()
+    );
     Ok(())
 }
 
@@ -1171,66 +1191,102 @@ fn resolve_esptool(build_options: &BuildOptions) -> String {
         .unwrap_or_else(|| "esptool".to_string())
 }
 
-fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), String> {
-    let esptool = resolve_esptool(build_options);
-    let chip = if build_options.target.is_esp32_xtensa()
-        || build_options.target.is_esp32_xtensa_espidf()
-    {
-        "esp32"
-    } else {
-        "esp32c3"
-    };
+fn flash_file_size(path: &Path, label: &str) -> Result<u64, String> {
+    let describe = |err: io::Error| format!("{label} ({}): {err}", path.display());
+    let metadata = fs::metadata(path).map_err(describe)?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(format!(
+            "{label} must be a nonempty regular file: {}",
+            path.display()
+        ));
+    }
+    fs::File::open(path).map_err(describe)?;
+    Ok(metadata.len())
+}
+
+fn flash_esp32(
+    bin_image: &Path,
+    app_size: u64,
+    build_options: &BuildOptions,
+    esptool: &str,
+    chip: &str,
+) -> Result<(), String> {
     let port = build_options
         .flash
         .port
         .clone()
-        .or_else(|| env::var("PRIME_ESP_PORT").ok())
-        .unwrap_or_else(|| "/dev/ttyUSB0".to_string());
+        .or_else(|| env::var("PRIME_ESP_PORT").ok());
     let baud = build_options
         .flash
         .baud
         .or_else(|| env::var("PRIME_ESP_BAUD").ok().and_then(|s| s.parse().ok()))
         .unwrap_or(460800);
-    let address = build_options
-        .flash
-        .address
-        .clone()
-        .unwrap_or_else(|| "0x10000".to_string());
+    let address = build_options.flash.address.as_deref().unwrap_or("0x10000");
+    let hex = address
+        .strip_prefix("0x")
+        .or_else(|| address.strip_prefix("0X"));
+    let offset = match hex {
+        Some(hex) => u32::from_str_radix(hex, 16),
+        None => address.parse::<u32>(),
+    }
+    .map_err(|_| format!("Invalid build.flash.address {address:?} (expected hex or decimal)"))?;
+    if offset == 0 || offset % 0x10000 != 0 {
+        return Err(format!(
+            "Invalid build.flash.address {address:?}; the application partition must start on a nonzero 0x10000 boundary"
+        ));
+    }
+    const FLASH_LIMIT: u64 = 1 << 24; // esptool uses 24-bit addressing on both targets.
+    if app_size > FLASH_LIMIT.saturating_sub(u64::from(offset)) {
+        return Err(format!(
+            "Application image at {address} exceeds the 16 MiB esptool address range for {chip}"
+        ));
+    }
     let mut cmd = Command::new(esptool);
-    cmd.arg("--chip")
-        .arg(chip)
-        .arg("--port")
-        .arg(&port)
-        .arg("--baud")
-        .arg(format!("{baud}"))
-        .arg("write-flash")
-        .arg("-z");
+    cmd.args(["--chip", chip]);
+    if let Some(port) = &port {
+        if port.trim().is_empty() {
+            return Err(
+                "Configured ESP serial port is empty (build.flash.port or PRIME_ESP_PORT)".into(),
+            );
+        }
+        cmd.arg("--port").arg(port);
+    }
+    cmd.arg("--baud")
+        .arg(baud.to_string())
+        .args(["write-flash", "-z"]);
 
-    // Include bootloader and partition table if present to avoid invalid header resets.
-    let default_bootloader = PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
-        .join("esp/esp-idf/examples/get-started/blink/build/bootloader/bootloader.bin");
-    let default_partitions = PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
-        .join("esp/esp-idf/examples/get-started/blink/build/partition_table/partition-table.bin");
-    let bootloader = env::var("PRIME_ESP_BOOTLOADER")
-        .map(PathBuf::from)
-        .unwrap_or(default_bootloader);
-    let partitions = env::var("PRIME_ESP_PARTITIONS")
-        .map(PathBuf::from)
-        .unwrap_or(default_partitions);
-    if bootloader.exists() {
-        cmd.arg("0x1000").arg(&bootloader);
+    let boot_offset = if build_options.target.is_esp32c3() {
+        0x0
+    } else {
+        0x1000
+    };
+    for (key, start, end) in [
+        ("PRIME_ESP_BOOTLOADER", boot_offset, 0x8000),
+        ("PRIME_ESP_PARTITIONS", 0x8000, 0x9000),
+    ] {
+        let Some(value) = env::var_os(key) else {
+            continue;
+        };
+        let path = PathBuf::from(value);
+        if flash_file_size(&path, key)? > end - start {
+            return Err(format!(
+                "{key} ({}) exceeds its flash region {start:#x}..{end:#x} for {chip}",
+                path.display()
+            ));
+        }
+        // Absolute paths also prevent filenames beginning with '-' or '@' becoming tool options.
+        cmd.arg(format!("{start:#x}"))
+            .arg(std::path::absolute(&path).map_err(|err| format!("{key}: {err}"))?);
     }
-    if partitions.exists() {
-        cmd.arg("0x8000").arg(&partitions);
-    }
-    cmd.arg(&address).arg(bin_image);
+    cmd.arg(format!("{offset:#x}")).arg(bin_image);
 
     let output = cmd
         .output()
-        .map_err(|err| format!("Failed to execute esptool.py: {err}"))?;
+        .map_err(|err| format!("Failed to execute {esptool} write-flash: {err}"))?;
     if !output.status.success() {
         return Err(format!(
-            "esptool.py failed:\n{}\n{}",
+            "{esptool} write-flash failed ({}):\n{}\n{}",
+            output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         ));
@@ -1238,7 +1294,7 @@ fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), Str
     println!(
         "Flashed {} to {} at {} (baud {})",
         bin_image.display(),
-        port,
+        port.as_deref().unwrap_or("the esptool-selected port"),
         address,
         baud
     );
