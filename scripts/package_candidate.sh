@@ -32,12 +32,18 @@ mkdir "$scratch/$binary_bundle" "$scratch/consumer"
 cp "$scratch/installed/bin/prime-lang" "$scratch/$binary_bundle/"
 cp "$scratch/$name/LICENSE" "$scratch/$binary_bundle/"
 cd "$scratch/consumer"
-printf '%s\n' 'module smoke; fn main() { out("Prime package OK"); }' > main.prime
 cli="$scratch/$binary_bundle/prime-lang"
-"$cli" check main.prime --format json | python3 -c \
+cat > main.prime <<'PRIME'
+out(6 * 7);
+PRIME
+printf '42\n' > expected
+"$cli" check - --format json < main.prime | python3 -c \
   'import json, sys; r=json.load(sys.stdin); assert r["schema_version"] == 1 and r["outcome"] == "ok"'
-"$cli" build main.prime --name hello
-printf 'Prime package OK\n' > expected
+"$cli" < main.prime > actual
+cmp expected actual
+"$cli" run - < main.prime > actual
+cmp expected actual
+"$cli" build - --name hello < main.prime
 ./.build.prime/hello/hello > actual
 cmp expected actual
 
