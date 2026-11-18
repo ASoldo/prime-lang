@@ -104,7 +104,7 @@ Validated outputs (fresh run, current syntax; files live under `workspace/demos/
 
 ### File I/O, Time, and Iterator Helpers
 
-- File built-ins: `fs_exists(path) -> bool`, `fs_read(path) -> Result[string, string]`, `fs_write(path, contents) -> Result[(), string]`.
+- File built-ins: `fs_exists(path) -> bool`, `fs_read(path) -> Result[string, string]`, `fs_write(path, contents) -> Result[(), string]`, and `fs_write_bytes(path, bytes: []uint8) -> Result[(), string]`. Paths are relative to the running process. From the repository root, build the demo with `prime-lang build workspace/demos/fs_demo/fs_demo.prime --name fs_demo`, then run `./.build.prime/fs_demo/fs_demo` to write the demo file.
 - Time built-ins: `now_ms() -> int64` and `sleep_ms(int64)` (alias for `sleep`); build mode records clock effects for deterministic snapshots.
 - Iterator helpers: `slice.iter()` / `map.iter()` return lightweight `Iterator[T]` with `next() -> Option[T]`; `map_keys` / `map_values` return slices. Works in run/build and in the emitted binary.
 - See `workspace/demos/fs_demo`, `time_demo`, and `iter_demo` for runnable examples.

@@ -362,7 +362,7 @@ match fs_read(path) {
   Result::Ok(text) => out(`read: {text}`),
   Result::Err(msg) => out(`read failed: {msg}`),
 }"#,
-                explanation: "`fs_exists` returns a bool, `fs_read`/`fs_write` return `Result[...]`. Build mode records effects so snapshots replay deterministically.",
+                explanation: "`fs_exists` returns a bool, `fs_read`/`fs_write` return `Result[...]`. The interpreter and native executable access files when they run. Relative paths use the current working directory.",
             },
             TopicSection {
                 title: "Time helpers",

@@ -449,7 +449,10 @@ fn build_spawn_join_returns_value() {
             EvalOutcome::Value(value) => value.into_value(),
             EvalOutcome::Flow(_) => panic!("unexpected flow from spawn"),
         };
-        let joined = compiler.builtin_join(vec![handle]).expect("join returns");
+        let joined = compiler
+            .builtin_join(vec![handle])
+            .expect("join returns")
+            .into_value();
         assert!(matches!(joined, Value::Int(v) if v.constant() == Some(9)));
     });
 }
@@ -506,7 +509,8 @@ fn build_spawn_join_returns_closure() {
         };
         let joined = compiler
             .builtin_join(vec![handle])
-            .expect("join returns closure");
+            .expect("join returns closure")
+            .into_value();
         let Value::Closure(returned) = joined else {
             panic!("expected closure from join");
         };
@@ -545,10 +549,12 @@ fn build_nested_spawn_join_roundtrips() {
         };
         let inner_handle = compiler
             .builtin_join(vec![outer])
-            .expect("outer join returns inner handle");
+            .expect("outer join returns inner handle")
+            .into_value();
         let result = compiler
             .builtin_join(vec![inner_handle])
-            .expect("inner join returns value");
+            .expect("inner join returns value")
+            .into_value();
         assert!(matches!(result, Value::Int(v) if v.constant() == Some(3)));
     });
 }
@@ -694,7 +700,8 @@ fn build_spawn_join_applies_channel_effects_and_value() {
     let mut compiler = Compiler::new();
     let joined = join_handle
         .join_with(&mut compiler)
-        .expect("join applies effects");
+        .expect("join applies effects")
+        .into_value();
     match joined {
         Value::Receiver(rx) => {
             match rx.recv() {

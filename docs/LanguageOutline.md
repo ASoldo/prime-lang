@@ -29,6 +29,14 @@ Replacing `Data(n) => n` with `Data(1) => 1` leaves other integers uncovered. Fo
 
 The checker tracks moves and mutable borrows. Direct `await` rejects an active mutable borrow and a task with a reference or pointer as its direct result type. Raw pointers have separate rules. The current checker does not prove arbitrary nested values safe to transfer between threads.
 
+## Host filesystem
+
+`fs_exists(path)` tests whether a path exists. `fs_read(path)` returns UTF-8 text in `Result[string, string]`. `fs_write(path, contents)` writes UTF-8 text and `fs_write_bytes(path, bytes)` writes a `[]uint8`. Both return `Result[(), string]`. Failures carry the error message. The interpreter and native executable resolve relative paths in their process working directory at execution time. Building an application emits these calls. Filesystem calls require a host target with std support and are rejected in `no_std` modules.
+
+The installed CLI includes the runtime sources and builds its matching archive under `.build.prime/runtime` or `$CARGO_TARGET_DIR/prime-runtime`.
+
+Use `match` or `if let` to handle the native result. Native code generation currently rejects `?` on a runtime-selected result and early returns inside runtime match arms. When compiling a spawned filesystem call, leave the experimental `PRIME_BUILD_PARALLEL` snapshot evaluator disabled.
+
 ## Scope exit
 
 Each scope registers cleanups as bindings and `defer` statements are evaluated. On normal scope exit, including early return, it runs the most recently registered cleanup first. A deferred action registered between two values with `Drop` runs after the second value drops and before the first. The executable example is in [the drop suite](../workspace/tests/drop).

@@ -163,6 +163,18 @@ pub struct RuntimeAbi {
     pub prime_tcp_disconnect_ty: LLVMTypeRef,
     pub prime_tcp_close: LLVMValueRef,
     pub prime_tcp_close_ty: LLVMTypeRef,
+    pub prime_fs_exists: LLVMValueRef,
+    pub prime_fs_exists_ty: LLVMTypeRef,
+    pub prime_fs_read: LLVMValueRef,
+    pub prime_fs_read_ty: LLVMTypeRef,
+    pub prime_fs_write: LLVMValueRef,
+    pub prime_fs_write_ty: LLVMTypeRef,
+    pub prime_fs_write_bytes: LLVMValueRef,
+    pub prime_fs_write_bytes_ty: LLVMTypeRef,
+    pub prime_string_equal: LLVMValueRef,
+    pub prime_string_equal_ty: LLVMTypeRef,
+    pub prime_string_join: LLVMValueRef,
+    pub prime_string_join_ty: LLVMTypeRef,
     pub prime_gfx_open: LLVMValueRef,
     pub prime_gfx_open_ty: LLVMTypeRef,
     pub prime_gfx_clear: LLVMValueRef,
@@ -577,6 +589,38 @@ impl RuntimeAbi {
             declare_fn(module, "prime_tcp_disconnect", void_type, &mut []);
         let (prime_tcp_close, prime_tcp_close_ty) =
             declare_fn(module, "prime_tcp_close", void_type, &mut []);
+        let (prime_fs_exists, prime_fs_exists_ty) =
+            declare_fn(module, "prime_fs_exists", bool_type, &mut [handle_type]);
+        let (prime_fs_read, prime_fs_read_ty) = declare_fn(
+            module,
+            "prime_fs_read",
+            handle_type,
+            &mut [handle_type, i32_type, i32_type],
+        );
+        let (prime_fs_write, prime_fs_write_ty) = declare_fn(
+            module,
+            "prime_fs_write",
+            handle_type,
+            &mut [handle_type, handle_type, i32_type, i32_type],
+        );
+        let (prime_fs_write_bytes, prime_fs_write_bytes_ty) = declare_fn(
+            module,
+            "prime_fs_write_bytes",
+            handle_type,
+            &mut [handle_type, handle_type, i32_type, i32_type],
+        );
+        let (prime_string_equal, prime_string_equal_ty) = declare_fn(
+            module,
+            "prime_string_equal",
+            bool_type,
+            &mut [handle_type, handle_type],
+        );
+        let (prime_string_join, prime_string_join_ty) = declare_fn(
+            module,
+            "prime_string_join",
+            handle_type,
+            &mut [channel_out_type, usize_type],
+        );
         let (prime_gfx_open, prime_gfx_open_ty) = declare_fn(
             module,
             "prime_gfx_open",
@@ -831,6 +875,18 @@ impl RuntimeAbi {
             prime_tcp_disconnect_ty,
             prime_tcp_close,
             prime_tcp_close_ty,
+            prime_fs_exists,
+            prime_fs_exists_ty,
+            prime_fs_read,
+            prime_fs_read_ty,
+            prime_fs_write,
+            prime_fs_write_ty,
+            prime_fs_write_bytes,
+            prime_fs_write_bytes_ty,
+            prime_string_equal,
+            prime_string_equal_ty,
+            prime_string_join,
+            prime_string_join_ty,
             prime_gfx_open,
             prime_gfx_open_ty,
             prime_gfx_clear,
@@ -1017,6 +1073,18 @@ impl RuntimeAbi {
             prime_tcp_disconnect_ty: std::ptr::null_mut(),
             prime_tcp_close: std::ptr::null_mut(),
             prime_tcp_close_ty: std::ptr::null_mut(),
+            prime_fs_exists: std::ptr::null_mut(),
+            prime_fs_exists_ty: std::ptr::null_mut(),
+            prime_fs_read: std::ptr::null_mut(),
+            prime_fs_read_ty: std::ptr::null_mut(),
+            prime_fs_write: std::ptr::null_mut(),
+            prime_fs_write_ty: std::ptr::null_mut(),
+            prime_fs_write_bytes: std::ptr::null_mut(),
+            prime_fs_write_bytes_ty: std::ptr::null_mut(),
+            prime_string_equal: std::ptr::null_mut(),
+            prime_string_equal_ty: std::ptr::null_mut(),
+            prime_string_join: std::ptr::null_mut(),
+            prime_string_join_ty: std::ptr::null_mut(),
             prime_gfx_open: std::ptr::null_mut(),
             prime_gfx_open_ty: std::ptr::null_mut(),
             prime_gfx_clear: std::ptr::null_mut(),

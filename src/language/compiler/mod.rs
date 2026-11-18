@@ -374,7 +374,7 @@ struct ChannelReceiver {
 }
 
 enum JoinResult {
-    Immediate(Option<Value>),
+    Immediate(Option<EvaluatedValue>),
     BuildThread(Option<thread::JoinHandle<Result<BuildEvaluation, String>>>),
 }
 
@@ -558,7 +558,7 @@ impl ChannelReceiver {
 }
 
 impl JoinHandleValue {
-    fn new(value: Value) -> Self {
+    fn new(value: EvaluatedValue) -> Self {
         Self {
             result: Rc::new(Mutex::new(JoinResult::Immediate(Some(value)))),
             handle: None,
@@ -579,7 +579,7 @@ impl JoinHandleValue {
         }
     }
 
-    fn join_with(&self, compiler: &mut Compiler) -> Result<Value, String> {
+    fn join_with(&self, compiler: &mut Compiler) -> Result<EvaluatedValue, String> {
         if let Some(handle) = self.handle {
             return Err(format!(
                 "join handle {:?} cannot be joined during build evaluation",
@@ -598,7 +598,9 @@ impl JoinHandleValue {
                 match handle.join() {
                     Ok(Ok(build)) => {
                         let mut channels = compiler.apply_build_effects(build.effects)?;
-                        compiler.build_value_to_value(build.value, &mut channels)
+                        compiler
+                            .build_value_to_value(build.value, &mut channels)
+                            .map(Into::into)
                     }
                     Ok(Err(err)) => Err(err),
                     Err(_) => Err("spawned task panicked".into()),
@@ -1202,7 +1204,7 @@ fn value_to_build_value_with_ctx(
             let mut guard = handle.result.lock().unwrap();
             match &mut *guard {
                 JoinResult::Immediate(Some(value)) => {
-                    let build_val = value_to_build_value_with_ctx(value, ctx)?;
+                    let build_val = value_to_build_value_with_ctx(value.value(), ctx)?;
                     let eval = BuildEvaluation {
                         value: build_val,
                         effects: Vec::new(),
@@ -1756,12 +1758,6 @@ impl Compiler {
                         guard.closed = true;
                         cv.notify_all();
                     }
-                }
-                BuildEffect::FsExists { .. }
-                | BuildEffect::FsRead { .. }
-                | BuildEffect::FsWrite { .. }
-                | BuildEffect::FsWriteBytes { .. } => {
-                    // Recorded only for deterministic replays; nothing to apply in compiled artifacts.
                 }
                 BuildEffect::NowMs { value } => {
                     self.build_clock_ms = self.build_clock_ms.max(value.saturating_add(1));

@@ -313,40 +313,11 @@ pub struct BuildEvaluation {
 #[derive(Clone, Debug)]
 pub enum BuildEffect {
     Out(Vec<BuildValue>),
-    ChannelCreate {
-        id: u64,
-    },
-    ChannelSend {
-        id: u64,
-        value: BuildValue,
-    },
-    ChannelClose {
-        id: u64,
-    },
-    FsExists {
-        path: String,
-        exists: bool,
-    },
-    FsRead {
-        path: String,
-        result: Result<String, String>,
-    },
-    FsWrite {
-        path: String,
-        contents: String,
-        result: Result<(), String>,
-    },
-    FsWriteBytes {
-        path: String,
-        len: usize,
-        result: Result<(), String>,
-    },
-    NowMs {
-        value: i128,
-    },
-    SleepMs {
-        millis: i128,
-    },
+    ChannelCreate { id: u64 },
+    ChannelSend { id: u64, value: BuildValue },
+    ChannelClose { id: u64 },
+    NowMs { value: i128 },
+    SleepMs { millis: i128 },
 }
 
 #[derive(Clone, Debug)]
@@ -2452,42 +2423,6 @@ impl BuildInterpreter {
         }
     }
 
-    fn expect_string_value(value: BuildValue, context: &str) -> Result<String, String> {
-        match value {
-            BuildValue::String(s) => Ok(s),
-            BuildValue::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
-                Self::expect_string_value(inner, context)
-            }
-            other => Err(format!("{context} expects string, found {}", other.kind())),
-        }
-    }
-
-    fn expect_byte_values(value: BuildValue, context: &str) -> Result<Vec<u8>, String> {
-        match value {
-            BuildValue::Slice(items) => {
-                let mut bytes = Vec::with_capacity(items.len());
-                for item in items {
-                    let BuildValue::Int(byte) = item else {
-                        return Err(format!("{context} expects []uint8"));
-                    };
-                    if !(0..=255).contains(&byte) {
-                        return Err(format!(
-                            "{context} expects bytes in range 0..=255, found {byte}"
-                        ));
-                    }
-                    bytes.push(byte as u8);
-                }
-                Ok(bytes)
-            }
-            BuildValue::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
-                Self::expect_byte_values(inner, context)
-            }
-            other => Err(format!("{context} expects slice, found {}", other.kind())),
-        }
-    }
-
     fn iter_items_from_value(value: BuildValue) -> Result<Vec<BuildValue>, String> {
         match value {
             BuildValue::Slice(items) => Ok(items),
@@ -2716,75 +2651,8 @@ impl BuildInterpreter {
                 }
                 Ok(BuildValue::Slice(values))
             }
-            "fs_exists" => {
-                self.require_std_or_embedded("fs_exists")?;
-                if args.len() != 1 {
-                    return Err("fs_exists expects 1 argument".into());
-                }
-                let path_value = self.eval_expr_mut(&args[0])?;
-                let path = Self::expect_string_value(path_value, "fs_exists")?;
-                let exists = std::path::Path::new(&path).exists();
-                self.effects
-                    .push(BuildEffect::FsExists { path: path.clone(), exists });
-                Ok(BuildValue::Bool(exists))
-            }
-            "fs_read" => {
-                self.require_std_or_embedded("fs_read")?;
-                if args.len() != 1 {
-                    return Err("fs_read expects 1 argument".into());
-                }
-                let path_value = self.eval_expr_mut(&args[0])?;
-                let path = Self::expect_string_value(path_value, "fs_read")?;
-                let result = std::fs::read_to_string(&path).map_err(|err| err.to_string());
-                self.effects.push(BuildEffect::FsRead {
-                    path: path.clone(),
-                    result: result.clone(),
-                });
-                match result {
-                    Ok(text) => Ok(self.wrap_enum("Ok", vec![BuildValue::String(text)])),
-                    Err(msg) => Ok(self.wrap_enum("Err", vec![BuildValue::String(msg)])),
-                }
-            }
-            "fs_write" => {
-                self.require_std_or_embedded("fs_write")?;
-                if args.len() != 2 {
-                    return Err("fs_write expects 2 arguments".into());
-                }
-                let path_value = self.eval_expr_mut(&args[0])?;
-                let path = Self::expect_string_value(path_value, "fs_write")?;
-                let contents_value = self.eval_expr_mut(&args[1])?;
-                let contents = Self::expect_string_value(contents_value, "fs_write")?;
-                let result = std::fs::write(&path, contents.clone()).map_err(|err| err.to_string());
-                self.effects.push(BuildEffect::FsWrite {
-                    path: path.clone(),
-                    contents,
-                    result: result.clone(),
-                });
-                match result {
-                    Ok(()) => Ok(self.wrap_enum("Ok", vec![BuildValue::Unit])),
-                    Err(msg) => Ok(self.wrap_enum("Err", vec![BuildValue::String(msg)])),
-                }
-            }
-            "fs_write_bytes" => {
-                self.require_std_or_embedded("fs_write_bytes")?;
-                if args.len() != 2 {
-                    return Err("fs_write_bytes expects 2 arguments".into());
-                }
-                let path_value = self.eval_expr_mut(&args[0])?;
-                let path = Self::expect_string_value(path_value, "fs_write_bytes")?;
-                let contents_value = self.eval_expr_mut(&args[1])?;
-                let contents = Self::expect_byte_values(contents_value, "fs_write_bytes")?;
-                let len = contents.len();
-                let result = std::fs::write(&path, contents).map_err(|err| err.to_string());
-                self.effects.push(BuildEffect::FsWriteBytes {
-                    path: path.clone(),
-                    len,
-                    result: result.clone(),
-                });
-                match result {
-                    Ok(()) => Ok(self.wrap_enum("Ok", vec![BuildValue::Unit])),
-                    Err(msg) => Ok(self.wrap_enum("Err", vec![BuildValue::String(msg)])),
-                }
+            "fs_exists" | "fs_read" | "fs_write" | "fs_write_bytes" => {
+                Err(format!("{name} requires runtime filesystem access; disable PRIME_BUILD_PARALLEL to emit this spawn at runtime"))
             }
             name if TcpBuiltin::lookup(name).is_some() => Err(format!("{name} requires the live host std runtime")),
             "gfx_open" | "gfx_clear" | "gfx_rect" | "gfx_sprite" | "gfx_text"

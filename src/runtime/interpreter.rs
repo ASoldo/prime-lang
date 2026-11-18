@@ -2308,17 +2308,7 @@ impl Interpreter {
         self.expect_arity("fs_write", &args, 2)?;
         let path = Self::expect_string_or_format("fs_write", args.remove(0))?;
         let contents = Self::expect_string_or_format("fs_write", args.remove(0))?;
-        match platform().fs_write(&path, &contents) {
-            Ok(()) => {
-                let ok = self.instantiate_enum("Result", "Ok", vec![Value::Unit])?;
-                Ok(vec![ok])
-            }
-            Err(err) => {
-                let err_val =
-                    self.instantiate_enum("Result", "Err", vec![Value::String(err.to_string())])?;
-                Ok(vec![err_val])
-            }
-        }
+        self.unit_result(platform().fs_write(&path, &contents))
     }
 
     fn builtin_fs_write_bytes(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
@@ -2332,24 +2322,14 @@ impl Interpreter {
                 continue;
             };
             let byte = Self::expect_int_value("fs_write_bytes", value)?;
-            if !(0..=255).contains(&byte) {
-                return Err(RuntimeError::TypeMismatch {
-                    message: format!("fs_write_bytes expects bytes in range 0..=255, found {byte}"),
-                });
-            }
-            bytes.push(byte as u8);
+            let Ok(byte) = u8::try_from(byte) else {
+                return self.unit_result(Err(format!(
+                    "fs_write_bytes expects bytes in range 0..=255, found {byte}"
+                )));
+            };
+            bytes.push(byte);
         }
-        match platform().fs_write_bytes(&path, &bytes) {
-            Ok(()) => {
-                let ok = self.instantiate_enum("Result", "Ok", vec![Value::Unit])?;
-                Ok(vec![ok])
-            }
-            Err(err) => {
-                let err_val =
-                    self.instantiate_enum("Result", "Err", vec![Value::String(err.to_string())])?;
-                Ok(vec![err_val])
-            }
-        }
+        self.unit_result(platform().fs_write_bytes(&path, &bytes))
     }
 
     fn builtin_tcp(

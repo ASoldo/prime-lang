@@ -2242,6 +2242,26 @@ impl Checker {
                     );
                     return None;
                 }
+                if matches!(
+                    ident.name.as_str(),
+                    "fs_exists" | "fs_read" | "fs_write" | "fs_write_bytes"
+                ) && (self.current_no_std
+                    || self.target.is_embedded()
+                    || !cfg!(feature = "std-builtins"))
+                {
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            span,
+                            format!("`{}` requires the host std filesystem", ident.name),
+                        )
+                        .with_code("E0NS")
+                        .with_help(
+                            "use a std module on a host target with the std-builtins feature",
+                        ),
+                    );
+                    return None;
+                }
                 if self.current_no_std
                     && self.is_std_only_builtin(&ident.name)
                     && !self.embedded_std_compatible_builtin(&ident.name)
@@ -3317,7 +3337,9 @@ impl Checker {
                         "`fs_exists` expects 1 argument (path)",
                     ));
                 }
-                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                if let Some(path) = args.first() {
+                    self.check_expression(module, path, Some(&string_type()), returns, env);
+                }
                 Some(bool_type())
             }
             "fs_read" => {
@@ -3328,7 +3350,9 @@ impl Checker {
                         "`fs_read` expects 1 argument (path)",
                     ));
                 }
-                self.check_expression(module, &args[0], Some(&string_type()), returns, env);
+                if let Some(path) = args.first() {
+                    self.check_expression(module, path, Some(&string_type()), returns, env);
+                }
                 Some(TypeExpr::Named(
                     "Result".into(),
                     vec![string_type(), string_type()],

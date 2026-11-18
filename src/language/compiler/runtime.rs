@@ -49,15 +49,10 @@ impl Compiler {
                     self.emit_printf_call(&text, &mut []);
                 }
                 FormatRuntimeSegment::Named(value) => {
-                    let mut wrapped = value;
-                    wrapped.runtime = None;
-                    self.maybe_attach_runtime_handle(&mut wrapped);
-                    self.print_value(wrapped)?;
+                    self.print_value(value)?;
                 }
                 FormatRuntimeSegment::Implicit => {
-                    if let Some(mut value) = args_iter.next() {
-                        value.runtime = None;
-                        self.maybe_attach_runtime_handle(&mut value);
+                    if let Some(value) = args_iter.next() {
                         self.print_value(value)?;
                     }
                 }

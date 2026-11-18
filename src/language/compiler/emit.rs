@@ -3,7 +3,7 @@ use crate::language::tcp_builtin::TcpBuiltin;
 
 struct PatternGuard<'a> {
     condition: LLVMValueRef,
-    binding: Option<(&'a str, LLVMValueRef)>,
+    binding: Option<(&'a str, LLVMValueRef, Option<TypeExpr>)>,
 }
 
 enum EnumArm<'a> {
@@ -576,11 +576,7 @@ impl Compiler {
                     };
                     if let Some(guard) = guard {
                         let flow = self.emit_while_let_body(header, guard, &stmt.body)?;
-                        if flow.is_some()
-                            && candidate
-                                .runtime
-                                .is_some_and(|rt| rt.lookup_found.is_some())
-                        {
+                        if flow.is_some() && candidate.runtime.is_some() {
                             return Err("conditional return or propagation in a runtime lookup loop is unsupported".into());
                         }
                         return Ok(flow);
@@ -767,17 +763,14 @@ impl Compiler {
     }
 
     fn lookup_pattern<'a>(
-        &self,
+        &mut self,
         candidate: &EvaluatedValue,
         pattern: &'a Pattern,
     ) -> Result<Option<PatternGuard<'a>>, String> {
-        let Some(RuntimeValue {
-            handle,
-            lookup_found: Some(found),
-        }) = candidate.runtime
-        else {
+        let Some(runtime) = candidate.runtime else {
             return Ok(None);
         };
+        let handle = runtime.handle;
         let Pattern::EnumVariant {
             enum_name,
             variant,
@@ -786,11 +779,50 @@ impl Compiler {
         else {
             return Ok(None);
         };
+        if matches!(candidate.value(), Value::Enum(e) if e.enum_name == "Result" && e.variant == "<runtime>")
+        {
+            let info = self
+                .enum_variants
+                .get(variant)
+                .filter(|info| info.enum_name == "Result")
+                .ok_or_else(|| format!("unknown Result variant `{variant}`"))?;
+            let tag = unsafe { LLVMConstInt(self.i32_type, info.variant_index as u64, 0) };
+            let field = info
+                .field_types_for(self.handle_types.get(&handle))
+                .into_iter()
+                .next();
+            let binding = match bindings.as_slice() {
+                [Pattern::Identifier(name, _)] => Some((name.as_str(), handle, field)),
+                [Pattern::Wildcard] => None,
+                _ => return Err("runtime Result pattern requires a binding or wildcard".into()),
+            };
+            let actual = self.call_runtime(
+                self.runtime_abi.prime_enum_tag,
+                self.runtime_abi.prime_enum_tag_ty,
+                &mut [handle],
+                "result_tag",
+            );
+            let condition = unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                    actual,
+                    tag,
+                    c"result_pattern".as_ptr(),
+                )
+            };
+            return Ok(Some(PatternGuard { condition, binding }));
+        }
+        let Some(found) = runtime.lookup_found else {
+            return Ok(None);
+        };
         if enum_name.as_deref().is_some_and(|name| name != "Option") {
             return Ok(None);
         }
         let (condition, binding) = match (variant.as_str(), bindings.as_slice()) {
-            ("Some", [Pattern::Identifier(name, _)]) => (found, Some((name.as_str(), handle))),
+            ("Some", [Pattern::Identifier(name, _)]) => {
+                (found, Some((name.as_str(), handle, None)))
+            }
             ("Some", [Pattern::Wildcard]) => (found, None),
             ("None", []) => (
                 unsafe { LLVMBuildNot(self.builder, found, c"lookup_missing".as_ptr()) },
@@ -801,15 +833,21 @@ impl Compiler {
         Ok(Some(PatternGuard { condition, binding }))
     }
 
-    fn bind_lookup_payload(&mut self, binding: Option<(&str, LLVMValueRef)>) -> Result<(), String> {
-        if let Some((name, option)) = binding {
+    fn bind_lookup_payload(
+        &mut self,
+        binding: Option<(&str, LLVMValueRef, Option<TypeExpr>)>,
+    ) -> Result<(), String> {
+        if let Some((name, enum_handle, ty)) = binding {
             let index = unsafe { LLVMConstInt(self.runtime_abi.usize_type, 0, 0) };
             let handle = self.call_runtime(
                 self.runtime_abi.prime_enum_get,
                 self.runtime_abi.prime_enum_get_ty,
-                &mut [option, index],
+                &mut [enum_handle, index],
                 "lookup_value",
             );
+            if let Some(ty) = ty {
+                self.handle_types.insert(handle, ty);
+            }
             let payload = Value::from_runtime_payload(handle);
             self.insert_var(name, payload.into(), false)?;
         }
@@ -1041,8 +1079,7 @@ impl Compiler {
                 } else {
                     match self.emit_expression(expr)? {
                         EvalOutcome::Value(value) => Ok(EvalOutcome::Value(
-                            Value::JoinHandle(Box::new(JoinHandleValue::new(value.into_value())))
-                                .into(),
+                            Value::JoinHandle(Box::new(JoinHandleValue::new(value))).into(),
                         )),
                         EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                     }
@@ -2514,6 +2551,119 @@ impl Compiler {
         unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, merge_block) };
         Ok(self.load_guarded_await_result(result_slot, err_tag, c"await_cancel_timeout_result"))
     }
+    fn string_or_slice_operand(
+        &mut self,
+        value: EvaluatedValue,
+        temporaries: &mut Vec<LLVMValueRef>,
+    ) -> Result<LLVMValueRef, String> {
+        if let Value::FormatTemplate(template) = value.value() {
+            let mut parts = Vec::new();
+            for segment in template.segments.clone() {
+                let part = match segment {
+                    FormatRuntimeSegment::Literal(text) => self.build_string_constant(text)?.into(),
+                    FormatRuntimeSegment::Named(value) => value,
+                    FormatRuntimeSegment::Implicit => {
+                        self.build_string_constant("{}".into())?.into()
+                    }
+                };
+                parts.push(self.string_or_slice_operand(part, temporaries)?);
+            }
+            let handle = self.join_string_parts(&parts);
+            temporaries.push(handle);
+            return Ok(handle);
+        }
+        let borrowed = match value.value() {
+            Value::Slice(slice) => slice.handle,
+            Value::Reference(reference) => reference.handle.or(value.runtime_handle()),
+            _ => value.runtime_handle(),
+        };
+        if let Some(handle) = borrowed {
+            return Ok(handle);
+        }
+        let handle = self.build_runtime_handle(value.into_value())?;
+        temporaries.push(handle);
+        Ok(handle)
+    }
+
+    fn join_string_parts(&mut self, parts: &[LLVMValueRef]) -> LLVMValueRef {
+        let ptr = self.alloc_handle_array(parts);
+        let len = unsafe { LLVMConstInt(self.runtime_abi.usize_type, parts.len() as u64, 0) };
+        self.call_runtime(
+            self.runtime_abi.prime_string_join,
+            self.runtime_abi.prime_string_join_ty,
+            &mut [ptr, len],
+            "string_join",
+        )
+    }
+
+    fn emit_filesystem_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        if self.target.is_embedded() || !cfg!(feature = "std-builtins") {
+            return Err(format!("{name} requires the host std filesystem"));
+        }
+        self.ensure_runtime_symbols();
+        let abi = self.runtime_abi;
+        let (function, signature, arity) = match name {
+            "fs_exists" => (abi.prime_fs_exists, abi.prime_fs_exists_ty, 1),
+            "fs_read" => (abi.prime_fs_read, abi.prime_fs_read_ty, 1),
+            "fs_write" => (abi.prime_fs_write, abi.prime_fs_write_ty, 2),
+            "fs_write_bytes" => (abi.prime_fs_write_bytes, abi.prime_fs_write_bytes_ty, 2),
+            _ => unreachable!(),
+        };
+        if args.len() != arity {
+            return Err(format!("{name} expects {arity} arguments"));
+        }
+        let mut operands = Vec::new();
+        let mut temporaries = Vec::new();
+        for expr in args {
+            let value = match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => value,
+                EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+            };
+            let handle = self.string_or_slice_operand(value, &mut temporaries)?;
+            operands.push(handle);
+        }
+        if name != "fs_exists" {
+            for variant in ["Ok", "Err"] {
+                let info = self
+                    .enum_variants
+                    .get(variant)
+                    .ok_or_else(|| format!("{name} requires Result::{variant}"))?;
+                operands.push(unsafe { LLVMConstInt(self.i32_type, info.variant_index as u64, 0) });
+            }
+        }
+        let handle = self.call_runtime(function, signature, &mut operands, name);
+        for temporary in temporaries {
+            self.runtime_release(temporary);
+        }
+        if name == "fs_exists" {
+            return Ok(EvalOutcome::Value(
+                Value::Bool(BoolValue::new(handle, None)).into(),
+            ));
+        }
+        let success = if name == "fs_read" {
+            TypeExpr::named("string")
+        } else {
+            TypeExpr::Unit
+        };
+        self.handle_types.insert(
+            handle,
+            TypeExpr::Named("Result".into(), vec![success, TypeExpr::named("string")]),
+        );
+        Ok(EvalOutcome::Value(
+            EvaluatedValue::from_value(Value::Enum(EnumValue {
+                enum_name: "Result".into(),
+                variant: "<runtime>".into(),
+                values: Vec::new(),
+                variant_index: 0,
+            }))
+            .with_runtime(handle),
+        ))
+    }
+
     pub(super) fn try_builtin_call(
         &mut self,
         name: &str,
@@ -2649,17 +2799,8 @@ impl Compiler {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_delay_ms(values)))
             }
             "now_ms" => Some(self.invoke_builtin(args, |this, values| this.builtin_now_ms(values))),
-            "fs_exists" => {
-                Some(self.invoke_builtin(args, |this, values| this.builtin_fs_exists(values)))
-            }
-            "fs_read" => {
-                Some(self.invoke_builtin(args, |this, values| this.builtin_fs_read(values)))
-            }
-            "fs_write" => {
-                Some(self.invoke_builtin(args, |this, values| this.builtin_fs_write(values)))
-            }
-            "fs_write_bytes" => {
-                Some(self.invoke_builtin(args, |this, values| this.builtin_fs_write_bytes(values)))
+            "fs_exists" | "fs_read" | "fs_write" | "fs_write_bytes" => {
+                Some(self.emit_filesystem_call(name, args))
             }
             "gfx_open" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_gfx_open(values)))
@@ -2821,7 +2962,7 @@ impl Compiler {
                 LLVMPositionBuilderAtEnd(self.builder, then_block);
                 self.push_scope();
                 self.bind_lookup_payload(binding)?;
-                let mut then_value: Option<EvaluatedValue> = None;
+                let mut then_value = None;
                 let then_eval = self.execute_block_contents(&if_expr.then_branch)?;
                 self.exit_scope()?;
                 match then_eval {
@@ -2838,7 +2979,7 @@ impl Compiler {
                         }
                     }
                     BlockEval::Value(val) => {
-                        then_value = Some(val);
+                        then_value = Some((val, LLVMGetInsertBlock(self.builder)));
                         LLVMBuildBr(self.builder, merge_block);
                     }
                     BlockEval::Flow(FlowSignal::Break) | BlockEval::Flow(FlowSignal::Continue) => {
@@ -2855,7 +2996,7 @@ impl Compiler {
                 };
 
                 LLVMPositionBuilderAtEnd(self.builder, else_block);
-                let mut else_value: Option<EvaluatedValue> = None;
+                let mut else_value = None;
                 if let Some(else_branch) = &if_expr.else_branch {
                     match else_branch {
                         ElseBranch::Block(block) => {
@@ -2876,7 +3017,7 @@ impl Compiler {
                                     }
                                 }
                                 BlockEval::Value(val) => {
-                                    else_value = Some(val);
+                                    else_value = Some((val, LLVMGetInsertBlock(self.builder)));
                                     LLVMBuildBr(self.builder, merge_block);
                                 }
                                 BlockEval::Flow(FlowSignal::Break)
@@ -2906,7 +3047,7 @@ impl Compiler {
                                 }
                             }
                             EvalOutcome::Value(val) => {
-                                else_value = Some(val);
+                                else_value = Some((val, LLVMGetInsertBlock(self.builder)));
                                 LLVMBuildBr(self.builder, merge_block);
                             }
                         },
@@ -2916,7 +3057,9 @@ impl Compiler {
                 }
 
                 LLVMPositionBuilderAtEnd(self.builder, merge_block);
-                if let (Some(then_val), Some(else_val)) = (then_value, else_value) {
+                if let (Some((then_val, then_block)), Some((else_val, else_block))) =
+                    (then_value, else_value)
+                {
                     return Ok(EvalOutcome::Value(
                         self.merge_if_values(then_val, then_block, else_val, else_block)?,
                     ));
@@ -2934,6 +3077,20 @@ impl Compiler {
         else_block: LLVMBasicBlockRef,
     ) -> Result<EvaluatedValue, String> {
         let merge_block = unsafe { LLVMGetInsertBlock(self.builder) };
+        let is_string = |value: &Value| {
+            matches!(value, Value::Str(_))
+                || matches!(value, Value::Reference(r) if r.handle.is_some_and(|h| self.is_string_handle(h)))
+        };
+        if self.target.is_host() && is_string(then_val.value()) && is_string(else_val.value()) {
+            let joined = self.merge_match_values(
+                &[(then_val, then_block), (else_val, else_block)],
+                merge_block,
+            )?;
+            if let Some(handle) = joined.runtime_handle() {
+                self.handle_types.insert(handle, TypeExpr::named("string"));
+            }
+            return Ok(joined);
+        }
         let builder = self.builder;
         let build_phi = |ty: LLVMTypeRef, name: &str| unsafe {
             let first_instr = LLVMGetFirstInstruction(merge_block);
@@ -3008,7 +3165,10 @@ impl Compiler {
                         self.describe_value(&Value::Enum(b))
                     ));
                 }
-                if self.runtime_handles_enabled() {
+                if self.runtime_handles_enabled()
+                    || then_runtime.is_some()
+                    || else_runtime.is_some()
+                {
                     let a_handle = then_runtime
                         .map(|rt| rt.handle)
                         .or_else(|| unsafe {
@@ -3048,6 +3208,14 @@ impl Compiler {
                     let mut blocks = [then_block, else_block];
                     unsafe {
                         LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);
+                    }
+                    if let Some(ty) = self
+                        .handle_types
+                        .get(&a_handle)
+                        .or_else(|| self.handle_types.get(&b_handle))
+                        .cloned()
+                    {
+                        self.handle_types.insert(phi, ty);
                     }
                     self.pending_runtime = Some(phi);
                     return Ok(self.evaluated(Value::Enum(EnumValue {
@@ -4073,6 +4241,37 @@ impl Compiler {
         left: Value,
         right: Value,
     ) -> Result<Value, String> {
+        let dynamic_string = |v: &Value| matches!(v, Value::Reference(r) if r.handle.is_some_and(|h| self.is_string_handle(h)));
+        if self.target.is_host()
+            && (dynamic_string(&left) || dynamic_string(&right))
+            && matches!(op, BinaryOp::Add | BinaryOp::Eq | BinaryOp::NotEq)
+        {
+            let mut temporaries = Vec::new();
+            let lhs = self.string_or_slice_operand(left.into(), &mut temporaries)?;
+            let rhs = self.string_or_slice_operand(right.into(), &mut temporaries)?;
+            let value = if matches!(op, BinaryOp::Add) {
+                let handle = self.join_string_parts(&[lhs, rhs]);
+                self.handle_types.insert(handle, TypeExpr::named("string"));
+                Value::from_runtime_payload(handle)
+            } else {
+                let mut equal = self.call_runtime(
+                    self.runtime_abi.prime_string_equal,
+                    self.runtime_abi.prime_string_equal_ty,
+                    &mut [lhs, rhs],
+                    "string_equal",
+                );
+                if matches!(op, BinaryOp::NotEq) {
+                    equal = unsafe {
+                        llvm_sys::core::LLVMBuildNot(self.builder, equal, c"string_ne".as_ptr())
+                    };
+                }
+                Value::Bool(BoolValue::new(equal, None))
+            };
+            for temporary in temporaries {
+                self.runtime_release(temporary);
+            }
+            return Ok(value);
+        }
         let lhs = Self::deref_if_reference(left);
         let rhs = Self::deref_if_reference(right);
         if let (Ok(a), Ok(b)) = (self.expect_int(lhs.clone()), self.expect_int(rhs.clone())) {

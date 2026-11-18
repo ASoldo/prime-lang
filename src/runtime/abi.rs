@@ -2618,7 +2618,11 @@ mod host {
         Float(f64),
         Bool(bool),
         Str(String),
-        Enum { tag: u32, values: Vec<HostValue> },
+        Enum {
+            tag: u32,
+            label: Option<&'static str>,
+            values: Vec<HostValue>,
+        },
         Slice(Arc<Mutex<Vec<PrimeHandle>>>),
         Map(Arc<Mutex<BTreeMap<String, PrimeHandle>>>),
         Sender(Arc<Mutex<Option<mpsc::Sender<PrimeHandle>>>>),
@@ -2626,6 +2630,40 @@ mod host {
         Task(Arc<HostTaskState>),
         TaskError(String),
         CancelToken(Arc<AtomicBool>),
+    }
+
+    impl std::fmt::Display for HostValue {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                HostValue::Int(i) => write!(f, "{i}"),
+                HostValue::Float(value) => write!(f, "{value}"),
+                HostValue::Bool(b) => write!(f, "{b}"),
+                HostValue::Str(s) => write!(f, "{s}"),
+                HostValue::Enum {
+                    label: Some(label),
+                    values,
+                    ..
+                } => {
+                    write!(f, "{label}(")?;
+                    for (index, value) in values.iter().enumerate() {
+                        if index > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{value}")?;
+                    }
+                    write!(f, ")")
+                }
+                HostValue::Enum { tag, .. } => write!(f, "<enum {tag}>"),
+                HostValue::Unit => write!(f, "()"),
+                HostValue::Task(_) => write!(f, "<task>"),
+                HostValue::TaskError(message) => write!(f, "{message}"),
+                HostValue::CancelToken(_) => write!(f, "<cancel token>"),
+                HostValue::Receiver(_) => write!(f, "<receiver>"),
+                HostValue::Sender(_) => write!(f, "<sender>"),
+                HostValue::Slice(_) => write!(f, "<slice>"),
+                HostValue::Map(_) => write!(f, "<map>"),
+            }
+        }
     }
 
     #[derive(Clone)]
@@ -3348,6 +3386,110 @@ mod host {
         to_handle(HostHandle::new(HostValue::Str(text)))
     }
 
+    unsafe fn handle_string(handle: &PrimeHandle) -> Result<&str, String> {
+        match (handle.0 as *const HostHandle).as_ref().map(|h| &h.value) {
+            Some(HostValue::Str(s)) => Ok(s),
+            _ => Err("filesystem operation expects a string".into()),
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_string_equal(lhs: PrimeHandle, rhs: PrimeHandle) -> bool {
+        matches!((handle_string(&lhs), handle_string(&rhs)), (Ok(a), Ok(b)) if a == b)
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_string_join(
+        parts: *const PrimeHandle,
+        len: usize,
+    ) -> PrimeHandle {
+        use std::fmt::Write;
+        let mut text = String::new();
+        if !parts.is_null() {
+            for part in slice::from_raw_parts(parts, len) {
+                let Some(part) = (part.0 as *const HostHandle).as_ref() else {
+                    return PrimeHandle::null();
+                };
+                let _ = write!(text, "{}", part.value);
+            }
+        }
+        to_handle(HostHandle::new(HostValue::Str(text)))
+    }
+
+    fn result_handle(result: Result<HostValue, String>, ok: u32, err: u32) -> PrimeHandle {
+        let (tag, label, payload) = match result {
+            Ok(value) => (ok, "Result::Ok", value),
+            Err(message) => (err, "Result::Err", HostValue::Str(message)),
+        };
+        let value = HostValue::Enum {
+            tag,
+            label: Some(label),
+            values: vec![payload],
+        };
+        to_handle(HostHandle::with_tag(value, tag))
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_fs_exists(path: PrimeHandle) -> bool {
+        handle_string(&path).is_ok_and(|path| std::path::Path::new(path).exists())
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_fs_read(path: PrimeHandle, ok: u32, err: u32) -> PrimeHandle {
+        let result = handle_string(&path).and_then(|path| {
+            std::fs::read_to_string(path)
+                .map(HostValue::Str)
+                .map_err(|e| e.to_string())
+        });
+        result_handle(result, ok, err)
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_fs_write(
+        path: PrimeHandle,
+        contents: PrimeHandle,
+        ok: u32,
+        err: u32,
+    ) -> PrimeHandle {
+        let result = (|| {
+            std::fs::write(handle_string(&path)?, handle_string(&contents)?)
+                .map_err(|e| e.to_string())?;
+            Ok(HostValue::Unit)
+        })();
+        result_handle(result, ok, err)
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_fs_write_bytes(
+        path: PrimeHandle,
+        contents: PrimeHandle,
+        ok: u32,
+        err: u32,
+    ) -> PrimeHandle {
+        let result = (|| {
+            let path = handle_string(&path)?;
+            let HostValue::Slice(items) = clone_value(contents) else {
+                return Err("fs_write_bytes expects []uint8".into());
+            };
+            let items = items
+                .lock()
+                .map_err(|_| "fs_write_bytes could not read slice")?;
+            let mut bytes = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                let HostValue::Int(byte) = clone_value(*item) else {
+                    return Err("fs_write_bytes expects []uint8".into());
+                };
+                bytes.push(u8::try_from(byte).map_err(|_| {
+                    format!("fs_write_bytes expects bytes in range 0..=255, found {byte}")
+                })?);
+            }
+            drop(items);
+            std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+            Ok(HostValue::Unit)
+        })();
+        result_handle(result, ok, err)
+    }
+
     #[unsafe(export_name = "prime_enum_new")]
     pub unsafe extern "C" fn prime_enum_new(
         values_ptr: *const PrimeHandle,
@@ -3361,7 +3503,11 @@ mod host {
                 values.push(clone_value(*handle));
             }
         }
-        let enum_value = HostValue::Enum { tag, values };
+        let enum_value = HostValue::Enum {
+            tag,
+            label: None,
+            values,
+        };
         to_handle(HostHandle::with_tag(enum_value, tag))
     }
 
@@ -3514,15 +3660,7 @@ mod host {
                 }
                 .ok_or_else(|| "invalid integer input".to_string())
             });
-        let (tag, payload) = match result {
-            Ok(value) => (ok_tag, value),
-            Err(message) => (err_tag, HostValue::Str(message)),
-        };
-        let value = HostValue::Enum {
-            tag,
-            values: vec![payload],
-        };
-        to_handle(HostHandle::with_tag(value, tag))
+        result_handle(result, ok_tag, err_tag)
     }
 
     #[unsafe(export_name = "prime_task_new")]
@@ -3815,6 +3953,7 @@ mod host {
             };
             let enum_value = HostValue::Enum {
                 tag,
+                label: None,
                 values: payloads,
             };
             let option_handle = to_handle(HostHandle::with_tag(enum_value, tag));
