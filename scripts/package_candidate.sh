@@ -28,11 +28,32 @@ if [[ -e "$scratch/$name/workspace/demos/tetris/assets" ]]; then
 fi
 cargo install --locked --path "$scratch/$name" --root "$scratch/installed" \
   --target-dir "$scratch/install-target"
-mkdir "$scratch/$binary_bundle" "$scratch/consumer"
+mkdir "$scratch/$binary_bundle" "$scratch/consumer" "$scratch/dist" "$scratch/unpacked"
 cp "$scratch/installed/bin/prime-lang" "$scratch/$binary_bundle/"
 cp "$scratch/$name/LICENSE" "$scratch/$binary_bundle/"
+python3 - "$scratch/$name" "$scratch/$binary_bundle" "$host" <<'PYINFO'
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+source, bundle = map(Path, sys.argv[1:3])
+dynamic = subprocess.check_output(["readelf", "-d", bundle / "prime-lang"], text=True)
+needed = sorted(re.findall(r"\(NEEDED\).*?\[([^\]]+)\]", dynamic))
+vcs = source / ".cargo_vcs_info.json"
+info = {
+    "target": sys.argv[3],
+    "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
+    "git_commit": json.loads(vcs.read_text())["git"]["sha1"] if vcs.exists() else None,
+    "needed_libraries": needed,
+}
+(bundle / "build-info.json").write_text(json.dumps(info, indent=2) + "\n")
+PYINFO
+tar -C "$scratch" -czf "$scratch/dist/$binary_bundle.tar.gz" "$binary_bundle"
+tar -C "$scratch/unpacked" -xzf "$scratch/dist/$binary_bundle.tar.gz"
 cd "$scratch/consumer"
-cli="$scratch/$binary_bundle/prime-lang"
+cli="$scratch/unpacked/$binary_bundle/prime-lang"
 cat > main.prime <<'PRIME'
 out(6 * 7);
 PRIME
@@ -47,11 +68,8 @@ cmp expected actual
 ./.build.prime/hello/hello > actual
 cmp expected actual
 
-cd "$scratch"
-mkdir dist
-cp "$archive" dist/
-tar -czf "dist/$binary_bundle.tar.gz" "$binary_bundle"
-cd dist
+cd "$scratch/dist"
+cp "$archive" .
 sha256sum "$name.crate" "$binary_bundle.tar.gz" > SHA256SUMS
 sha256sum -c SHA256SUMS
 # Each verified candidate gets its own directory, including repeated builds of a version.
