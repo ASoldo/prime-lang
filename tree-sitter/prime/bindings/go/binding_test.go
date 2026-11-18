@@ -9,7 +9,9 @@ import (
 
 func TestCanLoadGrammar(t *testing.T) {
 	language := tree_sitter.NewLanguage(tree_sitter_prime_lang.Language())
-	if language == nil {
-		t.Errorf("Error loading PrimeLang grammar")
+	parser := tree_sitter.NewParser()
+	defer parser.Close()
+	if err := parser.SetLanguage(language); err != nil {
+		t.Fatal(err)
 	}
 }

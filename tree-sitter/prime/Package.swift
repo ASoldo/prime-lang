@@ -1,4 +1,4 @@
-// swift-tools-version:5.3
+// swift-tools-version:5.9
 
 import Foundation
 import PackageDescription
@@ -10,11 +10,15 @@ if FileManager.default.fileExists(atPath: "src/scanner.c") {
 
 let package = Package(
     name: "TreeSitterPrimeLang",
+    platforms: [
+        .macOS(.v10_13), .macCatalyst(.v13), .iOS(.v12),
+        .tvOS(.v12), .watchOS(.v5), .visionOS(.v1),
+    ],
     products: [
         .library(name: "TreeSitterPrimeLang", targets: ["TreeSitterPrimeLang"]),
     ],
     dependencies: [
-        .package(name: "SwiftTreeSitter", url: "https://github.com/tree-sitter/swift-tree-sitter", from: "0.9.0"),
+        .package(url: "https://github.com/tree-sitter/swift-tree-sitter", .upToNextMinor(from: "0.25.0")),
     ],
     targets: [
         .target(
@@ -22,16 +26,13 @@ let package = Package(
             dependencies: [],
             path: ".",
             sources: sources,
-            resources: [
-                .copy("queries")
-            ],
             publicHeadersPath: "bindings/swift",
             cSettings: [.headerSearchPath("src")]
         ),
         .testTarget(
             name: "TreeSitterPrimeLangTests",
             dependencies: [
-                "SwiftTreeSitter",
+                .product(name: "SwiftTreeSitter", package: "swift-tree-sitter"),
                 "TreeSitterPrimeLang",
             ],
             path: "bindings/swift/TreeSitterPrimeLangTests"

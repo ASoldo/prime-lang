@@ -48,6 +48,10 @@
         "named": true
       },
       {
+        "type": "index_expression",
+        "named": true
+      },
+      {
         "type": "literal",
         "named": true
       },
@@ -1103,6 +1107,36 @@
         "types": [
           {
             "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "type_identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "index_expression",
+    "named": true,
+    "fields": {
+      "index": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "expression",
             "named": true
           }
         ]
@@ -2335,7 +2369,7 @@
     "fields": {},
     "children": {
       "multiple": true,
-      "required": true,
+      "required": false,
       "types": [
         {
           "type": "expression",
@@ -2365,7 +2399,7 @@
     "fields": {},
     "children": {
       "multiple": true,
-      "required": true,
+      "required": false,
       "types": [
         {
           "type": "type_expression",
@@ -2735,6 +2769,10 @@
   },
   {
     "type": "mut",
+    "named": false
+  },
+  {
+    "type": "package",
     "named": false
   },
   {

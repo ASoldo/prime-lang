@@ -11,5 +11,5 @@ import "unsafe"
 
 // Get the tree-sitter Language for this grammar.
 func Language() unsafe.Pointer {
-	return unsafe.Pointer(C.tree_sitter_prime_lang())
+	return unsafe.Pointer(C.tree_sitter_prime())
 }

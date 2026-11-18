@@ -30,6 +30,8 @@ module.exports = grammar({
   ],
 
   conflicts: $ => [
+    [$.array_literal, $.slice_type],
+    [$.expression, $.generic_type],
     [$.statement, $.expression],
     [$.return_type, $.tuple_type],
     [$.pattern, $.enum_pattern],
@@ -37,13 +39,17 @@ module.exports = grammar({
     [$.type_path, $.enum_pattern],
     [$.type_path, $.enum_pattern, $.type_expression],
     [$.type_path, $.expression],
+    [$.type_path, $.expression, $.type_expression],
+    [$.expression, $.type_expression],
     [$.expression, $.struct_literal],
     [$.expression, $.macro_argument],
     [$.macro_var, $.macro_argument],
     [$.module_path],
+    [$.namespace_path],
     [$.type_path, $.type_expression],
     [$.type_expression, $.generic_type],
     [$.tuple_type, $.function_type],
+    [$.tuple_expression, $.tuple_type],
   ],
 
   rules: {
@@ -55,18 +61,32 @@ module.exports = grammar({
 
     module_declaration: $ => seq(
       choice('module', 'library', 'test'),
-      field('name', $.module_path),
+      field('name', alias($.namespace_path, $.module_path)),
       ';'
     ),
 
     import_declaration: $ => seq(
       optional('pub'),
       'import',
-      field('path', choice($.module_path, $.string_literal)),
-      optional(seq('as', field('alias', $.identifier))),
-      optional($.import_selector_list),
+      choice(
+        seq(
+          field('path', alias($.namespace_path, $.module_path)),
+          choice(
+            seq(choice('::', '/'), choice('*', $.import_selector_list), optional($._import_alias)),
+            seq(optional($._import_alias), optional($.import_selector_list))
+          )
+        ),
+        seq(field('path', $.string_literal), optional($._import_alias), optional($.import_selector_list))
+      ),
       optional(';')
     ),
+
+    namespace_path: $ => seq(
+      field('head', choice($.identifier, $.type_identifier)),
+      repeat(seq(choice('::', '/'), field('tail', choice($.identifier, $.type_identifier))))
+    ),
+
+    _import_alias: $ => seq('as', field('alias', $.identifier)),
 
     prelude_export: $ => seq(
       'export',
@@ -77,11 +97,10 @@ module.exports = grammar({
 
     import_selector_list: $ => seq(
       '{',
-      commaSep1(choice(
+      commaSep(choice(
         '*',
-        seq(field('name', $.identifier), optional(seq('as', field('alias', $.identifier))))
+        seq(field('name', choice($.identifier, $.type_identifier)), optional($._import_alias))
       )),
-      optional(','),
       '}'
     ),
 
@@ -96,7 +115,7 @@ module.exports = grammar({
     ),
 
     item: $ => seq(
-      optional('pub'),
+      optional(seq('pub', optional(seq('(', 'package', ')')))),
       choice(
         $.macro_definition,
         $.function_definition,
@@ -369,6 +388,7 @@ module.exports = grammar({
       $.await_expression,
       $.async_expression,
       $.call_expression,
+      $.index_expression,
       $.field_expression,
       $.question_expression,
       $.struct_literal,
@@ -393,11 +413,7 @@ module.exports = grammar({
       'match',
       field('value', $.expression),
       '{',
-      optional(seq(
-        $.match_arm,
-        repeat(seq(choice(',', ';'), $.match_arm)),
-        optional(choice(',', ';'))
-      )),
+      repeat(seq($.match_arm, optional(','))),
       '}'
     ),
 
@@ -573,6 +589,13 @@ module.exports = grammar({
 
     argument_list: $ => seq('(', commaSep($.expression), ')'),
 
+    index_expression: $ => prec.left(PREC.call, seq(
+      field('value', $.expression),
+      '[',
+      field('index', $.expression),
+      ']'
+    )),
+
     field_expression: $ => prec.left(PREC.call,
       seq(
         field('value', $.expression),
@@ -614,10 +637,10 @@ module.exports = grammar({
 
     tuple_expression: $ => seq(
       '(',
-      choice(
+      optional(choice(
         seq($.expression, ',', $.expression, repeat(seq(',', $.expression)), optional(',')),
         seq($.expression, ',')
-      ),
+      )),
       ')'
     ),
 
@@ -747,7 +770,7 @@ module.exports = grammar({
     reference_type: $ => seq('&', optional('mut'), $.type_expression),
     slice_type: $ => seq('[', ']', $.type_expression),
     array_type: $ => seq('[', $.integer_literal, ']', $.type_expression),
-    tuple_type: $ => seq('(', commaSep1($.type_expression), ')'),
+    tuple_type: $ => seq('(', commaSep($.type_expression), ')'),
     function_type: $ => seq(
       'fn',
       '(',

@@ -4,8 +4,7 @@
 //! tree-sitter [`Parser`], and then use the parser to parse some code:
 //!
 //! ```
-//! let code = r#"
-//! "#;
+//! let code = "module demo; fn main() { () }";
 //! let mut parser = tree_sitter::Parser::new();
 //! let language = tree_sitter_prime_lang::LANGUAGE;
 //! parser
@@ -21,11 +20,11 @@
 use tree_sitter_language::LanguageFn;
 
 extern "C" {
-    fn tree_sitter_prime_lang() -> *const ();
+    fn tree_sitter_prime() -> *const ();
 }
 
 /// The tree-sitter [`LanguageFn`] for this grammar.
-pub const LANGUAGE: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_prime_lang) };
+pub const LANGUAGE: LanguageFn = unsafe { LanguageFn::from_raw(tree_sitter_prime) };
 
 /// The content of the [`node-types.json`] file for this grammar.
 ///
@@ -41,11 +40,36 @@ pub const NODE_TYPES: &str = include_str!("../../src/node-types.json");
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_can_load_grammar() {
+    fn parse(source: &str) -> tree_sitter::Tree {
+        let language: tree_sitter::Language = super::LANGUAGE.into();
+        assert_eq!(language.abi_version(), 15);
         let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&super::LANGUAGE.into())
-            .expect("Error loading PrimeLang parser");
+        parser.set_language(&language).unwrap();
+        parser.parse(source, None).unwrap()
+    }
+
+    #[test]
+    fn distinguishes_unit_type_and_expression() {
+        let tree = parse("module demo; fn sample() -> () { () }");
+        let root = tree.root_node();
+        assert!(!root.has_error(), "{}", root.to_sexp());
+        let function = root.named_child(1).unwrap().named_child(0).unwrap();
+        let returns = function.child_by_field_name("returns").unwrap();
+        let body = function.child_by_field_name("body").unwrap();
+        assert_eq!(returns.named_child(0).unwrap().kind(), "tuple_type");
+        assert_eq!(
+            body.child_by_field_name("tail").unwrap().kind(),
+            "tuple_expression"
+        );
+    }
+
+    #[test]
+    fn reports_invalid_and_incomplete_syntax() {
+        for source in [
+            "module demo; fn sample() { let = ; }",
+            "module demo; fn sample() { ()",
+        ] {
+            assert!(parse(source).root_node().has_error(), "{source}");
+        }
     }
 }
