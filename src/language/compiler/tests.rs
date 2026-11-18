@@ -709,9 +709,7 @@ fn borrow_demo_compiles() {
 }
 
 #[test]
-#[ignore]
 fn pattern_demo_compiles() {
-    // This demo is heavy and can hang build-mode under certain conditions; skip by default.
     compile_entry("workspace/demos/patterns/pattern_demo.prime")
         .expect("compile pattern demo in build mode");
 }

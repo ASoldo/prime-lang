@@ -471,9 +471,9 @@ impl RuntimeAbi {
             "prime_read_value",
             handle_type,
             &mut [
-                status_type,
-                status_type,
-                status_type,
+                i32_type,
+                i32_type,
+                i32_type,
                 string_data_type,
                 usize_type,
                 LLVMPointerType(handle_type, 0),

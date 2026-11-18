@@ -862,114 +862,132 @@ impl Compiler {
         }
     }
 
-    pub(super) fn builtin_get(&mut self, mut args: Vec<Value>) -> Result<Value, String> {
-        if args.len() != 2 {
-            return Err("get expects receiver and argument".into());
-        }
-        let receiver = args.remove(0);
-        match receiver {
+    pub(super) fn builtin_get(&mut self, args: Vec<Value>) -> Result<EvaluatedValue, String> {
+        let [receiver, key] = args
+            .try_into()
+            .map_err(|_| "get expects receiver and argument")?;
+        let (status, slot) = match receiver {
             Value::Slice(slice) => {
-                let int_value = self.expect_int(args.remove(0))?;
-                let idx_const = int_value.constant();
-                let mut slice = slice;
-                let mut handle = slice.handle;
-                if handle.is_none() && idx_const.is_none() {
-                    if let Ok(runtime) = self.build_runtime_handle(Value::Slice(slice.clone())) {
-                        slice.handle = Some(runtime);
-                        handle = Some(runtime);
+                let index = self.expect_int(key)?;
+                if let Some(i) = index.constant() {
+                    let Ok(i) = usize::try_from(i) else {
+                        return self
+                            .instantiate_enum_variant("None", vec![])
+                            .map(Into::into);
+                    };
+                    if slice.handle.is_none() {
+                        return self.known_lookup_option(slice.get(i));
                     }
                 }
-                if let Some(handle) = handle {
-                    if let Some(idx) = idx_const {
-                        if idx < 0 {
-                            return self.instantiate_enum_variant("None", Vec::new());
-                        }
-                    }
-                    let idx_arg = if let Some(idx) = idx_const {
-                        unsafe { LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0) }
-                    } else {
-                        self.int_to_usize(&int_value, "get_index")?
-                    };
-                    let slot =
-                        self.build_entry_alloca(self.runtime_abi.handle_type, "slice_get_out");
-                    let mut call_args = [handle, idx_arg, slot];
-                    self.call_runtime(
-                        self.runtime_abi.prime_slice_get_handle,
-                        self.runtime_abi.prime_slice_get_handle_ty,
-                        &mut call_args,
-                        "slice_get_handle",
-                    );
-                    let loaded = unsafe {
-                        LLVMBuildLoad2(
-                            self.builder,
-                            self.runtime_abi.handle_type,
-                            slot,
-                            CString::new("slice_get_loaded").unwrap().as_ptr(),
-                        )
-                    };
-                    let reference = ReferenceValue {
-                        cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
-                        mutable: false,
-                        origin: None,
-                        handle: Some(loaded),
-                    };
-                    return self
-                        .instantiate_enum_variant("Some", vec![Value::Reference(reference.clone())])
-                        .or_else(|_| Ok(Value::Reference(reference)));
+                let owned = slice.handle.is_none();
+                let handle = self.build_runtime_handle(Value::Slice(slice))?;
+                let index = self.int_to_usize(&index, "get_index")?;
+                let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "slice_get_out");
+                unsafe {
+                    LLVMBuildStore(self.builder, self.null_handle_ptr(), slot);
                 }
-                let idx = idx_const
-                    .ok_or_else(|| "get index must be constant in build mode".to_string())?;
-                if idx < 0 {
-                    return self.instantiate_enum_variant("None", Vec::new());
+                let status = self.call_runtime(
+                    self.runtime_abi.prime_slice_get_handle,
+                    self.runtime_abi.prime_slice_get_handle_ty,
+                    &mut [handle, index, slot],
+                    "slice_get_status",
+                );
+                if owned {
+                    self.runtime_release(handle);
                 }
-                let value = slice.get(idx as usize);
-                match value {
-                    Some(value) => self.instantiate_enum_variant("Some", vec![value]),
-                    None => self.instantiate_enum_variant("None", Vec::new()),
-                }
+                (status, slot)
             }
             Value::Map(map) => {
-                let key = Self::expect_string_value(args.remove(0), "get")?;
-                if let Some(handle) = map.handle {
-                    let (key_ptr, key_len) = self.build_runtime_bytes(&key, "map_get_key")?;
-                    let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "map_get_out");
-                    let mut call_args = [handle, key_ptr, key_len, slot];
-                    self.call_runtime(
-                        self.runtime_abi.prime_map_get_handle,
-                        self.runtime_abi.prime_map_get_handle_ty,
-                        &mut call_args,
-                        "map_get_handle",
-                    );
-                    let loaded = unsafe {
-                        LLVMBuildLoad2(
-                            self.builder,
-                            self.runtime_abi.handle_type,
-                            slot,
-                            CString::new("map_get_loaded").unwrap().as_ptr(),
-                        )
-                    };
-                    let reference = ReferenceValue {
-                        cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
-                        mutable: false,
-                        origin: None,
-                        handle: Some(loaded),
-                    };
-                    return self
-                        .instantiate_enum_variant("Some", vec![Value::Reference(reference.clone())])
-                        .or_else(|_| Ok(Value::Reference(reference)));
+                let key = Self::expect_string_value(key, "get")?;
+                let Some(handle) = map.handle else {
+                    return self.known_lookup_option(map.get(&key));
+                };
+                let (ptr, len) = self.build_runtime_bytes(&key, "map_get_key")?;
+                let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "map_get_out");
+                unsafe {
+                    LLVMBuildStore(self.builder, self.null_handle_ptr(), slot);
                 }
-                match map.get(&key) {
-                    Some(value) => self.instantiate_enum_variant("Some", vec![value]),
-                    None => self.instantiate_enum_variant("None", Vec::new()),
-                }
+                let status = self.call_runtime(
+                    self.runtime_abi.prime_map_get_handle,
+                    self.runtime_abi.prime_map_get_handle_ty,
+                    &mut [handle, ptr, len, slot],
+                    "map_get_status",
+                );
+                (status, slot)
             }
             Value::Reference(reference) => {
-                let mut forwarded = Vec::new();
-                forwarded.push(reference.cell.lock().unwrap().clone().into_value());
-                forwarded.extend(args);
-                self.builtin_get(forwarded)
+                let receiver = reference.cell.lock().unwrap().clone().into_value();
+                return self.builtin_get(vec![receiver, key]);
             }
-            _ => Err("get expects slice or map".into()),
+            _ => return Err("get expects slice or map".into()),
+        };
+        unsafe {
+            // A failed lookup leaves the output slot untouched. It was initialized
+            // to null so it is safe to release after copying a successful payload.
+            let payload = LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                slot,
+                c"lookup_payload".as_ptr(),
+            );
+            let (Some(some), Some(none)) = (
+                self.enum_variants.get("Some"),
+                self.enum_variants.get("None"),
+            ) else {
+                // Standalone modules without the Option prelude use the raw handle.
+                return Ok(Value::from_runtime_payload(payload).into());
+            };
+            let (some, none) = (some.variant_index, none.variant_index);
+            let found = LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                status,
+                LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0),
+                c"lookup_found".as_ptr(),
+            );
+            let len = llvm_sys::core::LLVMBuildZExt(
+                self.builder,
+                found,
+                self.runtime_abi.usize_type,
+                c"option_len".as_ptr(),
+            );
+            let tag = LLVMBuildSelect(
+                self.builder,
+                found,
+                LLVMConstInt(self.i32_type, some as u64, 0),
+                LLVMConstInt(self.i32_type, none as u64, 0),
+                c"option_tag".as_ptr(),
+            );
+            let handle = self.call_runtime(
+                self.runtime_abi.prime_enum_new,
+                self.runtime_abi.prime_enum_new_ty,
+                &mut [slot, len, tag],
+                "lookup_option",
+            );
+            self.runtime_release(payload);
+            Ok(EvaluatedValue {
+                value: Value::Enum(EnumValue {
+                    enum_name: "Option".into(),
+                    variant: "<runtime>".into(),
+                    values: Vec::new(),
+                    variant_index: 0,
+                }),
+                runtime: Some(RuntimeValue {
+                    handle,
+                    lookup_found: Some(found),
+                }),
+            })
+        }
+    }
+
+    fn known_lookup_option(&self, value: Option<Value>) -> Result<EvaluatedValue, String> {
+        match value {
+            Some(value) => self
+                .instantiate_enum_variant("Some", vec![value])
+                .map(Into::into),
+            None => self
+                .instantiate_enum_variant("None", Vec::new())
+                .map(Into::into),
         }
     }
 
