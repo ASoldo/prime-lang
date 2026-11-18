@@ -1,5 +1,7 @@
 #![allow(clippy::collapsible_if)]
 
+mod board;
+
 #[path = "runtime/distribution/mod.rs"]
 mod runtime_distribution;
 
@@ -87,6 +89,9 @@ enum Commands {
     },
     /// Build a Prime target (including stdin) to LLVM IR and a native binary
     Build(BuildArgs),
+    /// Identify an Espressif board or save its verified flash contents
+    #[command(subcommand)]
+    Board(board::BoardCommand),
     /// Lint a file once or continuously
     Lint {
         file: PathBuf,
@@ -293,6 +298,7 @@ enum Commands {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum OutputSchema {
+    Board,
     Check,
     Trace,
 }
@@ -355,6 +361,12 @@ fn main() -> std::process::ExitCode {
             return tools::check::run_check(&entry, project.as_deref(), frozen, format);
         }
         Commands::Build(args) => build_entry(args),
+        Commands::Board(command) => {
+            if let Err(err) = board::run(command) {
+                eprintln!("board: {err}");
+                return std::process::ExitCode::FAILURE;
+            }
+        }
         Commands::Lint { file, watch } => {
             ensure_prime_file(&file);
             warn_manifest_drift(&file);
@@ -451,6 +463,7 @@ fn main() -> std::process::ExitCode {
         Commands::Schema { format } => {
             use std::io::Write;
             let schema = match format {
+                OutputSchema::Board => include_str!("../docs/schemas/board-v1.json"),
                 OutputSchema::Check => include_str!("../docs/schemas/check-v1.json"),
                 OutputSchema::Trace => include_str!("../docs/schemas/trace-v1.json"),
             };

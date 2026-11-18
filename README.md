@@ -60,6 +60,8 @@ To check the host filesystem example, build it from the checkout root with `prim
 
 ### Embedded / ESP32 (Xtensa) Quickstart
 
+On a board with unknown contents, use `prime-lang board inspect` to identify the chip and `prime-lang board backup` to save a verified flash image. [Board identification and backup](docs/BoardRecovery.md)
+
 The [blink manifest](workspace/demos/esp32_blink/prime.toml) targets classic Xtensa ESP32. Install the Espressif Rust toolchain (`esp`), esp-clang, the Xtensa GCC tools and ESP-IDF. Build ESP-IDF's blink example once for `esp32` to generate `sections.ld` and `memory.ld`. With the tools installed and the IDF example built, point the Prime CLI at that checkout and its generated linker scripts. Adjust the two paths for your installation.
 
 ```sh
