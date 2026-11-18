@@ -1,0 +1,11 @@
+[package]
+name = "runtime-abi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "runtime_abi"
+path = "abi.rs"
+crate-type = ["staticlib"]
+
+[workspace]

@@ -1452,6 +1452,7 @@ dependencies = [
  "miette",
  "minifb",
  "notify",
+ "object",
  "rodio",
  "serde",
  "serde_json",

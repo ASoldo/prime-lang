@@ -33,7 +33,7 @@ use prime_lang::tools::{
     lint::run_lint,
 };
 use prime_lang::{language, lsp, project, tools};
-use runtime_distribution::RuntimePackage;
+use runtime_distribution::{RuntimeKind, RuntimePackage};
 use std::{
     env, fs, io,
     io::IsTerminal,
@@ -581,6 +581,7 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool, trace: bool) {
 
 fn compile_runtime_abi(
     package: &RuntimePackage,
+    kind: RuntimeKind,
     options: &BuildOptions,
 ) -> Result<PathBuf, String> {
     let target = &options.target;
@@ -628,6 +629,9 @@ fn compile_runtime_abi(
         .arg(&package.manifest);
     if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
         cmd.arg("-Zbuild-std=core,alloc");
+    }
+    if let Some(features) = kind.features() {
+        cmd.args(["--no-default-features", "--features", features]);
     }
     cmd.arg("--")
         .arg("--cfg")
@@ -1191,16 +1195,20 @@ fn run_gcc_with_runtime(
     let cache = env::var_os("CARGO_TARGET_DIR")
         .map(|dir| PathBuf::from(dir).join("prime-runtime"))
         .unwrap_or_else(|| PathBuf::from(".build.prime/runtime"));
-    let package =
-        RuntimePackage::prepare(&cache, build_options.target.is_embedded()).map_err(|err| {
-            format!(
-                "failed to prepare runtime package in {}: {err}",
-                cache.display()
-            )
-        })?;
-    let runtime_lib = compile_runtime_abi(&package, build_options)?;
+    let kind = if build_options.target.is_embedded() {
+        RuntimeKind::Embedded
+    } else {
+        RuntimeKind::for_object(obj_path)?
+    };
+    let package = RuntimePackage::prepare(&cache, kind).map_err(|err| {
+        format!(
+            "failed to prepare runtime package in {}: {err}",
+            cache.display()
+        )
+    })?;
+    let runtime_lib = compile_runtime_abi(&package, kind, build_options)?;
     match &build_options.target {
-        BuildTarget::Host => link_host(obj_path, &runtime_lib, bin_path),
+        BuildTarget::Host => link_host(obj_path, &runtime_lib, bin_path, kind),
         BuildTarget::Triple(_) if build_options.target.is_embedded() => {
             link_esp32(obj_path, &runtime_lib, bin_path, build_options)
         }
@@ -1412,16 +1420,23 @@ fn flash_esp32(
     Ok(())
 }
 
-fn link_host(obj_path: &Path, runtime_lib: &Path, bin_path: &Path) -> Result<(), String> {
+fn link_host(
+    obj_path: &Path,
+    runtime_lib: &Path,
+    bin_path: &Path,
+    kind: RuntimeKind,
+) -> Result<(), String> {
     let mut cmd = Command::new("gcc");
     cmd.arg(obj_path)
         .arg(runtime_lib)
         .arg("-o")
         .arg(bin_path)
         .arg("-lpthread")
-        .arg("-ldl")
-        .arg("-lasound")
-        .arg("-lm");
+        .arg("-ldl");
+    if matches!(kind, RuntimeKind::Audio | RuntimeKind::Multimedia) {
+        cmd.arg("-lasound");
+    }
+    cmd.arg("-lm");
     let output = cmd
         .output()
         .map_err(|err| format!("Failed to execute gcc: {err}"))?;

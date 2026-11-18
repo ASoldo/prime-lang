@@ -20,7 +20,7 @@ graph LR
   DEVICE --> UART["UART/ROM bindings"]
 ```
 
-The interpreter uses an in-process runtime. Native code calls C-compatible symbols declared in `src/language/runtime_abi.rs` and implemented in `src/runtime/abi.rs`. The CLI ships these implementations with the matching Cargo lockfiles. Changing a parameter's type or width requires updating both sides and exercising the generated call on the target.
+The interpreter uses an in-process runtime. Native code calls C-compatible symbols declared in `src/language/runtime_abi.rs` and implemented in `src/runtime/abi.rs`, `graphics_abi.rs` and `audio_abi.rs`. The CLI ships these implementations with the matching Cargo lockfiles. Changing a parameter's type or width requires updating both sides and exercising the generated call on the target.
 
 | Call | Argument | Return |
 | --- | --- | --- |
@@ -33,6 +33,21 @@ The interpreter uses an in-process runtime. Native code calls C-compatible symbo
 The host runtime uses OS threads. The embedded runtime uses statically initialized pools and a target-specific clock. Closing a channel preserves its queued values. After those values have been read, the channel releases its slot. [Embedded timers and channels](EmbeddedTimers.md)
 
 Host interpreter and async errors can propagate through task results. The embedded runtime aborts or loops on panic. [Async semantics and restrictions](AsyncAwait.md)
+
+## Host runtime selection
+
+After LLVM emits the object, `prime-lang build` inspects its undefined symbols. References to `prime_gfx_*` enable graphics and references to `prime_audio_*` enable audio. Both are enabled for Tetris. An unused declaration or a string containing a symbol name adds no dependency. A function whose body is present in the object can require media even if the program never calls it.
+
+The base runtime has a dependency-free Cargo manifest and lockfile. It provides text, core operations, filesystem and TCP. The three media combinations enable their respective Cargo features. Linux links ALSA for the combinations with audio. File and stdin builds use the same selection.
+
+The CLI carries the sources and locks when moved away from the repository. Each runtime combination has a separate Cargo target directory and build lock under `$CARGO_TARGET_DIR/prime-runtime`, or `.build.prime/runtime` when the variable is unset. Two builds of the same combination share the cache and hold its lock through native linking. Builds using different combinations can run concurrently.
+
+On x86-64 Arch Linux with Rust 1.100.0, LLVM 23.1.3 and two Cargo build jobs, the same `out("hello");` input to `prime-lang build - --name hello` gave the following elapsed times. Each cold run started with empty build and target directories and a populated Cargo registry. Warm times are the median of five subsequent builds. CLI installation time is excluded.
+
+| Host runtime | Cold build | Warm build |
+| --- | ---: | ---: |
+| Full runtime for every program (7a09ff2) | 42.999 s | 0.090 s |
+| Automatically selected minimal runtime | 0.842 s | 0.051 s |
 
 ## ESP32-C3 strings
 

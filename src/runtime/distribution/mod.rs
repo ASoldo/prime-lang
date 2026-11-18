@@ -7,12 +7,61 @@ use std::{
 
 /// The CLI carries the same sources that Cargo tracks when compiling it.
 /// Keep each sibling next to abi.rs so its relative module paths work.
-const SOURCES: &[(&str, &[u8])] = &[
+const BASE_SOURCES: &[(&str, &[u8])] = &[
     ("tcp.rs", include_bytes!("../tcp.rs")),
     ("abi.rs", include_bytes!("../abi.rs")),
+];
+
+const MEDIA_SOURCES: &[(&str, &[u8])] = &[
+    ("host.rs", include_bytes!("host.rs")),
+    ("audio_abi.rs", include_bytes!("../audio_abi.rs")),
+    ("graphics_abi.rs", include_bytes!("../graphics_abi.rs")),
     ("audio.rs", include_bytes!("../audio.rs")),
     ("graphics.rs", include_bytes!("../graphics.rs")),
 ];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeKind {
+    Minimal,
+    Graphics,
+    Audio,
+    Multimedia,
+    Embedded,
+}
+
+impl RuntimeKind {
+    pub fn for_object(path: &Path) -> Result<Self, String> {
+        use object::{Object, ObjectSymbol};
+        let bytes =
+            fs::read(path).map_err(|err| format!("Cannot read {}: {err}", path.display()))?;
+        let file = object::File::parse(&*bytes)
+            .map_err(|err| format!("Cannot inspect {}: {err}", path.display()))?;
+        let mut graphics = false;
+        let mut audio = false;
+        for symbol in file.symbols().filter(|s| s.is_undefined()) {
+            let name = symbol.name_bytes().map_err(|err| err.to_string())?;
+            // Mach-O and some COFF targets prefix C symbols with an underscore.
+            let name = name.strip_prefix(b"_").unwrap_or(name);
+            graphics |= name.starts_with(b"prime_gfx_");
+            audio |= name.starts_with(b"prime_audio_");
+        }
+        Ok(match (graphics, audio) {
+            (false, false) => Self::Minimal,
+            (true, false) => Self::Graphics,
+            (false, true) => Self::Audio,
+            (true, true) => Self::Multimedia,
+        })
+    }
+
+    pub fn features(self) -> Option<&'static str> {
+        match self {
+            Self::Graphics => Some("graphics"),
+            Self::Audio => Some("audio"),
+            Self::Multimedia => Some("graphics,audio"),
+            Self::Minimal | Self::Embedded => None,
+        }
+    }
+}
 
 pub(crate) struct RuntimePackage {
     pub manifest: PathBuf,
@@ -24,26 +73,38 @@ pub(crate) struct RuntimePackage {
 }
 
 impl RuntimePackage {
-    pub fn prepare(cache: &Path, embedded: bool) -> io::Result<Self> {
-        let (kind, manifest, lockfile) = if embedded {
-            (
-                "embedded",
+    pub fn prepare(cache: &Path, kind: RuntimeKind) -> io::Result<Self> {
+        let directory = match kind {
+            RuntimeKind::Minimal => "host-minimal",
+            RuntimeKind::Graphics => "host-graphics",
+            RuntimeKind::Audio => "host-audio",
+            RuntimeKind::Multimedia => "host-multimedia",
+            RuntimeKind::Embedded => "embedded",
+        };
+        let (manifest, lockfile, extra_sources) = match kind {
+            RuntimeKind::Embedded => (
                 include_str!("embedded.Cargo.toml"),
                 include_str!("embedded.Cargo.lock"),
-            )
-        } else {
-            (
-                "host",
+                &[][..],
+            ),
+            RuntimeKind::Minimal => (
+                include_str!("minimal.Cargo.toml"),
+                // Both packages have no external dependencies.
+                include_str!("embedded.Cargo.lock"),
+                &[][..],
+            ),
+            RuntimeKind::Graphics | RuntimeKind::Audio | RuntimeKind::Multimedia => (
                 include_str!("host.Cargo.toml"),
                 include_str!("host.Cargo.lock"),
-            )
+                MEDIA_SOURCES,
+            ),
         };
         // A compiler flag identifies this bundle to Cargo. Dependency artifacts
         // can then stay warm across CLI updates without reusing an old ABI.
         let mut hash = DefaultHasher::new();
-        (SOURCES, manifest, lockfile).hash(&mut hash);
+        (BASE_SOURCES, extra_sources, manifest, lockfile).hash(&mut hash);
         let source_id = format!("{:016x}", hash.finish());
-        let cache = cache.join(kind);
+        let cache = cache.join(directory);
         let package = cache.join(&source_id);
         fs::create_dir_all(&package)?;
         let build_lock = File::options()
@@ -53,7 +114,7 @@ impl RuntimePackage {
             .truncate(false)
             .open(cache.join("build.lock"))?;
         build_lock.lock()?;
-        for (name, bytes) in SOURCES.iter().copied().chain([
+        for (name, bytes) in BASE_SOURCES.iter().chain(extra_sources).copied().chain([
             ("Cargo.toml", manifest.as_bytes()),
             ("Cargo.lock", lockfile.as_bytes()),
         ]) {

@@ -5,7 +5,7 @@
 - Install Rust with rustup. The repository selects Rust 1.100.0 for development. The locked host CLI supports Rust 1.91 and newer.
 - LLVM 21 available for `llvm-sys` (build-mode uses `llc`). On Linux you can set `LLVM_SYS_211_PREFIX` and/or `PRIME_LLC` if LLVM is not in the default path.
 
-On Linux the host runtime also needs a C linker, pkg-config, ALSA and X11/Wayland development headers. The [CI workflow](../.github/workflows/ci.yml) lists the Ubuntu packages. The example inventory requires Python 3.11 or newer.
+Building the CLI from Rust sources on Linux also needs a C linker, pkg-config, ALSA and X11/Wayland development headers because the interpreter includes graphics and audio. The [CI workflow](../.github/workflows/ci.yml) lists the Ubuntu packages. The example inventory requires Python 3.11 or newer.
 
 ## First run
 
@@ -28,6 +28,16 @@ prime-lang build answer.prime --name answer
 ```
 
 The compiled executable prints `42`. The [stdin guide](Inline.md) shows how to use the same source with `check -`, `run --trace -` and `build -`.
+
+With an installed CLI, text, core-library, filesystem and TCP programs need only the Rust toolchain, LLVM and the C linker to build their native runtime. For example, run this in an empty directory with an empty Cargo registry while offline.
+
+```sh
+printf 'out("hello");\n' | CARGO_HOME="$PWD/registry" CARGO_TARGET_DIR="$PWD/target" \
+  CARGO_NET_OFFLINE=true prime-lang build - --name hello
+./.build.prime/hello/hello
+```
+
+Graphics and audio are selected automatically, including calls in compiled library functions. Graphics uses image and minifb with the window-system development packages. Audio uses rodio and ALSA on Linux. The first build of a media program needs its locked Cargo dependencies available locally or from the registry. [Runtime selection and caching](RuntimeFFI.md#host-runtime-selection)
 
 ## Create a package
 

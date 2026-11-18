@@ -1,3 +1,4 @@
+#[path = "cli_abi.rs"]
 pub mod abi;
 pub mod async_runtime;
 pub mod audio;
