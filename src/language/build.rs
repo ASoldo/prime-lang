@@ -3235,7 +3235,8 @@ enum Flow {
 mod tests {
     use super::*;
     use crate::language::ast::{
-        Block, DeferStmt, ExprStmt, FunctionBody, LetStmt, MatchArmExpr, MatchExpr, Visibility,
+        Block, DeferStmt, ExprId, ExprStmt, FunctionBody, LetStmt, MatchArmExpr, MatchExpr,
+        Visibility,
     };
     use crate::language::span::{Span, Spanned};
     use std::sync::mpsc;
@@ -3810,6 +3811,7 @@ mod tests {
                 }),
             ],
             tail: Some(Box::new(Expr::Match(MatchExpr {
+                id: ExprId::fresh(),
                 expr: Box::new(Expr::Call {
                     callee: Box::new(Expr::Identifier(Identifier {
                         name: "recv".into(),
@@ -3932,6 +3934,7 @@ mod tests {
             },
         );
         let expr = Expr::Match(MatchExpr {
+            id: ExprId::fresh(),
             expr: Box::new(Expr::EnumLiteral {
                 enum_name: Some("Option".into()),
                 variant: "Some".into(),

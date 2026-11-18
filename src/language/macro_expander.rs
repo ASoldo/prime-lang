@@ -1186,6 +1186,7 @@ impl<'a> Expander<'a> {
         errors: &mut Vec<SyntaxError>,
     ) -> MatchExpr {
         MatchExpr {
+            id: ExprId::fresh(),
             expr: Box::new(self.expand_expr(&expr.expr, 0, scope_span, errors)),
             arms: expr
                 .arms
@@ -1300,6 +1301,7 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
         Expr::Block(block) => Expr::Block(Box::new(substitute_block(*block, subst))),
         Expr::If(if_expr) => Expr::If(Box::new(substitute_if(*if_expr, subst))),
         Expr::Match(match_expr) => Expr::Match(MatchExpr {
+            id: match_expr.id,
             expr: Box::new(substitute_expr(*match_expr.expr, subst)),
             arms: match_expr
                 .arms
@@ -1836,7 +1838,7 @@ fn collect_bindings_expr(expr: &Expr) -> HashSet<String> {
     set
 }
 
-fn collect_bindings_pattern(pattern: &Pattern) -> HashSet<String> {
+pub(crate) fn collect_bindings_pattern(pattern: &Pattern) -> HashSet<String> {
     let mut set = HashSet::new();
     match pattern {
         Pattern::Identifier(name, _) => {
@@ -2245,6 +2247,7 @@ fn rename_if(if_expr: IfExpr, map: &HashMap<String, String>) -> IfExpr {
 
 fn rename_match(expr: MatchExpr, map: &HashMap<String, String>) -> MatchExpr {
     MatchExpr {
+        id: expr.id,
         expr: Box::new(rename_expr(*expr.expr, map)),
         arms: expr
             .arms

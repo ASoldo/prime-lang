@@ -18,6 +18,7 @@ use crate::{
         },
         runtime_abi::RuntimeAbi,
         span::Span,
+        typecheck::{CheckedFacts, CheckedMatch, CheckedProgram},
         types::{Mutability, TypeAnnotation, TypeExpr},
     },
     runtime::value::{FormatRuntimeSegmentGeneric, FormatTemplateValueGeneric},
@@ -104,6 +105,7 @@ impl FnSignature {
 }
 
 pub struct Compiler {
+    checked: Option<CheckedFacts>,
     context: LLVMContextRef,
     module: LLVMModuleRef,
     builder: LLVMBuilderRef,
@@ -1639,6 +1641,7 @@ impl Compiler {
                 context,
                 module: ptr::null_mut(),
                 builder,
+                checked: None,
                 i32_type,
                 f64_type,
                 printf_type: ptr::null_mut(),
@@ -2151,7 +2154,21 @@ impl Compiler {
         self.error_location.as_ref()
     }
 
+    pub fn compile_checked_program(&mut self, checked: CheckedProgram<'_>) -> Result<(), String> {
+        if self.target != checked.target {
+            return Err("compiler target differs from the checked program's target".into());
+        }
+        self.checked = Some(checked.facts);
+        let result = self.compile(checked.program);
+        self.checked = None;
+        result
+    }
+
     pub fn compile_program(&mut self, program: &Program) -> Result<(), String> {
+        self.compile(program)
+    }
+
+    fn compile(&mut self, program: &Program) -> Result<(), String> {
         self.error_location = None;
         let debug_mem = env::var_os("PRIME_DEBUG_MEM").is_some();
         if debug_mem {

@@ -12,6 +12,13 @@ pub fn check_program_with_options(
     expanded: &ExpandedProgram,
     options: &TypecheckOptions,
 ) -> Result<(), Vec<TypeError>> {
+    check_program_typed(expanded, options).map(|_| ())
+}
+
+pub fn check_program_typed<'a>(
+    expanded: &'a ExpandedProgram,
+    options: &TypecheckOptions,
+) -> Result<CheckedProgram<'a>, Vec<TypeError>> {
     let program = &expanded.program;
     let mut registry = TypeRegistry::default();
     for module in &program.modules {
@@ -19,6 +26,7 @@ pub fn check_program_with_options(
     }
     let mut checker = Checker {
         registry,
+        facts: CheckedFacts::default(),
         errors: Vec::new(),
         current_module: None,
         current_no_std: false,
@@ -29,7 +37,11 @@ pub fn check_program_with_options(
     checker.validate_impls();
     checker.check_program(program);
     if checker.errors.is_empty() {
-        return Ok(());
+        return Ok(CheckedProgram {
+            program,
+            target: checker.target,
+            facts: checker.facts,
+        });
     }
 
     let mut errors = checker.errors;
@@ -59,13 +71,14 @@ fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
                 );
             }
             Item::Enum(def) => {
-                for variant in &def.variants {
+                for (tag, variant) in def.variants.iter().enumerate() {
                     registry.enum_variants.insert(
                         variant.name.clone(),
                         EnumVariantInfo::from_def(
                             def.name.clone(),
                             module.name.clone(),
                             variant.clone(),
+                            tag as u32,
                         ),
                     );
                 }
@@ -185,6 +198,7 @@ fn register_function(
 }
 
 struct Checker {
+    facts: CheckedFacts,
     registry: TypeRegistry,
     errors: Vec<TypeError>,
     current_module: Option<String>,
@@ -210,12 +224,13 @@ impl Checker {
                     TypeError::new(&module.path, span, format!("Unknown enum `{}`", name))
                 })
             })?;
-            let variant_def =
-                find_variant(&enum_info.def, &enum_info.module, variant, module, span)?;
+            let (tag, variant_def) =
+                find_variant_with_tag(&enum_info.def, &enum_info.module, variant, module, span)?;
             Ok(EnumVariantInfo::from_def(
                 name.to_string(),
                 enum_info.module.clone(),
                 variant_def.clone(),
+                tag,
             ))
         } else if let Some(info) = self.registry.enum_variants.get(variant) {
             Ok(info.clone())
@@ -1983,13 +1998,14 @@ impl Checker {
     ) -> Option<TypeExpr> {
         let scrutinee_ty = self.check_expression(module, &expr.expr, None, returns, env);
         let mut arm_type: Option<TypeExpr> = None;
+        let mut arms = Vec::with_capacity(expr.arms.len());
         let mut patterns = Vec::new();
         let mut borrow_states: Vec<BorrowState> = Vec::new();
         for arm in &expr.arms {
             let (value_ty, state) = env.run_branch(|env| {
                 env.push_scope();
                 let errors_before_pattern = self.errors.len();
-                self.bind_pattern(
+                let variant = self.bind_pattern(
                     module,
                     &arm.pattern,
                     scrutinee_ty.as_ref(),
@@ -1999,10 +2015,25 @@ impl Checker {
                 if arm.guard.is_none() && self.errors.len() == errors_before_pattern {
                     patterns.push(&arm.pattern);
                 }
-                if let Some(guard) = &arm.guard {
-                    self.check_expression(module, guard, Some(&bool_type()), returns, env);
-                }
+                let guard = arm.guard.as_ref().and_then(|guard| {
+                    let span = expr_span(guard);
+                    let before = self.errors.len();
+                    let ty =
+                        self.check_expression(module, guard, Some(&bool_type()), returns, env)?;
+                    if self.errors.len() == before {
+                        self.ensure_type(module, span, &bool_type(), Some(&ty));
+                    }
+                    Some(TypeAnnotation { ty, span })
+                });
                 let ty = self.check_expression(module, &arm.value, expected, returns, env);
+                arms.push(CheckedMatchArm {
+                    variant,
+                    guard,
+                    value: ty.clone().map(|ty| TypeAnnotation {
+                        ty,
+                        span: expr_span(&arm.value),
+                    }),
+                });
                 env.pop_scope();
                 ty
             });
@@ -2014,9 +2045,11 @@ impl Checker {
             borrow_states.push(state);
         }
         env.merge_branch_borrows(&borrow_states);
+        let mut is_enum = arms.iter().any(|arm| arm.variant.is_some());
         if let Some(TypeExpr::Named(enum_name, args)) = &scrutinee_ty {
             let mut private = false;
             if let Some(enum_info) = self.lookup_enum(env, enum_name, &mut private) {
+                is_enum = true;
                 let missing =
                     match_coverage::missing_variants(self, env, &enum_info.def, args, &patterns);
                 if !missing.is_empty() {
@@ -2036,6 +2069,24 @@ impl Checker {
                     format!("enum `{}` is not public", enum_name),
                 ));
             }
+        }
+        if let Some(ty) = scrutinee_ty {
+            // A builtin can return a core enum even when its name is not imported.
+            is_enum |=
+                named_type_name(&ty).is_some_and(|name| self.registry.enums.contains_key(name));
+            self.facts.matches.insert(
+                expr.id,
+                CheckedMatch {
+                    is_enum,
+                    path: module.path.clone(),
+                    span: expr.span,
+                    scrutinee: TypeAnnotation {
+                        ty,
+                        span: expr_span(&expr.expr),
+                    },
+                    arms,
+                },
+            );
         }
         arm_type
     }
@@ -4343,7 +4394,7 @@ impl Checker {
         ty: Option<&TypeExpr>,
         env: &mut FnEnv,
         mutability: Mutability,
-    ) {
+    ) -> Option<CheckedVariant> {
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Identifier(name, span) => {
@@ -4351,9 +4402,7 @@ impl Checker {
             }
             Pattern::Literal(lit) => {
                 if let Some(actual) = ty {
-                    let Some(literal_ty) = self.check_literal(module, lit, ty) else {
-                        return;
-                    };
+                    let literal_ty = self.check_literal(module, lit, ty)?;
                     if &literal_ty != actual {
                         self.errors.push(TypeError::new(
                             &module.path,
@@ -4387,7 +4436,7 @@ impl Checker {
                         };
                         self.errors
                             .push(TypeError::new(&module.path, pattern_span(pattern), msg));
-                        return;
+                        return None;
                     };
                     if let Some(expected) = &expected_enum
                         && (expected.def.name != owner.def.name || expected.module != owner.module)
@@ -4396,14 +4445,14 @@ impl Checker {
                             &module.path, pattern_span(pattern),
                             format!("enum pattern `{name}::{variant}` does not match value of type `{}`", expected.def.name),
                         ));
-                        return;
+                        return None;
                     }
                     Some(owner)
                 } else {
                     expected_enum
                 };
                 if let Some(enum_info) = owner {
-                    let Ok(variant_def) = find_variant(
+                    let Ok((tag, variant_def)) = find_variant_with_tag(
                         &enum_info.def,
                         &enum_info.module,
                         variant,
@@ -4418,7 +4467,7 @@ impl Checker {
                                 variant, enum_info.def.name
                             ),
                         ));
-                        return;
+                        return None;
                     };
                     if bindings.len() != variant_def.fields.len() {
                         self.errors.push(TypeError::new(
@@ -4431,7 +4480,7 @@ impl Checker {
                                 bindings.len()
                             ),
                         ));
-                        return;
+                        return None;
                     }
                     let args: &[TypeExpr] = match expected_ty {
                         Some(TypeExpr::Named(_, args)) => args,
@@ -4441,7 +4490,12 @@ impl Checker {
                     for (binding, field) in bindings.iter().zip(fields.iter()) {
                         self.bind_pattern(module, binding, Some(&field.ty), env, mutability);
                     }
-                    return;
+                    return Some(CheckedVariant {
+                        enum_name: enum_info.def.name,
+                        name: variant.clone(),
+                        tag,
+                        fields,
+                    });
                 }
                 if let Some(info) = self.registry.enum_variants.get(variant).cloned() {
                     if let Some(actual_enum) = enum_name {
@@ -4451,7 +4505,7 @@ impl Checker {
                                 info.span,
                                 format!("`{}` does not belong to enum `{}`", variant, actual_enum),
                             ));
-                            return;
+                            return None;
                         }
                     } else if let Some(TypeExpr::Named(actual_enum, _)) = ty {
                         if actual_enum != &info.enum_name {
@@ -4460,7 +4514,7 @@ impl Checker {
                                 pattern_span(pattern),
                                 format!("`{}` does not belong to enum `{}`", variant, actual_enum),
                             ));
-                            return;
+                            return None;
                         }
                     }
                     if bindings.len() != info.def.fields.len() {
@@ -4474,12 +4528,18 @@ impl Checker {
                                 bindings.len()
                             ),
                         ));
-                        return;
+                        return None;
                     }
                     let fields = instantiate_variant_fields(&info, ty, &self.registry);
                     for (binding, field) in bindings.iter().zip(fields.iter()) {
                         self.bind_pattern(module, binding, Some(&field.ty), env, mutability);
                     }
+                    return Some(CheckedVariant {
+                        enum_name: info.enum_name,
+                        name: variant.clone(),
+                        tag: info.tag,
+                        fields,
+                    });
                 } else {
                     self.errors.push(TypeError::new(
                         &module.path,
@@ -4500,7 +4560,7 @@ impl Checker {
                                 elements.len()
                             ),
                         ));
-                        return;
+                        return None;
                     }
                     for (pat, elem_ty) in elements.iter().zip(types.iter()) {
                         self.bind_pattern(module, pat, Some(elem_ty), env, mutability);
@@ -4521,7 +4581,7 @@ impl Checker {
                 let value_ty = match ty {
                     Some(actual) => match self.expect_map_type(module, *span, Some(actual)) {
                         Some((_key, value)) => Some(value),
-                        None => return,
+                        None => return None,
                     },
                     None => None,
                 };
@@ -4620,6 +4680,7 @@ impl Checker {
                 }
             }
         }
+        None
     }
 
     fn check_range_bounds(
@@ -7203,6 +7264,57 @@ fn report() {
             "expected placeholder count error, got {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn checked_matches_distinguish_expansions_at_the_same_source_span() {
+        let source = r#"
+module test;
+enum A[T] { Item(T), Empty }
+enum B[T] { Empty, Item(T) }
+macro inspect(value: tokens) -> int32 { match value { Item(_) if true => 1, _ => 0 } }
+fn a(x: A[string]) -> int32 { ~inspect(x) }
+fn b(x: B[bool]) -> int32 { ~inspect(x) }
+"#;
+        let path = PathBuf::from("test.prime");
+        let module = parse_module("test", path.clone(), source).unwrap();
+        let expanded = macro_expander::expand_program(&Program {
+            modules: vec![module],
+        })
+        .unwrap();
+        let checked = super::check_program_typed(&expanded, &Default::default()).unwrap();
+        let matches = &checked.facts().matches;
+        assert_eq!(matches.len(), 2);
+        let mut spans = Vec::new();
+        for (owner, tag, field) in [("A", 0, "string"), ("B", 1, "bool")] {
+            let m = matches
+                .values()
+                .find(|m| m.scrutinee.ty.canonical_name() == format!("{owner}[{field}]"))
+                .unwrap();
+            assert_eq!(m.path, path);
+            spans.push(m.span);
+            let first = &m.arms[0];
+            let variant = first.variant.as_ref().unwrap();
+            assert_eq!(variant.enum_name, owner);
+            assert_eq!(variant.name, "Item");
+            assert_eq!(variant.tag, tag);
+            assert_eq!(variant.fields[0].ty.canonical_name(), field);
+            let guard = first.guard.as_ref().unwrap();
+            assert_eq!(&source[guard.span.start..guard.span.end], "true");
+            assert_eq!(guard.ty, super::bool_type());
+            assert_eq!(first.value.as_ref().unwrap().ty.canonical_name(), "int32");
+            assert!(m.arms[1].guard.is_none());
+        }
+        assert_eq!(spans[0], spans[1]);
+    }
+
+    #[test]
+    fn rejects_a_non_boolean_guard_at_its_use() {
+        let source = "module test; enum E { N(int32) } fn f(e: E) -> int32 { match e { N(n) if n => 1, _ => 0 } }";
+        let errors = typecheck_source(source).unwrap_err();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].message, "expected `bool`, found `int32`");
+        assert_eq!(errors[0].span.start, source.find("if n").unwrap() + 3);
     }
 
     #[test]

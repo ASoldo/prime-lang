@@ -2,7 +2,7 @@
 
 use crate::language::{
     ast::*,
-    enum_utils::find_variant,
+    enum_utils::find_variant_with_tag,
     macro_expander::ExpandedProgram,
     span::Span,
     types::{Mutability, TypeAnnotation, TypeExpr},
@@ -162,6 +162,7 @@ struct EnumInfo {
 
 #[derive(Clone)]
 struct EnumVariantInfo {
+    tag: u32,
     enum_name: String,
     def: EnumVariant,
     span: Span,
@@ -169,8 +170,9 @@ struct EnumVariantInfo {
 }
 
 impl EnumVariantInfo {
-    fn from_def(enum_name: String, enum_module: String, def: EnumVariant) -> Self {
+    fn from_def(enum_name: String, enum_module: String, def: EnumVariant, tag: u32) -> Self {
         Self {
+            tag,
             enum_name,
             span: def.span,
             _module: enum_module,
@@ -229,6 +231,9 @@ struct ImplCandidate {
     block: ImplBlock,
 }
 
+mod checked;
 mod checker;
 
-pub use checker::{check_program, check_program_with_options};
+pub use checked::*;
+
+pub use checker::{check_program, check_program_typed, check_program_with_options};

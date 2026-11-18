@@ -2767,6 +2767,7 @@ impl Parser {
         }
         let end = self.expect(TokenKind::RBrace)?.span.end;
         Ok(Expr::Match(MatchExpr {
+            id: ExprId::fresh(),
             expr: Box::new(expr),
             arms,
             span: Span::new(start, end),

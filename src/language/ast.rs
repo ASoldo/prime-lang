@@ -593,8 +593,22 @@ pub enum ElseBranch {
     ElseIf(Box<IfExpr>),
 }
 
+/// Identity of one expanded expression. Compiler and interpreter AST clones
+/// retain it even when multiple macro expansions have identical source spans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ExprId(usize);
+
+impl ExprId {
+    pub fn fresh() -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MatchExpr {
+    pub id: ExprId,
     pub expr: Box<Expr>,
     pub arms: Vec<MatchArmExpr>,
     pub span: Span,

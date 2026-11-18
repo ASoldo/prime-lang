@@ -819,14 +819,13 @@ fn build_entry(args: BuildArgs) {
             let typecheck_options = TypecheckOptions {
                 target: build_options.target.clone(),
             };
-            if let Err(errors) =
-                typecheck::check_program_with_options(&expanded_program, &typecheck_options)
-            {
-                emit_type_errors(&errors);
-                std::process::exit(1);
-            }
+            let checked = typecheck::check_program_typed(&expanded_program, &typecheck_options)
+                .unwrap_or_else(|errors| {
+                    emit_type_errors(&errors);
+                    std::process::exit(1);
+                });
             let mut compiler = Compiler::with_target(build_options.target.clone());
-            if let Err(err) = compiler.compile_program(&expanded_program.program) {
+            if let Err(err) = compiler.compile_checked_program(checked) {
                 let location = compiler.error_location();
                 let path = location.and_then(|loc| {
                     expanded_program

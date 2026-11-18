@@ -6,6 +6,21 @@ struct PatternGuard<'a> {
     binding: Option<(&'a str, LLVMValueRef)>,
 }
 
+enum EnumArm<'a> {
+    Variant {
+        tag: u32,
+        fields: Vec<TypeExpr>,
+        bindings: &'a [Pattern],
+    },
+    CatchAll(Option<&'a str>),
+}
+
+struct RuntimeEnumMatch<'a> {
+    handle: LLVMValueRef,
+    tag: LLVMValueRef,
+    arms: Vec<EnumArm<'a>>,
+}
+
 impl Compiler {
     pub(super) fn emit_expression_with_hint(
         &mut self,
@@ -212,7 +227,14 @@ impl Compiler {
             Expr::Match(match_expr) => {
                 self.collect_free_in_expr(&match_expr.expr, locals, free);
                 for arm in &match_expr.arms {
-                    self.collect_free_in_expr(&arm.value, locals, free);
+                    let mut bindings = locals.clone();
+                    bindings.extend(crate::language::macro_expander::collect_bindings_pattern(
+                        &arm.pattern,
+                    ));
+                    if let Some(guard) = &arm.guard {
+                        self.collect_free_in_expr(guard, &mut bindings, free);
+                    }
+                    self.collect_free_in_expr(&arm.value, &mut bindings, free);
                 }
             }
             Expr::Reference { expr, .. } | Expr::Deref { expr, .. } | Expr::Move { expr, .. } => {
@@ -3230,239 +3252,292 @@ impl Compiler {
             EvalOutcome::Value(value) => value,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
         };
-        let runtime_enum = match target.value() {
-            Value::Enum(e) => target
-                .runtime_handle()
-                .map(|handle| (handle, e.enum_name.clone())),
-            Value::Reference(reference) => reference.handle.and_then(|handle| {
-                match_expr.arms.iter().find_map(|arm| match &arm.pattern {
-                    Pattern::EnumVariant { variant, .. } => self
-                        .enum_variants
-                        .get(variant)
-                        .map(|info| (handle, info.enum_name.clone())),
-                    _ => None,
-                })
-            }),
-            _ => None,
-        };
-        if let Some((handle, name)) = runtime_enum {
-            if let Some(result) = self.emit_runtime_enum_match(handle, &name, match_expr)? {
-                return Ok(result);
-            }
-            if matches!(target.value(), Value::Enum(e) if e.variant == "<runtime>")
-                || matches!(target.value(), Value::Reference(r) if r.handle.is_some())
-            {
-                return Err("unsupported pattern for a runtime enum".into());
-            }
-        }
-        for arm in &match_expr.arms {
-            self.push_scope();
-            if self.match_pattern(target.value(), &arm.pattern, false)? {
-                let value = self.emit_expression(&arm.value)?;
-                self.exit_scope()?;
-                return Ok(value);
-            }
-            self.exit_scope()?;
-        }
-        let detail = match target.value() {
-            Value::Enum(e) => {
-                let has_handle = target.runtime_handle().is_some();
-                format!(
-                    "enum {}::{} (runtime_handle={})",
-                    e.enum_name, e.variant, has_handle
-                )
-            }
-            Value::Reference(r) => {
-                let inner = r
-                    .cell
-                    .lock()
-                    .ok()
-                    .map(|v| self.describe_value(v.value()).to_string());
-                format!(
-                    "reference (handle={}, inner={})",
-                    r.handle.is_some(),
-                    inner.unwrap_or_else(|| "unknown".into())
-                )
-            }
-            other => self.describe_value(other).to_string(),
-        };
-        Err(format!(
-            "No match arm matched in build mode (value: {}, span {}..{})",
-            detail, match_expr.span.start, match_expr.span.end
-        ))
-    }
-
-    pub(super) fn emit_runtime_enum_match(
-        &mut self,
-        handle: LLVMValueRef,
-        enum_name: &str,
-        match_expr: &MatchExpr,
-    ) -> Result<Option<EvalOutcome<EvaluatedValue>>, String> {
-        let variant_tags: HashMap<_, _> = self
-            .enum_variants
-            .iter()
-            .filter(|(_, info)| info.enum_name == enum_name)
-            .map(|(name, info)| (name.clone(), info.variant_index))
-            .collect();
-
-        let supported_patterns = match_expr.arms.iter().all(|arm| match &arm.pattern {
-            Pattern::EnumVariant {
-                variant, bindings, ..
-            } => {
-                variant_tags.contains_key(variant)
-                    && bindings
-                        .iter()
-                        .all(|b| matches!(b, Pattern::Identifier(_, _) | Pattern::Wildcard))
-            }
-            Pattern::Wildcard => true,
-            _ => false,
-        });
-        if !supported_patterns {
-            return Ok(None);
-        }
-
-        let function = unsafe { LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)) };
-        let merge_block = unsafe {
-            LLVMAppendBasicBlockInContext(
-                self.context,
-                function,
-                CString::new("match_merge").unwrap().as_ptr(),
-            )
-        };
-
-        let tag = self.call_runtime(
-            self.runtime_abi.prime_enum_tag,
-            self.runtime_abi.prime_enum_tag_ty,
-            &mut [handle],
-            "enum_tag",
-        );
-
-        let mut current_block = unsafe { LLVMGetInsertBlock(self.builder) };
+        let checked = self
+            .checked
+            .as_ref()
+            .and_then(|facts| facts.match_expr(match_expr.id))
+            .cloned();
+        let runtime = self.runtime_enum_match(&target, match_expr, checked.as_ref())?;
+        let mut merge = None;
         let mut incoming = Vec::new();
-
+        let mut exhausted = false;
         for (idx, arm) in match_expr.arms.iter().enumerate() {
-            let (expected_tag, bindings, field_types) = match &arm.pattern {
-                Pattern::EnumVariant {
-                    variant, bindings, ..
-                } => {
-                    let tag = variant_tags.get(variant.as_str()).copied();
-                    if tag.is_none() {
-                        return Ok(None);
-                    }
-                    let field_types =
-                        self.enum_variants[variant].field_types_for(self.handle_types.get(&handle));
-                    (tag, Some(bindings), field_types)
-                }
-                Pattern::Wildcard => (None, None, Vec::new()),
-                _ => return Ok(None),
-            };
-
-            let then_block = unsafe {
-                LLVMAppendBasicBlockInContext(
-                    self.context,
-                    function,
-                    CString::new(format!("match_arm_{idx}")).unwrap().as_ptr(),
-                )
-            };
-            let else_block = unsafe {
-                LLVMAppendBasicBlockInContext(
-                    self.context,
-                    function,
-                    CString::new(format!("match_else_{idx}")).unwrap().as_ptr(),
-                )
-            };
-
-            unsafe { LLVMPositionBuilderAtEnd(self.builder, current_block) };
-            if let Some(tag_val) = expected_tag {
-                let tag_const = unsafe { LLVMConstInt(LLVMTypeOf(tag), tag_val as u64, 0) };
-                let cond = unsafe {
-                    LLVMBuildICmp(
-                        self.builder,
-                        llvm_sys::LLVMIntPredicate::LLVMIntEQ,
-                        tag,
-                        tag_const,
-                        CString::new("match_tag_cmp").unwrap().as_ptr(),
-                    )
-                };
-                unsafe { LLVMBuildCondBr(self.builder, cond, then_block, else_block) };
-            } else {
-                unsafe { LLVMBuildBr(self.builder, then_block) };
-            }
-
-            unsafe { LLVMPositionBuilderAtEnd(self.builder, then_block) };
+            let facts = checked.as_ref().map(|m| &m.arms[idx]);
+            let mut next = None;
             self.push_scope();
-            if let Some(bindings) = bindings {
-                for (field_idx, binding) in bindings.iter().enumerate() {
-                    let Pattern::Identifier(name, _) = binding else {
-                        if matches!(binding, Pattern::Wildcard) {
-                            continue;
-                        }
-                        return Ok(None);
-                    };
-                    let field_handle = self.call_runtime(
-                        self.runtime_abi.prime_enum_get,
-                        self.runtime_abi.prime_enum_get_ty,
-                        &mut [handle, unsafe {
-                            LLVMConstInt(self.runtime_abi.usize_type, field_idx as u64, 0)
-                        }],
-                        "enum_get",
-                    );
-                    if let Some(tag) = expected_tag
-                        && self
-                            .enum_string_fields
-                            .get(&handle)
-                            .is_some_and(|fields| fields.contains(&(tag, field_idx)))
-                    {
-                        self.handle_types
-                            .insert(field_handle, TypeExpr::named("string"));
-                    } else if let Some(ty) = field_types.get(field_idx) {
-                        self.handle_types.insert(field_handle, ty.clone());
+            if let Some(runtime) = &runtime {
+                match &runtime.arms[idx] {
+                    EnumArm::Variant {
+                        tag,
+                        fields,
+                        bindings,
+                    } => {
+                        let condition = unsafe {
+                            LLVMBuildICmp(
+                                self.builder,
+                                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                                runtime.tag,
+                                LLVMConstInt(LLVMTypeOf(runtime.tag), *tag as u64, 0),
+                                c"match_tag_cmp".as_ptr(),
+                            )
+                        };
+                        next = Some(self.branch_match_arm(condition, None));
+                        self.bind_enum_fields(runtime.handle, *tag, bindings, fields)?;
                     }
-                    let reference = ReferenceValue {
-                        cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
-                        mutable: false,
-                        origin: None,
-                        handle: Some(field_handle),
-                    };
-                    let bound = self.evaluated(Value::Reference(reference));
-                    self.insert_var(name, bound, false)?;
+                    EnumArm::CatchAll(Some(name)) => {
+                        self.insert_var(name, target.clone(), false)?
+                    }
+                    EnumArm::CatchAll(None) => {}
+                }
+            } else if !self.match_pattern(target.value(), &arm.pattern, false)? {
+                self.exit_scope()?;
+                continue;
+            }
+
+            if let Some(guard) = &arm.guard {
+                let hint = facts.and_then(|a| a.guard.as_ref()).map(|g| &g.ty);
+                let value = match self.emit_expression_with_hint(guard, hint)? {
+                    EvalOutcome::Value(v) => v,
+                    EvalOutcome::Flow(flow) if next.is_none() && merge.is_none() => {
+                        self.exit_scope()?;
+                        return Ok(EvalOutcome::Flow(flow));
+                    }
+                    EvalOutcome::Flow(_) => {
+                        return Err(
+                            "cannot exit early from a runtime match guard in native code".into(),
+                        );
+                    }
+                };
+                let flag = self.value_to_bool(value.into_value())?;
+                match flag.constant() {
+                    Some(false) => {
+                        self.exit_scope()?;
+                        if let Some(next) = next {
+                            unsafe {
+                                LLVMBuildBr(self.builder, next);
+                                LLVMPositionBuilderAtEnd(self.builder, next);
+                            }
+                        }
+                        continue;
+                    }
+                    Some(true) => {}
+                    None => {
+                        let condition = self.bool_llvm_value(&flag);
+                        next = Some(self.branch_match_arm(condition, next));
+                    }
                 }
             }
-            let arm_value = self.emit_expression(&arm.value)?;
+
+            let hint = facts.and_then(|a| a.value.as_ref()).map(|v| &v.ty);
+            let outcome = self.emit_expression_with_hint(&arm.value, hint)?;
             self.exit_scope()?;
-            match arm_value {
-                EvalOutcome::Value(val) => {
-                    incoming.push((val, unsafe { LLVMGetInsertBlock(self.builder) }));
-                    unsafe { LLVMBuildBr(self.builder, merge_block) };
-                }
+            if next.is_none() && merge.is_none() {
+                return Ok(outcome);
+            }
+            let merge_block = *merge.get_or_insert_with(|| self.match_block(c"match_merge"));
+            match outcome {
+                EvalOutcome::Value(value) => unsafe {
+                    incoming.push((value, LLVMGetInsertBlock(self.builder)));
+                    LLVMBuildBr(self.builder, merge_block);
+                },
                 EvalOutcome::Flow(FlowSignal::Return(_) | FlowSignal::Propagate(_)) => {
                     return Err("cannot exit early from a runtime match arm in native code; return the match expression instead".into());
                 }
-                EvalOutcome::Flow(FlowSignal::Break) | EvalOutcome::Flow(FlowSignal::Continue) => {
-                    let current_block = unsafe { LLVMGetInsertBlock(self.builder) };
-                    if current_block.is_null()
-                        || unsafe { LLVMGetBasicBlockTerminator(current_block) }.is_null()
-                    {
+                EvalOutcome::Flow(FlowSignal::Break | FlowSignal::Continue) => {
+                    let block = unsafe { LLVMGetInsertBlock(self.builder) };
+                    if unsafe { LLVMGetBasicBlockTerminator(block) }.is_null() {
                         return Err(
                             "break/continue in runtime match arm did not terminate block".into(),
                         );
                     }
                 }
             }
-            current_block = else_block;
-            if expected_tag.is_none() {
+            if let Some(next) = next {
+                unsafe { LLVMPositionBuilderAtEnd(self.builder, next) };
+            } else {
+                exhausted = true;
                 break;
             }
         }
-
-        // An unmatched tag has no value to contribute to the merge.
+        let Some(merge_block) = merge else {
+            return Err(format!(
+                "No match arm matched in build mode (value: {}, span {})",
+                self.describe_value(target.value()),
+                match_expr.span
+            ));
+        };
         unsafe {
-            LLVMPositionBuilderAtEnd(self.builder, current_block);
-            llvm_sys::core::LLVMBuildUnreachable(self.builder);
+            if !exhausted {
+                llvm_sys::core::LLVMBuildUnreachable(self.builder);
+            }
             LLVMPositionBuilderAtEnd(self.builder, merge_block);
         }
-        let result = self.merge_match_values(&incoming, merge_block)?;
-        Ok(Some(EvalOutcome::Value(result)))
+        Ok(EvalOutcome::Value(
+            self.merge_match_values(&incoming, merge_block)?,
+        ))
+    }
+
+    fn match_block(&self, name: &CStr) -> LLVMBasicBlockRef {
+        unsafe {
+            let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
+            LLVMAppendBasicBlockInContext(self.context, function, name.as_ptr())
+        }
+    }
+
+    // Both a tag mismatch and a false guard continue at the next source arm.
+    fn branch_match_arm(
+        &self,
+        condition: LLVMValueRef,
+        next: Option<LLVMBasicBlockRef>,
+    ) -> LLVMBasicBlockRef {
+        let success = self.match_block(c"match_arm");
+        let next = next.unwrap_or_else(|| self.match_block(c"match_next"));
+        unsafe {
+            LLVMBuildCondBr(self.builder, condition, success, next);
+            LLVMPositionBuilderAtEnd(self.builder, success);
+        }
+        next
+    }
+
+    fn runtime_enum_match<'a>(
+        &mut self,
+        target: &EvaluatedValue,
+        expr: &'a MatchExpr,
+        checked: Option<&CheckedMatch>,
+    ) -> Result<Option<RuntimeEnumMatch<'a>>, String> {
+        let handle = match target.value() {
+            Value::Enum(_) => target.runtime_handle(),
+            Value::Reference(r) => r.handle,
+            _ => None,
+        };
+        let Some(handle) = handle else {
+            return Ok(None);
+        };
+
+        // Raw Program callers predate checked facts. Only that entry point
+        // resolves a layout from the compiler's enum registry.
+        let legacy_owner = if self.checked.is_none() {
+            match target.value() {
+                Value::Enum(e) => Some(&e.enum_name),
+                _ => expr.arms.iter().find_map(|arm| match &arm.pattern {
+                    Pattern::EnumVariant { variant, .. } => {
+                        self.enum_variants.get(variant).map(|v| &v.enum_name)
+                    }
+                    _ => None,
+                }),
+            }
+        } else {
+            None
+        };
+        if !checked.is_some_and(|m| m.is_enum) && legacy_owner.is_none() {
+            return Ok(None);
+        }
+
+        let arms: Option<Vec<_>> = expr
+            .arms
+            .iter()
+            .enumerate()
+            .map(|(i, arm)| match &arm.pattern {
+                Pattern::EnumVariant {
+                    variant, bindings, ..
+                } if bindings
+                    .iter()
+                    .all(|b| matches!(b, Pattern::Identifier(..) | Pattern::Wildcard)) =>
+                {
+                    let (tag, fields) = if let Some(checked) = checked {
+                        let v = checked.arms[i].variant.as_ref()?;
+                        (v.tag, v.fields.iter().map(|f| f.ty.clone()).collect())
+                    } else {
+                        let v = self.enum_variants.get(variant)?;
+                        if Some(&v.enum_name) != legacy_owner {
+                            return None;
+                        }
+                        (
+                            v.variant_index,
+                            v.field_types_for(self.handle_types.get(&handle)),
+                        )
+                    };
+                    Some(EnumArm::Variant {
+                        tag,
+                        fields,
+                        bindings,
+                    })
+                }
+                Pattern::Identifier(name, _) => Some(EnumArm::CatchAll(Some(name))),
+                Pattern::Wildcard => Some(EnumArm::CatchAll(None)),
+                _ => None,
+            })
+            .collect();
+        let Some(arms) = arms else {
+            // Complex patterns can still be matched when the enum value is known.
+            if matches!(target.value(), Value::Enum(e) if e.variant != "<runtime>") {
+                return Ok(None);
+            }
+            return Err(format!(
+                "unsupported pattern for a runtime enum at {}",
+                expr.span
+            ));
+        };
+        let tag = self.call_runtime(
+            self.runtime_abi.prime_enum_tag,
+            self.runtime_abi.prime_enum_tag_ty,
+            &mut [handle],
+            "enum_tag",
+        );
+        Ok(Some(RuntimeEnumMatch { handle, tag, arms }))
+    }
+
+    fn bind_enum_fields(
+        &mut self,
+        handle: LLVMValueRef,
+        tag: u32,
+        bindings: &[Pattern],
+        fields: &[TypeExpr],
+    ) -> Result<(), String> {
+        for (idx, binding) in bindings.iter().enumerate() {
+            let Pattern::Identifier(name, _) = binding else {
+                continue;
+            };
+            let field = self.call_runtime(
+                self.runtime_abi.prime_enum_get,
+                self.runtime_abi.prime_enum_get_ty,
+                &mut [handle, unsafe {
+                    LLVMConstInt(self.runtime_abi.usize_type, idx as u64, 0)
+                }],
+                "enum_get",
+            );
+            if self
+                .enum_string_fields
+                .get(&handle)
+                .is_some_and(|fs| fs.contains(&(tag, idx)))
+            {
+                self.handle_types.insert(field, TypeExpr::named("string"));
+            } else if let Some(ty) = fields.get(idx) {
+                self.handle_types.insert(field, ty.clone());
+            }
+            // Decode concrete scalar fields with their checked ABI type. In
+            // particular, two boxed floats or booleans must retain their kind
+            // when the guard compares them.
+            let payload = Value::from_runtime_payload(field);
+            let value = match self.handle_types.get(&field) {
+                Some(TypeExpr::Named(ty, _)) => match ty.as_str() {
+                    "bool" => Value::Bool(self.value_to_bool(payload)?),
+                    "float32" | "float64" => Value::Float(self.expect_float(payload)?),
+                    "int8" | "int16" | "int32" | "int64" | "isize" | "uint8" | "uint16"
+                    | "uint32" | "uint64" | "usize" | "rune" => {
+                        Value::Int(self.expect_int(payload)?)
+                    }
+                    _ => payload,
+                },
+                _ => payload,
+            };
+            self.insert_var(
+                name,
+                EvaluatedValue::from_value(value).with_runtime(field),
+                false,
+            )?;
+        }
+        Ok(())
     }
 
     fn merge_match_values(
