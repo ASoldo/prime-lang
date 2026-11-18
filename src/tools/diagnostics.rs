@@ -1,9 +1,12 @@
 use crate::{
     language::{errors::SyntaxError, span::Span, typecheck::TypeError},
-    project::{FileErrors, diagnostics::ManifestIssue},
+    project::{
+        FileErrors,
+        diagnostics::{ManifestIssue, ManifestIssueKind},
+    },
     runtime::error::RuntimeError,
 };
-use miette::{Diagnostic, NamedSource, Report, SourceSpan};
+use miette::{Diagnostic, MietteDiagnostic, NamedSource, Report, Severity, SourceSpan};
 use std::path::Path;
 use thiserror::Error;
 
@@ -51,13 +54,28 @@ pub fn report_io_error(path: &Path, error: &std::io::Error) {
 }
 
 #[derive(Debug, Error, Diagnostic, Clone)]
-#[error("{message}")]
+#[error("{details}")]
+#[diagnostic(forward(details))]
 pub struct ManifestDiagnostic {
     #[source_code]
     src: NamedSource<String>,
-    #[label("{message}")]
+    #[label("{details}")]
     span: SourceSpan,
-    message: String,
+    details: MietteDiagnostic,
+}
+
+// Match the manifest diagnostic levels used by the language server.
+pub(super) fn manifest_issue_severity(kind: &ManifestIssueKind) -> Severity {
+    use ManifestIssueKind::*;
+    match kind {
+        ModuleKindMismatch { .. } | UnknownImport { .. } => Severity::Error,
+        ModuleNameMismatch { .. }
+        | MissingModuleHeader { .. }
+        | DeclaredModuleNotInManifest { .. }
+        | DuplicateModuleDeclaration
+        | DuplicateImport { .. }
+        | ManifestMissingModule { .. } => Severity::Warning,
+    }
 }
 
 pub fn emit_manifest_issues(named: &NamedSource<String>, issues: &[ManifestIssue]) -> bool {
@@ -70,7 +88,8 @@ pub fn emit_manifest_issues(named: &NamedSource<String>, issues: &[ManifestIssue
         let diagnostic = ManifestDiagnostic {
             src: named.clone(),
             span,
-            message: issue.kind.message(),
+            details: MietteDiagnostic::new(issue.kind.message())
+                .with_severity(manifest_issue_severity(&issue.kind)),
         };
         eprintln!("{:?}", Report::new(diagnostic));
         emitted = true;

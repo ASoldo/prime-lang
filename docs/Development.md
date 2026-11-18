@@ -4,15 +4,15 @@ Prime-lang is a single Rust binary (`prime-lang`) plus a workspace of `.prime` d
 
 ## Build & install
 
-- Build (iterative): `cargo build`
-- Install the CLI: `cargo install --path . --force`
+- Build (iterative): `cargo build --locked`
+- Install the CLI: `cargo install --locked --path .`
 
 ## Checks
 
 - CI-equivalent (recommended): `./scripts/ci.sh`
 - Format: `cargo fmt --all -- --check`
-- Tests (single-threaded integration harness): `cargo test --all -- --test-threads=1`
-- Lint (Rust): `cargo clippy --all-targets --all-features -- -D warnings`
+- Tests (single-threaded integration harness): `cargo test --locked --all -- --test-threads=1`
+- Lint (Rust): `cargo clippy --locked --all-targets --all-features -- -D warnings`
 
 Note: `cargo test -- --format=json` and `cargo test -- --report-time` require nightly `-Z unstable-options`.
 
@@ -34,7 +34,18 @@ Docs are sourced from Prime doc comments:
 
 ## Example regression sweep
 
-Run the bundled demos through the same parser + typecheck used by the LSP:
+`prime-lang lint <file.prime>` checks lexing, parsing, and module declarations and imports against the nearest `prime.toml`, when present. Use `prime-lang check <file.prime>` for semantic checks and `prime-lang run <file.prime>` to execute an entry module.
 
-- `./scripts/check_examples.sh`
-- `PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh` (also executes runnable demos)
+| One-shot lint exit code | Meaning |
+| --- | --- |
+| `0` | The check completed cleanly or only produced warnings. Missing or mismatched module names and duplicate imports are examples of warnings. |
+| `1` | The source or manifest could not be read or parsed, or lint found an error such as an unresolved import or a module kind mismatch. |
+| `2` | The command line was invalid, for example because the file argument was omitted. |
+
+Diagnostics go to stderr. A clean file prints `no diagnostics` to stdout. With `--watch`, the CLI checks immediately and again when the source changes, including atomic saves. A failed check leaves the watcher running so the next edit can fix it. A watcher setup or backend failure exits with code `1`. Press Ctrl+C to stop watching.
+
+`./scripts/check_examples.sh` requires Bash and Python 3.11 or newer. It reads the module, library and test paths in every `workspace/**/prime.toml`, resolves them relative to their manifest, and runs both lint and semantic checking for each distinct source. The first line reports the file and manifest counts. Set `PRIME_RUN_EXAMPLES=1` to also invoke `prime-lang run` after each successful check. This includes library and test files, and some demos may require input or hardware.
+
+The script uses `PRIME_BIN` when set (an executable path or command name). Otherwise it tries the local debug build, the local release build, then `prime-lang` on `PATH`. It respects `CARGO_TARGET_DIR` for local builds. Empty inventories, invalid manifests, missing source files and unavailable tools fail the sweep. A failed lint, check or run stops the script with that command's exit status.
+
+After `cargo build --locked`, run `python3 scripts/tests/test_lint.py -v` to check the CLI exit codes, watch recovery and sweep behavior. To run only the inventory and shell checks, use `python3 scripts/tests/test_lint.py ExampleSweep -v`.

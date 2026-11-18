@@ -1,8 +1,9 @@
 use crate::{
-    language::{ast::Module, errors::SyntaxError, lexer::lex, parser::parse_module},
+    language::{errors::SyntaxError, lexer::lex, parser::parse_module},
     project::{diagnostics::analyze_manifest_issues, find_manifest, manifest::PackageManifest},
+    tools::diagnostics::{emit_manifest_issues, manifest_issue_severity},
 };
-use miette::{Diagnostic, NamedSource, Report, SourceSpan};
+use miette::{Diagnostic, NamedSource, Report, Severity, SourceSpan};
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{error::Error, fs, path::Path, sync::mpsc, time::Duration};
 use thiserror::Error;
@@ -19,39 +20,46 @@ struct LexDiagnostic {
 }
 
 pub fn run_lint(file_path: &Path, watch: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
-    run_single_check(file_path)?;
-
+    let path = std::path::absolute(file_path)?;
     if !watch {
-        return Ok(());
+        return run_single_check(&path);
     }
 
-    let path_buf = file_path.to_path_buf();
+    // Editors often save by replacing the file. Watch its directory so the
+    // next edit is still visible after the original inode disappears.
+    let parent = path
+        .parent()
+        .ok_or("cannot watch a path without a parent")?
+        .canonicalize()?;
+    let path = parent.join(path.file_name().ok_or("missing file name")?);
     let (tx, rx) = mpsc::channel();
     let mut watcher = build_watcher(tx)?;
-    watcher.watch(&path_buf, RecursiveMode::NonRecursive)?;
+    watcher.watch(&parent, RecursiveMode::NonRecursive)?;
 
+    let check = || {
+        if let Err(err) = run_single_check(&path) {
+            eprintln!("lint error: {err}");
+        }
+    };
+    check();
     println!(
         "Watching {} for changes. Press Ctrl+C to stop…",
-        path_buf.display()
+        path.display()
     );
 
     for event in rx {
-        match event {
-            Ok(evt) => {
-                if matches!(
-                    evt.kind,
-                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
-                ) {
-                    if let Err(err) = run_single_check(&path_buf) {
-                        eprintln!("lint error: {err}");
-                    }
-                }
-            }
-            Err(err) => eprintln!("watch error: {err}"),
+        let event = event?;
+        if event.paths.contains(&path)
+            && matches!(
+                event.kind,
+                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+            )
+        {
+            check();
         }
     }
 
-    Ok(())
+    Err("file watcher disconnected".into())
 }
 
 fn build_watcher(
@@ -69,34 +77,33 @@ fn build_watcher(
 }
 
 fn run_single_check(path: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let source = fs::read_to_string(path)?;
-    let module_name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("main")
-        .to_string();
-
-    let _tokens = match lex(&source) {
-        Ok(tokens) => tokens,
-        Err(errors) => {
+    let source = fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
+    let module_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("main");
+    let module = parse_module(module_name, path.to_path_buf(), &source).map_err(|errs| {
+        if let Err(errors) = lex(&source) {
             report_lex_errors(path, &source, &errors);
-            return Ok(());
+            "failed to lex module"
+        } else {
+            emit_syntax_errors_for_source(path, &source, &errs.errors);
+            "failed to parse module"
         }
-    };
-
-    let named = NamedSource::new(path.display().to_string(), source.clone());
-
-    match parse_module(&module_name, path.to_path_buf(), &source) {
-        Ok(module) => {
-            let mut emitted = false;
-            emitted |= lint_manifest_issues(path, &named, &module);
-            if !emitted {
-                println!("{}: no diagnostics", path.display());
-            }
+    })?;
+    let manifest = find_manifest(path)
+        .map(|manifest_path| PackageManifest::load(&manifest_path))
+        .transpose()?;
+    let issues = analyze_manifest_issues(&module, path, manifest.as_ref());
+    if issues.is_empty() {
+        println!("{}: no diagnostics", path.display());
+    } else {
+        let named = NamedSource::new(path.display().to_string(), source);
+        emit_manifest_issues(&named, &issues);
+        if issues
+            .iter()
+            .any(|issue| manifest_issue_severity(&issue.kind) == Severity::Error)
+        {
+            return Err("module has manifest errors".into());
         }
-        Err(errs) => emit_syntax_errors_for_source(path, &source, &errs.errors),
     }
-
     Ok(())
 }
 
@@ -119,15 +126,4 @@ fn emit_syntax_errors_for_source(path: &Path, source: &str, errors: &[SyntaxErro
             crate::tools::diagnostics::SyntaxDiagnostic::from_error(named.clone(), err.clone());
         eprintln!("{:?}", Report::new(diag));
     }
-}
-
-fn lint_manifest_issues(path: &Path, named: &NamedSource<String>, module: &Module) -> bool {
-    let Some(manifest_path) = find_manifest(path) else {
-        return false;
-    };
-    let Ok(manifest) = PackageManifest::load(&manifest_path) else {
-        return false;
-    };
-    let issues = analyze_manifest_issues(module, path, Some(&manifest));
-    crate::tools::diagnostics::emit_manifest_issues(named, &issues)
 }
