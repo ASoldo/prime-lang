@@ -10,6 +10,8 @@ A file can declare a `module`, `library` or `test` header. Package manifests (`p
 
 Blocks return their final expression. `if` and `match` can produce values. A match arm with a guard only applies when its guard succeeds. Missing enum variants are reported in declaration order. Prime includes tuples, arrays, slices, maps, structs, enums, interfaces and generic functions. `Option[T]` and `Result[T, E]` are defined in the workspace core library. `?` propagates a failure and `try { ... }` establishes a local propagation boundary.
 
+An integer literal must fit its inferred or declared integer type. For example, a variant field declared as `uint8` accepts `255` and rejects `256`. An `int8` field accepts `-128`. The width of `isize` and `usize` follows the selected target. These checks cover literals. The current interpreter can still carry an out-of-range value produced by arithmetic or an explicit cast in a narrow field.
+
 The checker tracks moves and mutable borrows. Direct `await` rejects an active mutable borrow and a task with a reference or pointer as its direct result type. Raw pointers have separate rules. The current checker does not prove arbitrary nested values safe to transfer between threads.
 
 ## Scope exit
