@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::OnceLock,
 };
@@ -106,27 +106,26 @@ fn prime_tests_support_scripted_input() {
     );
 }
 
-#[test]
-fn build_mode_in_preserves_values() {
-    let build_name = "integration_in_build";
-    let artifact_dir = PathBuf::from(root()).join(".build.prime").join(build_name);
-    let _ = fs::remove_dir_all(&artifact_dir);
-
+fn build_demo(work_dir: &Path, entry: &Path, name: &str) -> PathBuf {
     let status = Command::new(bin_path())
-        .current_dir(root())
-        .args([
-            "build",
-            "workspace/tests/build_input_demo/build_input_demo.prime",
-            "--name",
-            build_name,
-        ])
+        .current_dir(work_dir)
+        .arg("build")
+        .arg(entry)
+        .args(["--name", name])
         .env_remove("PRIME_TEST_INPUTS")
         .env_remove("PRIME_TEST_INPUTS_FILE")
         .status()
-        .expect("failed to run build");
-    assert!(status.success(), "build failed for integration input demo");
+        .expect("build demo");
+    assert!(status.success(), "build failed for {}", entry.display());
+    work_dir.join(".build.prime").join(name).join(name)
+}
 
-    let binary = artifact_dir.join(build_name);
+#[test]
+fn build_mode_in_preserves_values() {
+    let work = tempdir().expect("temporary input demo directory");
+    let entry =
+        PathBuf::from(root()).join("workspace/tests/build_input_demo/build_input_demo.prime");
+    let binary = build_demo(work.path(), &entry, "integration_in_build");
     for (input, expected) in [
         (
             "16\nabc\n",
@@ -142,6 +141,7 @@ fn build_mode_in_preserves_values() {
         ),
     ] {
         let mut child = Command::new(&binary)
+            .current_dir(work.path())
             .env_remove("PRIME_TEST_INPUTS")
             .env_remove("PRIME_TEST_INPUTS_FILE")
             .stdin(Stdio::piped())
@@ -166,49 +166,70 @@ fn build_mode_in_preserves_values() {
 }
 
 #[test]
-fn channel_demo_build_matches_run_output() {
-    assert_demo_build_matches_run_output(
-        "workspace/demos/channel_demo/channel_demo.prime",
-        "channel_demo_parity",
+fn pattern_demo_build_matches_run_output() {
+    let work = tempdir().expect("temporary pattern demo directory");
+    let entry = PathBuf::from(root()).join("workspace/demos/patterns/pattern_demo.prime");
+    let binary = build_demo(work.path(), &entry, "pattern_demo_parity");
+    let compiled = Command::new(binary)
+        .current_dir(work.path())
+        .output()
+        .expect("run compiled pattern demo");
+    let interpreted = Command::new(bin_path())
+        .current_dir(work.path())
+        .arg("run")
+        .arg(entry)
+        .output()
+        .expect("run interpreted pattern demo");
+    for output in [&compiled, &interpreted] {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(
+        String::from_utf8(compiled.stdout).unwrap(),
+        String::from_utf8(interpreted.stdout).unwrap()
     );
 }
 
 #[test]
-fn pattern_demo_build_matches_run_output() {
-    assert_demo_build_matches_run_output(
-        "workspace/demos/patterns/pattern_demo.prime",
-        "pattern_demo_parity",
-    );
-}
-
-fn assert_demo_build_matches_run_output(entry: &str, build_name: &str) {
+fn channel_demo_build_matches_run_output() {
+    let build_name = "channel_demo_parity";
     let root_dir = PathBuf::from(root());
     let artifact_dir = root_dir.join(".build.prime").join(build_name);
     let _ = fs::remove_dir_all(&artifact_dir);
 
     let status = Command::new(bin_path())
         .current_dir(&root_dir)
-        .args(["build", entry, "--name", build_name])
+        .args([
+            "build",
+            "workspace/demos/channel_demo/channel_demo.prime",
+            "--name",
+            build_name,
+        ])
         .status()
-        .expect("build demo");
-    assert!(status.success(), "{entry} build failed");
+        .expect("build channel demo");
+    assert!(status.success(), "channel demo build failed");
 
     let binary = artifact_dir.join(build_name);
-    let build_output = Command::new(&binary).output().expect("run compiled demo");
+    let build_output = Command::new(&binary)
+        .output()
+        .expect("run compiled channel demo");
     assert!(
         build_output.status.success(),
-        "compiled {entry} failed: {}",
+        "compiled channel demo failed: {}",
         String::from_utf8_lossy(&build_output.stderr)
     );
 
     let run_output = Command::new(bin_path())
         .current_dir(&root_dir)
-        .args(["run", entry])
+        .args(["run", "workspace/demos/channel_demo/channel_demo.prime"])
         .output()
-        .expect("run interpreted demo");
+        .expect("run interpreted channel demo");
     assert!(
         run_output.status.success(),
-        "interpreted {entry} failed: {}",
+        "interpreted channel demo failed: {}",
         String::from_utf8_lossy(&run_output.stderr)
     );
 
@@ -220,7 +241,7 @@ fn assert_demo_build_matches_run_output(entry: &str, build_name: &str) {
         .to_string();
     assert_eq!(
         build_stdout, run_stdout,
-        "build/run output mismatch for {entry}"
+        "build/run output mismatch for channel demo"
     );
 }
 
