@@ -1,5 +1,10 @@
 use super::*;
 
+struct PatternGuard<'a> {
+    condition: LLVMValueRef,
+    binding: Option<(&'a str, LLVMValueRef)>,
+}
+
 impl Compiler {
     pub(super) fn emit_expression_with_hint(
         &mut self,
@@ -499,114 +504,64 @@ impl Compiler {
                         break;
                     }
                 },
-                WhileCondition::Let { pattern, value } => {
-                    if let Pattern::Literal(Literal::Bool(expected, _)) = pattern {
-                        unsafe {
-                            let current_block = LLVMGetInsertBlock(self.builder);
-                            if current_block.is_null() {
-                                return Err("no insertion block for while-let loop".into());
+                WhileCondition::Let { pattern, value } => loop {
+                    let header = unsafe {
+                        let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
+                        let header = LLVMAppendBasicBlockInContext(
+                            self.context,
+                            function,
+                            c"while_let_test".as_ptr(),
+                        );
+                        LLVMBuildBr(self.builder, header);
+                        LLVMPositionBuilderAtEnd(self.builder, header);
+                        header
+                    };
+                    let candidate = match self.emit_expression(value)? {
+                        EvalOutcome::Value(value) => value,
+                        EvalOutcome::Flow(flow) => return Ok(Some(flow)),
+                    };
+                    let guard = if let Pattern::Literal(Literal::Bool(expected, _)) = pattern {
+                        let flag = self.value_to_bool(candidate.value().clone())?;
+                        let condition = self.bool_llvm_value(&flag);
+                        let condition = if *expected {
+                            condition
+                        } else {
+                            unsafe {
+                                LLVMBuildNot(self.builder, condition, c"while_let_not".as_ptr())
                             }
-                            let function = LLVMGetBasicBlockParent(current_block);
-                            if function.is_null() {
-                                return Err("while-let loop outside function".into());
-                            }
-                            let cond_block = LLVMAppendBasicBlockInContext(
-                                self.context,
-                                function,
-                                CString::new("while_let_cond").unwrap().as_ptr(),
-                            );
-                            let body_block = LLVMAppendBasicBlockInContext(
-                                self.context,
-                                function,
-                                CString::new("while_let_body").unwrap().as_ptr(),
-                            );
-                            let after_block = LLVMAppendBasicBlockInContext(
-                                self.context,
-                                function,
-                                CString::new("while_let_after").unwrap().as_ptr(),
-                            );
-                            LLVMBuildBr(self.builder, cond_block);
-                            LLVMPositionBuilderAtEnd(self.builder, cond_block);
-                            let cond_value = match self.emit_expression(value)? {
-                                EvalOutcome::Value(value) => value.into_value(),
-                                EvalOutcome::Flow(flow) => return Ok(Some(flow)),
-                            };
-                            let cond_bool = self.value_to_bool(cond_value)?;
-                            let mut cond_llvm = self.bool_llvm_value(&cond_bool);
-                            if !*expected {
-                                cond_llvm = LLVMBuildNot(
-                                    self.builder,
-                                    cond_llvm,
-                                    CString::new("while_let_not").unwrap().as_ptr(),
-                                );
-                            }
-                            LLVMBuildCondBr(self.builder, cond_llvm, body_block, after_block);
-
-                            LLVMPositionBuilderAtEnd(self.builder, body_block);
-                            self.loop_controls.push(LoopControl {
-                                break_block: after_block,
-                                continue_block: cond_block,
-                            });
-                            let result = (|| {
-                                self.push_scope();
-                                let result = self.execute_block_contents(&stmt.body)?;
-                                self.exit_scope()?;
-                                Ok::<_, String>(result)
-                            })();
-                            self.loop_controls.pop();
-                            let result = result?;
-                            match result {
-                                BlockEval::Flow(flow @ FlowSignal::Return(_))
-                                | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                    LLVMPositionBuilderAtEnd(self.builder, after_block);
-                                    return Ok(Some(flow));
-                                }
-                                _ => {}
-                            }
-
-                            let insert_block = LLVMGetInsertBlock(self.builder);
-                            let terminated = !insert_block.is_null()
-                                && !LLVMGetBasicBlockTerminator(insert_block).is_null();
-                            if !terminated {
-                                match result {
-                                    BlockEval::Flow(FlowSignal::Break) => {
-                                        LLVMBuildBr(self.builder, after_block);
-                                    }
-                                    _ => {
-                                        LLVMBuildBr(self.builder, cond_block);
-                                    }
-                                }
-                            }
-                            LLVMPositionBuilderAtEnd(self.builder, after_block);
-                        }
+                        };
+                        Some(PatternGuard {
+                            condition,
+                            binding: None,
+                        })
                     } else {
-                        loop {
-                            let candidate = match self.emit_expression(value)? {
-                                EvalOutcome::Value(value) => value,
-                                EvalOutcome::Flow(flow) => return Ok(Some(flow)),
-                            };
-                            self.push_scope();
-                            let matched = self.match_pattern(candidate.value(), pattern, false)?;
-                            if !matched {
-                                self.exit_scope()?;
-                                break;
-                            }
-                            let result = self.execute_block_contents(&stmt.body)?;
-                            self.exit_scope()?;
-                            match result {
-                                BlockEval::Value(_) => {}
-                                BlockEval::Flow(FlowSignal::Continue) => continue,
-                                BlockEval::Flow(FlowSignal::Break) => break,
-                                BlockEval::Flow(flow @ FlowSignal::Return(_)) => {
-                                    return Ok(Some(flow));
-                                }
-                                BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                    return Ok(Some(flow));
-                                }
-                            }
+                        self.lookup_pattern(&candidate, pattern)?
+                    };
+                    if let Some(guard) = guard {
+                        let flow = self.emit_while_let_body(header, guard, &stmt.body)?;
+                        if flow.is_some()
+                            && candidate
+                                .runtime
+                                .is_some_and(|rt| rt.lookup_found.is_some())
+                        {
+                            return Err("conditional return or propagation in a runtime lookup loop is unsupported".into());
                         }
+                        return Ok(flow);
                     }
-                }
+
+                    self.push_scope();
+                    if !self.match_pattern(candidate.value(), pattern, false)? {
+                        self.exit_scope()?;
+                        break;
+                    }
+                    let result = self.execute_block_contents(&stmt.body)?;
+                    self.exit_scope()?;
+                    match result {
+                        BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {}
+                        BlockEval::Flow(FlowSignal::Break) => break,
+                        BlockEval::Flow(flow) => return Ok(Some(flow)),
+                    }
+                },
             },
             Statement::Loop(loop_stmt) => {
                 if self.runtime_handles_enabled() {
@@ -770,6 +725,93 @@ impl Compiler {
                     }
                 }
             },
+        }
+        Ok(None)
+    }
+
+    fn lookup_pattern<'a>(
+        &self,
+        candidate: &EvaluatedValue,
+        pattern: &'a Pattern,
+    ) -> Result<Option<PatternGuard<'a>>, String> {
+        let Some(RuntimeValue {
+            handle,
+            lookup_found: Some(found),
+        }) = candidate.runtime
+        else {
+            return Ok(None);
+        };
+        let Pattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings,
+        } = pattern
+        else {
+            return Ok(None);
+        };
+        if enum_name.as_deref().is_some_and(|name| name != "Option") {
+            return Ok(None);
+        }
+        let (condition, binding) = match (variant.as_str(), bindings.as_slice()) {
+            ("Some", [Pattern::Identifier(name, _)]) => (found, Some((name.as_str(), handle))),
+            ("Some", [Pattern::Wildcard]) => (found, None),
+            ("None", []) => (
+                unsafe { LLVMBuildNot(self.builder, found, c"lookup_missing".as_ptr()) },
+                None,
+            ),
+            _ => return Err("unsupported pattern on runtime collection lookup".into()),
+        };
+        Ok(Some(PatternGuard { condition, binding }))
+    }
+
+    fn bind_lookup_payload(&mut self, binding: Option<(&str, LLVMValueRef)>) -> Result<(), String> {
+        if let Some((name, option)) = binding {
+            let index = unsafe { LLVMConstInt(self.runtime_abi.usize_type, 0, 0) };
+            let handle = self.call_runtime(
+                self.runtime_abi.prime_enum_get,
+                self.runtime_abi.prime_enum_get_ty,
+                &mut [option, index],
+                "lookup_value",
+            );
+            let payload = Value::from_runtime_payload(handle);
+            self.insert_var(name, payload.into(), false)?;
+        }
+        Ok(())
+    }
+
+    fn emit_while_let_body(
+        &mut self,
+        header: LLVMBasicBlockRef,
+        pattern: PatternGuard<'_>,
+        body: &Block,
+    ) -> Result<Option<FlowSignal>, String> {
+        unsafe {
+            let function = LLVMGetBasicBlockParent(header);
+            let body_block =
+                LLVMAppendBasicBlockInContext(self.context, function, c"while_let_body".as_ptr());
+            let after =
+                LLVMAppendBasicBlockInContext(self.context, function, c"while_let_after".as_ptr());
+            LLVMBuildCondBr(self.builder, pattern.condition, body_block, after);
+            LLVMPositionBuilderAtEnd(self.builder, body_block);
+            self.push_scope();
+            self.bind_lookup_payload(pattern.binding)?;
+            self.loop_controls.push(LoopControl {
+                break_block: after,
+                continue_block: header,
+            });
+            let result = self.execute_block_contents(body);
+            self.loop_controls.pop();
+            self.exit_scope()?;
+            if let BlockEval::Flow(flow @ (FlowSignal::Return(_) | FlowSignal::Propagate(_))) =
+                result?
+            {
+                LLVMPositionBuilderAtEnd(self.builder, after);
+                return Ok(Some(flow));
+            }
+            if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(self.builder)).is_null() {
+                LLVMBuildBr(self.builder, header);
+            }
+            LLVMPositionBuilderAtEnd(self.builder, after);
         }
         Ok(None)
     }
@@ -1439,11 +1481,9 @@ impl Compiler {
         };
         let fmt_len =
             unsafe { LLVMConstInt(self.runtime_abi.usize_type, fmt_handles.len() as u64, 0) };
-        let type_code_const =
-            unsafe { LLVMConstInt(self.runtime_abi.status_type, type_code as u64, 0) };
-        let ok_tag_const = unsafe { LLVMConstInt(self.runtime_abi.status_type, ok_tag as u64, 0) };
-        let err_tag_const =
-            unsafe { LLVMConstInt(self.runtime_abi.status_type, err_tag as u64, 0) };
+        let type_code_const = unsafe { LLVMConstInt(self.i32_type, type_code as u64, 0) };
+        let ok_tag_const = unsafe { LLVMConstInt(self.i32_type, ok_tag as u64, 0) };
+        let err_tag_const = unsafe { LLVMConstInt(self.i32_type, err_tag as u64, 0) };
 
         let result_handle = self.call_runtime(
             self.runtime_abi.prime_read_value,
@@ -2677,212 +2717,194 @@ impl Compiler {
         &mut self,
         if_expr: &IfExpr,
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
-        match &if_expr.condition {
+        let (cond_bool, binding) = match &if_expr.condition {
             IfCondition::Expr(condition) => {
-                let cond_value = match self.emit_expression(condition)? {
+                let value = match self.emit_expression(condition)? {
                     EvalOutcome::Value(value) => value.into_value(),
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
-                let cond_bool = self.value_to_bool(cond_value)?;
-                if let Some(flag) = cond_bool.constant() {
-                    if flag {
+                (self.value_to_bool(value)?, None)
+            }
+            IfCondition::Let { pattern, value } => {
+                let candidate = match self.emit_expression(value)? {
+                    EvalOutcome::Value(value) => value,
+                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                };
+                if let Some(lookup) = self.lookup_pattern(&candidate, pattern)? {
+                    (BoolValue::new(lookup.condition, None), lookup.binding)
+                } else {
+                    self.push_scope();
+                    if self.match_pattern(candidate.value(), pattern, false)? {
+                        let result = self.execute_block_contents(&if_expr.then_branch)?;
+                        self.exit_scope()?;
+                        return Ok(match result {
+                            BlockEval::Value(value) => EvalOutcome::Value(value),
+                            BlockEval::Flow(flow) => EvalOutcome::Flow(flow),
+                        });
+                    }
+                    self.exit_scope()?;
+                    (self.const_bool_value(false), None)
+                }
+            }
+        };
+        if let Some(flag) = cond_bool.constant() {
+            if flag {
+                self.push_scope();
+                let value = self.execute_block_contents(&if_expr.then_branch)?;
+                self.exit_scope()?;
+                match value {
+                    BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
+                    BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                }
+            } else if let Some(else_branch) = &if_expr.else_branch {
+                match else_branch {
+                    ElseBranch::Block(block) => {
                         self.push_scope();
-                        let value = self.execute_block_contents(&if_expr.then_branch)?;
+                        let value = self.execute_block_contents(block)?;
                         self.exit_scope()?;
                         match value {
                             BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
                             BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                         }
-                    } else if let Some(else_branch) = &if_expr.else_branch {
-                        match else_branch {
-                            ElseBranch::Block(block) => {
-                                self.push_scope();
-                                let value = self.execute_block_contents(block)?;
-                                self.exit_scope()?;
-                                match value {
-                                    BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                                    BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-                                }
-                            }
-                            ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
-                        }
-                    } else {
-                        Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
                     }
-                } else {
-                    unsafe {
+                    ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
+                }
+            } else {
+                Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
+            }
+        } else {
+            unsafe {
+                let current_block = LLVMGetInsertBlock(self.builder);
+                if current_block.is_null() {
+                    return Err("no insertion block for if expression".into());
+                }
+                let function = LLVMGetBasicBlockParent(current_block);
+                if function.is_null() {
+                    return Err("if expression outside function".into());
+                }
+                let then_block = LLVMAppendBasicBlockInContext(
+                    self.context,
+                    function,
+                    CString::new("if_then").unwrap().as_ptr(),
+                );
+                let else_block = LLVMAppendBasicBlockInContext(
+                    self.context,
+                    function,
+                    CString::new("if_else").unwrap().as_ptr(),
+                );
+                let merge_block = LLVMAppendBasicBlockInContext(
+                    self.context,
+                    function,
+                    CString::new("if_merge").unwrap().as_ptr(),
+                );
+                let cond_llvm = self.bool_llvm_value(&cond_bool);
+                LLVMBuildCondBr(self.builder, cond_llvm, then_block, else_block);
+
+                LLVMPositionBuilderAtEnd(self.builder, then_block);
+                self.push_scope();
+                self.bind_lookup_payload(binding)?;
+                let mut then_value: Option<EvaluatedValue> = None;
+                let then_eval = self.execute_block_contents(&if_expr.then_branch)?;
+                self.exit_scope()?;
+                match then_eval {
+                    BlockEval::Flow(FlowSignal::Return(_))
+                    | BlockEval::Flow(FlowSignal::Propagate(_)) => {
                         let current_block = LLVMGetInsertBlock(self.builder);
-                        if current_block.is_null() {
-                            return Err("no insertion block for if expression".into());
+                        if current_block.is_null()
+                            || LLVMGetBasicBlockTerminator(current_block).is_null()
+                        {
+                            return Err(
+                                "return/propagate in dynamic if branch did not terminate block"
+                                    .into(),
+                            );
                         }
-                        let function = LLVMGetBasicBlockParent(current_block);
-                        if function.is_null() {
-                            return Err("if expression outside function".into());
+                    }
+                    BlockEval::Value(val) => {
+                        then_value = Some(val);
+                        LLVMBuildBr(self.builder, merge_block);
+                    }
+                    BlockEval::Flow(FlowSignal::Break) | BlockEval::Flow(FlowSignal::Continue) => {
+                        let current_block = LLVMGetInsertBlock(self.builder);
+                        if current_block.is_null()
+                            || LLVMGetBasicBlockTerminator(current_block).is_null()
+                        {
+                            return Err(
+                                "break/continue in dynamic if branch did not terminate block"
+                                    .into(),
+                            );
                         }
-                        let then_block = LLVMAppendBasicBlockInContext(
-                            self.context,
-                            function,
-                            CString::new("if_then").unwrap().as_ptr(),
-                        );
-                        let else_block = LLVMAppendBasicBlockInContext(
-                            self.context,
-                            function,
-                            CString::new("if_else").unwrap().as_ptr(),
-                        );
-                        let merge_block = LLVMAppendBasicBlockInContext(
-                            self.context,
-                            function,
-                            CString::new("if_merge").unwrap().as_ptr(),
-                        );
-                        let cond_llvm = self.bool_llvm_value(&cond_bool);
-                        LLVMBuildCondBr(self.builder, cond_llvm, then_block, else_block);
+                    }
+                };
 
-                        LLVMPositionBuilderAtEnd(self.builder, then_block);
-                        self.push_scope();
-                        let mut then_value: Option<EvaluatedValue> = None;
-                        let then_eval = self.execute_block_contents(&if_expr.then_branch)?;
-                        self.exit_scope()?;
-                        match then_eval {
-                            BlockEval::Flow(FlowSignal::Return(_))
-                            | BlockEval::Flow(FlowSignal::Propagate(_)) => {
-                                let current_block = LLVMGetInsertBlock(self.builder);
-                                if current_block.is_null()
-                                    || LLVMGetBasicBlockTerminator(current_block).is_null()
-                                {
-                                    return Err(
-                                        "return/propagate in dynamic if branch did not terminate block"
-                                            .into(),
-                                    );
-                                }
-                            }
-                            BlockEval::Value(val) => {
-                                then_value = Some(val);
-                                LLVMBuildBr(self.builder, merge_block);
-                            }
-                            BlockEval::Flow(FlowSignal::Break)
-                            | BlockEval::Flow(FlowSignal::Continue) => {
-                                let current_block = LLVMGetInsertBlock(self.builder);
-                                if current_block.is_null()
-                                    || LLVMGetBasicBlockTerminator(current_block).is_null()
-                                {
-                                    return Err(
-                                        "break/continue in dynamic if branch did not terminate block"
-                                            .into(),
-                                    );
-                                }
-                            }
-                        };
-
-                        LLVMPositionBuilderAtEnd(self.builder, else_block);
-                        let mut else_value: Option<EvaluatedValue> = None;
-                        if let Some(else_branch) = &if_expr.else_branch {
-                            match else_branch {
-                                ElseBranch::Block(block) => {
-                                    self.push_scope();
-                                    let else_eval = self.execute_block_contents(block)?;
-                                    self.exit_scope()?;
-                                    match else_eval {
-                                        BlockEval::Flow(FlowSignal::Return(_))
-                                        | BlockEval::Flow(FlowSignal::Propagate(_)) => {
-                                            let current_block = LLVMGetInsertBlock(self.builder);
-                                            if current_block.is_null()
-                                                || LLVMGetBasicBlockTerminator(current_block)
-                                                    .is_null()
-                                            {
-                                                return Err(
-                                                    "return/propagate in dynamic if branch did not terminate block"
-                                                        .into(),
-                                                );
-                                            }
-                                        }
-                                        BlockEval::Value(val) => {
-                                            else_value = Some(val);
-                                            LLVMBuildBr(self.builder, merge_block);
-                                        }
-                                        BlockEval::Flow(FlowSignal::Break)
-                                        | BlockEval::Flow(FlowSignal::Continue) => {
-                                            let current_block = LLVMGetInsertBlock(self.builder);
-                                            if current_block.is_null()
-                                                || LLVMGetBasicBlockTerminator(current_block)
-                                                    .is_null()
-                                            {
-                                                return Err(
-                                                    "break/continue in dynamic if branch did not terminate block"
-                                                        .into(),
-                                                );
-                                            }
-                                        }
-                                    };
-                                }
-                                ElseBranch::ElseIf(nested) => {
-                                    match self.emit_if_expression(nested)? {
-                                        EvalOutcome::Flow(_) => {
-                                            let current_block = LLVMGetInsertBlock(self.builder);
-                                            if current_block.is_null()
-                                                || LLVMGetBasicBlockTerminator(current_block)
-                                                    .is_null()
-                                            {
-                                                return Err(
-                                                    "flow in dynamic else-if branch did not terminate block"
-                                                        .into(),
-                                                );
-                                            }
-                                        }
-                                        EvalOutcome::Value(val) => {
-                                            else_value = Some(val);
-                                            LLVMBuildBr(self.builder, merge_block);
-                                        }
+                LLVMPositionBuilderAtEnd(self.builder, else_block);
+                let mut else_value: Option<EvaluatedValue> = None;
+                if let Some(else_branch) = &if_expr.else_branch {
+                    match else_branch {
+                        ElseBranch::Block(block) => {
+                            self.push_scope();
+                            let else_eval = self.execute_block_contents(block)?;
+                            self.exit_scope()?;
+                            match else_eval {
+                                BlockEval::Flow(FlowSignal::Return(_))
+                                | BlockEval::Flow(FlowSignal::Propagate(_)) => {
+                                    let current_block = LLVMGetInsertBlock(self.builder);
+                                    if current_block.is_null()
+                                        || LLVMGetBasicBlockTerminator(current_block).is_null()
+                                    {
+                                        return Err(
+                                            "return/propagate in dynamic if branch did not terminate block"
+                                                .into(),
+                                        );
                                     }
                                 }
-                            }
-                        } else {
-                            LLVMBuildBr(self.builder, merge_block);
+                                BlockEval::Value(val) => {
+                                    else_value = Some(val);
+                                    LLVMBuildBr(self.builder, merge_block);
+                                }
+                                BlockEval::Flow(FlowSignal::Break)
+                                | BlockEval::Flow(FlowSignal::Continue) => {
+                                    let current_block = LLVMGetInsertBlock(self.builder);
+                                    if current_block.is_null()
+                                        || LLVMGetBasicBlockTerminator(current_block).is_null()
+                                    {
+                                        return Err(
+                                            "break/continue in dynamic if branch did not terminate block"
+                                                .into(),
+                                        );
+                                    }
+                                }
+                            };
                         }
-
-                        LLVMPositionBuilderAtEnd(self.builder, merge_block);
-                        if let (Some(then_val), Some(else_val)) = (then_value, else_value) {
-                            return Ok(EvalOutcome::Value(
-                                self.merge_if_values(then_val, then_block, else_val, else_block)?,
-                            ));
-                        }
-                    }
-                    Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
-                }
-            }
-            IfCondition::Let { pattern, value, .. } => {
-                let scrutinee = match self.emit_expression(value)? {
-                    EvalOutcome::Value(value) => value,
-                    EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
-                };
-                self.push_scope();
-                let matches = self.match_pattern(scrutinee.value(), pattern, false)?;
-                if matches {
-                    let result = self.execute_block_contents(&if_expr.then_branch)?;
-                    self.exit_scope()?;
-                    match result {
-                        BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                        BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
-                    }
-                } else {
-                    self.exit_scope()?;
-                    if let Some(else_branch) = &if_expr.else_branch {
-                        match else_branch {
-                            ElseBranch::Block(block) => {
-                                self.push_scope();
-                                let value = self.execute_block_contents(block)?;
-                                self.exit_scope()?;
-                                match value {
-                                    BlockEval::Value(value) => Ok(EvalOutcome::Value(value)),
-                                    BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
+                        ElseBranch::ElseIf(nested) => match self.emit_if_expression(nested)? {
+                            EvalOutcome::Flow(_) => {
+                                let current_block = LLVMGetInsertBlock(self.builder);
+                                if current_block.is_null()
+                                    || LLVMGetBasicBlockTerminator(current_block).is_null()
+                                {
+                                    return Err(
+                                        "flow in dynamic else-if branch did not terminate block"
+                                            .into(),
+                                    );
                                 }
                             }
-                            ElseBranch::ElseIf(nested) => self.emit_if_expression(nested),
-                        }
-                    } else {
-                        Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
+                            EvalOutcome::Value(val) => {
+                                else_value = Some(val);
+                                LLVMBuildBr(self.builder, merge_block);
+                            }
+                        },
                     }
+                } else {
+                    LLVMBuildBr(self.builder, merge_block);
+                }
+
+                LLVMPositionBuilderAtEnd(self.builder, merge_block);
+                if let (Some(then_val), Some(else_val)) = (then_value, else_value) {
+                    return Ok(EvalOutcome::Value(
+                        self.merge_if_values(then_val, then_block, else_val, else_block)?,
+                    ));
                 }
             }
+            Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
         }
     }
 
@@ -3057,13 +3079,14 @@ impl Compiler {
         }
     }
 
-    pub(super) fn invoke_builtin<F>(
+    pub(super) fn invoke_builtin<F, V>(
         &mut self,
         args: &[Expr],
         mut f: F,
     ) -> Result<EvalOutcome<EvaluatedValue>, String>
     where
-        F: FnMut(&mut Self, Vec<Value>) -> Result<Value, String>,
+        F: FnMut(&mut Self, Vec<Value>) -> Result<V, String>,
+        V: Into<EvaluatedValue>,
     {
         let mut evaluated = Vec::with_capacity(args.len());
         for expr in args {

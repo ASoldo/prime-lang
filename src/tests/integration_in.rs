@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::OnceLock,
 };
@@ -106,58 +106,90 @@ fn prime_tests_support_scripted_input() {
     );
 }
 
-#[test]
-#[ignore = "input handling flakiness on CI; skip until stabilized"]
-fn build_mode_in_preserves_values() {
-    let build_name = "integration_in_build";
-    let artifact_dir = PathBuf::from(root()).join(".build.prime").join(build_name);
-    let _ = fs::remove_dir_all(&artifact_dir);
-
+fn build_demo(work_dir: &Path, entry: &Path, name: &str) -> PathBuf {
     let status = Command::new(bin_path())
-        .current_dir(root())
-        .args([
-            "build",
-            "workspace/tests/build_input_demo/build_input_demo.prime",
-            "--name",
-            build_name,
-        ])
+        .current_dir(work_dir)
+        .arg("build")
+        .arg(entry)
+        .args(["--name", name])
         .env_remove("PRIME_TEST_INPUTS")
         .env_remove("PRIME_TEST_INPUTS_FILE")
         .status()
-        .expect("failed to run build");
-    assert!(status.success(), "build failed for integration input demo");
+        .expect("build demo");
+    assert!(status.success(), "build failed for {}", entry.display());
+    work_dir.join(".build.prime").join(name).join(name)
+}
 
-    let binary = artifact_dir.join(build_name);
-    let mut child = Command::new(&binary)
-        .env_remove("PRIME_TEST_INPUTS")
-        .env_remove("PRIME_TEST_INPUTS_FILE")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to run compiled binary");
-    {
-        let mut stdin = child.stdin.take().expect("child stdin missing");
-        stdin
-            .write_all(b"16\nabc\n")
-            .expect("failed to write stdin");
+#[test]
+fn build_mode_in_preserves_values() {
+    let work = tempdir().expect("temporary input demo directory");
+    let entry =
+        PathBuf::from(root()).join("workspace/tests/build_input_demo/build_input_demo.prime");
+    let binary = build_demo(work.path(), &entry, "integration_in_build");
+    for (input, expected) in [
+        (
+            "16\nabc\n",
+            "Enter age: age recorded: 16\nTemperature for Soldo: temp error: invalid integer input\n",
+        ),
+        (
+            "abc\n-7\n",
+            "Enter age: age error: invalid integer input\nTemperature for Soldo: temp recorded: -7\n",
+        ),
+        (
+            "21\n42\n",
+            "Enter age: age recorded: 21\nTemperature for Soldo: temp recorded: 42\n",
+        ),
+    ] {
+        let mut child = Command::new(&binary)
+            .current_dir(work.path())
+            .env_remove("PRIME_TEST_INPUTS")
+            .env_remove("PRIME_TEST_INPUTS_FILE")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to run compiled binary");
+        {
+            let mut stdin = child.stdin.take().expect("child stdin missing");
+            stdin.write_all(input.as_bytes()).expect("write stdin");
+        }
+        let output = child
+            .wait_with_output()
+            .expect("failed to read binary output");
+        assert!(
+            output.status.success(),
+            "binary exited with failure: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
     }
-    let output = child
-        .wait_with_output()
-        .expect("failed to read binary output");
-    assert!(
-        output.status.success(),
-        "binary exited with failure: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("age recorded: 16"),
-        "missing age output:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("temp error: invalid integer input"),
-        "missing temp error output:\n{stdout}"
+}
+
+#[test]
+fn pattern_demo_build_matches_run_output() {
+    let work = tempdir().expect("temporary pattern demo directory");
+    let entry = PathBuf::from(root()).join("workspace/demos/patterns/pattern_demo.prime");
+    let binary = build_demo(work.path(), &entry, "pattern_demo_parity");
+    let compiled = Command::new(binary)
+        .current_dir(work.path())
+        .output()
+        .expect("run compiled pattern demo");
+    let interpreted = Command::new(bin_path())
+        .current_dir(work.path())
+        .arg("run")
+        .arg(entry)
+        .output()
+        .expect("run interpreted pattern demo");
+    for output in [&compiled, &interpreted] {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_eq!(
+        String::from_utf8(compiled.stdout).unwrap(),
+        String::from_utf8(interpreted.stdout).unwrap()
     );
 }
 

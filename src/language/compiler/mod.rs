@@ -179,6 +179,17 @@ enum Value {
     Moved,
 }
 
+impl Value {
+    fn from_runtime_payload(handle: LLVMValueRef) -> Self {
+        Self::Reference(ReferenceValue {
+            cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+            mutable: false,
+            origin: None,
+            handle: Some(handle),
+        })
+    }
+}
+
 #[derive(Clone)]
 struct ClosureValue {
     id: usize,
@@ -691,6 +702,7 @@ struct Binding {
 #[derive(Clone, Copy)]
 struct RuntimeValue {
     handle: LLVMValueRef,
+    lookup_found: Option<LLVMValueRef>,
 }
 
 #[derive(Clone)]
@@ -724,7 +736,10 @@ impl EvaluatedValue {
     }
 
     fn set_runtime(&mut self, handle: LLVMValueRef) {
-        self.runtime = Some(RuntimeValue { handle });
+        self.runtime = Some(RuntimeValue {
+            handle,
+            lookup_found: None,
+        });
     }
 
     fn with_runtime(mut self, handle: LLVMValueRef) -> Self {
@@ -1319,8 +1334,8 @@ impl Compiler {
         }
     }
 
-    fn evaluated(&mut self, value: Value) -> EvaluatedValue {
-        let mut evaluated = EvaluatedValue::from_value(value);
+    fn evaluated(&mut self, value: impl Into<EvaluatedValue>) -> EvaluatedValue {
+        let mut evaluated = value.into();
         if let Some(handle) = self.pending_runtime.take() {
             evaluated.set_runtime(handle);
         }

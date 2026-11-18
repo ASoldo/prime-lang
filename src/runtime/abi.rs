@@ -2298,7 +2298,7 @@ mod host {
     use std::ffi::c_void;
     use std::io::{self, Write};
     use std::slice;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::sync::{Arc, Condvar, Mutex};
     use std::thread;
@@ -3132,55 +3132,51 @@ mod host {
         let _ = stdout.flush();
     }
 
+    // The first three i32 arguments carry a TYPE_* code and two program-defined enum tags.
     #[unsafe(export_name = "prime_read_value")]
     pub unsafe extern "C" fn prime_read_value(
-        type_code: PrimeStatus,
-        ok_tag: PrimeStatus,
-        err_tag: PrimeStatus,
+        type_code: u32,
+        ok_tag: u32,
+        err_tag: u32,
         prompt_ptr: *const u8,
         prompt_len: usize,
         _fmt_values: *mut PrimeHandle,
         _fmt_len: usize,
     ) -> PrimeHandle {
+        // Compiled out() calls may have buffered text in C stdio.
+        let _ = fflush(std::ptr::null_mut());
         if !prompt_ptr.is_null() && prompt_len > 0 {
             if let Ok(prompt) = std::str::from_utf8(slice::from_raw_parts(prompt_ptr, prompt_len)) {
                 let _ = io::stdout().write_all(prompt.as_bytes());
                 let _ = io::stdout().flush();
             }
         }
-        static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
-        let call_idx = CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         let mut input = String::new();
-        let _ = io::stdin().read_line(&mut input);
-        let trimmed = input.trim();
-        let parsed = match type_code as u32 {
-            TYPE_INT8 | TYPE_INT16 | TYPE_INT32 | TYPE_INT64 | TYPE_ISIZE | TYPE_UINT8
-            | TYPE_UINT16 | TYPE_UINT32 | TYPE_UINT64 | TYPE_USIZE => {
-                trimmed.parse::<i128>().ok().map(HostValue::Int)
-            }
-            TYPE_STRING => Some(HostValue::Str(trimmed.to_string())),
-            TYPE_BOOL => trimmed.parse::<bool>().ok().map(HostValue::Bool),
-            _ => None,
+        let result = io::stdin()
+            .read_line(&mut input)
+            .map_err(|err| err.to_string())
+            .and_then(|_| {
+                let trimmed = input.trim();
+                match type_code {
+                    TYPE_INT8 | TYPE_INT16 | TYPE_INT32 | TYPE_INT64 | TYPE_ISIZE | TYPE_UINT8
+                    | TYPE_UINT16 | TYPE_UINT32 | TYPE_UINT64 | TYPE_USIZE => {
+                        trimmed.parse::<i128>().ok().map(HostValue::Int)
+                    }
+                    TYPE_STRING => Some(HostValue::Str(trimmed.to_string())),
+                    TYPE_BOOL => trimmed.parse::<bool>().ok().map(HostValue::Bool),
+                    _ => None,
+                }
+                .ok_or_else(|| "invalid integer input".to_string())
+            });
+        let (tag, payload) = match result {
+            Ok(value) => (ok_tag, value),
+            Err(message) => (err_tag, HostValue::Str(message)),
         };
-        if let Some(payload) = parsed {
-            if call_idx == 0 {
-                let _ = writeln!(io::stdout(), "age recorded: {trimmed}");
-            }
-            let enum_value = HostValue::Enum {
-                tag: ok_tag as u32,
-                values: vec![payload],
-            };
-            to_handle(HostHandle::with_tag(enum_value, ok_tag as u32))
-        } else {
-            if call_idx == 1 {
-                let _ = writeln!(io::stdout(), "temp error: invalid integer input");
-            }
-            let enum_value = HostValue::Enum {
-                tag: err_tag as u32,
-                values: vec![HostValue::Str("invalid integer input".into())],
-            };
-            to_handle(HostHandle::with_tag(enum_value, err_tag as u32))
-        }
+        let value = HostValue::Enum {
+            tag,
+            values: vec![payload],
+        };
+        to_handle(HostHandle::with_tag(value, tag))
     }
 
     #[unsafe(export_name = "prime_task_new")]
