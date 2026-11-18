@@ -29,43 +29,45 @@ ws.onmessage = ({data}) => console.log(typeof data === "string" ? data : new Uin
 ws.onopen = () => ws.send(new Uint8Array([0, 255, 0]));
 ```
 
-Open a second client. Sending `ws.send("both")` on either client makes both receive the text `ready`. All other messages echo only to the sender. Close with `ws.close(1000)`; stop the adapter with Ctrl-C.
+Open a second client. Sending `ws.send("both")` on either client makes both receive the text `ready`. Send `move` from each browser to increment a shared counter. Both receive `state COUNT by PEER`. Send `who` for a private ID and active-player count, or `bye` to close the sender's connection. Other text and binary messages echo only to the sender. Stop the adapter with Ctrl-C. [Prime demo](echo.prime)
 
 ## Prime process interface
 
-The adapter starts the command following `--` directly and serializes all events on its stdin. For each event, read exactly three newline-terminated lines with `in[int32]("")`, `in[string]("")` and `in[string]("")`.
+The adapter starts the command following `--` directly. WebSocket and Pion DataChannel applications share the following peer protocol. Read exactly three newline-terminated lines from stdin for each event.
 
-| Line | Contents |
-| --- | --- |
-| 1 | Positive decimal peer ID, stable until disconnect. Reconnecting assigns a fresh ID. |
-| 2 | `open`, `text`, `binary` or `close`. A transport failure also produces `close`. |
-| 3 | Lowercase hexadecimal bytes with two digits per byte. Text uses UTF-8. Open, close and zero-length messages have an empty third line. |
+| Line | Prime call | Contents |
+| --- | --- | --- |
+| 1 | `in[string]("")` | `open`, `close`, `text`, `text64` or `bytes`. |
+| 2 | `in[int64]("")` | Positive decimal connection ID. Reconnecting assigns a fresh ID. |
+| 3 | `in[string]("")` | Empty on open. A short transport reason on close. Otherwise the message payload. |
 
-Reply once per event on stdout with `out("drop")` or one line of the form `DEST KIND HEX`. DEST is `self`, `all` (including the sender), or a decimal peer ID. KIND is `text` or `binary`. HEX accepts up to 8192 lowercase hex digits, in pairs. An empty message ends with the space after KIND. A reply to a disconnected peer is discarded. Reserve stdout for replies and keep input prompts empty. EOF ends the application. A malformed reply, invalid text output, application exit or a five-second response timeout stops the service with an error.
+Single-line UTF-8 messages use `text`. Text containing a control character or surrounding whitespace uses `text64` to preserve the bytes through both Prime string readers. Binary messages use `bytes`. Both encoded kinds use standard padded base64. An empty data message has an empty third line. The 4096-byte limit applies to the decoded payload.
 
-For example, the event lines `2`, `binary`, `00ff00` can produce `2 binary 00ff00`. A reply of `all text 7265616479` sends the UTF-8 string `ready`. Prime can change both the message and its destination. The adapter waits for delivery attempts before processing the next event. Concurrent senders are serialized in arrival-to-handler order. One slow write can delay the other senders.
+Write any number of newline-terminated commands to stdout, independently of input events. Write `text ID PAYLOAD`, `text64 ID BASE64`, `bytes ID BASE64`, or `close ID`. For an empty data message retain the space after the ID. A command addressed to a departed peer is discarded. For example, `bytes 2 AP8A` sends the three bytes `00 ff 00` to peer 2. To broadcast, the application emits one command for each currently connected peer. Each command addresses one connection on one adapter instance.
+
+Keep prompts empty and reserve stdout for commands. Input and output run independently with ordered event records and ordered stdout commands. A malformed command, blocked stdin write (three seconds), or unexpected child exit ends the service. During shutdown the child receives EOF and has two seconds to exit.
 
 ## Bounds and target support
 
 | Resource | Limit or behavior |
 | --- | --- |
-| Active application peers | 4. Excess upgraded connections close with 1013. OS backlog hint 8 and a three-second opening handshake timeout. |
+| Active application peers | `--max-peers N` accepts 1–256 and defaults to 4. Excess upgraded connections close with 1013. OS backlog hint max(8, N) and a three-second opening handshake timeout. |
 | Incoming message | 4096 bytes after fragment assembly, at most 64 fragments and 120 seconds per complete message including idle time. Oversize closes with 1009. Fragment count or time exhaustion closes with 1008. |
-| Per-peer application budget | After processing 256 data messages the server closes with 1008. Ping/pong and close are handled by the WebSocket library. |
-| Backpressure | Receive queue high-water mark of four frames, write high-water mark of 8192 bytes, one pending application exchange per handler. Two-second send deadline, one-second close deadline. |
+| Per-peer application budget | Up to 256 data messages per rolling second. The next message inside that window closes the peer with 1008. Continuing below the rate limit supports long matches. Ping/pong and close are handled by the WebSocket library. |
+| Backpressure | Receive queue high-water mark of four frames, write high-water mark of 8192 bytes, one pending stdin record per handler and one stdout send at a time across all peers. Two-second send deadline, one-second close deadline. |
 | Wire and lifetime | Plain loopback WS, compression disabled. One service instance per application. IDs and game state are process-local. |
 
 This SDK requires host stdio, process creation, TCP and Python. There is no firmware or no_std implementation. Installing or building Prime and running an offline hello requires none of the SDK's Python packages. This local development service accepts unauthenticated local clients.
 
 ## Tetris exchange contract
 
-A game can use one text message per input: `t1:left`, `t1:right`, `t1:rotate` or `t1:drop`. Assign player roles on `open`, validate each input against the peer ID and game state, and release the role on `close`. A full display snapshot fits in one binary message of 201 bytes. The first byte is the version (1); bytes 1 through 200 represent the visible 10 × 20 board in row-major order starting at the top left. Cell 0 is empty and 1–7 select the game palette. Reply to a newly admitted peer with the latest snapshot and broadcast updated snapshots after accepted inputs. Reconnection starts a fresh session. Applications can drop unknown commands and clients can discard unsupported snapshot versions or lengths.
+Start one adapter with `--max-peers 99` and one authoritative game process. The application assigns roles on `open`, validates each input against its connection ID and releases the role on `close`. IDs start at 1 for each adapter process. Hosts combining WebSocket and WebRTC namespaces must key connections by transport instance as well as peer ID.
 
-This proposed game contract covers input-driven snapshots. The supplied demo implements echo and broadcast. Game simulation, authentication and continuous server-initiated ticks are outside the adapter interface. REST and WebRTC can evolve independently.
+The adapter carries the game's move and state formats unchanged. For example, a client can send the text `move 7 2` as its seventh input. The host can acknowledge just that player, then send state to multiple recipients independently. For a snapshot larger than 4096 bytes, the game must split it into messages within that limit. Give the parts a common tick or snapshot ID, part number and part count so receivers can apply a complete snapshot atomically. WebSocket fragmentation alone does not increase the per-message limit. The SDK demo's shared counter exercises authoritative updates and fan-out; arena game rules live in the application.
 
 ## Interoperability regression
 
-Use a Linux host with Chromium and matching chromedriver on PATH. The regression creates its own loopback HTTP origin and launches a temporary headless browser. From the repository root, run these commands in the SDK virtual environment.
+Use a Linux host with Chromium and matching chromedriver on PATH. The regression creates its own loopback HTTP origin and launches two independent temporary headless Chromium instances. From the repository root, run these commands in the SDK virtual environment.
 
 ```sh
 cargo build --locked --bin prime-lang
@@ -73,4 +75,4 @@ pip install -r sdk/websocket/requirements-test.txt
 python sdk/websocket/test_service.py "${CARGO_TARGET_DIR:-target}/debug/prime-lang"
 ```
 
-Each backend runs the same independent websocket-client checks and browser WebSocket API scenario. The suite covers byte-exact empty, NUL, multibyte and maximum-sized payloads, concurrent clients, a ping inside fragmented text, close, interrupted TCP, client admission, message and fragment budgets, oversized input and two-recipient broadcast.
+Each backend runs the same independent websocket-client checks and browser WebSocket API scenario. The suite covers byte-exact empty, NUL, multibyte and maximum-sized payloads, concurrent clients, a ping inside fragmented text, close, interrupted TCP, client admission, rate and fragment limits, progressing beyond 256 lifetime inputs, oversized input and two-recipient broadcast. A separate run on each backend admits 99 simultaneous connections (97 independent clients and both browsers), rejects the 100th, verifies two successive state broadcasts at every peer, reuses the released browser slot with a fresh ID, and checks the final application peer count after disconnects.

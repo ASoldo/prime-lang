@@ -1,29 +1,65 @@
-//! Echo to the sender. A text "both" broadcasts "ready" to all peers.
+//! Stateful host demo for the shared WebSocket and DataChannel peer protocol.
 module ws_echo;
+enum Option[T] { Some(T), None }
 enum Result[T, E] { Ok(T), Err(E) }
 
-fn next_event() -> bool {
-  match in[int32]("") {
-    Result::Ok(id) => match in[string]("") {
-      Result::Ok(kind) => match in[string]("") {
-        Result::Ok(hex) => {
-          if kind == "text" && hex == "626f7468" {
-            out("all text 7265616479");
-          } else if kind == "binary" || kind == "text" {
-            out(`{id} {kind} {hex}`);
-          } else {
-            out("drop");
-          }
-          true
-        },
-        Result::Err(_) => false,
-      },
-      Result::Err(_) => false,
-    },
-    Result::Err(_) => false,
+fn peer_at(peers: []int64, index: int32) -> int64 {
+  match peers[index] {
+    Option::Some(value) => value,
+    Option::None => 0,
   }
 }
 
+fn replace(peers: []int64, old: int64, new_id: int64) -> bool {
+  let mut int32 index = 0;
+  while index < peers.len() {
+    if peer_at(peers, index) == old {
+      peers[index] = new_id;
+      return true;
+    }
+    index = index + 1;
+  }
+  false
+}
+
+fn broadcast(peers: []int64, update: bool, moves: int32, actor: int64) {
+  let mut int32 index = 0;
+  while index < peers.len() {
+    let int64 id = peer_at(peers, index);
+    if id > 0 {
+      if update { out(`text {id} state {moves} by {actor}`); }
+      else { out(`text {id} ready`); }
+    }
+    index = index + 1;
+  }
+}
+
+fn run() -> Result[(), string] {
+  let mut []int64 peers = [];
+  let mut int32 moves = 0;
+  let mut int32 active = 0;
+  while let Result::Ok(kind) = in[string]("") {
+    let int64 peer = in[int64]("")?;
+    let string data = in[string]("")?;
+    if kind == "open" {
+      if !replace(peers, 0, peer) { peers.push(peer); }
+      active = active + 1;
+    } else if kind == "close" {
+      if replace(peers, peer, 0) { active = active - 1; }
+    } else if kind == "text" && data == "who" {
+      out(`text {peer} peer {peer} active {active}`);
+    } else if kind == "text" && data == "bye" {
+      out(`close {peer}`);
+    } else if kind == "text" && (data == "both" || data == "move") {
+      if data == "move" { moves = moves + 1; }
+      broadcast(peers, data == "move", moves, peer);
+    } else if kind == "text" || kind == "text64" || kind == "bytes" {
+      out(`{kind} {peer} {data}`);
+    }
+  }
+  Result::Ok(())
+}
+
 fn main() {
-  while next_event() {}
+  let Result[(), string] ended = run();
 }

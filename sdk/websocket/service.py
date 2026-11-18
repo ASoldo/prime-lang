@@ -1,78 +1,108 @@
 """Serve loopback WebSockets on behalf of one long-lived Prime process."""
 import argparse
 import asyncio
+import base64
+from collections import deque
 import itertools
-import re
 import signal
 import sys
+import time
+import unicodedata
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
-MAX_CLIENTS = 4
 MAX_BYTES = 4096
-MAX_MESSAGES = 256
+MESSAGES_PER_SECOND = 256
 MAX_FRAGMENTS = 64
-RESPONSE = re.compile(rb"(self|all|[1-9][0-9]{0,9}) (text|binary) ([0-9a-f]*)\n")
+
+
+def event_payload(parts):
+    if isinstance(parts[0], bytes):
+        return "bytes", base64.b64encode(b"".join(parts)).decode("ascii")
+    value = "".join(parts)
+    if value != value.strip() or any(unicodedata.category(ch) == "Cc" for ch in value):
+        return "text64", base64.b64encode(value.encode()).decode("ascii")
+    return "text", value
+
+
+def parse_command(line):
+    if not line.endswith(b"\n"):
+        raise ValueError("missing command terminator")
+    kind, _, rest = line[:-1].partition(b" ")
+    peer, has_payload, data = rest.partition(b" ")
+    if not peer.isdigit() or not 0 < int(peer) < 2**64:
+        raise ValueError("expected positive decimal peer ID")
+    if kind == b"close" and not has_payload:
+        return int(peer), None
+    if not has_payload or kind not in (b"text", b"bytes", b"text64"):
+        raise ValueError("expected a text, text64, bytes or close command")
+    if kind != b"text":
+        decoded = base64.b64decode(data, validate=True)
+        if base64.b64encode(decoded) != data:
+            raise ValueError("expected canonical padded base64")
+        data = decoded
+    if len(data) > MAX_BYTES:
+        raise ValueError("oversized payload")
+    return int(peer), data if kind == b"bytes" else data.decode("utf-8")
 
 
 class Service:
-    def __init__(self, child):
+    def __init__(self, child, max_peers):
         self.child = child
+        self.max_peers = max_peers
         self.clients = {}
         self.ids = itertools.count(1)
-        self.lock = asyncio.Lock()
+        self.input_lock = asyncio.Lock()
         self.stopped = asyncio.Event()
         self.error = None
 
-    async def exchange(self, client_id, kind, data):
-        # Serializing input through delivery also orders broadcasts for all peers.
-        async with self.lock:
+    async def event(self, peer, kind, payload):
+        async with self.input_lock:
             if self.stopped.is_set():
                 return
             try:
-                async with asyncio.timeout(5):
-                    record = f"{client_id}\n{kind}\n{data.hex()}\n"
-                    self.child.stdin.write(record.encode("ascii"))
+                self.child.stdin.write(f"{kind}\n{peer}\n{payload}\n".encode())
+                async with asyncio.timeout(3):
                     await self.child.stdin.drain()
-                    line = await self.child.stdout.readline()
-                    if line == b"drop\n":
-                        return
-                    match = RESPONSE.fullmatch(line)
-                    if not match or len(match[3]) > 2 * MAX_BYTES:
-                        raise ValueError("invalid Prime response")
-                    payload = bytes.fromhex(match[3].decode())
-                    if match[2] == b"text":
-                        payload = payload.decode("utf-8")
-            except (ValueError, OSError, TimeoutError) as exc:
-                self.error = f"Prime exchange failed: {exc!r}"
+            except (OSError, TimeoutError) as exc:
+                self.error = f"Prime stdin: {exc!r}"
                 self.stopped.set()
-                return
 
-            dest = match[1]
-            if dest == b"all":
-                peers = list(self.clients.values())
-            else:
-                peer = self.clients.get(client_id if dest == b"self" else int(dest))
-                peers = [peer] if peer else []
-            for peer in peers:
+    async def commands(self):
+        try:
+            while line := await self.child.stdout.readline():
+                peer, data = parse_command(line)
+                ws = self.clients.get(peer)
+                if ws is None:
+                    continue
                 try:
-                    async with asyncio.timeout(2):
-                        await peer.send(payload)
+                    if data is None:
+                        await ws.close(1000, "prime-close")
+                    else:
+                        async with asyncio.timeout(2):
+                            await ws.send(data)
                 except TimeoutError:
-                    await peer.close(1013, "write timeout")
+                    await ws.close(1013, "slow-receiver")
                 except ConnectionClosed:
                     pass
+            if not self.stopped.is_set():
+                self.error = "Prime closed stdout"
+        except (ValueError, OSError) as exc:
+            self.error = f"Prime stdout: {exc!r}"
+        finally:
+            self.stopped.set()
 
     async def handle(self, ws):
-        if len(self.clients) >= MAX_CLIENTS:
+        if len(self.clients) >= self.max_peers:
             await ws.close(1013, "client limit")
             return
         client_id = next(self.ids)
         self.clients[client_id] = ws
         try:
-            await self.exchange(client_id, "open", b"")
-            for _ in range(MAX_MESSAGES):
+            await self.event(client_id, "open", "")
+            arrivals = deque()
+            while True:
                 chunks = []
                 async with asyncio.timeout(120):
                     async for part in ws.recv_streaming():
@@ -80,19 +110,22 @@ class Service:
                             await ws.close(1008, "fragment limit")
                             return
                         chunks.append(part)
-                if isinstance(chunks[0], str):
-                    kind, data = "text", "".join(chunks).encode("utf-8")
-                else:
-                    kind, data = "binary", b"".join(chunks)
-                await self.exchange(client_id, kind, data)
-            await ws.close(1008, "message budget")
+                now = time.monotonic()
+                while arrivals and arrivals[0] <= now - 1:
+                    arrivals.popleft()
+                if len(arrivals) >= MESSAGES_PER_SECOND:
+                    await ws.close(1008, "message rate")
+                    return
+                arrivals.append(now)
+                kind, payload = event_payload(chunks)
+                await self.event(client_id, kind, payload)
         except TimeoutError:
             await ws.close(1008, "receive timeout")
         except ConnectionClosed:
             pass
         finally:
+            await self.event(client_id, "close", "prime-close" if ws.close_reason == "prime-close" else "peer-close")
             del self.clients[client_id]
-            await self.exchange(client_id, "close", b"")
 
 
 async def stop_child(child):
@@ -119,7 +152,7 @@ async def run(args):
     child = await asyncio.create_subprocess_exec(
         *args.command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         limit=2 * MAX_BYTES + 32)
-    service = Service(child)
+    service = Service(child, args.max_peers)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, service.stopped.set)
@@ -127,15 +160,17 @@ async def run(args):
         async with serve(service.handle, "127.0.0.1", args.port,
                          origins=[None, *args.origin], compression=None,
                          max_size=MAX_BYTES, max_queue=4, write_limit=8192,
-                         open_timeout=3, close_timeout=1, backlog=8) as server:
+                         open_timeout=3, close_timeout=1, backlog=max(8, args.max_peers)) as server:
             print(f"LISTEN {server.sockets[0].getsockname()[1]}", flush=True)
+            commands = asyncio.create_task(service.commands())
             stopped = asyncio.create_task(service.stopped.wait())
             exited = asyncio.create_task(child.wait())
             await asyncio.wait((stopped, exited), return_when=asyncio.FIRST_COMPLETED)
             if exited.done() and not service.stopped.is_set():
                 service.error = f"Prime exited unexpectedly ({child.returncode})"
             service.stopped.set()
-            stopped.cancel()
+            commands.cancel()
+            await asyncio.gather(commands, stopped, return_exceptions=True)
     finally:
         await stop_child(child)
     if service.error:
@@ -145,7 +180,11 @@ async def run(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default=0, type=int)
+    parser.add_argument("--max-peers", type=int, default=4, help="application peer limit (1..256)")
     parser.add_argument("--origin", action="append", default=[],
                         help="allow an exact browser Origin (repeatable)")
     parser.add_argument("command", nargs="+", help="Prime executable and arguments after --")
-    asyncio.run(run(parser.parse_args()))
+    args = parser.parse_args()
+    if not 1 <= args.max_peers <= 256:
+        parser.error("--max-peers must be in 1..256")
+    asyncio.run(run(args))
