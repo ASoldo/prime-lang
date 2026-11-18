@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate one classic ESP32 no_std_parity run on UART or in a raw capture."""
+"""Validate a classic ESP32 probe on UART or in a raw capture."""
 
 import argparse
 from contextlib import contextmanager
@@ -26,7 +26,13 @@ EXPECTED = (
     "await_cancel_timeout parity err timeout",
     "no_std parity demo done",
 )
-PROBE_PREFIXES = ("no_std parity", "defer ", "async ", "match ", "timeout parity", "await_")
+BOARD_IO = (
+    "board IO start", "GPIO2 low 0", "GPIO2 high 1", "GPIO2 low 0",
+    "short wait timeout", "ready timer ok", "empty channel timeout", "board IO done",
+)
+PROBES = {"parity": EXPECTED, "board-io": BOARD_IO}
+PROBE_PREFIXES = ("no_std parity", "defer ", "async ", "match ", "timeout parity", "await_",
+                  "board IO", "GPIO2 ", "short wait ", "ready timer ", "empty channel ")
 FAULT = re.compile(
     r"guru meditation|\bpanic(?:ked|ed|['’]d)?\b|\brebooting\b|brownout|"
     r"\bwdt reset\b|\bwatchdog (?:got triggered|timeout|reset)|"
@@ -47,7 +53,8 @@ class InvalidRun(ValueError):
 
 
 class Transcript:
-    def __init__(self):
+    def __init__(self, expected=EXPECTED):
+        self.expected = expected
         self.position = 0
         self.boot_stage = 0
         self.partial = b""
@@ -74,9 +81,9 @@ class Transcript:
             return
         if not self.position and not line.startswith(PROBE_PREFIXES):
             return  # Initial ROM and bootloader chatter varies with the board.
-        if self.position == len(EXPECTED):
+        if self.position == len(self.expected):
             raise InvalidRun(f"unexpected output after done: {line!r}")
-        expected = EXPECTED[self.position]
+        expected = self.expected[self.position]
         if line != expected:
             raise InvalidRun(f"expected {expected!r}, received {line!r}")
         self.position += 1
@@ -84,8 +91,8 @@ class Transcript:
     def finish(self, reason):
         if self.partial:
             raise InvalidRun(f"{reason} in an unterminated UART line: {self.partial[:120]!r}")
-        if self.position < len(EXPECTED):
-            raise InvalidRun(f"{reason} waiting for {EXPECTED[self.position]!r}")
+        if self.position < len(self.expected):
+            raise InvalidRun(f"{reason} waiting for {self.expected[self.position]!r}")
 
 
 @contextmanager
@@ -112,8 +119,8 @@ def input_fd(path, live):
         os.close(fd)
 
 
-def check(fd, live, timeout):
-    run = Transcript()
+def check(fd, live, timeout, expected):
+    run = Transcript(expected)
     deadline = time.monotonic() + timeout
     if live:
         print("UART ready at 115200 8N1. Reset the board once now.", file=sys.stderr, flush=True)
@@ -140,19 +147,21 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--port", metavar="TTY", help="listen at 115200 baud until the deadline")
     source.add_argument("--log", metavar="FILE", help="replay a saved raw UART log through EOF")
+    parser.add_argument("--probe", choices=PROBES, default="parity", help="firmware to validate")
     parser.add_argument("--timeout", type=float, default=15.0, metavar="SECONDS",
                         help="total observation or replay deadline in seconds (default 15)")
     args = parser.parse_args()
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error("--timeout must be a positive finite number")
     live = args.port is not None
+    expected = PROBES[args.probe]
     try:
         with input_fd(args.port if live else args.log, live) as fd:
-            check(fd, live, args.timeout)
+            check(fd, live, args.timeout, expected)
     except (InvalidRun, OSError, termios.error) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
-    print(f"PASS: {'UART' if live else 'log'} matched all {len(EXPECTED)} parity lines")
+    print(f"PASS: {'UART' if live else 'log'} matched all {len(expected)} {args.probe} lines")
     return 0
 
 

@@ -10,6 +10,9 @@ path = "main.prime"
 visibility = "pub"
 no_std = true
 
+[modules]
+board_io = { name = "demos::esp32_board_io", path = "board_io.prime", visibility = "pub", no_std = true }
+
 [build]
 # Classic ESP32 (Xtensa)
 target = "xtensa-esp32-espidf"

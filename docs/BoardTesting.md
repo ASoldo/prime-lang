@@ -16,6 +16,17 @@ python3 scripts/check_esp32_parity.py --port /dev/ttyUSB0 --timeout 15
 
 For a saved capture, use the same validator with `--log path/to/board.uart`. Keep raw LF or CRLF lines from a single run, including boot messages and the observation tail. The validator reads to EOF. It reports the first mismatch, an incomplete run, a panic diagnostic or an unexpected reboot with exit status 1. The Xtensa Rust panic handler spins silently, so a halt during a probe can surface as a deadline waiting for its next line.
 
+## GPIO readback and deadlines
+
+On a classic ESP32 development board, leave GPIO2 free of external drivers. Build the board I/O probe and install its application using the board's bootloader and partition layout. The CLI's default flash operation updates the application. A fully erased board also needs a matching bootloader and partition table. [Flash options](EmbeddedPipeline.md)
+
+```sh
+prime-lang build workspace/demos/no_std_parity/board_io.prime --name board_io --no-flash
+python3 scripts/check_esp32_parity.py --probe board-io --port /dev/ttyUSB0
+```
+
+The program drives GPIO2 low, high and low again, sampling the physical pad after each change. The validator expects `0, 1, 0`. It also checks that a 50 ms task times out at 5 ms, an already completed timer succeeds and an empty open channel times out. Replay a captured run with `--probe board-io --log board-io.uart`. [Probe source](../workspace/demos/no_std_parity/board_io.prime) · [Espressif GPIO reference](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/peripherals/gpio.html)
+
 ## Offline check
 
 The first fixture is a synthetic transcript of the eleven required lines, in order. It should exit 0. The second is the application output from an Espressif QEMU run of `c825d5f`, saved with LF line endings. It should exit 1 at `await_timeout parity err`, where the firmware printed `2000505063154167820296574927073` in place of `timeout`. Both commands run without a board.

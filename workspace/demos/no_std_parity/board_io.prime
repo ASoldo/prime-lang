@@ -1,0 +1,42 @@
+//! Physical readback of an unloaded GPIO2 pad and timer checks on classic ESP32.
+module demos::esp32_board_io;
+
+enum Option[T] { Some(T), None }
+enum Result[T, E] { Ok(T), Err(E) }
+
+fn main() {
+  pin_mode(2, 1);
+  out("board IO start");
+  digital_write(2, 0);
+  delay_ms(30);
+  let int32 first = digital_read(2);
+  out(`GPIO2 low {first}`);
+  digital_write(2, 1);
+  delay_ms(30);
+  let int32 high = digital_read(2);
+  out(`GPIO2 high {high}`);
+  digital_write(2, 0);
+  delay_ms(30);
+  let int32 last = digital_read(2);
+  out(`GPIO2 low {last}`);
+
+  let Task[()] slow = sleep_task(50);
+  match await_timeout(slow, 5) {
+    Ok(_) => out("slow timer completed too soon"),
+    Err(msg) => out(`short wait {msg}`),
+  }
+  let Task[()] ready = sleep_task(0);
+  match await_timeout(ready, 10) {
+    Ok(_) => out("ready timer ok"),
+    Err(msg) => out(`ready timer failed {msg}`),
+  }
+  let (tx, rx) = channel[int32]();
+  let Result[Option[int32], string] pending = await_timeout(recv_task(rx), 5);
+  match pending {
+    Ok(_) => out("empty channel returned too soon"),
+    Err(msg) => out(`empty channel {msg}`),
+  }
+  close(tx);
+  close(rx);
+  out("board IO done");
+}

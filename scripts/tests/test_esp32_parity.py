@@ -20,11 +20,11 @@ BOOT = b"ets Jun  8 2016 00:22:57\r\n\r\nrst:0x1 (POWERON_RESET),boot:0x13 (SPI_
 
 
 class BoardAcceptance(unittest.TestCase):
-    def replay(self, contents):
+    def replay(self, contents, *options):
         with tempfile.NamedTemporaryFile() as log:
             log.write(contents)
             log.flush()
-            return subprocess.run([*CLI, "--log", log.name, "--timeout", "3"],
+            return subprocess.run([*CLI, "--log", log.name, "--timeout", "3", *options],
                                   capture_output=True, timeout=5)
 
     def rejected(self, contents, diagnostic):
@@ -48,6 +48,17 @@ class BoardAcceptance(unittest.TestCase):
         self.assertIn(b"expected 'await_timeout parity err timeout'", result.stderr)
         self.assertIn(b"received 'await_timeout parity err 2000505063154167820296574927073'", result.stderr)
         self.assertNotIn(b"PASS", result.stdout)
+
+    def test_physical_gpio_readback_and_timers(self):
+        good = (BOOT + b"[rt] reset_reason=1\r\nboard IO start\r\n"
+                b"GPIO2 low 0\r\nGPIO2 high 1\r\nGPIO2 low 0\r\n"
+                b"short wait timeout\r\nready timer ok\r\nempty channel timeout\r\nboard IO done\r\n")
+        result = self.replay(good, "--probe", "board-io")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        wrong = self.replay(good.replace(b"GPIO2 high 1", b"GPIO2 high 0"), "--probe", "board-io")
+        self.assertEqual(wrong.returncode, 1)
+        self.assertIn(b"received 'GPIO2 high 0'", wrong.stderr)
+        self.assertEqual(self.replay(GOOD, "--probe", "board-io").returncode, 1)
 
     def test_each_line_required_once_in_order(self):
         for index, line in enumerate(LINES):
