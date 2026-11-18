@@ -434,26 +434,76 @@ pub struct ReferenceValue {
     pub origin: Option<String>,
 }
 
+/// Keep ordinary aggregate elements inline. The first borrow moves the
+/// element into a stable cell, including when its containing slice grows.
+#[derive(Debug)]
+pub(crate) enum MemberValue {
+    Inline(Value),
+    Cell(SharedValue),
+}
+
+impl MemberValue {
+    fn read(&self) -> Value {
+        match self {
+            Self::Inline(value) => value.clone(),
+            Self::Cell(cell) => cell.lock().unwrap().clone(),
+        }
+    }
+
+    fn cell(&mut self) -> SharedValue {
+        let value = match self {
+            Self::Cell(cell) => return cell.clone(),
+            Self::Inline(value) => value,
+        };
+        let cell = Arc::new(Mutex::new(std::mem::replace(value, Value::Unit)));
+        *self = Self::Cell(cell.clone());
+        cell
+    }
+}
+
+// Struct assignment copies fields, even when the source has addressable cells.
+impl Clone for MemberValue {
+    fn clone(&self) -> Self {
+        Self::Inline(self.read())
+    }
+}
+
+impl fmt::Display for MemberValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Inline(value) => fmt::Display::fmt(value, f),
+            Self::Cell(cell) => fmt::Display::fmt(&*cell.lock().unwrap(), f),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct StructInstance {
     pub name: String,
-    pub fields: BTreeMap<String, Value>,
+    pub(crate) fields: BTreeMap<String, MemberValue>,
     pub embedded: Vec<Value>,
 }
 
 impl StructInstance {
     pub fn get_field(&self, field: &str) -> Option<Value> {
-        if let Some(value) = self.fields.get(field) {
-            return Some(value.clone());
+        self.fields.get(field).map(MemberValue::read).or_else(|| {
+            self.embedded.iter().find_map(|embedded| match embedded {
+                Value::Struct(s) => s.get_field(field),
+                _ => None,
+            })
+        })
+    }
+
+    pub fn field_cell(&mut self, field: &str) -> Option<SharedValue> {
+        if let Some(value) = self.fields.get_mut(field) {
+            return Some(value.cell());
         }
-        for embed in &self.embedded {
-            if let Value::Struct(struct_value) = embed {
-                if let Some(value) = struct_value.get_field(field) {
-                    return Some(value);
-                }
-            }
-        }
-        None
+        self.embedded
+            .iter_mut()
+            .find_map(|embedded| match embedded {
+                Value::Struct(s) => s.field_cell(field),
+                _ => None,
+            })
     }
 }
 
@@ -466,7 +516,7 @@ impl fmt::Display for StructInstance {
                 write!(f, ", ")?;
             }
             first = false;
-            write!(f, "{}: {}", name, value)?;
+            write!(f, "{name}: {value}")?;
         }
         write!(f, "}}")
     }
@@ -542,7 +592,7 @@ impl BoxValue {
 
 #[derive(Clone, Debug)]
 pub struct SliceValue {
-    pub items: Arc<Mutex<Vec<Value>>>,
+    items: Arc<Mutex<Vec<MemberValue>>>,
 }
 
 impl Default for SliceValue {
@@ -560,12 +610,14 @@ impl SliceValue {
 
     pub fn from_vec(items: Vec<Value>) -> Self {
         Self {
-            items: Arc::new(Mutex::new(items)),
+            items: Arc::new(Mutex::new(
+                items.into_iter().map(MemberValue::Inline).collect(),
+            )),
         }
     }
 
     pub fn push(&self, value: Value) {
-        self.items.lock().unwrap().push(value);
+        self.items.lock().unwrap().push(MemberValue::Inline(value));
     }
 
     pub fn len(&self) -> usize {
@@ -577,13 +629,24 @@ impl SliceValue {
     }
 
     pub fn get(&self, index: usize) -> Option<Value> {
-        self.items.lock().unwrap().get(index).cloned()
+        self.items.lock().unwrap().get(index).map(MemberValue::read)
+    }
+
+    pub fn element_cell(&self, index: usize) -> Option<SharedValue> {
+        self.items
+            .lock()
+            .unwrap()
+            .get_mut(index)
+            .map(MemberValue::cell)
     }
 
     pub fn set(&self, index: usize, value: Value) -> bool {
         let mut guard = self.items.lock().unwrap();
         if let Some(slot) = guard.get_mut(index) {
-            *slot = value;
+            match slot {
+                MemberValue::Inline(element) => *element = value,
+                MemberValue::Cell(cell) => *cell.lock().unwrap() = value,
+            }
             true
         } else {
             false

@@ -299,7 +299,7 @@ impl Compiler {
         match statement {
             Statement::Let(stmt) => match &stmt.pattern {
                 Pattern::Identifier(name, _) => {
-                    let value = if let Some(expr) = &stmt.value {
+                    let mut value = if let Some(expr) = &stmt.value {
                         let expected = stmt.ty.as_ref().map(|ann| &ann.ty);
                         match self.emit_expression_with_hint(expr, expected)? {
                             EvalOutcome::Value(value) => value,
@@ -308,6 +308,27 @@ impl Compiler {
                     } else {
                         self.evaluated(Value::Unit)
                     };
+                    if self.target.is_embedded()
+                        && stmt.mutability == Mutability::Mutable
+                        && let Some(TypeExpr::Array { ty, size }) =
+                            stmt.ty.as_ref().map(|ann| &ann.ty)
+                        && let Value::Slice(slice) = value.value_mut()
+                        && let Some(element) = self.scalar_storage_type(ty)
+                    {
+                        let array_ty = unsafe { LLVMArrayType2(element, *size as u64) };
+                        let ptr = self.build_entry_alloca(array_ty, name);
+                        let array = FixedArray {
+                            base: StorageSlot {
+                                ptr,
+                                ty: element,
+                                projected: true,
+                            },
+                            len: *size,
+                        };
+                        self.initialize_array(array, slice)?;
+                        slice.fixed = Some(array);
+                    }
+                    self.prepare_shared_collection(&mut value, stmt.span)?;
                     self.insert_var(name, value, stmt.mutability == Mutability::Mutable)?;
                 }
                 pattern => {
@@ -408,7 +429,7 @@ impl Compiler {
                                 EvalOutcome::Value(value) => value,
                                 EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                             };
-                            self.store_cell(&pointer.cell, value);
+                            self.write_reference(&pointer, value)?;
                         }
                         _ => {
                             return Err(
@@ -1113,9 +1134,9 @@ impl Compiler {
                                 .ok_or_else(|| format!("Field {} not found", field))?;
                             return Ok(EvalOutcome::Value(value.into()));
                         }
-                        Value::Reference(reference) => {
-                            reference.cell.lock().unwrap().clone().into_value()
-                        }
+                        Value::Reference(reference) => self
+                            .load_binding_value(&reference.cell, reference.slot)
+                            .into_value(),
                         Value::Pointer(pointer) => {
                             pointer.cell.lock().unwrap().clone().into_value()
                         }
@@ -3268,6 +3289,7 @@ impl Compiler {
                         LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);
                     }
                     return Ok(self.evaluated(Value::Reference(ReferenceValue {
+                        indexed: None,
                         slot: None,
                         cell: a.cell.clone(),
                         mutable: a.mutable || b.mutable,
@@ -3313,11 +3335,133 @@ impl Compiler {
         f(self, evaluated).map(|v| EvalOutcome::Value(self.evaluated(v)))
     }
 
+    pub(super) fn scalar_storage_type(&self, ty: &TypeExpr) -> Option<LLVMTypeRef> {
+        match ty {
+            TypeExpr::Named(name, _) if name == "bool" => Some(self.runtime_abi.bool_type),
+            TypeExpr::Named(name, _) if matches!(name.as_str(), "float32" | "float64") => {
+                Some(self.f64_type)
+            }
+            TypeExpr::Named(name, _) if name == "rune" => Some(self.runtime_abi.int_type),
+            _ => IntegerType::from_type(ty, self.target.pointer_width_bits())
+                .map(|_| self.runtime_abi.int_type),
+        }
+    }
+
+    pub(super) fn checked_index(
+        &mut self,
+        index: &IntValue,
+        length: LLVMValueRef,
+    ) -> Result<LLVMValueRef, String> {
+        let wide = self.int_to_runtime_int(index, "borrow_index")?;
+        let valid = unsafe {
+            let length = llvm_sys::core::LLVMBuildZExt(
+                self.builder,
+                length,
+                self.runtime_abi.int_type,
+                c"borrow_length_wide".as_ptr(),
+            );
+            LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntULT,
+                wide,
+                length,
+                c"borrow_in_bounds".as_ptr(),
+            )
+        };
+        self.runtime_guard(valid, "borrow index out of bounds")?;
+        self.int_to_usize(index, "borrow_index_usize")
+    }
+
     pub(super) fn build_reference(
         &mut self,
         expr: &Expr,
         mutable: bool,
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        if mutable && let Some((owner, projection)) = projected_place(expr) {
+            let binding = self
+                .get_binding(&owner.name)
+                .ok_or_else(|| format!("unknown owner `{}`", owner.name))?;
+            let (cell, owner_slot) = {
+                let guard = binding.cell.lock().unwrap();
+                match guard.value() {
+                    Value::Reference(r) if r.mutable => (r.cell.clone(), r.slot),
+                    _ if binding.mutable => (binding.cell.clone(), binding.slot),
+                    _ => return Err(format!("owner `{}` is immutable", owner.name)),
+                }
+            };
+            let (target, slot, indexed) = match projection {
+                Projection::Field(field) => {
+                    let current = cell.lock().unwrap();
+                    let Value::Struct(instance) = current.value() else {
+                        return Err("field borrow requires a struct".into());
+                    };
+                    let storage = instance
+                        .field_slots
+                        .get(field)
+                        .ok_or_else(|| format!("field `{field}` has no mutable storage"))?;
+                    (storage.cell.clone(), storage.slot, None)
+                }
+                Projection::Index(id, index) => {
+                    let value = match self.emit_expression(index)? {
+                        EvalOutcome::Value(v) => v.into_value(),
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    };
+                    let index = self.expect_int(value)?;
+                    let current = match owner_slot {
+                        Some(slot) => self.load_slot(slot),
+                        None => cell.lock().unwrap().clone(),
+                    };
+                    let Value::Slice(slice) = current.value() else {
+                        return Err("element borrow requires a slice or array".into());
+                    };
+                    let metadata = Rc::new(Mutex::new(Value::Unit.into()));
+                    if let Some(array) = slice.fixed {
+                        let length = unsafe {
+                            LLVMConstInt(self.runtime_abi.usize_type, array.len as u64, 0)
+                        };
+                        let i = self.checked_index(&index, length)?;
+                        (metadata, Some(array.element(self.builder, i)), None)
+                    } else {
+                        let handle = slice.handle.ok_or(
+                            "indexed borrow requires a runtime slice handle or a fixed array",
+                        )?;
+                        let element = self
+                            .checked
+                            .as_ref()
+                            .and_then(|c| c.indexed_loans.get(&id))
+                            .cloned()
+                            .ok_or("missing checked element type for indexed borrow")?;
+                        let length = self.call_runtime(
+                            self.runtime_abi.prime_slice_len_handle,
+                            self.runtime_abi.prime_slice_len_handle_ty,
+                            &mut [handle],
+                            "borrow_length",
+                        );
+                        let index = self.checked_index(&index, length)?;
+                        (
+                            metadata,
+                            None,
+                            Some(IndexedLoan {
+                                slice: handle,
+                                index,
+                                element,
+                            }),
+                        )
+                    }
+                }
+            };
+            return Ok(EvalOutcome::Value(
+                Value::Reference(ReferenceValue {
+                    indexed,
+                    slot,
+                    cell: target,
+                    mutable,
+                    origin: Some(owner.name.clone()),
+                    handle: None,
+                })
+                .into(),
+            ));
+        }
         match expr {
             Expr::Identifier(ident) => {
                 let Binding {
@@ -3341,6 +3485,7 @@ impl Compiler {
                 }
                 Ok(EvalOutcome::Value(
                     Value::Reference(ReferenceValue {
+                        indexed: None,
                         slot,
                         cell,
                         mutable,
@@ -3354,6 +3499,7 @@ impl Compiler {
             _ => match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => Ok(EvalOutcome::Value(
                     Value::Reference(ReferenceValue {
+                        indexed: None,
                         slot: None,
                         cell: Rc::new(Mutex::new(value)),
                         mutable,
@@ -3441,13 +3587,40 @@ impl Compiler {
         matches!(value, Value::Boxed(_) | Value::Slice(_) | Value::Map(_))
     }
 
+    pub(super) fn read_reference(
+        &mut self,
+        reference: &ReferenceValue,
+    ) -> Result<EvaluatedValue, String> {
+        if let Some(loan) = &reference.indexed {
+            let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "element_out");
+            let status = self.call_runtime(
+                self.runtime_abi.prime_slice_get_handle,
+                self.runtime_abi.prime_slice_get_handle_ty,
+                &mut [loan.slice, loan.index, slot],
+                "element_get",
+            );
+            self.check_element_status(status)?;
+            let payload = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    slot,
+                    c"element".as_ptr(),
+                )
+            };
+            self.handle_types.insert(payload, loan.element.clone());
+            let value = self.decode_enum_field(payload)?;
+            self.runtime_release(payload);
+            Ok(value.into())
+        } else {
+            Ok(self.load_binding_value(&reference.cell, reference.slot))
+        }
+    }
+
     pub(super) fn deref_value(&mut self, value: Value) -> Result<EvaluatedValue, String> {
         match value {
-            Value::Reference(reference) => {
-                Ok(self.load_binding_value(&reference.cell, reference.slot))
-            }
-            Value::Pointer(pointer) => {
-                Ok(self.read_token_binding(pointer.cell.lock().unwrap().clone()))
+            Value::Reference(reference) | Value::Pointer(reference) => {
+                self.read_reference(&reference)
             }
             _ => Err("Cannot dereference non-reference value in build mode".into()),
         }

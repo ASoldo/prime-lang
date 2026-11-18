@@ -22,6 +22,9 @@ impl CheckedProgram<'_> {
 pub struct CheckedFacts {
     pub(crate) integers: crate::language::integer::CheckedIntegers,
     pub(crate) try_results: HashMap<ExprId, TypeExpr>,
+    pub(crate) borrowed_fields: HashMap<(String, String), TypeExpr>,
+    pub(crate) shared_collections: HashSet<(String, usize, usize)>,
+    pub(crate) indexed_loans: HashMap<ExprId, TypeExpr>,
     pub(crate) matches: HashMap<ExprId, CheckedMatch>,
 }
 

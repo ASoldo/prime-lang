@@ -30,6 +30,51 @@ impl Compiler {
         self.run_function_with_values(func_entry, evaluated_args)
     }
 
+    // Two parameters may refer to the same slice even when their caller used
+    // different names. Check their runtime addresses before executing the body.
+    fn check_projected_aliases(&mut self, args: &[Value]) -> Result<(), String> {
+        for (i, arg) in args.iter().enumerate() {
+            let Value::Reference(a) = arg else { continue };
+            for other in &args[..i] {
+                let Value::Reference(b) = other else { continue };
+                if !(a.is_projected() || b.is_projected()) {
+                    continue;
+                }
+                let ne = llvm_sys::LLVMIntPredicate::LLVMIntNE;
+                let distinct = unsafe {
+                    if let (Some(a), Some(b)) = (&a.indexed, &b.indexed) {
+                        let owners = LLVMBuildICmp(
+                            self.builder,
+                            ne,
+                            a.slice,
+                            b.slice,
+                            c"different_slices".as_ptr(),
+                        );
+                        let elements = LLVMBuildICmp(
+                            self.builder,
+                            ne,
+                            a.index,
+                            b.index,
+                            c"different_indices".as_ptr(),
+                        );
+                        LLVMBuildOr(
+                            self.builder,
+                            owners,
+                            elements,
+                            c"distinct_elements".as_ptr(),
+                        )
+                    } else if let (Some(a), Some(b)) = (a.slot, b.slot) {
+                        LLVMBuildICmp(self.builder, ne, a.ptr, b.ptr, c"distinct_places".as_ptr())
+                    } else {
+                        continue;
+                    }
+                };
+                self.runtime_guard(distinct, "element is already mutably borrowed in this call")?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn run_function_with_values(
         &mut self,
         func_entry: FunctionEntry,
@@ -47,6 +92,7 @@ impl Compiler {
 
         self.ensure_item_visible(&func_entry.module, func.visibility, &func.name, "function")?;
         let value_args: Vec<Value> = evaluated_args.iter().map(|v| v.value().clone()).collect();
+        self.check_projected_aliases(&value_args)?;
         self.ensure_interface_arguments(&func.params, &value_args)?;
         self.module_stack.push(func_entry.module.clone());
         let return_types: Vec<TypeExpr> = func.returns.iter().map(|ann| ann.ty.clone()).collect();
@@ -54,7 +100,8 @@ impl Compiler {
         self.begin_exit_boundary(ExitKind::Function, self.scopes.len());
         let result = (|| {
             self.push_scope();
-            for (param, value) in func.params.iter().zip(evaluated_args) {
+            for (param, mut value) in func.params.iter().zip(evaluated_args) {
+                self.prepare_shared_collection(&mut value, param.span)?;
                 self.bind_var(
                     &param.name,
                     value,

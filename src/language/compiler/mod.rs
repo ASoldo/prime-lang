@@ -39,15 +39,15 @@ use llvm_sys::{
         LLVMConstInt, LLVMConstIntGetZExtValue, LLVMConstNull, LLVMConstPointerNull, LLVMConstReal,
         LLVMContextCreate, LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder,
         LLVMDisposeMessage, LLVMDisposeModule, LLVMDoubleTypeInContext, LLVMFloatTypeInContext,
-        LLVMFunctionType, LLVMGetAllocatedType, LLVMGetBasicBlockParent,
-        LLVMGetBasicBlockTerminator, LLVMGetElementType, LLVMGetFirstBasicBlock,
-        LLVMGetFirstInstruction, LLVMGetGlobalParent, LLVMGetInsertBlock, LLVMGetIntTypeWidth,
-        LLVMGetLastInstruction, LLVMGetModuleContext, LLVMGetParam, LLVMGetReturnType,
-        LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext, LLVMIntTypeInContext,
-        LLVMIsAConstantInt, LLVMIsAFunction, LLVMModuleCreateWithNameInContext, LLVMPointerType,
-        LLVMPositionBuilder, LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore,
-        LLVMPrintModuleToFile, LLVMSetLinkage, LLVMSetTarget, LLVMStructCreateNamed,
-        LLVMStructSetBody, LLVMStructTypeInContext, LLVMTypeOf, LLVMVoidTypeInContext,
+        LLVMFunctionType, LLVMGetBasicBlockParent, LLVMGetBasicBlockTerminator, LLVMGetElementType,
+        LLVMGetFirstBasicBlock, LLVMGetFirstInstruction, LLVMGetGlobalParent, LLVMGetInsertBlock,
+        LLVMGetIntTypeWidth, LLVMGetLastInstruction, LLVMGetModuleContext, LLVMGetParam,
+        LLVMGetReturnType, LLVMGetTypeKind, LLVMInt8TypeInContext, LLVMInt32TypeInContext,
+        LLVMIntTypeInContext, LLVMIsAConstantInt, LLVMIsAFunction,
+        LLVMModuleCreateWithNameInContext, LLVMPointerType, LLVMPositionBuilder,
+        LLVMPositionBuilderAtEnd, LLVMPositionBuilderBefore, LLVMPrintModuleToFile, LLVMSetLinkage,
+        LLVMSetTarget, LLVMStructCreateNamed, LLVMStructSetBody, LLVMStructTypeInContext,
+        LLVMTypeOf, LLVMVoidTypeInContext,
     },
     prelude::*,
 };
@@ -208,6 +208,7 @@ impl Value {
 
     fn from_runtime_payload(handle: LLVMValueRef) -> Self {
         Self::Reference(ReferenceValue {
+            indexed: None,
             slot: None,
             cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
             mutable: false,
@@ -276,8 +277,9 @@ struct FloatValue {
 
 #[derive(Clone)]
 struct ReferenceValue {
+    indexed: Option<IndexedLoan>,
     // Set when this reference aliases an LLVM-backed scalar binding.
-    slot: Option<LLVMValueRef>,
+    slot: Option<StorageSlot>,
     cell: Rc<Mutex<EvaluatedValue>>,
     mutable: bool,
     origin: Option<String>,
@@ -285,12 +287,19 @@ struct ReferenceValue {
 }
 
 #[derive(Clone)]
-struct PointerValue {
-    cell: Rc<Mutex<EvaluatedValue>>,
-    mutable: bool,
-    handle: Option<LLVMValueRef>,
-    origin: Option<String>,
+struct IndexedLoan {
+    slice: LLVMValueRef,
+    index: LLVMValueRef,
+    element: TypeExpr,
 }
+
+impl ReferenceValue {
+    fn is_projected(&self) -> bool {
+        self.indexed.is_some() || self.slot.is_some_and(|slot| slot.projected)
+    }
+}
+
+type PointerValue = ReferenceValue;
 
 // One runtime ownership claim backs immutable copies of a compiler value. The
 // weak marker follows ordinary Value clones, including nested values and captures.
@@ -357,6 +366,7 @@ struct BoxValue {
 
 #[derive(Clone)]
 struct SliceValue {
+    fixed: Option<FixedArray>,
     handle: Option<LLVMValueRef>,
     items: Rc<Mutex<Vec<Value>>>,
 }
@@ -724,15 +734,49 @@ impl TaskValue {
 
 #[derive(Clone)]
 struct StructValue {
+    field_slots: HashMap<String, Binding>,
     name: String,
     fields: HashMap<String, Value>,
+}
+
+#[derive(Clone, Copy)]
+struct StorageSlot {
+    projected: bool,
+    ptr: LLVMValueRef,
+    ty: LLVMTypeRef,
+}
+
+#[derive(Clone, Copy)]
+struct FixedArray {
+    base: StorageSlot,
+    len: usize,
+}
+
+impl FixedArray {
+    fn element(self, builder: LLVMBuilderRef, mut index: LLVMValueRef) -> StorageSlot {
+        let ptr = unsafe {
+            LLVMBuildInBoundsGEP2(
+                builder,
+                self.base.ty,
+                self.base.ptr,
+                &mut index,
+                1,
+                c"array_element".as_ptr(),
+            )
+        };
+        StorageSlot {
+            projected: true,
+            ptr,
+            ty: self.base.ty,
+        }
+    }
 }
 
 #[derive(Clone)]
 struct Binding {
     cell: Rc<Mutex<EvaluatedValue>>,
     mutable: bool,
-    slot: Option<LLVMValueRef>,
+    slot: Option<StorageSlot>,
 }
 
 #[derive(Clone, Copy)]
@@ -859,6 +903,7 @@ impl BoxValue {
 impl SliceValue {
     fn new() -> Self {
         Self {
+            fixed: None,
             handle: None,
             items: Rc::new(Mutex::new(Vec::new())),
         }
@@ -866,6 +911,7 @@ impl SliceValue {
 
     fn from_vec(items: Vec<Value>) -> Self {
         Self {
+            fixed: None,
             handle: None,
             items: Rc::new(Mutex::new(items)),
         }
@@ -873,6 +919,7 @@ impl SliceValue {
 
     fn with_handle(handle: LLVMValueRef) -> Self {
         Self {
+            fixed: None,
             handle: Some(handle),
             items: Rc::new(Mutex::new(Vec::new())),
         }
@@ -1032,6 +1079,7 @@ impl BuildCaptureContext {
             .map_err(|_| "Reference poisoned while capturing build snapshot".to_string())?;
         let inner = value_to_build_value_with_ctx(guard.value(), self)?;
         let build_ref = BuildReference {
+            member: None,
             cell: Arc::new(Mutex::new(inner)),
             mutable,
         };
@@ -1094,6 +1142,11 @@ fn value_to_build_value_with_ctx(
             Ok(BuildValue::Tuple(converted))
         }
         Value::Struct(instance) => {
+            if !instance.field_slots.is_empty() {
+                return Err(
+                    "runtime struct field storage cannot be captured by the build evaluator".into(),
+                );
+            }
             let mut fields = BTreeMap::new();
             for (name, field) in &instance.fields {
                 fields.insert(name.clone(), value_to_build_value_with_ctx(field, ctx)?);
@@ -1130,6 +1183,9 @@ fn value_to_build_value_with_ctx(
             )?)))
         }
         Value::Slice(slice) => {
+            if slice.fixed.is_some() {
+                return Err("runtime fixed array cannot be captured by the build evaluator".into());
+            }
             let guard = slice
                 .items
                 .lock()
@@ -1198,12 +1254,13 @@ fn value_to_build_value_with_ctx(
                 id, inner,
             )))
         }
-        Value::Reference(reference) => {
+        Value::Reference(reference) | Value::Pointer(reference) => {
+            if reference.is_projected() {
+                return Err(
+                    "runtime projected borrow cannot be captured by the build evaluator".into(),
+                );
+            }
             let captured = ctx.reference_from_cell(&reference.cell, reference.mutable)?;
-            Ok(BuildValue::Reference(captured))
-        }
-        Value::Pointer(pointer) => {
-            let captured = ctx.reference_from_cell(&pointer.cell, pointer.mutable)?;
             Ok(BuildValue::Reference(captured))
         }
         Value::Closure(closure) => {
@@ -1285,7 +1342,11 @@ fn value_to_build_value_with_ctx(
 
 impl StructValue {
     fn new(name: String, fields: HashMap<String, Value>) -> Self {
-        Self { name, fields }
+        Self {
+            name,
+            fields,
+            field_slots: HashMap::new(),
+        }
     }
 
     fn get(&self, field: &str) -> Option<Value> {
@@ -1926,16 +1987,10 @@ impl Compiler {
                 }
             },
             BuildValue::Reference(reference) => {
-                let inner = self.build_value_to_value(
-                    reference
-                        .cell
-                        .lock()
-                        .map_err(|_| "reference poisoned in build result")?
-                        .clone(),
-                    channels,
-                )?;
+                let inner = self.build_value_to_value(reference.read()?, channels)?;
                 let cell = Rc::new(Mutex::new(EvaluatedValue::from_value(inner)));
                 Ok(Value::Reference(ReferenceValue {
+                    indexed: None,
                     slot: None,
                     cell,
                     mutable: reference.mutable,

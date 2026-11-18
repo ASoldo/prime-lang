@@ -8,7 +8,7 @@ impl Compiler {
         unsafe { LLVMConstIntOfArbitraryPrecision(self.runtime_abi.int_type, 2, words.as_ptr()) }
     }
 
-    fn integer_guard(&mut self, ok: LLVMValueRef, message: &str) -> Result<(), String> {
+    pub(super) fn runtime_guard(&mut self, ok: LLVMValueRef, message: &str) -> Result<(), String> {
         if self.in_host_task() {
             return self.host_task_check(ok, message);
         }
@@ -45,7 +45,7 @@ impl Compiler {
             );
             LLVMBuildAnd(self.builder, lower, upper, c"int_fits".as_ptr())
         };
-        self.integer_guard(
+        self.runtime_guard(
             ok,
             &format!("integer result is out of range for `{}`", ty.name),
         )
@@ -67,7 +67,7 @@ impl Compiler {
                 // Preserve the error on its execution path.
                 Err(message) => {
                     let never = unsafe { LLVMConstNull(self.runtime_abi.bool_type) };
-                    self.integer_guard(never, &message)?;
+                    self.runtime_guard(never, &message)?;
                     return Ok(Value::Int(self.const_int_value(0)));
                 }
             }
@@ -132,7 +132,7 @@ impl Compiler {
                             c"nonzero".as_ptr(),
                         )
                     };
-                    self.integer_guard(nonzero, "integer division by zero")?;
+                    self.runtime_guard(nonzero, "integer division by zero")?;
                 }
                 // Every input is a sign- or zero-extended language integer (at most 64 bits).
                 // A uint64 product with bit 127 set fails the signed lower-bound check.

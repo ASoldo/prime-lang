@@ -118,6 +118,24 @@ class C3Program(unittest.TestCase):
         self.execute("_start")
         self.assertEqual(b"".join(map(self.read_string, handles)), self.expected_output)
 
+    def assert_guest_trap(self, message):
+        diagnostics = []
+        def capture_error(cpu, *_):
+            if cpu.reg_read(UC_RISCV_REG_A0) == 0:
+                ptr, size = cpu.reg_read(UC_RISCV_REG_A1), cpu.reg_read(UC_RISCV_REG_A2)
+                diagnostics.append(bytes(cpu.mem_read(ptr, size)))
+
+        check = self.symbols["prime_integer_check"]
+        self.cpu.hook_add(UC_HOOK_CODE, capture_error, begin=check, end=check)
+        # Unicorn versions report different exceptions for the guest breakpoint.
+        # Check the faulting RV32 instruction (c.ebreak or ebreak) directly.
+        with self.assertRaises(UcError):
+            self.execute("_start")
+        pc = self.cpu.reg_read(UC_RISCV_REG_PC)
+        instruction = bytes(self.cpu.mem_read(pc, 4))
+        self.assertTrue(instruction.startswith(b"\x02\x90") or instruction == b"\x73\x00\x10\x00", instruction.hex())
+        self.assertEqual(diagnostics, [message])
+
 
 class C3Strings(C3Program):
     expected_output = "result=empty\nčaj\n-13\n".encode()
@@ -310,6 +328,30 @@ class C3Integers(C3Program):
         self.assert_output(self.observe_print())
 
 
+class C3ProjectedBorrow(C3Program):
+    source = """module c3_strings;
+        enum Option[T] { Some(T), None }
+        struct Pair { first: int32; other: int32; }
+        fn bump(r: &mut int32) { *r = *r + 1; }
+        fn relay(r: &mut int32) { bump(&mut *r); bump(r); }
+        fn main() {
+            let mut Pair p = Pair{8, 13};
+            let mut int32 i = 0;
+            while i < 2 { relay(&mut p.first); i = i + 1; }
+            out(p.first); out(p.other);
+            let mut [3]int32 items = [4, 8, 16];
+            i = 0;
+            while i < 2 { relay(&mut items[i]); i = i + 1; }
+            match items[0] { Some(x) => out(x), None => out(-1), }
+            match items[1] { Some(x) => out(x), None => out(-1), }
+            match items[2] { Some(x) => out(x), None => out(-1), }
+        }"""
+    expected_output = b"12\n13\n6\n10\n16\n"
+
+    def test_forwarded_field_and_index(self):
+        self.assert_output(self.observe_print())
+
+
 class C3IntegerOverflow(C3Program):
     source = """module c3_strings;
         fn byte(n: uint8) -> uint8 { n }
@@ -317,22 +359,21 @@ class C3IntegerOverflow(C3Program):
     expected_error = b"out of range for `uint8`"
 
     def test_dynamic_overflow_reports_then_traps(self):
-        diagnostics = []
-        def capture_error(cpu, *_):
-            if cpu.reg_read(UC_RISCV_REG_A0) == 0:
-                ptr, size = cpu.reg_read(UC_RISCV_REG_A1), cpu.reg_read(UC_RISCV_REG_A2)
-                diagnostics.append(bytes(cpu.mem_read(ptr, size)))
+        self.assert_guest_trap(b"integer result is out of range for `uint8`")
 
-        check = self.symbols["prime_integer_check"]
-        self.cpu.hook_add(UC_HOOK_CODE, capture_error, begin=check, end=check)
-        # Unicorn versions report different exceptions for the guest breakpoint.
-        # Check the faulting RV32 instruction (c.ebreak or ebreak) directly.
-        with self.assertRaises(UcError):
-            self.execute("_start")
-        pc = self.cpu.reg_read(UC_RISCV_REG_PC)
-        instruction = bytes(self.cpu.mem_read(pc, 4))
-        self.assertTrue(instruction.startswith(b"\x02\x90") or instruction == b"\x73\x00\x10\x00", instruction.hex())
-        self.assertEqual(diagnostics, [b"integer result is out of range for `uint8`"])
+
+class C3BorrowBounds(C3Program):
+    source = """module c3_strings;
+        fn ignore(r: &mut int32) { out("entered"); }
+        fn main() {
+            let mut [1]int32 data = [1];
+            let mut uint64 index = 4294967296;
+            ignore(&mut data[index]);
+        }"""
+    expected_error = b"borrow index out of bounds"
+
+    def test_index_checked_before_narrowing_to_32_bits(self):
+        self.assert_guest_trap(self.expected_error)
 
 
 if __name__ == "__main__":

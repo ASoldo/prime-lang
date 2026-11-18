@@ -1,8 +1,8 @@
 use crate::language::ast::{
     AssignStmt, BinaryOp, Block, CaptureMode, CapturedVar, ClosureBody, Expr, FormatSegment,
     FormatStringLiteral, FunctionDef, FunctionParam, Identifier, IfCondition, IfExpr, Literal,
-    MatchExpr, Pattern, RangeExpr, Statement, StructLiteralField, StructLiteralKind, UnaryOp,
-    forwarded_mut_reference,
+    MatchExpr, Pattern, Projection, RangeExpr, Statement, StructLiteralField, StructLiteralKind,
+    UnaryOp, forwarded_mut_reference, projected_place,
 };
 use crate::language::integer::{CheckedIntegers, IntegerOp, Scalar, value_site};
 use crate::language::span::Span;
@@ -80,8 +80,34 @@ pub enum BuildCleanup {
 
 #[derive(Clone, Debug)]
 pub struct BuildReference {
+    pub(crate) member: Option<BuildMember>,
     pub cell: Arc<Mutex<BuildValue>>,
     pub mutable: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum BuildMember {
+    Field(String),
+    Index(usize),
+}
+
+impl BuildReference {
+    fn target<'a>(&self, owner: &'a mut BuildValue) -> Result<&'a mut BuildValue, String> {
+        match (&self.member, owner) {
+            (None, value) => Ok(value),
+            (Some(BuildMember::Field(field)), BuildValue::Struct { fields, .. }) => fields
+                .get_mut(field)
+                .ok_or_else(|| format!("unknown field `{field}`")),
+            (Some(BuildMember::Index(i)), BuildValue::Slice(items)) => items
+                .get_mut(*i)
+                .ok_or_else(|| "borrow index out of bounds".into()),
+            _ => Err("invalid projected borrow owner".into()),
+        }
+    }
+
+    pub(crate) fn read(&self) -> Result<BuildValue, String> {
+        Ok(self.target(&mut self.cell.lock().unwrap())?.clone())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -744,7 +770,11 @@ impl BuildInterpreter {
             self.begin_shared_borrow(name, name, span)?;
         }
         self.captured_borrows.insert(name.to_string());
-        Ok(BuildReference { cell, mutable })
+        Ok(BuildReference {
+            cell,
+            mutable,
+            member: None,
+        })
     }
 
     fn eval_expr_mut(&mut self, expr: &Expr) -> Result<BuildValue, String> {
@@ -906,21 +936,56 @@ impl BuildInterpreter {
                         self.begin_shared_borrow(&ident.name, &ident.name, ident.span)?;
                     }
                     Ok(BuildValue::Reference(BuildReference {
+                        member: None,
                         cell,
                         mutable: *mutable,
                     }))
                 }
-                _ if *mutable => Err("mutable borrow requires addressable storage".into()),
+                _ if *mutable => {
+                    let (owner, projection) = projected_place(expr)
+                        .ok_or("mutable borrow requires addressable storage")?;
+                    let binding = self
+                        .find_binding_mut(&owner.name)
+                        .ok_or("unknown borrow owner")?;
+                    let mut cell = binding.cell.clone();
+                    let through_ref = match &*cell.lock().unwrap() {
+                        BuildValue::Reference(r) if r.mutable => Some(r.cell.clone()),
+                        _ => None,
+                    };
+                    if let Some(target) = through_ref {
+                        cell = target;
+                    } else if !binding.mutable {
+                        return Err(format!("`{}` is immutable", owner.name));
+                    }
+                    let member = match projection {
+                        Projection::Field(name) => BuildMember::Field(name.to_owned()),
+                        Projection::Index(_, expr) => {
+                            let value = self.eval_expr_mut(expr)?;
+                            BuildMember::Index(
+                                usize::try_from(self.expect_int(value)?)
+                                    .map_err(|_| "borrow index out of bounds")?,
+                            )
+                        }
+                    };
+                    let r = BuildReference {
+                        cell,
+                        mutable: true,
+                        member: Some(member),
+                    };
+                    r.target(&mut r.cell.lock().unwrap())?;
+                    Ok(BuildValue::Reference(r))
+                }
                 _ => {
                     let value = self.eval_expr_mut(expr)?;
                     Ok(BuildValue::Reference(BuildReference {
+                        member: None,
                         cell: Arc::new(Mutex::new(value)),
                         mutable: *mutable,
                     }))
                 }
             },
             Expr::Deref { expr, .. } => match self.eval_expr_mut(expr)? {
-                BuildValue::Reference(reference) => Ok(reference.cell.lock().unwrap().clone()),
+                BuildValue::Reference(reference) => reference.read(),
                 other => Err(format!("deref not supported for {}", other.kind())),
             },
             Expr::Try { block, .. } => self.eval_try(block),
@@ -1280,7 +1345,7 @@ impl BuildInterpreter {
                         if !reference.mutable {
                             return Err("Cannot assign through immutable reference".into());
                         }
-                        *reference.cell.lock().unwrap() = value;
+                        *reference.target(&mut reference.cell.lock().unwrap())? = value;
                         Ok(())
                     }
                     other => Err(format!(
@@ -1544,7 +1609,7 @@ impl BuildInterpreter {
                 .remove(field)
                 .ok_or_else(|| format!("field `{}` not found in struct", field)),
             BuildValue::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.read()?;
                 match inner {
                     BuildValue::Struct { mut fields, .. } => fields
                         .remove(field)
@@ -2009,17 +2074,7 @@ impl BuildInterpreter {
                 true
             }
             (BuildValue::Reference(lref), BuildValue::Reference(rref)) => {
-                let l = lref
-                    .cell
-                    .lock()
-                    .map_err(|_| "failed to lock left reference".to_string())?
-                    .clone();
-                let r = rref
-                    .cell
-                    .lock()
-                    .map_err(|_| "failed to lock right reference".to_string())?
-                    .clone();
-                Self::values_equal(&l, &r)?
+                Self::values_equal(&lref.read()?, &rref.read()?)?
             }
             _ => false,
         })
@@ -2155,6 +2210,7 @@ impl BuildInterpreter {
         }
         let receiver_value = guard.clone();
         let reference = BuildValue::Reference(BuildReference {
+            member: None,
             cell: binding.cell.clone(),
             mutable: true,
         });
@@ -2460,7 +2516,7 @@ impl BuildInterpreter {
                 }
             }
             BuildValue::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.read()?;
                 self.eval_index(inner, index)
             }
             other => Err(format!("{} cannot be indexed", other.kind())),
@@ -2483,7 +2539,7 @@ impl BuildInterpreter {
                 Ok(guard.iter().skip(start).cloned().collect())
             }
             BuildValue::Reference(reference) => {
-                let inner = reference.cell.lock().unwrap().clone();
+                let inner = reference.read()?;
                 Self::iter_items_from_value(inner)
             }
             other => Err(format!("iter not supported for {}", other.kind())),
@@ -2638,7 +2694,7 @@ impl BuildInterpreter {
                 let map = match map_value {
                     BuildValue::Map(entries) => entries,
                     BuildValue::Reference(reference) => {
-                        let inner = reference.cell.lock().unwrap().clone();
+                        let inner = reference.read()?;
                         match inner {
                             BuildValue::Map(entries) => entries,
                             other => {
@@ -2674,7 +2730,7 @@ impl BuildInterpreter {
                 let map = match map_value {
                     BuildValue::Map(entries) => entries,
                     BuildValue::Reference(reference) => {
-                        let inner = reference.cell.lock().unwrap().clone();
+                        let inner = reference.read()?;
                         match inner {
                             BuildValue::Map(entries) => entries,
                             other => {
@@ -3030,7 +3086,7 @@ impl BuildInterpreter {
                         None => Ok(self.wrap_enum("None", vec![])),
                     },
                     (BuildValue::Reference(reference), _) => {
-                        let inner = reference.cell.lock().unwrap().clone();
+                        let inner = reference.read()?;
                         self.eval_builtin_or_deferred(name, Some(inner), type_args, &args[1..])
                     }
                     (receiver, _) => Err(format!(

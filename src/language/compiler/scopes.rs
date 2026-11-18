@@ -219,33 +219,94 @@ impl Compiler {
         self.store_binding_value(&binding.cell, binding.slot, value)
     }
 
+    pub(super) fn initialize_array(
+        &mut self,
+        array: FixedArray,
+        slice: &SliceValue,
+    ) -> Result<(), String> {
+        if array.len != slice.len() {
+            return Err("fixed array length mismatch".into());
+        }
+        for (i, value) in slice.items.lock().unwrap().iter().enumerate() {
+            let index = unsafe { LLVMConstInt(self.runtime_abi.usize_type, i as u64, 0) };
+            let slot = array.element(self.builder, index);
+            self.store_slot(slot, value.clone().into())?;
+        }
+        Ok(())
+    }
+
     pub(super) fn store_binding_value(
         &mut self,
         cell: &Mutex<EvaluatedValue>,
-        slot: Option<LLVMValueRef>,
+        slot: Option<StorageSlot>,
         mut value: EvaluatedValue,
     ) -> Result<(), String> {
-        if let Some(slot) = slot {
-            // Mutable integer bindings use the runtime integer width. The type of
-            // the alloca also distinguishes them from booleans at a dereference.
-            let ty = unsafe { LLVMGetAllocatedType(slot) };
-            let (scalar, updated) = if ty == self.runtime_abi.int_type {
-                let int = self.expect_int(value.into_value())?;
-                let scalar = self.int_to_runtime_int(&int, "integer_store")?;
-                (scalar, Value::Int(IntValue::new(scalar, None)))
-            } else {
-                let flag = self.value_to_bool(value.into_value())?;
-                let scalar = self.bool_llvm_value(&flag);
-                (scalar, Value::Bool(BoolValue::new(scalar, None)))
-            };
-            unsafe {
-                LLVMBuildStore(self.builder, scalar, slot);
+        if let Value::Slice(new) = value.value_mut()
+            && let Value::Slice(old) = cell.lock().unwrap().value()
+            && let Some(array) = old.fixed
+        {
+            self.initialize_array(array, new)?;
+            new.fixed = Some(array);
+        }
+        if let Value::Struct(new) = value.value_mut() {
+            let old = cell.lock().unwrap();
+            if let Value::Struct(old) = old.value() {
+                for (field, storage) in &old.field_slots {
+                    if let Some(v) = new.fields.get(field) {
+                        self.store_binding_value(&storage.cell, storage.slot, v.clone().into())?;
+                    }
+                }
+                new.field_slots.clone_from(&old.field_slots);
             }
-            value = updated.into();
+        }
+        if let Some(slot) = slot {
+            value = self.store_slot(slot, value)?;
         }
         Self::clear_scalar_constant(&mut value);
         self.store_cell(cell, value);
         Ok(())
+    }
+
+    pub(super) fn store_slot(
+        &mut self,
+        slot: StorageSlot,
+        value: EvaluatedValue,
+    ) -> Result<EvaluatedValue, String> {
+        let ty = slot.ty;
+        let (scalar, updated) = if ty == self.runtime_abi.handle_type {
+            let Value::Slice(mut slice) = value.into_value() else {
+                return Err("slice assignment requires a slice".into());
+            };
+            let handle = match slice.handle {
+                Some(handle) => handle,
+                None => self.build_runtime_handle(Value::Slice(slice.clone()))?,
+            };
+            slice.handle = Some(handle);
+            (handle, Value::Slice(slice))
+        } else if ty == self.runtime_abi.int_type {
+            let int = self.expect_int(value.into_value())?;
+            let scalar = self.int_to_runtime_int(&int, "integer_store")?;
+            (scalar, Value::Int(IntValue::new(scalar, None)))
+        } else if ty == self.f64_type {
+            let float = self.expect_float(value.into_value())?;
+            let scalar = unsafe {
+                llvm_sys::core::LLVMBuildFPCast(
+                    self.builder,
+                    float.llvm(),
+                    ty,
+                    c"float_store".as_ptr(),
+                )
+            };
+            (scalar, Value::Float(FloatValue::new(scalar, None)))
+        } else {
+            let flag = self.value_to_bool(value.into_value())?;
+            let scalar = self.bool_llvm_value(&flag);
+            (scalar, Value::Bool(BoolValue::new(scalar, None)))
+        };
+        unsafe {
+            LLVMBuildStore(self.builder, scalar, slot.ptr);
+        }
+        Ok(updated.into())
     }
 
     pub(super) fn value_to_bool(&mut self, value: Value) -> Result<BoolValue, String> {
@@ -518,6 +579,7 @@ impl Compiler {
             }
         }
         let reference = Value::Reference(ReferenceValue {
+            indexed: None,
             slot,
             cell: cell.clone(),
             mutable: true,
@@ -539,6 +601,41 @@ impl Compiler {
         self.bind_var(name, value, mutable, false)
     }
 
+    // A copied slice still denotes the same collection. Materialize a shared
+    // owner at its declaration, where the handle dominates all uses and aliases.
+    pub(super) fn prepare_shared_collection(
+        &mut self,
+        value: &mut EvaluatedValue,
+        span: Span,
+    ) -> Result<(), String> {
+        let shared = self.target.is_host()
+            && self.module_stack.last().is_some_and(|module| {
+                self.checked.as_ref().is_some_and(|facts| {
+                    !facts.indexed_loans.is_empty()
+                        && facts.shared_collections.contains(&(
+                            module.clone(),
+                            span.start,
+                            span.end,
+                        ))
+                })
+            });
+        if shared {
+            self.materialize_slice(value)?;
+        }
+        Ok(())
+    }
+
+    fn materialize_slice(&mut self, value: &mut EvaluatedValue) -> Result<(), String> {
+        if let Value::Slice(slice) = value.value_mut()
+            && slice.handle.is_none()
+        {
+            let handle = self.build_runtime_handle(Value::Slice(slice.clone()))?;
+            slice.handle = Some(handle);
+            value.set_runtime(handle);
+        }
+        Ok(())
+    }
+
     pub(super) fn bind_var(
         &mut self,
         name: &str,
@@ -552,19 +649,37 @@ impl Compiler {
         if mutable {
             Self::clear_scalar_constant(&mut value);
             if self.target.is_host() {
-                let runtime_seed = match value.value() {
-                    Value::Slice(slice) if slice.handle.is_none() => {
-                        Some(Value::Slice(slice.clone()))
-                    }
-                    _ => None,
+                self.materialize_slice(&mut value)?;
+            }
+        }
+        if mutable && let Value::Struct(instance) = value.value_mut() {
+            for (field, v) in &instance.fields {
+                let Some(ty) = self
+                    .checked
+                    .as_ref()
+                    .and_then(|c| {
+                        c.borrowed_fields
+                            .get(&(instance.name.clone(), field.clone()))
+                    })
+                    .and_then(|ty| self.scalar_storage_type(ty))
+                else {
+                    continue;
                 };
-                if let Some(seed) = runtime_seed {
-                    let handle = self.build_runtime_handle(seed)?;
-                    if let Value::Slice(slice) = value.value_mut() {
-                        slice.handle = Some(handle);
-                    }
-                    value.set_runtime(handle);
-                }
+                let slot = Some(StorageSlot {
+                    projected: true,
+                    ptr: self.build_entry_alloca(ty, field),
+                    ty,
+                });
+                let cell = Rc::new(Mutex::new(Value::Unit.into()));
+                self.store_binding_value(&cell, slot, v.clone().into())?;
+                instance.field_slots.insert(
+                    field.clone(),
+                    Binding {
+                        cell,
+                        mutable: true,
+                        slot,
+                    },
+                );
             }
         }
         Self::attach_origin(&mut value, name);
@@ -586,6 +701,23 @@ impl Compiler {
                         value = Value::CancelToken(binding).into();
                     }
                 }
+                Value::Slice(slice)
+                    if self
+                        .checked
+                        .as_ref()
+                        .is_some_and(|c| !c.indexed_loans.is_empty()) =>
+                {
+                    if let Some(handle) = slice.handle {
+                        let alloca =
+                            self.build_entry_alloca(self.runtime_abi.handle_type, "slice_binding");
+                        unsafe { LLVMBuildStore(self.builder, handle, alloca) };
+                        slot = Some(StorageSlot {
+                            projected: false,
+                            ptr: alloca,
+                            ty: self.runtime_abi.handle_type,
+                        });
+                    }
+                }
                 Value::Int(int_val) => {
                     let wide = self.int_to_runtime_int(&int_val, "integer_initial_value")?;
                     let alloca =
@@ -594,7 +726,11 @@ impl Compiler {
                         LLVMBuildStore(self.builder, wide, alloca);
                     }
                     *value.value_mut() = Value::Int(IntValue::new(wide, None));
-                    slot = Some(alloca);
+                    slot = Some(StorageSlot {
+                        projected: false,
+                        ptr: alloca,
+                        ty: self.runtime_abi.int_type,
+                    });
                 }
                 Value::Bool(flag) => {
                     let alloca = self
@@ -603,7 +739,11 @@ impl Compiler {
                     unsafe {
                         LLVMBuildStore(self.builder, stored, alloca);
                     }
-                    slot = Some(alloca);
+                    slot = Some(StorageSlot {
+                        projected: false,
+                        ptr: alloca,
+                        ty: self.runtime_abi.bool_type,
+                    });
                 }
                 _ => {}
             }
@@ -664,15 +804,45 @@ impl Compiler {
     pub(super) fn load_binding_value(
         &mut self,
         cell: &Mutex<EvaluatedValue>,
-        slot: Option<LLVMValueRef>,
+        slot: Option<StorageSlot>,
     ) -> EvaluatedValue {
         let Some(slot) = slot else {
-            return self.read_token_binding(cell.lock().unwrap().clone());
+            let mut value = cell.lock().unwrap().clone();
+            if let Value::Struct(instance) = value.value_mut() {
+                for (field, binding) in mem::take(&mut instance.field_slots) {
+                    let current = self.load_binding_value(&binding.cell, binding.slot);
+                    instance.fields.insert(field, current.into_value());
+                }
+            }
+            if let Value::Slice(slice) = value.value_mut()
+                && let Some(array) = slice.fixed
+            {
+                let mut loaded = Vec::with_capacity(array.len);
+                for i in 0..array.len {
+                    let index = unsafe { LLVMConstInt(self.runtime_abi.usize_type, i as u64, 0) };
+                    loaded.push(
+                        self.load_slot(array.element(self.builder, index))
+                            .into_value(),
+                    );
+                }
+                slice.items = Rc::new(Mutex::new(loaded));
+            }
+            return self.read_token_binding(value);
         };
-        let ty = unsafe { LLVMGetAllocatedType(slot) };
-        let loaded = unsafe { LLVMBuildLoad2(self.builder, ty, slot, c"binding_load".as_ptr()) };
-        if ty == self.runtime_abi.int_type {
+        self.load_slot(slot)
+    }
+
+    pub(super) fn load_slot(&mut self, slot: StorageSlot) -> EvaluatedValue {
+        let ty = slot.ty;
+        let loaded =
+            unsafe { LLVMBuildLoad2(self.builder, ty, slot.ptr, c"binding_load".as_ptr()) };
+        if ty == self.runtime_abi.handle_type {
+            self.evaluated(Value::Slice(SliceValue::with_handle(loaded)))
+                .with_runtime(loaded)
+        } else if ty == self.runtime_abi.int_type {
             self.evaluated(Value::Int(IntValue::new(loaded, None)))
+        } else if ty == self.f64_type {
+            self.evaluated(Value::Float(FloatValue::new(loaded, None)))
         } else {
             self.evaluated(Value::Bool(BoolValue::new(loaded, None)))
         }
@@ -788,6 +958,7 @@ impl Compiler {
                             )
                         };
                         let reference = ReferenceValue {
+                            indexed: None,
                             slot: None,
                             cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                             mutable: false,
@@ -857,6 +1028,7 @@ impl Compiler {
                             )
                         };
                         let key_ref = ReferenceValue {
+                            indexed: None,
                             slot: None,
                             cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                             mutable: false,
@@ -864,6 +1036,7 @@ impl Compiler {
                             handle: Some(key_handle),
                         };
                         let value_ref = ReferenceValue {
+                            indexed: None,
                             slot: None,
                             cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                             mutable: false,

@@ -17,8 +17,8 @@ use crate::runtime::{
     value::{
         BoxValue, CancelTokenValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue,
         EnumValue, FormatRuntimeSegment, FormatTemplateValue, IteratorValue, JoinHandleValue,
-        MapValue, PointerValue, RangeValue, ReferenceValue, SliceValue, StructInstance, TaskValue,
-        Value,
+        MapValue, MemberValue, PointerValue, RangeValue, ReferenceValue, SliceValue,
+        StructInstance, TaskValue, Value,
     },
 };
 use crate::target::{BuildTarget, embedded_target_hint};
@@ -3734,6 +3734,60 @@ impl Interpreter {
     }
 
     fn build_reference(&mut self, expr: &Expr, mutable: bool) -> RuntimeResult<EvalOutcome<Value>> {
+        if mutable && let Some((owner, projection)) = projected_place(expr) {
+            let (mut cell, writable) =
+                self.env
+                    .get_cell(&owner.name)
+                    .ok_or_else(|| RuntimeError::UnknownSymbol {
+                        name: owner.name.clone(),
+                    })?;
+            let reference = match &*cell.lock().unwrap() {
+                Value::Reference(r) => Some(r.clone()),
+                _ => None,
+            };
+            if let Some(r) = reference {
+                if !r.mutable {
+                    return Err(RuntimeError::ImmutableBinding {
+                        name: owner.name.clone(),
+                    });
+                }
+                cell = r.cell;
+            } else if !writable {
+                return Err(RuntimeError::ImmutableBinding {
+                    name: owner.name.clone(),
+                });
+            }
+            let projected = match projection {
+                Projection::Field(field) => match &mut *cell.lock().unwrap() {
+                    Value::Struct(instance) => instance.field_cell(field),
+                    _ => None,
+                }
+                .ok_or_else(|| RuntimeError::TypeMismatch {
+                    message: format!("unknown field `{field}`"),
+                })?,
+                Projection::Index(_, index) => {
+                    let value = match self.eval_expression(index)? {
+                        EvalOutcome::Value(v) => v,
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    };
+                    let index = Self::expect_int_value("indexed borrow", value)?;
+                    match &*cell.lock().unwrap() {
+                        Value::Slice(slice) => usize::try_from(index)
+                            .ok()
+                            .and_then(|i| slice.element_cell(i)),
+                        _ => None,
+                    }
+                    .ok_or_else(|| RuntimeError::Panic {
+                        message: "borrow index out of bounds".into(),
+                    })?
+                }
+            };
+            return Ok(EvalOutcome::Value(Value::Reference(ReferenceValue {
+                cell: projected,
+                mutable,
+                origin: Some(owner.name.clone()),
+            })));
+        }
         match expr {
             Expr::Identifier(ident) => {
                 let (cell, binding_mut) =
@@ -4061,7 +4115,9 @@ impl Interpreter {
                     other => other.clone(),
                 };
                 let elements = match concrete {
-                    Value::Slice(slice) => slice.items.lock().unwrap().clone(),
+                    Value::Slice(slice) => (0..slice.len())
+                        .filter_map(|i| slice.get(i))
+                        .collect::<Vec<_>>(),
                     _ => return Ok(false),
                 };
                 if rest.is_none() && elements.len() != prefix.len() + suffix.len() {
@@ -4119,7 +4175,7 @@ impl Interpreter {
                         EvalOutcome::Value(value) => value,
                         EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                     };
-                    field_map.insert(field.name.clone(), value);
+                    field_map.insert(field.name.clone(), MemberValue::Inline(value));
                 }
             }
             StructLiteralKind::Positional(values) => {
@@ -4143,7 +4199,7 @@ impl Interpreter {
                     if is_embedded {
                         embedded.push(value);
                     } else if let Some(field_name) = field_name {
-                        field_map.insert(field_name, value);
+                        field_map.insert(field_name, MemberValue::Inline(value));
                     }
                 }
             }

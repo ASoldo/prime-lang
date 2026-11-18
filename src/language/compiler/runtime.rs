@@ -166,7 +166,7 @@ impl Compiler {
                         return Ok(());
                     }
                     // Print the current pointed-to value (non-runtime).
-                    let inner = self.load_binding_value(&reference.cell, reference.slot);
+                    let inner = self.read_reference(reference)?;
                     return self.print_value(inner);
                 }
                 Value::Str(string) => {
@@ -367,7 +367,7 @@ impl Compiler {
                     Ok(())
                 } else {
                     self.emit_printf_call("&", &mut []);
-                    let inner = self.load_binding_value(&reference.cell, reference.slot);
+                    let inner = self.read_reference(&reference)?;
                     self.print_value(inner)
                 }
             }
@@ -806,17 +806,7 @@ impl Compiler {
                     );
                     return Ok(inner);
                 }
-                let inner = self.load_binding_value(&reference.cell, reference.slot).into_value();
-                let target = self.build_runtime_handle(inner)?;
-                let mut_flag = unsafe {
-                    LLVMConstInt(self.runtime_abi.bool_type, reference.mutable as u64, 0)
-                };
-                Ok(self.call_runtime(
-                    self.runtime_abi.prime_reference_new,
-                    self.runtime_abi.prime_reference_new_ty,
-                    &mut [target, mut_flag],
-                    "ref_new",
-                ))
+                self.reference_handle(&reference)
             }
             _ => Err("runtime handle generation not implemented for this value".into()),
         }

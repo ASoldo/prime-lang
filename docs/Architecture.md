@@ -22,15 +22,17 @@ The language server uses the Rust frontend for source analysis. Tree-sitter supp
 
 ### A mutable parameter across a call
 
-This program prints `7` in both the interpreter and the host binary. In an ordinary named function call, the reference to `n` keeps the caller’s storage. The native emitter loads and stores through the same LLVM slot when the binding is an integer or boolean. Passing an existing reference on to another named function keeps the original loan live in the caller. [Interpreter/native regression](../scripts/tests/test_mutable_references.py)
+This program prints `7` in both the interpreter and the host binary. The argument selects the original field, so both named functions update the same storage. [Interpreter/native regression](../scripts/tests/test_mutable_references.py)
 
 ```prime
 module example;
+struct Pair { value: int32; other: int32; }
 fn bump(n: &mut int32) { *n = *n + 1; }
+fn relay(n: &mut int32) { bump(&mut *n); }
 fn main() {
-  let mut int32 n = 6;
-  bump(&mut n);
-  out(n);
+  let mut Pair p = Pair{6, 9};
+  relay(&mut p.value);
+  out(p.value);
 }
 ```
 
@@ -43,4 +45,4 @@ prime-lang build example.prime --name example
 ./.build.prime/example/example
 ```
 
-In a named function call, both `bump(r)` and `bump(&mut *r)` forward the named mutable reference `r` to its original storage. The checker counts both spellings as the same loan when checking the arguments of one call. It rejects storing an explicit reborrow in another binding, reborrowing a shared reference or raw pointer, and taking a mutable reference to a struct field or an indexed element. To replace a field, construct the updated struct and assign it through a mutable reference to the whole struct. Closure calls use a separate native calling convention.
+The interpreter moves a field or slice element into a stable cell on its first borrow. Copying a struct copies its field values. The LLVM emitter allocates slots for borrowed scalar fields on entry to the enclosing function and initializes them when it binds the mutable struct. Reading the struct loads those fields. For a host slice or array, the native reference carries the collection handle and the index evaluated at the borrow. A bounds check runs before the callee starts, including when the callee never dereferences its parameter. Reads and writes use the same handle and index through named calls and reborrows. An embedded fixed array occupies a contiguous LLVM allocation. A checked index selects its element address before a named call. The RV32 regression executes both field and indexed updates in a linked ESP32-C3 program in Unicorn. [RV32 regression](../scripts/test_c3_strings.py)

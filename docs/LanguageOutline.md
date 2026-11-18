@@ -31,7 +31,13 @@ fn value(packet: Packet) -> int32 {
 
 Replacing `Data(n) => n` with `Data(1) => 1` leaves other integers uncovered. For nested patterns, the checker considers combinations of fields together. A qualified pattern must belong to the enum being matched.
 
-The checker tracks moves and mutable borrows. A named function can receive a mutable reference `r` as `f(r)` or `f(&mut *r)`. The explicit reborrow must be a direct argument and its operand must be a named mutable reference. Mutable borrows of fields and indexed elements are rejected. Direct `await` rejects an active mutable borrow and a task with a reference or pointer as its direct result type. Raw pointers have separate rules. The current checker does not prove arbitrary nested values safe to transfer between threads.
+The checker tracks moves and mutable borrows. A named function can receive a mutable reference `r` as `f(r)` or `f(&mut *r)`. The explicit reborrow must be a direct argument and its operand must be a named mutable reference.
+
+A direct argument to a named function with an owned result may borrow a scalar field as `&mut player.hp`, or an indexed element as `&mut items[i]`. Host builds support slices and fixed arrays. Embedded builds use fixed scalar arrays such as `let mut [3]int32 items = [4, 8, 16];`. The owner must be a named mutable binding or a named mutable reference. These projections support integer, rune, boolean and floating-point elements. A projected index yields a reference to the element, evaluates the index once and reports an out-of-bounds index before entering the function. Ordinary indexing yields an `Option`.
+
+Two arguments may borrow distinct fields or distinct literal indices of an owner. Borrowing the whole owner overlaps all its members, and a dynamic index may overlap any index of the same owner.
+
+Direct `await` rejects an active mutable borrow and a task with a reference or pointer as its direct result type. Raw pointers have separate rules. The current checker does not prove arbitrary nested values safe to transfer between threads.
 
 ## Imports, collections and ownership
 

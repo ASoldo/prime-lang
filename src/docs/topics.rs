@@ -621,8 +621,11 @@ out(prime.label());"#,
 }
 
 fn refill_hp(target: &mut Player, amount: int32) {
-  let Player snapshot = *target;
-  *target = Player{ hp: snapshot.hp + amount, ..snapshot };
+  add_hp(&mut target.hp, amount);
+}
+
+fn add_hp(hp: &mut int32, amount: int32) {
+  *hp = *hp + amount;
 }
 
 fn calibrate_station(name: string) {

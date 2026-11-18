@@ -1,8 +1,7 @@
 //! Pointer helpers demo.
 //!
-//! Demonstrates building raw pointers from references (`ptr`, `ptr_mut`) and
-//! dereferencing them. Use this style carefully: pointer operations bypass some
-//! of the safety that references provide.
+//! Updates an embedded field through a mutable parameter and reads the current
+//! value through a raw pointer.
 module demos::pointer_demo;
 
 import core::types;
@@ -26,19 +25,14 @@ fn spawn_player(name: string, position: Vec2, hp: int32) -> Player {
   }
 }
 
-/// Computes the new hp through a raw pointer, then replaces the player.
-fn heal_with_pointer(player: &mut Player, delta: int32) -> int32 {
-  let Player snapshot = *player;
-  let mut int32 hp = snapshot.hp;
-  let ptr = ptr_mut(&mut hp);
-  *ptr = *ptr + delta;
-  *player = Player{
-    Transform{ snapshot.position, snapshot.velocity },
-    Stats{ *ptr, snapshot.stamina },
-    snapshot.name,
-    snapshot.level,
-  };
-  *ptr
+/// Updates the borrowed field in the caller.
+fn heal_hp(hp: &mut int32, delta: int32) {
+  *hp = *hp + delta;
+}
+
+fn heal(player: &mut Player, delta: int32) -> int32 {
+  heal_hp(&mut player.hp, delta);
+  player.hp
 }
 
 /// Uses `ptr` to read `player.hp` through a raw pointer.
@@ -58,7 +52,7 @@ fn main() {
   let mut Player hero = spawn_player("Pointer Hero", Vec2{ 0.0, 0.0 }, 50);
   out(`initial hp {hero.hp}`);
 
-  let int32 boosted = heal_with_pointer(&mut hero, 12);
+  let int32 boosted = heal(&mut hero, 12);
   out(`boosted hp {boosted}`);
   out(`frozen hp {freeze_hp(&hero)}`);
 

@@ -275,6 +275,7 @@ impl Compiler {
             TypeExpr::Reference { mutable, .. } => {
                 self.handle_types.insert(llvm, ty.clone());
                 Ok(Value::Reference(ReferenceValue {
+                    indexed: None,
                     slot: None,
                     cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                     mutable: *mutable,
@@ -421,6 +422,8 @@ impl Compiler {
             TypeExpr::Unit => Ok(Value::Unit),
             TypeExpr::Slice(_) => Ok(Value::Slice(SliceValue::with_handle(llvm))),
             TypeExpr::Pointer { mutable, .. } => Ok(Value::Pointer(PointerValue {
+                indexed: None,
+                slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: *mutable,
                 handle: Some(llvm),

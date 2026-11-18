@@ -6,6 +6,12 @@ impl Compiler {
         &mut self,
         reference: &ReferenceValue,
     ) -> Result<LLVMValueRef, String> {
+        if reference.is_projected() {
+            return Err(
+                "a projected mutable borrow cannot cross the runtime handle calling convention"
+                    .into(),
+            );
+        }
         if let Some(handle) = reference.handle {
             let mut args = [handle];
             return Ok(self.call_runtime(
@@ -29,6 +35,19 @@ impl Compiler {
         ))
     }
 
+    pub(super) fn check_element_status(&mut self, status: LLVMValueRef) -> Result<(), String> {
+        let ok = unsafe {
+            LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                status,
+                LLVMConstInt(self.runtime_abi.status_type, PrimeStatus::Ok as u64, 0),
+                c"element_ok".as_ptr(),
+            )
+        };
+        self.runtime_guard(ok, "borrow index out of bounds")
+    }
+
     pub(super) fn write_reference(
         &mut self,
         reference: &ReferenceValue,
@@ -36,6 +55,17 @@ impl Compiler {
     ) -> Result<(), String> {
         if !reference.mutable {
             return Err("Cannot assign through immutable reference".into());
+        }
+        if let Some(loan) = &reference.indexed {
+            let handle = self.build_runtime_handle(value.into_value())?;
+            let status = self.call_runtime(
+                self.runtime_abi.prime_slice_set_handle,
+                self.runtime_abi.prime_slice_set_handle_ty,
+                &mut [loan.slice, loan.index, handle],
+                "element_set",
+            );
+            self.runtime_release(handle);
+            return self.check_element_status(status);
         }
         if let Some(handle) = reference.handle {
             let new_handle = self.build_runtime_handle(value.into_value())?;
@@ -383,6 +413,7 @@ impl Compiler {
                 return self.instantiate_enum_variant("None", Vec::new());
             }
             let reference = ReferenceValue {
+                indexed: None,
                 slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
@@ -541,6 +572,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
+                indexed: None,
                 slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
@@ -642,6 +674,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
+                indexed: None,
                 slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
@@ -727,6 +760,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
+                indexed: None,
                 slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
@@ -887,6 +921,9 @@ impl Compiler {
         let (status, slot) = match receiver {
             Value::Slice(slice) => {
                 let index = self.expect_int(key)?;
+                if let Some(array) = slice.fixed {
+                    return self.fixed_array_lookup(array, &index);
+                }
                 if let Some(i) = index.constant() {
                     let Ok(i) = usize::try_from(i) else {
                         return self
@@ -958,6 +995,56 @@ impl Compiler {
             )
         };
         self.lookup_option(found, slot)
+    }
+
+    fn fixed_array_lookup(
+        &mut self,
+        array: FixedArray,
+        index: &IntValue,
+    ) -> Result<EvaluatedValue, String> {
+        if array.len == 0 {
+            return self.known_lookup_option(None);
+        }
+        if let Some(index) = index.constant() {
+            let Some(i) = usize::try_from(index).ok().filter(|i| *i < array.len) else {
+                return self.known_lookup_option(None);
+            };
+            let i = unsafe { LLVMConstInt(self.runtime_abi.usize_type, i as u64, 0) };
+            let value = self.load_slot(array.element(self.builder, i)).into_value();
+            return self.known_lookup_option(Some(value));
+        }
+        // Compare at the original integer width. The GEP and allocation execute
+        // only for a valid index, and load the current value after projected writes.
+        let index = self.int_to_runtime_int(index, "array_lookup_index")?;
+        let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "array_lookup_out");
+        unsafe {
+            LLVMBuildStore(self.builder, self.null_handle_ptr(), slot);
+            let found = LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntULT,
+                index,
+                LLVMConstInt(self.runtime_abi.int_type, array.len as u64, 0),
+                c"array_in_bounds".as_ptr(),
+            );
+            let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
+            let present =
+                LLVMAppendBasicBlockInContext(self.context, function, c"array_present".as_ptr());
+            let done = LLVMAppendBasicBlockInContext(
+                self.context,
+                function,
+                c"array_lookup_done".as_ptr(),
+            );
+            LLVMBuildCondBr(self.builder, found, present, done);
+            LLVMPositionBuilderAtEnd(self.builder, present);
+            let value = self
+                .load_slot(array.element(self.builder, index))
+                .into_value();
+            let handle = self.build_runtime_handle(value)?;
+            LLVMBuildStore(self.builder, handle, slot);
+            LLVMBuildBr(self.builder, done);
+            LLVMPositionBuilderAtEnd(self.builder, done);
+            self.lookup_option(found, slot)
+        }
     }
 
     // Embedded slices with a compiler-known shape can contain runtime integer
@@ -1125,6 +1212,13 @@ impl Compiler {
         match base {
             Value::Slice(mut slice) => {
                 let int_value = self.expect_int(index)?;
+                if let Some(array) = slice.fixed {
+                    let len =
+                        unsafe { LLVMConstInt(self.runtime_abi.usize_type, array.len as u64, 0) };
+                    let i = self.checked_index(&int_value, len)?;
+                    self.store_slot(array.element(self.builder, i), value.into())?;
+                    return Ok(());
+                }
                 let idx_const = int_value.constant();
                 let mut handle = slice.handle;
                 if handle.is_none() && idx_const.is_none() {
@@ -2360,6 +2454,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
+                indexed: None,
                 slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
@@ -2494,10 +2589,8 @@ impl Compiler {
         }
         match args.pop().unwrap() {
             Value::Reference(reference) => Ok(Value::Pointer(PointerValue {
-                cell: reference.cell,
                 mutable,
-                handle: reference.handle,
-                origin: reference.origin.clone(),
+                ..reference
             })),
             Value::Pointer(mut ptr) => {
                 ptr.mutable = ptr.mutable || mutable;

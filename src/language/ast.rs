@@ -661,6 +661,28 @@ pub struct MapLiteralEntry {
     pub value: Expr,
 }
 
+/// An addressable projection is rooted in a named binding. Its index is an
+/// expression so each evaluator can evaluate it once when taking the loan.
+#[derive(Clone, Copy)]
+pub(crate) enum Projection<'a> {
+    Field(&'a str),
+    Index(ExprId, &'a Expr),
+}
+
+pub(crate) fn projected_place(expr: &Expr) -> Option<(&Identifier, Projection<'_>)> {
+    let (base, projection) = match expr {
+        Expr::FieldAccess { base, field, .. } => (base, Projection::Field(field)),
+        Expr::Index {
+            base, index, id, ..
+        } => (base, Projection::Index(*id, index.as_ref())),
+        _ => return None,
+    };
+    match base.as_ref() {
+        Expr::Identifier(owner) => Some((owner, projection)),
+        _ => None,
+    }
+}
+
 /// A named call can pass `&mut *r` by forwarding the existing reference `r`.
 /// Every evaluator must pass the reference itself, including its backing storage.
 pub(crate) fn forwarded_mut_reference(arg: &Expr) -> Option<&Expr> {

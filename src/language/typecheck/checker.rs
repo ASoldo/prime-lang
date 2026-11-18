@@ -1201,12 +1201,19 @@ impl Checker {
         let mut env = FnEnv::new(module.path.clone(), Vec::new(), imports.clone());
         if expected.is_none() && !is_literal_initializer(&def.value) {
             // Types of unannotated constant dependencies are unresolved. Still
-            // validate borrow places, without publishing partial lowering facts.
+            // validate borrow places and keep the storage facts for those places.
             env.publish_captures = false;
             let start = self.errors.len();
-            let facts = std::mem::take(&mut self.facts);
+            let mut facts = std::mem::take(&mut self.facts);
             let folded = std::mem::take(&mut self.folded_integers);
             self.check_expression(module, &def.value, None, &[], &mut env);
+            facts
+                .shared_collections
+                .extend(self.facts.shared_collections.drain());
+            facts
+                .borrowed_fields
+                .extend(self.facts.borrowed_fields.drain());
+            facts.indexed_loans.extend(self.facts.indexed_loans.drain());
             self.facts = facts;
             self.folded_integers = folded;
             self.errors
@@ -1269,6 +1276,8 @@ impl Checker {
                             }
                             pending_borrows = expression_borrow_targets(value, env);
                             let binding_ty = expected.clone().or(ty);
+                            let loan_source = binding_loan_source(value, binding_ty.as_ref(), env);
+                            self.record_shared_collection(module, value, binding_ty.as_ref(), env);
                             env.declare(
                                 name,
                                 binding_ty,
@@ -1276,6 +1285,11 @@ impl Checker {
                                 stmt.span,
                                 &mut self.errors,
                             );
+                            if let Some(binding) =
+                                env.scopes.last_mut().and_then(|s| s.get_mut(name))
+                            {
+                                binding.loan_source = loan_source;
+                            }
                             if !stmt.mutability.is_mutable()
                                 && let Some(n) = self.integer_constant(value)
                                 && let Some(binding) =
@@ -1351,6 +1365,17 @@ impl Checker {
                         for target in expression_borrow_targets(&assign.value, env) {
                             env.register_binding_borrow(&ident.name, target, ident.span);
                         }
+                    }
+                    let ty = env.lookup(&ident.name).and_then(|b| b.ty.as_ref());
+                    self.record_shared_collection(module, &assign.value, ty, env);
+                    let loan_source = binding_loan_source(&assign.value, ty, env);
+                    if let Some(binding) = env
+                        .scopes
+                        .iter_mut()
+                        .rev()
+                        .find_map(|s| s.get_mut(&ident.name))
+                    {
+                        binding.loan_source = loan_source;
                     }
                 }
                 Expr::Index {
@@ -1760,7 +1785,42 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
-        let actual = self.check_expression_hint(module, expr, expected, returns, env)?;
+        let projected = if env.argument_loans.is_empty() {
+            None
+        } else {
+            projected_call_place(expr, env)
+        };
+        let previous_owner = env.projection_owner;
+        if !env.argument_loans.is_empty() {
+            let access = match (projected, expr) {
+                (Some(place), _) => {
+                    env.projection_owner = projected_place(expr).map(|(owner, _)| owner.id);
+                    Some(place)
+                }
+                (_, Expr::Identifier(id)) if Some(id.id) != env.projection_owner => {
+                    Some(binding_place(id, env))
+                }
+                _ => None,
+            };
+            if let Some(access) = access
+                && env.argument_loans.iter().any(|loan| loan.overlaps(&access))
+            {
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        expr_span(expr),
+                        format!(
+                            "`{}` is already mutably borrowed in this call",
+                            access.owner
+                        ),
+                    )
+                    .with_code(MUTABLE_PLACE_ERROR),
+                );
+            }
+        }
+        let actual = self.check_expression_hint(module, expr, expected, returns, env);
+        env.projection_owner = previous_owner;
+        let actual = actual?;
         if let Some(dest_ty) = expected
             && &actual != dest_ty
             && let Some(dest) = IntegerType::from_type(dest_ty, self.pointer_bits())
@@ -1941,7 +2001,16 @@ impl Checker {
                 }
             }
             Expr::ArrayLiteral(values, span) => match expected {
-                Some(TypeExpr::Slice(inner)) => {
+                Some(TypeExpr::Slice(inner) | TypeExpr::Array { ty: inner, .. }) => {
+                    if let Some(TypeExpr::Array { size, .. }) = expected
+                        && *size != values.len()
+                    {
+                        self.errors.push(TypeError::new(
+                            &module.path,
+                            *span,
+                            format!("array requires {size} elements, found {}", values.len()),
+                        ));
+                    }
                     for value in values {
                         let actual = self.check_expression(
                             module,
@@ -1950,15 +2019,19 @@ impl Checker {
                             returns,
                             env,
                         );
-                        self.check_ownership_coercion(
-                            module,
-                            env,
-                            expr_span(value),
-                            inner,
-                            actual.as_ref(),
-                        );
+                        if matches!(expected, Some(TypeExpr::Array { .. })) {
+                            self.ensure_type(module, expr_span(value), inner, actual.as_ref());
+                        } else {
+                            self.check_ownership_coercion(
+                                module,
+                                env,
+                                expr_span(value),
+                                inner,
+                                actual.as_ref(),
+                            );
+                        }
                     }
-                    Some(TypeExpr::Slice(inner.clone()))
+                    expected.cloned()
                 }
                 Some(other) => {
                     self.errors.push(TypeError::new(
@@ -2005,8 +2078,8 @@ impl Checker {
                     }
                 }
                 let error = match (*mutable, expr.as_ref()) {
-                    (true, Expr::FieldAccess { .. }) => Some(
-                        "cannot mutably borrow a struct field; update the containing struct through its binding",
+                    (true, Expr::FieldAccess { .. } | Expr::Index { .. }) => Some(
+                        "a projected mutable borrow requires a named-function argument rooted in a mutable binding",
                     ),
                     (true, Expr::Deref { .. }) => Some(
                         "a mutable reborrow requires a direct named-function argument of the form `&mut *r`, where `r` is a mutable reference",
@@ -2702,23 +2775,38 @@ impl Checker {
             },
             _ => None,
         };
-        let mut references = HashMap::new();
+        let has_projection = args.iter().any(|arg| matches!(arg, Expr::Reference {mutable: true, expr, ..} if projected_place(expr).is_some()));
+        let mut references: Vec<(CallPlace, bool)> = Vec::new();
         for arg in receiver.into_iter().chain(args) {
-            if let Some((target, mutable)) = call_reference_target(arg, env) {
-                let previous = references.insert(target.clone(), mutable);
-                if previous.is_some_and(|was_mutable| was_mutable || mutable) {
+            let reference = call_reference_target(arg, env).or_else(|| {
+                if has_projection
+                    && let Expr::Identifier(owner) = arg
+                    && matches!(
+                        env.lookup(&owner.name)?.ty,
+                        Some(TypeExpr::Slice(_) | TypeExpr::Array { .. })
+                    )
+                {
+                    Some((binding_place(owner, env), false))
+                } else {
+                    None
+                }
+            });
+            if let Some((place, mutable)) = reference {
+                if references.iter().any(|(previous, was_mutable)| {
+                    (*was_mutable || mutable) && previous.overlaps(&place)
+                }) {
                     self.errors.push(
                         TypeError::new(
                             &module.path,
                             expr_span(arg),
-                            format!("`{target}` is already mutably borrowed in this call"),
+                            format!("`{}` is already mutably borrowed in this call", place.owner),
                         )
                         .with_code(MUTABLE_PLACE_ERROR),
                     );
                 }
+                references.push((place, mutable));
             }
         }
-
         match callee {
             Expr::Identifier(ident) => {
                 if self.is_embedded_builtin(&ident.name) && !self.embedded_builtins_enabled() {
@@ -4410,6 +4498,72 @@ impl Checker {
         }
     }
 
+    fn record_shared_collection(
+        &mut self,
+        module: &Module,
+        expr: &Expr,
+        ty: Option<&TypeExpr>,
+        env: &FnEnv,
+    ) {
+        if matches!(ty, Some(TypeExpr::Slice(_) | TypeExpr::Array { .. }))
+            && let Expr::Identifier(owner) = expr
+            && let Some(span) = binding_place(owner, env).origin
+        {
+            self.facts
+                .shared_collections
+                .insert((module.name.clone(), span.start, span.end));
+        }
+    }
+
+    fn check_named_arguments(
+        &mut self,
+        module: &Module,
+        args: &[Expr],
+        params: &[TypeAnnotation],
+        result_types: &[TypeAnnotation],
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) {
+        let mut loans: Vec<CallPlace> = Vec::new();
+        for (arg, param) in args.iter().zip(params) {
+            self.record_shared_collection(module, arg, Some(&param.ty), env);
+            let reference = call_reference_target(arg, env);
+            let previous = env.argument_loans.len();
+            // Direct reference arguments are compared together in check_call. A
+            // later value argument can also access the owner in a nested call.
+            env.argument_loans.extend(
+                loans
+                    .iter()
+                    .filter(|loan| {
+                        reference
+                            .as_ref()
+                            .is_none_or(|(direct, _)| !loan.overlaps(direct))
+                    })
+                    .cloned(),
+            );
+            self.check_named_argument(module, arg, &param.ty, returns, env);
+            env.argument_loans.truncate(previous);
+            if let Some((place, true)) = reference
+                && place.member.is_some()
+            {
+                if result_types.iter().any(|result| {
+                    self.task_transfer_error(&result.ty, env, &mut HashSet::new())
+                        .is_some()
+                }) {
+                    self.errors.push(
+                        TypeError::new(
+                            &module.path,
+                            expr_span(arg),
+                            "a projected mutable borrow requires a call with an owned result",
+                        )
+                        .with_code(MUTABLE_PLACE_ERROR),
+                    );
+                }
+                loans.push(place);
+            }
+        }
+    }
+
     fn check_named_argument(
         &mut self,
         module: &Module,
@@ -4418,6 +4572,144 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) {
+        if let Expr::Reference {
+            mutable: true,
+            expr,
+            span,
+        } = arg
+            && let Some((owner, projection)) = projected_place(expr)
+        {
+            let start_errors = self.errors.len();
+            let binding = env.lookup(&owner.name);
+            let writable = binding.is_some_and(|b| match &b.ty {
+                Some(TypeExpr::Reference { mutable, ty }) => {
+                    *mutable
+                        && !matches!(
+                            ty.as_ref(),
+                            TypeExpr::Pointer { .. } | TypeExpr::Reference { .. }
+                        )
+                }
+                Some(TypeExpr::Pointer { .. }) => false,
+                _ => b.mutable,
+            });
+            if !writable {
+                self.errors.push(TypeError::new(&module.path, *span,
+                    format!("projected borrow requires a mutable owner; `{}` is immutable or not a mutable binding", owner.name))
+                    .with_code(MUTABLE_PLACE_ERROR));
+                return;
+            }
+            if let Some((place, _)) = call_reference_target(arg, env)
+                && env.scopes.iter().flat_map(|s| s.values()).any(|b| {
+                    matches!(b.ty, Some(TypeExpr::Reference { mutable: false, .. }))
+                        && b.loan_source
+                            .as_ref()
+                            .is_some_and(|shared| shared.overlaps(&place))
+                })
+            {
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        *span,
+                        format!("`{}` has an active shared borrow", owner.name),
+                    )
+                    .with_code(MUTABLE_PLACE_ERROR),
+                );
+            }
+            env.ensure_mut_borrow_allowed(module, *span, &owner.name, &mut self.errors);
+            let inner = match projection {
+                Projection::Field(field) => {
+                    let struct_name = binding
+                        .and_then(|b| b.ty.as_ref())
+                        .map(strip_refs_and_pointers)
+                        .and_then(named_type_name)
+                        .map(str::to_owned);
+                    let start = self.errors.len();
+                    let ty = self.check_expression(module, expr, None, returns, env);
+                    if let (Some(name), Some(ty)) = (struct_name, ty.as_ref()) {
+                        self.facts
+                            .borrowed_fields
+                            .insert((name, field.to_owned()), ty.clone());
+                    }
+                    if ty.is_none() && self.errors.len() == start {
+                        self.errors.push(
+                            TypeError::new(&module.path, *span, format!("unknown field `{field}`"))
+                                .with_code(MUTABLE_PLACE_ERROR),
+                        );
+                    }
+                    ty
+                }
+                Projection::Index(id, index) => {
+                    let Expr::Index { base, .. } = expr.as_ref() else {
+                        unreachable!()
+                    };
+                    let saved_owner = env.projection_owner.replace(owner.id);
+                    let base_ty = self.check_expression(module, base, None, returns, env);
+                    env.projection_owner = saved_owner;
+                    let index_ty = self.check_expression(module, index, None, returns, env);
+                    if index_ty
+                        .as_ref()
+                        .is_some_and(|ty| IntegerType::from_type(ty, self.pointer_bits()).is_none())
+                    {
+                        self.errors.push(
+                            TypeError::new(
+                                &module.path,
+                                *span,
+                                "an indexed borrow requires an integer index",
+                            )
+                            .with_code(MUTABLE_PLACE_ERROR),
+                        );
+                    }
+                    match base_ty.as_ref().map(strip_refs_and_pointers) {
+                        Some(TypeExpr::Slice(_)) if self.target.is_embedded() => {
+                            self.errors.push(
+                                TypeError::new(
+                                    &module.path,
+                                    *span,
+                                    "embedded indexed borrows require a fixed-size array",
+                                )
+                                .with_code(MUTABLE_PLACE_ERROR),
+                            );
+                            None
+                        }
+                        Some(TypeExpr::Slice(ty) | TypeExpr::Array { ty, .. }) => {
+                            self.facts.indexed_loans.insert(id, *ty.clone());
+                            Some(*ty.clone())
+                        }
+                        _ => {
+                            self.errors.push(
+                                TypeError::new(
+                                    &module.path,
+                                    *span,
+                                    "an indexed borrow requires a slice or array owner",
+                                )
+                                .with_code(MUTABLE_PLACE_ERROR),
+                            );
+                            None
+                        }
+                    }
+                }
+            };
+            if let Some(ty) = inner {
+                if IntegerType::from_type(&ty, self.pointer_bits()).is_none()
+                    && !matches!(&ty, TypeExpr::Named(name, _) if matches!(name.as_str(), "bool" | "float32" | "float64" | "rune"))
+                {
+                    self.errors.push(TypeError::new(&module.path, *span,
+                        "projected mutable borrows support integer, boolean, rune and floating-point storage").with_code(MUTABLE_PLACE_ERROR));
+                } else {
+                    let reference = TypeExpr::Reference {
+                        mutable: true,
+                        ty: Box::new(ty),
+                    };
+                    self.ensure_type(module, *span, param, Some(&reference));
+                }
+            }
+            for err in &mut self.errors[start_errors..] {
+                if err.code.is_none() {
+                    err.code = Some(MUTABLE_PLACE_ERROR.into());
+                }
+            }
+            return;
+        }
         if let Some(reference) = forwarded_mut_reference(arg) {
             let actual = self.check_expression(module, reference, None, returns, env);
             if matches!(actual, Some(TypeExpr::Reference { mutable: true, .. })) {
@@ -4463,9 +4755,14 @@ impl Checker {
                 ),
             ));
         }
-        for (expr, param) in args.iter().zip(instantiated.params.iter()) {
-            self.check_named_argument(module, expr, &param.ty, returns, env);
-        }
+        self.check_named_arguments(
+            module,
+            args,
+            &instantiated.params,
+            &instantiated.returns,
+            returns,
+            env,
+        );
         self.select_call_result(module, span, &instantiated.returns, expected)
     }
 
@@ -4508,9 +4805,14 @@ impl Checker {
                 ),
             ));
         }
-        for (expr, param) in args.iter().zip(instantiated.params.iter().skip(1)) {
-            self.check_named_argument(module, expr, &param.ty, returns, env);
-        }
+        self.check_named_arguments(
+            module,
+            args,
+            &instantiated.params[1..],
+            &instantiated.returns,
+            returns,
+            env,
+        );
         self.select_call_result(module, span, &instantiated.returns, expected)
     }
 
@@ -6375,6 +6677,7 @@ impl Checker {
 
 #[derive(Clone)]
 struct BindingInfo {
+    loan_source: Option<CallPlace>,
     integer_constant: Option<i128>,
     ty: Option<TypeExpr>,
     mut_borrows: Vec<String>,
@@ -6387,6 +6690,7 @@ struct BindingInfo {
 impl BindingInfo {
     fn new(ty: Option<TypeExpr>, mutable: Mutability, origin: Span) -> Self {
         Self {
+            loan_source: None,
             integer_constant: None,
             ty,
             mut_borrows: Vec::new(),
@@ -6412,6 +6716,8 @@ struct ImportScope {
 }
 
 struct FnEnv {
+    argument_loans: Vec<CallPlace>,
+    projection_owner: Option<ExprId>,
     path: PathBuf,
     type_params: HashSet<String>,
     scopes: Vec<HashMap<String, BindingInfo>>,
@@ -6445,6 +6751,8 @@ struct ClosureCaptureContext {
 impl FnEnv {
     fn new(path: PathBuf, type_params: Vec<String>, imports: ImportScope) -> Self {
         Self {
+            argument_loans: Vec::new(),
+            projection_owner: None,
             path,
             type_params: type_params.into_iter().collect(),
             scopes: vec![HashMap::new()],
@@ -7369,23 +7677,87 @@ fn expression_borrow_targets(expr: &Expr, env: &FnEnv) -> Vec<String> {
     expression_borrow_targets_with_context(expr, env, &context)
 }
 
-fn call_reference_target(expr: &Expr, env: &FnEnv) -> Option<(String, bool)> {
-    match expr {
-        Expr::Reference { mutable, expr, .. } => match expr.as_ref() {
-            Expr::Identifier(ident) => Some((ident.name.clone(), *mutable)),
-            Expr::Deref { expr, .. } => {
-                call_reference_target(expr, env).map(|(target, _)| (target, *mutable))
+#[derive(Clone)]
+struct CallPlace {
+    owner: String,
+    origin: Option<Span>,
+    member: Option<CallMember>,
+}
+
+#[derive(Clone, PartialEq)]
+enum CallMember {
+    Field(String),
+    Index(Option<i128>),
+}
+
+impl CallPlace {
+    fn overlaps(&self, other: &Self) -> bool {
+        self.owner == other.owner
+            && self.origin == other.origin
+            && match (&self.member, &other.member) {
+                (Some(CallMember::Index(Some(a))), Some(CallMember::Index(Some(b)))) => a == b,
+                (Some(CallMember::Field(a)), Some(CallMember::Field(b))) => a == b,
+                _ => true,
             }
+    }
+}
+
+fn binding_place(owner: &Identifier, env: &FnEnv) -> CallPlace {
+    if let Some(source) = env.lookup(&owner.name).and_then(|b| b.loan_source.clone()) {
+        return source;
+    }
+    let owner = env
+        .binding_borrow_target(&owner.name)
+        .unwrap_or_else(|| owner.name.clone());
+    CallPlace {
+        origin: env.binding_origin(&owner),
+        owner,
+        member: None,
+    }
+}
+
+fn binding_loan_source(expr: &Expr, ty: Option<&TypeExpr>, env: &FnEnv) -> Option<CallPlace> {
+    match (ty?, expr) {
+        (TypeExpr::Reference { .. }, _) => call_reference_target(expr, env).map(|(place, _)| place),
+        (TypeExpr::Slice(_) | TypeExpr::Array { .. }, Expr::Identifier(id)) => {
+            Some(binding_place(id, env))
+        }
+        _ => None,
+    }
+}
+
+fn projected_call_place(expr: &Expr, env: &FnEnv) -> Option<CallPlace> {
+    let (owner, projection) = projected_place(expr)?;
+    let mut place = binding_place(owner, env);
+    place.member = Some(match projection {
+        Projection::Field(field) => CallMember::Field(field.to_owned()),
+        Projection::Index(_, index) => CallMember::Index(match index {
+            Expr::Literal(Literal::Int(n, _)) => Some(*n),
             _ => None,
-        },
-        Expr::Identifier(ident) => {
-            let TypeExpr::Reference { mutable, .. } = env.lookup(&ident.name)?.ty.as_ref()? else {
+        }),
+    });
+    Some(place)
+}
+
+fn call_reference_target(expr: &Expr, env: &FnEnv) -> Option<(CallPlace, bool)> {
+    match expr {
+        Expr::Reference { mutable, expr, .. } => {
+            if let Some(place) = projected_call_place(expr, env) {
+                return Some((place, *mutable));
+            }
+            match expr.as_ref() {
+                Expr::Identifier(owner) => Some((binding_place(owner, env), *mutable)),
+                Expr::Deref { expr, .. } => {
+                    call_reference_target(expr, env).map(|(place, _)| (place, *mutable))
+                }
+                _ => None,
+            }
+        }
+        Expr::Identifier(owner) => {
+            let TypeExpr::Reference { mutable, .. } = env.lookup(&owner.name)?.ty.as_ref()? else {
                 return None;
             };
-            let target = env
-                .binding_borrow_target(&ident.name)
-                .unwrap_or_else(|| ident.name.clone());
-            Some((target, *mutable))
+            Some((binding_place(owner, env), *mutable))
         }
         _ => None,
     }

@@ -62,6 +62,7 @@ class MutableReferences(unittest.TestCase):
     def execute(self, *args, data="", success=True, error=None):
         result = subprocess.run(args, cwd=self.work, env=self.env, input=data, text=True,
                                 capture_output=True, timeout=300)
+        self.assertGreaterEqual(result.returncode, 0, result)
         self.assertEqual(result.returncode == 0, success, result)
         if error is not None:
             self.assertIn(error, result.stderr)
@@ -96,7 +97,84 @@ class MutableReferences(unittest.TestCase):
         """)
         self.compare("", "7\n")
 
-    def test_unsupported_mutable_places_are_located_before_execution(self):
+    def test_projected_places_update_only_the_selected_storage(self):
+        self.check_and_build("""module example;
+import core::prelude::{Result};
+struct Pair { x: int32; y: int32; }
+fn bump(r: &mut int32) { *r = *r + 1; }
+fn relay(r: &mut int32) { bump(&mut *r); bump(r); }
+fn both(a: &mut int32, b: &mut int32) { *a = *a + 10; *b = *b + 20; }
+fn field(p: &mut Pair) { relay(&mut p.x); }
+fn choose(i: int32) -> int32 { out("index"); i }
+fn main() {
+  match in[int32]("") {
+    Ok(i) => {
+      let mut Pair pair = Pair{10, 20};
+      let Pair original = pair;
+      if i == 0 { field(&mut pair); }
+      both(&mut pair.x, &mut pair.y);
+      out(pair.x); out(pair.y); out(original.x);
+      let mut []int32 items = [3, 5, 7];
+      both(&mut items[0], &mut items[2]);
+      relay(&mut items[choose(i)]);
+      out(slice_get_int(items, 0, -1)); out(slice_get_int(items, 1, -1)); out(slice_get_int(items, 2, -1));
+    },
+    Err(_) => out("invalid"),
+  }
+}
+""")
+        self.compare("0\n", "22\n40\n10\nindex\n15\n5\n27\n")
+        self.compare("2\n", "20\n40\n10\nindex\n13\n5\n29\n")
+        for index in ("-1", "3"):
+            for cmd in ((self.cli, "run", self.source), (self.work / ".build.prime/example/example",)):
+                with self.subTest(index=index, command=cmd):
+                    self.execute(*cmd, data=index + "\n", success=False, error="borrow index out of bounds")
+
+    def test_aliases_reaching_different_parameters(self):
+        self.check_and_build("""module example;
+            fn both(x: &mut int32, y: &mut int32) { out("entered"); }
+            fn receive(a: []int32, b: []int32) {
+                let mut []int32 first = a;
+                let mut []int32 second = b;
+                both(&mut first[0], &mut second[0]);
+            }
+            fn main() { let []int32 owner = [1]; receive(owner, owner); }
+        """)
+        for cmd in ((self.cli, "run", self.source), (self.work / ".build.prime/example/example",)):
+            self.assertEqual(self.execute(*cmd, success=False, error="already mutably borrowed"), "")
+
+    def test_empty_slice_is_checked_before_the_callee(self):
+        self.check_and_build("""module example;
+            fn ignore(value: &mut int32) { out("entered"); }
+            fn main() { let mut []int32 empty = []; ignore(&mut empty[0]); }
+        """)
+        for cmd in ((self.cli, "run", self.source), (self.work / ".build.prime/example/example",)):
+            self.assertEqual(self.execute(*cmd, success=False, error="borrow index out of bounds"), "")
+
+    def test_fixed_array_and_mutable_owner_reference(self):
+        self.check_and_build("""module example;
+            import core::prelude::{Option};
+            fn flip(flag: &mut bool) { *flag = !*flag; }
+            fn relay(flags: &mut [2]bool) { flip(&mut flags[1]); }
+            fn main() {
+                let mut [2]bool flags = [false, false];
+                relay(&mut flags);
+                match flags[0] { Some(v) => out(v), None => out("missing"), }
+                match flags[1] { Some(v) => out(v), None => out("missing"), }
+            }
+        """)
+        self.compare("", "false\ntrue\n")
+
+    def test_projected_constant_initializer(self):
+        self.check_and_build("""module example;
+            struct Pair { x: int32; y: int32; }
+            fn bump(r: &mut int32) { *r = *r + 1; }
+            const X: int32 = { let mut Pair p = Pair{6, 9}; bump(&mut p.x); p.x };
+            fn main() { out(X); }
+        """)
+        self.compare("", "7\n")
+
+    def test_invalid_mutable_places_are_located_before_execution(self):
         header = """module example;
 // UTF-8 byte offsets: č
 struct Pair { field: int32; }
@@ -104,13 +182,43 @@ pub interface Update { fn replace(self: &mut Pair, other: &mut Pair); }
 impl Update for Pair { fn replace(self: &mut Pair, other: &mut Pair) { *other = Pair{7}; } }
 fn bump(n: &mut int32) { *n = *n + 1; }
 fn both(x: &mut int32, y: &mut int32) {}
+fn with_owner(x: &mut Pair, y: &mut int32) {}
+fn identity(r: &mut int32) -> &mut int32 { r }
+fn add(x: &mut int32, y: int32) {}
+fn read(x: &Pair) -> int32 { x.field }
 fn inspect(x: &mut int32, y: &int32) {}
 """
         for function, place, message in (
-            ("fn main() { let mut Pair pair = Pair{field: 6}; bump(&mut pair.field); }",
-             "&mut pair.field", "cannot mutably borrow a struct field"),
-            ("const X = { let mut Pair p = Pair{field: 6}; bump(&mut p.field); p.field };",
-             "&mut p.field", "cannot mutably borrow a struct field"),
+            ("fn main() { let Pair pair = Pair{field: 6}; bump(&mut pair.field); }",
+             "&mut pair.field", "requires a mutable owner"),
+            ("const X = { let Pair p = Pair{field: 6}; bump(&mut p.field); p.field };",
+             "&mut p.field", "requires a mutable owner"),
+            ("fn relay(p: &Pair) { bump(&mut p.field); }",
+             "&mut p.field", "requires a mutable owner"),
+            ("fn main() { let mut []int32 a = [1,2]; let mut int32 i = 1; both(&mut a[0], &mut a[i]); }",
+             "&mut a[i]", "already mutably borrowed"),
+            ("fn main() { let mut Pair p = Pair{6}; let r = &mut p; bump(&mut p.field); }",
+             "&mut p.field", "already mutably borrowed"),
+            ("fn main() { let mut Pair p = Pair{6}; bump(&mut p.missing); }",
+             "&mut p.missing", "unknown field"),
+            ("fn main() { let mut Pair p = Pair{6}; let escaped = identity(&mut p.field); }",
+             "&mut p.field", "requires a call with an owned result"),
+            ("fn main() { let mut Pair p = Pair{6}; with_owner(&mut p, &mut p.field); }",
+             "&mut p.field", "already mutably borrowed"),
+            ("fn main() { let mut Pair p = Pair{6}; add(&mut p.field, read(&p)); }",
+             "p", "already mutably borrowed"),
+            ("fn main() { let mut []int32 a = [1]; both(&mut a[0], &mut a[0]); }",
+             "&mut a[0]", "already mutably borrowed"),
+            ("fn main() { let mut Pair p = Pair{6}; let loan = &p; bump(&mut p.field); }",
+             "&mut p.field", "active shared borrow"),
+            ("fn main() { let mut []int32 a = [1]; let mut []int32 b = a; both(&mut a[0], &mut b[0]); }",
+             "&mut b[0]", "already mutably borrowed"),
+            ("fn main() { let mut Pair p = Pair{6}; both(&mut p.field, &mut p.field); }",
+             "&mut p.field", "already mutably borrowed"),
+            ("fn main() { bump(&mut Pair{field: 6}.field); }",
+             "&mut Pair{field: 6}.field", "rooted in a mutable binding"),
+            ("fn main() { let mut []int32 a = [6]; bump(&mut a[true]); }",
+             "&mut a[true]", "requires an integer index"),
             ("fn relay(r: &mut int32) { let child = &mut *r; bump(child); }",
              "&mut *r", "a mutable reborrow requires a direct"),
             ("fn relay(r: &int32) { bump(&mut *r); }",
@@ -123,8 +231,8 @@ fn inspect(x: &mut int32, y: &int32) {}
              "&mut *r", "already mutably borrowed"),
             ("fn relay(r: &mut int32) { both(r, &mut *r); }",
              "&mut *r", "already mutably borrowed"),
-            ("fn main() { let mut []int32 items = [6]; bump(&mut items[0]); }",
-             "&mut items[0]", "cannot take a reference to a temporary value"),
+            ("fn main() { let []int32 items = [6]; bump(&mut items[0]); }",
+             "&mut items[0]", "requires a mutable owner"),
         ):
             with self.subTest(function=function):
                 source = header + function

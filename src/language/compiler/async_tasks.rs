@@ -148,6 +148,7 @@ impl Compiler {
                 Value::Str(s.clone())
             }
             Value::Str(_) | Value::Reference(_) => Value::Reference(ReferenceValue {
+                indexed: None,
                 slot: None,
                 cell: Rc::new(Mutex::new(Value::Unit.into())),
                 mutable: false,
