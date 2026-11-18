@@ -1,6 +1,6 @@
 # Runtime & FFI Surfaces
 
-How the interpreter, compiler, and runtime ABI interact across host and Xtensa targets.
+How the interpreter, compiler, and runtime ABI interact across the host, ESP32 and ESP32-C3 targets.
 
 ```mermaid
 graph LR
@@ -12,7 +12,7 @@ graph LR
 
   subgraph "Staticlib (per target)"
     ABI_SRC["src/runtime/abi.rs"] --> HOST_LIB["libruntime_abi.a (host)"]
-    ABI_SRC --> XTENSA_LIB["libruntime_abi.a (xtensa)"]
+    ABI_SRC --> XTENSA_LIB["libruntime_abi.a (embedded target)"]
   end
 
   HOST_LIB -. exports .-> ABI_DECL
@@ -20,8 +20,14 @@ graph LR
   DEVICE --> UART["UART/ROM bindings"]
 ```
 
-Highlights:
-- Interpreter uses its own in-process runtime; build mode invokes the ABI for async/channels when async appears (runtime handles are auto-attached).
-- The same ABI signatures are declared in IR; linking picks the correct staticlib for the target. Xtensa builds request `-relocation-model=static` and link libc/libgcc alongside `libruntime_abi.a`.
-- Xtensa runtime (no_std) includes async tasks, channels, calibrated delays for `sleep_task`, a waiter queue + poll for `recv_task`/`recv_timeout`, GPIO mux for common LED pins, ring-buffered strings, watchdog disable, and basic reference helpers (`prime_reference_read` passthrough).
-- Panic contract: host surfaces panics as `RuntimeError::Panic` through the interpreter/async join; embedded `no_std` builds abort/loop on panic with no unwinding. Plan to propagate errors explicitly for embedded async.
+The interpreter uses an in-process runtime. Native code calls C-compatible symbols declared in `src/language/runtime_abi.rs` and implemented in `src/runtime/abi.rs`. The CLI ships these implementations with the matching Cargo lockfiles. Changing a parameter's type or width requires updating both sides and exercising the generated call on the target.
+
+| Call | Argument | Return |
+| --- | --- | --- |
+| `prime_sleep_task` | `i128` milliseconds | Opaque task handle |
+| `prime_delay_ms` | `i32` milliseconds | `PrimeStatus` |
+| `prime_recv_timeout` | Receiver handle, `i128` milliseconds, output pointer | `PrimeStatus` |
+
+The host runtime uses OS threads. The embedded runtime uses statically initialized pools and a target-specific clock. Closing a channel preserves its queued values. After those values have been read, the channel releases its slot. [Embedded timers and channels](EmbeddedTimers.md)
+
+Host interpreter and async errors can propagate through task results. The embedded runtime aborts or loops on panic. [Async semantics and restrictions](AsyncAwait.md)
