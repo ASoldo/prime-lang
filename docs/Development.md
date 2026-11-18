@@ -18,6 +18,10 @@ A native `prime-lang build` compiles the bundled Rust runtime with its own lockf
 
 Note: `cargo test -- --format=json` and `cargo test -- --report-time` require nightly `-Z unstable-options`.
 
+## Dependency advisories
+
+Install the audit tool with `cargo install --locked --version 0.23.0 cargo-audit`, then run `./scripts/audit-dependencies.sh`. It refreshes the RustSec database once and checks four lockfiles against the same snapshot: the CLI, the bundled host and embedded runtimes, and the editor grammar. A reported vulnerability or failure to audit a file makes the command fail. The output also lists maintenance warnings. The **Dependency audit** workflow runs on changes to these lockfiles or the audit itself, and can be triggered manually for unchanged releases. [RustSec advisory database](https://rustsec.org/)
+
 ## Prime docs (HTML app)
 
 - Generate HTML: `prime-lang docs --generate --out docs.html`

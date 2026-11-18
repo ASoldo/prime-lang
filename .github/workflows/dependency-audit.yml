@@ -1,0 +1,30 @@
+name: Dependency audit
+
+on:
+  push:
+    paths:
+      - '**/Cargo.lock'
+      - 'Cargo.lock'
+      - 'src/runtime/distribution/*.Cargo.lock'
+      - 'scripts/audit-dependencies.sh'
+      - '.github/workflows/dependency-audit.yml'
+  pull_request:
+    paths:
+      - '**/Cargo.lock'
+      - 'Cargo.lock'
+      - 'src/runtime/distribution/*.Cargo.lock'
+      - 'scripts/audit-dependencies.sh'
+      - '.github/workflows/dependency-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rustsec:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cargo install --locked --version 0.23.0 cargo-audit
+      - run: ./scripts/audit-dependencies.sh
