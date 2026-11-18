@@ -21,7 +21,7 @@ cargo build --locked --bin prime-lang
 export PRIME_BIN="$CARGO_TARGET_DIR/debug/prime-lang"
 env "CARGO_BIN_EXE_prime-lang=$PRIME_BIN" cargo test --locked --all -- --test-threads=1
 cargo test --manifest-path tree-sitter/prime/Cargo.toml --locked -- --nocapture
-python3 scripts/tests/test_lint.py -v
+python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 ./scripts/check_examples.sh
 
 # Some Prime tests write files relative to their working directory.
