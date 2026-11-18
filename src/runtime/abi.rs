@@ -1765,6 +1765,22 @@ mod embedded {
         }
     }
 
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_integer_check(ok: bool, message: *const u8, len: usize) {
+        if !ok {
+            prime_print(prime_string_new(message, len));
+            #[cfg(target_arch = "riscv32")]
+            core::arch::asm!("ebreak");
+            loop {
+                core::hint::spin_loop()
+            }
+        }
+    }
+
     // Classic ESP32: reserve timer group 0, general-purpose timer 0. A hardware
     // 64-bit counter keeps ticking even when no Prime code samples the clock.
     #[cfg(target_arch = "xtensa")]
@@ -3800,6 +3816,15 @@ mod host {
             )));
         };
         to_handle(HostHandle::new(HostValue::TaskError(message)))
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_integer_check(ok: bool, message: *const u8, len: usize) {
+        if !ok {
+            let message = String::from_utf8_lossy(std::slice::from_raw_parts(message, len));
+            eprintln!("Runtime panic: {message}");
+            std::process::exit(1);
+        }
     }
 
     #[unsafe(export_name = "prime_host_task_abort")]

@@ -20,10 +20,15 @@ impl CheckedProgram<'_> {
 
 #[derive(Default)]
 pub struct CheckedFacts {
+    pub(crate) integers: crate::language::integer::CheckedIntegers,
     pub(crate) matches: HashMap<ExprId, CheckedMatch>,
 }
 
 impl CheckedFacts {
+    pub fn integers(&self) -> &crate::language::integer::CheckedIntegers {
+        &self.integers
+    }
+
     pub fn match_expr(&self, id: ExprId) -> Option<&CheckedMatch> {
         self.matches.get(&id)
     }

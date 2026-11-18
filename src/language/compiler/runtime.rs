@@ -230,25 +230,29 @@ impl Compiler {
                     return Ok(());
                 }
                 Value::Bool(flag) => {
-                    if let Some(constant) = flag.constant() {
-                        let text = if constant { "true" } else { "false" };
-                        let (ptr, len) = self.build_runtime_bytes(text, "rt_print_bool")?;
-                        let mut call_args = [ptr, len];
-                        let handle = self.call_runtime(
-                            self.runtime_abi.prime_string_new,
-                            self.runtime_abi.prime_string_new_ty,
-                            &mut call_args,
-                            "string_new",
-                        );
-                        let mut print_args = [handle];
-                        self.call_runtime(
-                            self.runtime_abi.prime_print,
-                            self.runtime_abi.prime_print_ty,
-                            &mut print_args,
-                            "prime_print",
-                        );
-                        return Ok(());
-                    }
+                    let (yes, yes_len) = self.build_runtime_bytes("true", "bool_true")?;
+                    let (no, no_len) = self.build_runtime_bytes("false", "bool_false")?;
+                    let flag = self.bool_llvm_value(flag);
+                    let mut args = unsafe {
+                        [
+                            LLVMBuildSelect(self.builder, flag, yes, no, c"bool_text".as_ptr()),
+                            LLVMBuildSelect(
+                                self.builder,
+                                flag,
+                                yes_len,
+                                no_len,
+                                c"bool_length".as_ptr(),
+                            ),
+                        ]
+                    };
+                    let handle = self.call_runtime(
+                        self.runtime_abi.prime_string_new,
+                        self.runtime_abi.prime_string_new_ty,
+                        &mut args,
+                        "bool_string",
+                    );
+                    self.emit_runtime_print(handle);
+                    return Ok(());
                 }
                 _ => {}
             }
@@ -480,7 +484,7 @@ impl Compiler {
             )),
             Value::Int(int_value) => {
                 let arg = if let Some(constant) = int_value.constant() {
-                    unsafe { LLVMConstInt(self.runtime_abi.int_type, constant as u64, 1) }
+                    self.wide_integer_constant(constant)
                 } else {
                     let current = unsafe { LLVMTypeOf(int_value.llvm()) };
                     if current == self.runtime_abi.int_type {

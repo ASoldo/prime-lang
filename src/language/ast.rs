@@ -432,27 +432,32 @@ pub enum Expr {
         span: Span,
     },
     TryPropagate {
+        id: ExprId,
         expr: Box<Expr>,
         span: Span,
     },
     Binary {
+        id: ExprId,
         op: BinaryOp,
         left: Box<Expr>,
         right: Box<Expr>,
         span: Span,
     },
     Unary {
+        id: ExprId,
         op: UnaryOp,
         expr: Box<Expr>,
         span: Span,
     },
     Call {
+        id: ExprId,
         callee: Box<Expr>,
         type_args: Vec<TypeExpr>,
         args: Vec<Expr>,
         span: Span,
     },
     FieldAccess {
+        id: ExprId,
         base: Box<Expr>,
         field: String,
         span: Span,
@@ -479,6 +484,7 @@ pub enum Expr {
     ArrayLiteral(Vec<Expr>, Span),
     Range(RangeExpr),
     Index {
+        id: ExprId,
         base: Box<Expr>,
         index: Box<Expr>,
         span: Span,
@@ -489,6 +495,7 @@ pub enum Expr {
         span: Span,
     },
     Deref {
+        id: ExprId,
         expr: Box<Expr>,
         span: Span,
     },
@@ -501,6 +508,7 @@ pub enum Expr {
         span: Span,
     },
     Await {
+        id: ExprId,
         expr: Box<Expr>,
         span: Span,
     },
@@ -524,6 +532,7 @@ pub enum Expr {
 
 #[derive(Clone, Debug)]
 pub struct Identifier {
+    pub id: ExprId,
     pub name: String,
     pub span: Span,
 }

@@ -394,11 +394,13 @@ impl Compiler {
         if mutable {
             match value.value().clone() {
                 Value::Int(int_val) => {
-                    let ty = unsafe { LLVMTypeOf(int_val.llvm()) };
-                    let alloca = self.build_entry_alloca(ty, &format!("{name}_slot"));
+                    let wide = self.int_to_runtime_int(&int_val, "integer_initial_value")?;
+                    let alloca =
+                        self.build_entry_alloca(self.runtime_abi.int_type, &format!("{name}_slot"));
                     unsafe {
-                        LLVMBuildStore(self.builder, int_val.llvm(), alloca);
+                        LLVMBuildStore(self.builder, wide, alloca);
                     }
+                    *value.value_mut() = Value::Int(IntValue::new(wide, None));
                     slot = Some(alloca);
                 }
                 Value::Bool(flag) => {

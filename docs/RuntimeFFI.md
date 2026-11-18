@@ -24,6 +24,7 @@ The interpreter uses an in-process runtime. Native code calls C-compatible symbo
 
 | Call | Argument | Return |
 | --- | --- | --- |
+| `prime_integer_check` | Boolean condition, pointer to UTF-8 diagnostic bytes, target-width byte length | Returns on success. On failure the host reports the error and exits, and firmware stops. |
 | `prime_sleep_task` | `i128` milliseconds | Opaque task handle |
 | `prime_delay_ms` | `i32` milliseconds | `PrimeStatus` |
 | `prime_recv_timeout` | Receiver handle, `i128` milliseconds, output pointer | `PrimeStatus` |
@@ -48,3 +49,5 @@ PRIME_BIN="$PWD/target/debug/prime-lang" python3 scripts/test_c3_strings.py -v
 ```
 
 The probe runs the Prime interpreter and builds the fixture through `prime-lang build main.prime --name c3 --no-flash`. Unicorn executes the linked RV32IMC application twice. The test reads the handles passed to `prime_print` through the linked ABI and compares their bytes with interpreter output, including a closed channel yielding `Err("empty")` and a task returning UTF-8 text. Separate probes exercise pool exhaustion, repeated lookups and decimal formatting. This checks the print boundary in emulation. Physical UART output and board boot require separate verification.
+
+The same RV32IMC suite runs integer programs through the interpreter and CLI-built firmware in Unicorn. It checks adjacent wide integers, 32-bit pointer-sized casts, boolean output, and out-of-range arguments at a user function boundary. On RV32 the failed guard receives the diagnostic bytes and executes a breakpoint. The suite observes the guest ABI and CPU exception without board I/O.

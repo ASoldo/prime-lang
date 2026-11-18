@@ -125,6 +125,8 @@ pub struct RuntimeAbi {
     pub prime_sleep_task_ty: LLVMTypeRef,
     pub prime_recv_task: LLVMValueRef,
     pub prime_recv_task_ty: LLVMTypeRef,
+    pub prime_integer_check: LLVMValueRef,
+    pub prime_integer_check_ty: LLVMTypeRef,
     pub prime_print: LLVMValueRef,
     pub prime_print_ty: LLVMTypeRef,
     pub prime_int_to_string: LLVMValueRef,
@@ -512,6 +514,12 @@ impl RuntimeAbi {
             declare_fn(module, "prime_sleep_task", handle_type, &mut [int_type]);
         let (prime_recv_task, prime_recv_task_ty) =
             declare_fn(module, "prime_recv_task", handle_type, &mut [handle_type]);
+        let (prime_integer_check, prime_integer_check_ty) = declare_fn(
+            module,
+            "prime_integer_check",
+            void_type,
+            &mut [bool_type, string_data_type, usize_type],
+        );
         let (prime_print, prime_print_ty) =
             declare_fn(module, "prime_print", void_type, &mut [handle_type]);
         let (prime_int_to_string, prime_int_to_string_ty) =
@@ -837,6 +845,8 @@ impl RuntimeAbi {
             prime_sleep_task_ty,
             prime_recv_task,
             prime_recv_task_ty,
+            prime_integer_check,
+            prime_integer_check_ty,
             prime_print,
             prime_print_ty,
             prime_int_to_string,
@@ -1035,6 +1045,8 @@ impl RuntimeAbi {
             prime_sleep_task_ty: std::ptr::null_mut(),
             prime_recv_task: std::ptr::null_mut(),
             prime_recv_task_ty: std::ptr::null_mut(),
+            prime_integer_check: std::ptr::null_mut(),
+            prime_integer_check_ty: std::ptr::null_mut(),
             prime_print: std::ptr::null_mut(),
             prime_print_ty: std::ptr::null_mut(),
             prime_int_to_string: std::ptr::null_mut(),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a Prime CLI-built ESP32-C3 string fixture and probe its native ABI."""
+"""Execute CLI-built ESP32-C3 string and integer probes on Unicorn."""
 
 import os
 from pathlib import Path
@@ -8,9 +8,9 @@ import subprocess
 import tempfile
 import unittest
 
-from unicorn import Uc, UC_ARCH_RISCV, UC_HOOK_CODE, UC_MODE_RISCV32
+from unicorn import Uc, UcError, UC_ARCH_RISCV, UC_HOOK_CODE, UC_MODE_RISCV32
 from unicorn.riscv_const import (
-    UC_RISCV_REG_A0, UC_RISCV_REG_GP, UC_RISCV_REG_PC, UC_RISCV_REG_RA, UC_RISCV_REG_SP,
+    UC_RISCV_REG_A0, UC_RISCV_REG_A1, UC_RISCV_REG_A2, UC_RISCV_REG_GP, UC_RISCV_REG_PC, UC_RISCV_REG_RA, UC_RISCV_REG_SP,
 )
 
 
@@ -19,7 +19,10 @@ TEXT, DATA, RAM_SIZE = 0x40380000, 0x3FC90000, 96 * 1024
 SCRATCH = 0x10000
 
 
-class C3Strings(unittest.TestCase):
+class C3Program(unittest.TestCase):
+    source = None
+    expected_error = None
+
     @classmethod
     def setUpClass(cls):
         temp = tempfile.TemporaryDirectory()
@@ -37,10 +40,15 @@ class C3Strings(unittest.TestCase):
         def run(*cmd):
             return subprocess.check_output(cmd, cwd=work, env=env)
 
-        ref = run(cli, "run", "main.prime")
-        if ref != "result=empty\nčaj\n-13\n".encode():
-            raise AssertionError(ref)
-        cls.reference = ref
+        if cls.source:
+            (work / "main.prime").write_text(cls.source)
+        run(cli, "check", "main.prime", "--format", "json")
+        result = subprocess.run([cli, "run", "main.prime"], cwd=work, env=env, capture_output=True)
+        if cls.expected_error:
+            if result.returncode == 0 or cls.expected_error not in result.stderr:
+                raise AssertionError(result)
+        elif result.returncode or result.stdout != cls.expected_output:
+            raise AssertionError(result)
         cc = shutil.which("riscv32-esp-elf-gcc")
         asm = [cc] if cc else ["clang", "--target=riscv32-unknown-elf"]
         if not cc:
@@ -91,17 +99,27 @@ class C3Strings(unittest.TestCase):
         length = int.from_bytes(self.cpu.mem_read(SCRATCH + 4, 4), "little")
         return bytes(self.cpu.mem_read(ptr, length))
 
-    def test_prime_result(self):
-        # Observe the handles actually passed to print, then ask the linked ABI
-        # for their bytes. Every constructor, match and print executes on RV32.
+    def observe_print(self):
         handles = []
         address = self.symbols["prime_print"]
         self.cpu.hook_add(UC_HOOK_CODE, lambda cpu, *_: handles.append(cpu.reg_read(UC_RISCV_REG_A0)),
                           begin=address, end=address)
+        return handles
+
+    def assert_output(self, handles):
+        # Observe the handles passed to print and ask the linked ABI for their bytes.
+        handles.clear()
+        self.execute("_start")
+        self.assertEqual(b"".join(map(self.read_string, handles)), self.expected_output)
+
+
+class C3Strings(C3Program):
+    expected_output = "result=empty\nčaj\n-13\n".encode()
+
+    def test_prime_result(self):
+        handles = self.observe_print()
         for _ in range(2):
-            handles.clear()
-            self.execute("_start")
-            self.assertEqual(b"".join(map(self.read_string, handles)), self.reference)
+            self.assert_output(handles)
 
     def test_byte_capacity(self):
         value = bytes(range(256)) * 32
@@ -128,6 +146,51 @@ class C3Strings(unittest.TestCase):
             self.cpu.mem_write(SCRATCH + 16, value.to_bytes(16, "little", signed=True))
             handle = self.call("int_to_string", SCRATCH + 16)
             self.assertEqual(self.read_string(handle), str(value).encode())
+
+
+class C3Integers(C3Program):
+    source = """module c3_strings;
+        fn add_word(x: int64) -> int64 { x + 4294967296 }
+        fn main() {
+            let mut int64 x = 0;
+            let int64 hi = 9007199254740993;
+            let int64 lo = 9007199254740992;
+            out(hi + x > lo);
+            out(add_word(x) > x);
+            out(add_word(x) < x);
+            out(cast[usize](x - 1));
+            out(cast[isize](x + 4294967295));
+            out(cast[uint8](256));
+        }"""
+    expected_output = b"true\ntrue\nfalse\n4294967295\n-1\n0\n"
+
+    def test_integer_widths(self):
+        self.assert_output(self.observe_print())
+
+
+class C3IntegerOverflow(C3Program):
+    source = """module c3_strings;
+        fn byte(n: uint8) -> uint8 { n }
+        fn main() { let mut int64 x = 256; out(byte(x)); }"""
+    expected_error = b"out of range for `uint8`"
+
+    def test_dynamic_overflow_reports_then_traps(self):
+        diagnostics = []
+        def capture_error(cpu, *_):
+            if cpu.reg_read(UC_RISCV_REG_A0) == 0:
+                ptr, size = cpu.reg_read(UC_RISCV_REG_A1), cpu.reg_read(UC_RISCV_REG_A2)
+                diagnostics.append(bytes(cpu.mem_read(ptr, size)))
+
+        check = self.symbols["prime_integer_check"]
+        self.cpu.hook_add(UC_HOOK_CODE, capture_error, begin=check, end=check)
+        # Unicorn versions report different exceptions for the guest breakpoint.
+        # Check the faulting RV32 instruction (c.ebreak or ebreak) directly.
+        with self.assertRaises(UcError):
+            self.execute("_start")
+        pc = self.cpu.reg_read(UC_RISCV_REG_PC)
+        instruction = bytes(self.cpu.mem_read(pc, 4))
+        self.assertTrue(instruction.startswith(b"\x02\x90") or instruction == b"\x73\x00\x10\x00", instruction.hex())
+        self.assertEqual(diagnostics, [b"integer result is out of range for `uint8`"])
 
 
 if __name__ == "__main__":

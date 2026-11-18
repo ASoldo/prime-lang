@@ -245,7 +245,9 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
             shift_span(span, delta);
             shift_block_spans(block, delta);
         }
-        Expr::TryPropagate { expr: inner, span } => {
+        Expr::TryPropagate {
+            expr: inner, span, ..
+        } => {
             shift_span(span, delta);
             shift_expr_spans(inner, delta);
         }
@@ -335,7 +337,9 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
             shift_expr_spans(&mut range.start, delta);
             shift_expr_spans(&mut range.end, delta);
         }
-        Expr::Index { base, index, span } => {
+        Expr::Index {
+            base, index, span, ..
+        } => {
             shift_span(span, delta);
             shift_expr_spans(base, delta);
             shift_expr_spans(index, delta);
@@ -1916,6 +1920,7 @@ impl Parser {
             let ident = self.expect_identifier("Expected target after '*'")?;
             let span = Span::new(start, ident.span.end);
             Expr::Deref {
+                id: ExprId::fresh(),
                 expr: Box::new(Expr::Identifier(ident)),
                 span,
             }
@@ -1927,6 +1932,7 @@ impl Parser {
                 let field = self.expect_identifier("Expected field name after '.'")?;
                 let span = expr_span(&target).union(field.span);
                 target = Expr::FieldAccess {
+                    id: ExprId::fresh(),
                     base: Box::new(target),
                     field: field.name,
                     span,
@@ -1938,6 +1944,7 @@ impl Parser {
                 let end = self.expect(TokenKind::RBracket)?.span.end;
                 let span = Span::new(expr_span(&target).start, end);
                 target = Expr::Index {
+                    id: ExprId::fresh(),
                     base: Box::new(target),
                     index: Box::new(index),
                     span,
@@ -2124,6 +2131,7 @@ impl Parser {
             let right = self.parse_binary(prec + 1)?;
             let span = expr_span(&left).union(expr_span(&right));
             left = Expr::Binary {
+                id: ExprId::fresh(),
                 op,
                 left: Box::new(left),
                 right: Box::new(right),
@@ -2139,6 +2147,7 @@ impl Parser {
             let expr = self.parse_unary()?;
             let span = expr_span(&expr);
             return Ok(Expr::Unary {
+                id: ExprId::fresh(),
                 op: UnaryOp::Neg,
                 expr: Box::new(expr),
                 span,
@@ -2148,6 +2157,7 @@ impl Parser {
             let expr = self.parse_unary()?;
             let span = expr_span(&expr);
             return Ok(Expr::Unary {
+                id: ExprId::fresh(),
                 op: UnaryOp::Not,
                 expr: Box::new(expr),
                 span,
@@ -2167,6 +2177,7 @@ impl Parser {
             let expr = self.parse_unary()?;
             let span = expr_span(&expr);
             return Ok(Expr::Deref {
+                id: ExprId::fresh(),
                 expr: Box::new(expr),
                 span,
             });
@@ -2203,6 +2214,7 @@ impl Parser {
             let expr = self.parse_unary()?;
             let span = Span::new(start, expr_span(&expr).end);
             return Ok(Expr::Await {
+                id: ExprId::fresh(),
                 expr: Box::new(expr),
                 span,
             });
@@ -2241,6 +2253,7 @@ impl Parser {
                             };
                             self.exit_paren();
                             expr = Expr::Call {
+                                id: ExprId::fresh(),
                                 callee: Box::new(expr),
                                 type_args,
                                 args,
@@ -2257,6 +2270,7 @@ impl Parser {
                 let index_expr = self.parse_expression()?;
                 let end = self.expect(TokenKind::RBracket)?.span.end;
                 expr = Expr::Index {
+                    id: ExprId::fresh(),
                     base: Box::new(expr),
                     index: Box::new(index_expr),
                     span: Span::new(span_start, end),
@@ -2285,6 +2299,7 @@ impl Parser {
                 };
                 self.exit_paren();
                 expr = Expr::Call {
+                    id: ExprId::fresh(),
                     callee: Box::new(expr),
                     type_args: Vec::new(),
                     args,
@@ -2324,7 +2339,9 @@ impl Parser {
                         }
                     }
                     expr = Expr::Call {
+                        id: ExprId::fresh(),
                         callee: Box::new(Expr::FieldAccess {
+                            id: ExprId::fresh(),
                             base: Box::new(expr),
                             field: field.name,
                             span,
@@ -2336,6 +2353,7 @@ impl Parser {
                     continue;
                 } else {
                     expr = Expr::FieldAccess {
+                        id: ExprId::fresh(),
                         base: Box::new(expr),
                         field: field.name,
                         span,
@@ -2349,6 +2367,7 @@ impl Parser {
                     .previous_span()
                     .unwrap_or_else(|| Span::new(span.end, span.end));
                 expr = Expr::TryPropagate {
+                    id: ExprId::fresh(),
                     expr: Box::new(expr),
                     span: Span::new(span.start, question_span.end),
                 };
@@ -2391,6 +2410,7 @@ impl Parser {
             let ident = self.expect_identifier("Expected identifier after '@'")?;
             let span = Span::new(at_start, ident.span.end);
             return Ok(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: format!("@{}", ident.name),
                 span,
             }));
@@ -2424,6 +2444,7 @@ impl Parser {
             Some(TokenKind::In) => {
                 let span = self.advance().span;
                 let ident = Identifier {
+                    id: ExprId::fresh(),
                     name: "in".into(),
                     span,
                 };
@@ -3517,11 +3538,16 @@ impl Parser {
         match self.peek_kind() {
             Some(TokenKind::Identifier(name)) => {
                 let span = self.advance().span;
-                Ok(Identifier { name, span })
+                Ok(Identifier {
+                    id: ExprId::fresh(),
+                    name,
+                    span,
+                })
             }
             Some(TokenKind::TestKw) => {
                 let span = self.advance().span;
                 Ok(Identifier {
+                    id: ExprId::fresh(),
                     name: "test".into(),
                     span,
                 })

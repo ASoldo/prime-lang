@@ -1705,7 +1705,9 @@ fn find_in_expr(expr: &Expr, offset: usize) -> Option<(String, Span)> {
                 None
             }
         }
-        Expr::TryPropagate { expr: inner, span }
+        Expr::TryPropagate {
+            expr: inner, span, ..
+        }
         | Expr::Reference {
             expr: inner, span, ..
         }

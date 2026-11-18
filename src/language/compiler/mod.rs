@@ -16,6 +16,7 @@ use crate::{
             BuildFunctionKey, BuildInterpreter, BuildIterator, BuildJoinHandle, BuildJoinOutcome,
             BuildReference, BuildScope, BuildSnapshot, BuildTask, BuildValue,
         },
+        integer::{IntegerOp, IntegerType, Scalar},
         runtime_abi::RuntimeAbi,
         span::Span,
         typecheck::{CheckedFacts, CheckedMatch, CheckedProgram},
@@ -70,6 +71,7 @@ mod async_tasks;
 mod builtins;
 mod closures;
 mod emit;
+mod integers;
 mod resolve;
 mod runtime;
 mod scopes;
@@ -1632,6 +1634,10 @@ impl Compiler {
         Self::with_target(BuildTarget::host())
     }
 
+    fn integer_operation(&self, id: ExprId) -> Option<IntegerOp> {
+        self.checked.as_ref()?.integers.operations.get(&id).copied()
+    }
+
     pub fn with_target(target: BuildTarget) -> Self {
         unsafe {
             let context = LLVMContextCreate();
@@ -1774,7 +1780,11 @@ impl Compiler {
 
     fn const_int_value(&self, value: i128) -> IntValue {
         unsafe {
-            let llvm = LLVMConstInt(self.i32_type, value as u64, 0);
+            let llvm = if i32::try_from(value).is_ok() {
+                LLVMConstInt(self.i32_type, value as u64, 0)
+            } else {
+                self.wide_integer_constant(value)
+            };
             IntValue::new(llvm, Some(value))
         }
     }

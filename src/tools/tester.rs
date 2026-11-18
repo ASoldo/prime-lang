@@ -178,35 +178,26 @@ fn run_test_file(root: &Path, path: &Path) -> Result<(), String> {
     // Seed scripted input queue for `in[...]` so prime tests can run non-interactively.
     crate::runtime::Interpreter::seed_test_inputs_from_env();
 
-    if let Err(errors) = typecheck::check_program(&expanded_program) {
-        emit_type_errors(&errors);
-        return Err("typechecking failed".into());
-    }
+    let checked = typecheck::check_program_typed(&expanded_program, &Default::default()).map_err(
+        |errors| {
+            emit_type_errors(&errors);
+            "typechecking failed".to_string()
+        },
+    )?;
 
-    let expanded_modules = expanded_program
-        .program
-        .modules
-        .iter()
-        .cloned()
-        .map(|module| project::ModuleUnit { module })
-        .collect();
-    let expanded_package = project::Package {
-        program: expanded_program.program.clone(),
-        modules: expanded_modules,
-    };
-
-    let mut interpreter = Interpreter::new(expanded_package.clone());
+    let mut interpreter = Interpreter::from_checked(checked);
     if let Err(err) = interpreter.bootstrap() {
         report_runtime_error(&err);
         return Err("bootstrap failed".into());
     }
 
     let mut failures = Vec::new();
-    let test_module = expanded_package
+    let test_module = expanded_program
+        .program
         .modules
         .iter()
-        .find(|unit| unit.module.path == canonical)
-        .map(|unit| unit.module.clone());
+        .find(|module| module.path == canonical)
+        .cloned();
     let Some(module) = test_module else {
         return Err("could not locate test module".into());
     };

@@ -895,6 +895,23 @@ impl Compiler {
         &mut self,
         expr: &Expr,
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        let result = self.emit_expression_inner(expr)?;
+        if let EvalOutcome::Value(value) = &result
+            && let Some(dest) = crate::language::integer::value_site(expr)
+                .and_then(|id| self.checked.as_ref()?.integers.narrowing.get(&id))
+                .copied()
+        {
+            let n = self.expect_int(value.value().clone())?;
+            let wide = self.int_to_runtime_int(&n, "integer_destination")?;
+            self.range_guard(wide, dest)?;
+        }
+        Ok(result)
+    }
+
+    fn emit_expression_inner(
+        &mut self,
+        expr: &Expr,
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Literal(Literal::Int(value, _)) => Ok(EvalOutcome::Value(
                 self.evaluated(Value::Int(self.const_int_value(*value))),
@@ -933,7 +950,7 @@ impl Compiler {
                     BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                 }
             }
-            Expr::TryPropagate { expr, span } => match self.emit_expression(expr)? {
+            Expr::TryPropagate { expr, span, .. } => match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => self.eval_try_operator(value, *span),
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
@@ -947,7 +964,11 @@ impl Compiler {
                 Ok(EvalOutcome::Value(value))
             }
             Expr::Binary {
-                op, left, right, ..
+                id,
+                op,
+                left,
+                right,
+                ..
             } => {
                 let lhs = match self.emit_expression(left)? {
                     EvalOutcome::Value(value) => value,
@@ -957,6 +978,12 @@ impl Compiler {
                     EvalOutcome::Value(value) => value,
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
+                if let Some(plan) = self.integer_operation(*id) {
+                    let a = self.expect_int(lhs.into_value())?;
+                    let b = self.expect_int(rhs.into_value())?;
+                    let value = self.emit_integer_op(plan, a, Some(b))?;
+                    return Ok(EvalOutcome::Value(self.evaluated(value)));
+                }
                 self.eval_binary(*op, lhs.into_value(), rhs.into_value())
                     .map(|v| EvalOutcome::Value(self.evaluated(v)))
             }
@@ -1069,8 +1096,14 @@ impl Compiler {
                 if experimental {
                     let snapshot = self.snapshot_build_state()?;
                     let expr_clone = expr.clone();
+                    let integers = self
+                        .checked
+                        .as_ref()
+                        .map(|f| f.integers.clone())
+                        .unwrap_or_default();
                     let handle = thread::spawn(move || {
-                        let interpreter = BuildInterpreter::new(snapshot);
+                        let interpreter =
+                            BuildInterpreter::new(snapshot).with_checked_integers(integers);
                         interpreter.eval_with_effects(&expr_clone)
                     });
                     Ok(EvalOutcome::Value(
@@ -1164,16 +1197,22 @@ impl Compiler {
                 }
             }
             Expr::Call {
+                id,
                 callee,
                 type_args,
                 args,
                 ..
-            } => self.emit_call_expression(callee, type_args, args),
-            Expr::Unary { op, expr, .. } => {
+            } => self.emit_call_expression(*id, callee, type_args, args),
+            Expr::Unary { id, op, expr, .. } => {
                 let value = match self.emit_expression(expr)? {
                     EvalOutcome::Value(value) => value.into_value(),
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
+                if let Some(plan) = self.integer_operation(*id) {
+                    let a = self.expect_int(value)?;
+                    let value = self.emit_integer_op(plan, a, None)?;
+                    return Ok(EvalOutcome::Value(self.evaluated(value)));
+                }
                 self.eval_unary(*op, value)
                     .map(|v| EvalOutcome::Value(self.evaluated(v)))
             }
@@ -1327,6 +1366,7 @@ impl Compiler {
 
     pub(super) fn emit_call_expression(
         &mut self,
+        id: ExprId,
         callee: &Expr,
         type_args: &[TypeExpr],
         args: &[Expr],
@@ -1339,6 +1379,24 @@ impl Compiler {
                         &ident.name,
                         args,
                     );
+                }
+                if ident.name == "cast" {
+                    let ([target], [argument]) = (type_args, args) else {
+                        return Err("cast expects one target type and one value".into());
+                    };
+                    let plan = self
+                        .integer_operation(id)
+                        .or_else(|| {
+                            IntegerType::from_type(target, self.target.pointer_width_bits())
+                                .map(IntegerOp::Cast)
+                        })
+                        .ok_or("LLVM cast requires an integer target")?;
+                    let a = match self.emit_expression(argument)? {
+                        EvalOutcome::Value(v) => self.expect_int(v.into_value())?,
+                        EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
+                    };
+                    let value = self.emit_integer_op(plan, a, None)?;
+                    return Ok(EvalOutcome::Value(self.evaluated(value)));
                 }
                 if ident.name == "out" {
                     return self.emit_out_call(args);
@@ -3113,9 +3171,22 @@ impl Compiler {
         } = else_val;
         match (then_value, else_value) {
             (Value::Int(a), Value::Int(b)) => {
-                let ty = unsafe { LLVMTypeOf(a.llvm()) };
-                let phi = build_phi(ty, "if_int_phi");
                 let mut vals = [a.llvm(), b.llvm()];
+                if unsafe { LLVMTypeOf(vals[0]) != LLVMTypeOf(vals[1]) } {
+                    for ((block, value), incoming) in [(then_block, &a), (else_block, &b)]
+                        .into_iter()
+                        .zip(&mut vals)
+                    {
+                        unsafe {
+                            LLVMPositionBuilderBefore(builder, LLVMGetBasicBlockTerminator(block));
+                        }
+                        *incoming = self.int_to_runtime_int(value, "if_integer")?;
+                    }
+                    unsafe {
+                        LLVMPositionBuilderAtEnd(builder, merge_block);
+                    }
+                }
+                let phi = build_phi(unsafe { LLVMTypeOf(vals[0]) }, "if_int_phi");
                 let mut blocks = [then_block, else_block];
                 unsafe {
                     LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);

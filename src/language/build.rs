@@ -3,6 +3,7 @@ use crate::language::ast::{
     FormatStringLiteral, FunctionDef, FunctionParam, Identifier, IfCondition, IfExpr, Literal,
     MatchExpr, Pattern, RangeExpr, Statement, StructLiteralField, StructLiteralKind, UnaryOp,
 };
+use crate::language::integer::{CheckedIntegers, IntegerOp, Scalar, value_site};
 use crate::language::span::Span;
 use crate::language::tcp_builtin::TcpBuiltin;
 use crate::language::types::{Mutability, TypeAnnotation, TypeExpr};
@@ -272,6 +273,7 @@ pub enum BuildJoinOutcome {
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct BuildInterpreter {
+    integers: Arc<CheckedIntegers>,
     scopes: Vec<BuildScope>,
     effects: Vec<BuildEffect>,
     enum_variants: HashMap<String, BuildEnumVariant>,
@@ -498,6 +500,7 @@ impl BuildInterpreter {
             }
         }
         Self {
+            integers: Arc::default(),
             scopes: snapshot.scopes,
             effects: Vec::new(),
             enum_variants: snapshot.enum_variants,
@@ -517,6 +520,11 @@ impl BuildInterpreter {
             clock_ms: snapshot.clock_ms,
             embedded: snapshot.embedded,
         }
+    }
+
+    pub fn with_checked_integers(mut self, integers: CheckedIntegers) -> Self {
+        self.integers = Arc::new(integers);
+        self
     }
 
     fn clone_for_spawn(&self) -> Self {
@@ -739,6 +747,40 @@ impl BuildInterpreter {
     }
 
     fn eval_expr_mut(&mut self, expr: &Expr) -> Result<BuildValue, String> {
+        let site = value_site(expr);
+        let op = site.and_then(|id| self.integers.operations.get(&id).copied());
+        let value = match (op, expr) {
+            (Some(op), Expr::Binary { left, right, .. }) => {
+                let a = self.eval_expr_mut(left)?;
+                let b = self.eval_expr_mut(right)?;
+                Self::integer_value(op.evaluate(self.expect_int(a)?, Some(self.expect_int(b)?))?)
+            }
+            (Some(op), Expr::Unary { expr, .. }) => {
+                let a = self.eval_expr_mut(expr)?;
+                Self::integer_value(op.evaluate(self.expect_int(a)?, None)?)
+            }
+            (Some(op @ IntegerOp::Cast(_)), Expr::Call { args, .. }) => {
+                let a = self.eval_expr_mut(&args[0])?;
+                Self::integer_value(op.evaluate(self.expect_int(a)?, None)?)
+            }
+            _ => self.eval_expr_inner(expr)?,
+        };
+        if let BuildValue::Int(n) = value
+            && let Some(dest) = site.and_then(|id| self.integers.narrowing.get(&id))
+        {
+            dest.checked(n)?;
+        }
+        Ok(value)
+    }
+
+    fn integer_value(scalar: Scalar) -> BuildValue {
+        match scalar {
+            Scalar::Int(n) => BuildValue::Int(n),
+            Scalar::Bool(v) => BuildValue::Bool(v),
+        }
+    }
+
+    fn eval_expr_inner(&mut self, expr: &Expr) -> Result<BuildValue, String> {
         match expr {
             Expr::Literal(lit) => self.eval_literal(lit),
             Expr::FormatString(literal) => self.eval_format_string(literal),
@@ -2705,10 +2747,10 @@ impl BuildInterpreter {
                     {
                         BuildValue::Int(f as i128)
                     }
-                    (name, BuildValue::Int(i))
-                        if name.starts_with("int") || name.starts_with("uint") =>
-                    {
-                        BuildValue::Int(i)
+                    (_, BuildValue::Int(i)) => {
+                        let bits = if self.embedded { 32 } else { usize::BITS };
+                        let ty = crate::language::integer::IntegerType::from_type(target, bits).ok_or("cast requires a numeric target")?;
+                        BuildValue::Int(ty.cast(i))
                     }
                     (_, other) => {
                         return Err(format!(
@@ -3147,7 +3189,9 @@ mod tests {
         let body = FunctionBody::Block(Box::new(Block {
             statements: vec![Statement::Expr(ExprStmt {
                 expr: Expr::Call {
+                    id: ExprId::fresh(),
                     callee: Box::new(Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "out".into(),
                         span: s,
                     })),
@@ -3209,7 +3253,9 @@ mod tests {
     fn build_channel_pair() -> (BuildChannelSender, BuildChannelReceiver) {
         let s = span();
         let expr = Expr::Call {
+            id: ExprId::fresh(),
             callee: Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "channel".into(),
                 span: s,
             })),
@@ -3241,6 +3287,7 @@ mod tests {
                 pattern: Pattern::Identifier("x".into(), s),
                 ty: None,
                 value: Some(Expr::Binary {
+                    id: ExprId::fresh(),
                     op: BinaryOp::Add,
                     left: Box::new(Expr::Literal(Literal::Int(1, s))),
                     right: Box::new(Expr::Literal(Literal::Int(2, s))),
@@ -3250,6 +3297,7 @@ mod tests {
                 span: s,
             })],
             tail: Some(Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "x".into(),
                 span: s,
             }))),
@@ -3297,12 +3345,14 @@ mod tests {
         let block = Block {
             statements: vec![Statement::Assign(AssignStmt {
                 target: Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "y".into(),
                     span: s,
                 }),
                 value: Expr::Literal(Literal::Int(5, s)),
             })],
             tail: Some(Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "y".into(),
                 span: s,
             }))),
@@ -3322,7 +3372,9 @@ mod tests {
     fn eval_out_records_effect() {
         let s = span();
         let expr = Expr::Call {
+            id: ExprId::fresh(),
             callee: Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "out".into(),
                 span: s,
             })),
@@ -3358,8 +3410,10 @@ mod tests {
                 }),
                 Statement::While(crate::language::ast::WhileStmt {
                     condition: crate::language::ast::WhileCondition::Expr(Expr::Binary {
+                        id: ExprId::fresh(),
                         op: BinaryOp::Lt,
                         left: Box::new(Expr::Identifier(Identifier {
+                            id: ExprId::fresh(),
                             name: "n".into(),
                             span: s,
                         })),
@@ -3369,12 +3423,15 @@ mod tests {
                     body: Block {
                         statements: vec![Statement::Assign(AssignStmt {
                             target: Expr::Identifier(Identifier {
+                                id: ExprId::fresh(),
                                 name: "n".into(),
                                 span: s,
                             }),
                             value: Expr::Binary {
+                                id: ExprId::fresh(),
                                 op: BinaryOp::Add,
                                 left: Box::new(Expr::Identifier(Identifier {
+                                    id: ExprId::fresh(),
                                     name: "n".into(),
                                     span: s,
                                 })),
@@ -3388,6 +3445,7 @@ mod tests {
                 }),
             ],
             tail: Some(Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "n".into(),
                 span: s,
             }))),
@@ -3425,16 +3483,20 @@ mod tests {
                     body: Block {
                         statements: vec![Statement::Assign(AssignStmt {
                             target: Expr::Identifier(Identifier {
+                                id: ExprId::fresh(),
                                 name: "sum".into(),
                                 span: s,
                             }),
                             value: Expr::Binary {
+                                id: ExprId::fresh(),
                                 op: BinaryOp::Add,
                                 left: Box::new(Expr::Identifier(Identifier {
+                                    id: ExprId::fresh(),
                                     name: "sum".into(),
                                     span: s,
                                 })),
                                 right: Box::new(Expr::Identifier(Identifier {
+                                    id: ExprId::fresh(),
                                     name: "i".into(),
                                     span: s,
                                 })),
@@ -3448,6 +3510,7 @@ mod tests {
                 }),
             ],
             tail: Some(Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "sum".into(),
                 span: s,
             }))),
@@ -3499,12 +3562,15 @@ mod tests {
                 span: s,
             })],
             tail: Some(Box::new(Expr::Binary {
+                id: ExprId::fresh(),
                 op: BinaryOp::Add,
                 left: Box::new(Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "a".into(),
                     span: s,
                 })),
                 right: Box::new(Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "b".into(),
                     span: s,
                 })),
@@ -3543,12 +3609,15 @@ mod tests {
                 span: s,
             })],
             tail: Some(Box::new(Expr::Binary {
+                id: ExprId::fresh(),
                 op: BinaryOp::Add,
                 left: Box::new(Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "first".into(),
                     span: s,
                 })),
                 right: Box::new(Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "last".into(),
                     span: s,
                 })),
@@ -3567,9 +3636,12 @@ mod tests {
     fn builtin_len_and_min_work() {
         let s = span();
         let expr = Expr::Binary {
+            id: ExprId::fresh(),
             op: BinaryOp::Add,
             left: Box::new(Expr::Call {
+                id: ExprId::fresh(),
                 callee: Box::new(Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "len".into(),
                     span: s,
                 })),
@@ -3584,7 +3656,9 @@ mod tests {
                 span: s,
             }),
             right: Box::new(Expr::Call {
+                id: ExprId::fresh(),
                 callee: Box::new(Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "min".into(),
                     span: s,
                 })),
@@ -3650,7 +3724,9 @@ mod tests {
                     ),
                     ty: None,
                     value: Some(Expr::Call {
+                        id: ExprId::fresh(),
                         callee: Box::new(Expr::Identifier(Identifier {
+                            id: ExprId::fresh(),
                             name: "channel".into(),
                             span: s,
                         })),
@@ -3663,13 +3739,16 @@ mod tests {
                 }),
                 Statement::Expr(crate::language::ast::ExprStmt {
                     expr: Expr::Call {
+                        id: ExprId::fresh(),
                         callee: Box::new(Expr::Identifier(Identifier {
+                            id: ExprId::fresh(),
                             name: "send".into(),
                             span: s,
                         })),
                         type_args: Vec::new(),
                         args: vec![
                             Expr::Identifier(Identifier {
+                                id: ExprId::fresh(),
                                 name: "tx".into(),
                                 span: s,
                             }),
@@ -3682,12 +3761,15 @@ mod tests {
             tail: Some(Box::new(Expr::Match(MatchExpr {
                 id: ExprId::fresh(),
                 expr: Box::new(Expr::Call {
+                    id: ExprId::fresh(),
                     callee: Box::new(Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "recv".into(),
                         span: s,
                     })),
                     type_args: Vec::new(),
                     args: vec![Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "rx".into(),
                         span: s,
                     })],
@@ -3702,6 +3784,7 @@ mod tests {
                         },
                         guard: None,
                         value: Expr::Identifier(Identifier {
+                            id: ExprId::fresh(),
                             name: "v".into(),
                             span: s,
                         }),
@@ -3819,6 +3902,7 @@ mod tests {
                     },
                     guard: None,
                     value: Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "x".into(),
                         span: s,
                     }),
@@ -3872,6 +3956,7 @@ mod tests {
         let first = interpreter
             .eval_expr(&Expr::Move {
                 expr: Box::new(Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "x".into(),
                     span: s,
                 })),
@@ -3880,6 +3965,7 @@ mod tests {
             .expect("first move should succeed");
         assert!(matches!(first, BuildValue::Int(1)));
         let second = interpreter.eval_expr(&Expr::Identifier(Identifier {
+            id: ExprId::fresh(),
             name: "x".into(),
             span: s,
         }));
@@ -3918,6 +4004,7 @@ mod tests {
         let first = interpreter.eval_expr(&Expr::Reference {
             mutable: true,
             expr: Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "y".into(),
                 span: s,
             })),
@@ -3927,6 +4014,7 @@ mod tests {
         let second = interpreter.eval_expr(&Expr::Reference {
             mutable: true,
             expr: Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "y".into(),
                 span: s,
             })),
@@ -3935,6 +4023,7 @@ mod tests {
         assert!(second.is_err(), "second mutable borrow should fail");
         // Reading while mutably borrowed should also fail.
         let third = interpreter.eval_expr(&Expr::Identifier(Identifier {
+            id: ExprId::fresh(),
             name: "y".into(),
             span: s,
         }));
@@ -3975,6 +4064,7 @@ mod tests {
             .eval_expr(&Expr::Reference {
                 mutable: true,
                 expr: Box::new(Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "item".into(),
                     span: borrow_span,
                 })),
@@ -3983,6 +4073,7 @@ mod tests {
             .expect("first borrow");
         let err = interpreter
             .eval_expr(&Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "item".into(),
                 span: Span::new(20, 24),
             }))
@@ -4031,6 +4122,7 @@ mod tests {
         interpreter
             .eval_expr(&Expr::Move {
                 expr: Box::new(Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "slot".into(),
                     span: move_span,
                 })),
@@ -4039,6 +4131,7 @@ mod tests {
             .expect("move succeeds");
         let err = interpreter
             .eval_expr(&Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "slot".into(),
                 span: Span::new(50, 52),
             }))
@@ -4101,6 +4194,7 @@ mod tests {
                 params: vec![],
                 body: ClosureBody::Expr(Spanned {
                     node: Box::new(Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "x".into(),
                         span: s,
                     })),
@@ -4115,6 +4209,7 @@ mod tests {
         let second_borrow = interpreter.eval_expr(&Expr::Reference {
             mutable: true,
             expr: Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "x".into(),
                 span: s,
             })),
@@ -4149,7 +4244,9 @@ mod tests {
                 body: ClosureBody::Block(Box::new(Block {
                     statements: vec![Statement::Defer(DeferStmt {
                         expr: Expr::Call {
+                            id: ExprId::fresh(),
                             callee: Box::new(Expr::Identifier(Identifier {
+                                id: ExprId::fresh(),
                                 name: "out".into(),
                                 span: s,
                             })),
@@ -4214,7 +4311,9 @@ mod tests {
                 }),
                 Statement::Defer(DeferStmt {
                     expr: Expr::Call {
+                        id: ExprId::fresh(),
                         callee: Box::new(Expr::Identifier(Identifier {
+                            id: ExprId::fresh(),
                             name: "out".into(),
                             span: s,
                         })),
@@ -4271,6 +4370,7 @@ mod tests {
                     ty: None,
                     value: Some(Expr::Move {
                         expr: Box::new(Expr::Identifier(Identifier {
+                            id: ExprId::fresh(),
                             name: "a".into(),
                             span: s,
                         })),
@@ -4449,9 +4549,11 @@ mod tests {
         let block = Block {
             statements: vec![Statement::Assign(AssignStmt {
                 target: Expr::Deref {
+                    id: ExprId::fresh(),
                     expr: Box::new(Expr::Reference {
                         mutable: true,
                         expr: Box::new(Expr::Identifier(Identifier {
+                            id: ExprId::fresh(),
                             name: "x".into(),
                             span: s,
                         })),
@@ -4469,6 +4571,7 @@ mod tests {
             .expect("deref assignment succeeds");
         let result = interpreter
             .eval_expr(&Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "x".into(),
                 span: s,
             }))
@@ -4516,7 +4619,9 @@ mod tests {
         let block = Block {
             statements: vec![Statement::Assign(AssignStmt {
                 target: Expr::FieldAccess {
+                    id: ExprId::fresh(),
                     base: Box::new(Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "p".into(),
                         span: s,
                     })),
@@ -4533,7 +4638,9 @@ mod tests {
             .expect("field assignment");
         let updated = interpreter
             .eval_expr(&Expr::FieldAccess {
+                id: ExprId::fresh(),
                 base: Box::new(Expr::Identifier(Identifier {
+                    id: ExprId::fresh(),
                     name: "p".into(),
                     span: s,
                 })),
@@ -4557,7 +4664,9 @@ mod tests {
     fn get_fetches_slice_elements() {
         let s = span();
         let expr = Expr::Call {
+            id: ExprId::fresh(),
             callee: Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "get".into(),
                 span: s,
             })),
@@ -4608,6 +4717,7 @@ mod tests {
     fn bitwise_int_operations_work() {
         let s = span();
         let expr = Expr::Binary {
+            id: ExprId::fresh(),
             op: BinaryOp::BitAnd,
             left: Box::new(Expr::Literal(Literal::Int(6, s))), // 110
             right: Box::new(Expr::Literal(Literal::Int(3, s))), // 011
@@ -4623,6 +4733,7 @@ mod tests {
     fn mixed_numeric_operations_promote_to_float() {
         let s = span();
         let expr = Expr::Binary {
+            id: ExprId::fresh(),
             op: BinaryOp::Div,
             left: Box::new(Expr::Literal(Literal::Int(7, s))),
             right: Box::new(Expr::Literal(Literal::Float(2.0, s))),
@@ -4638,6 +4749,7 @@ mod tests {
     fn deep_struct_equality_matches() {
         let s = span();
         let expr = Expr::Binary {
+            id: ExprId::fresh(),
             op: BinaryOp::Eq,
             left: Box::new(Expr::StructLiteral {
                 name: "Point".into(),
@@ -4679,6 +4791,7 @@ mod tests {
     fn map_equality_matches_keys_and_values() {
         let s = span();
         let expr = Expr::Binary {
+            id: ExprId::fresh(),
             op: BinaryOp::Eq,
             left: Box::new(Expr::MapLiteral {
                 entries: vec![
@@ -4735,6 +4848,7 @@ mod tests {
             },
         );
         let ok_expr = Expr::TryPropagate {
+            id: ExprId::fresh(),
             expr: Box::new(Expr::EnumLiteral {
                 enum_name: Some("Result".into()),
                 variant: "Ok".into(),
@@ -4750,6 +4864,7 @@ mod tests {
         assert!(matches!(ok_value, BuildValue::Int(9)));
 
         let err_expr = Expr::TryPropagate {
+            id: ExprId::fresh(),
             expr: Box::new(Expr::EnumLiteral {
                 enum_name: Some("Result".into()),
                 variant: "Err".into(),

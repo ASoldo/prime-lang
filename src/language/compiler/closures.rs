@@ -144,19 +144,16 @@ impl Compiler {
                 | "uint64" | "usize" | "rune" => match value {
                     Value::Int(int_value) => {
                         let target = self.expect_llvm_type(ty, "integer conversion")?;
-                        let current = unsafe { LLVMTypeOf(int_value.llvm()) };
-                        if target == current {
-                            Ok(int_value.llvm())
-                        } else {
-                            Ok(unsafe {
-                                LLVMBuildSExt(
-                                    self.builder,
-                                    int_value.llvm(),
-                                    target,
-                                    CString::new("int_cast").unwrap().as_ptr(),
-                                )
-                            })
-                        }
+                        let wide = self.int_to_runtime_int(&int_value, "integer_argument")?;
+                        Ok(unsafe {
+                            llvm_sys::core::LLVMBuildIntCast2(
+                                self.builder,
+                                wide,
+                                target,
+                                0,
+                                c"integer_abi".as_ptr(),
+                            )
+                        })
                     }
                     other => Err(format!(
                         "Expected integer value for `{}` capture, found {}",
@@ -287,7 +284,20 @@ impl Compiler {
             }
             TypeExpr::Named(name, _) => match name.as_str() {
                 "int8" | "int16" | "int32" | "int64" | "isize" | "uint8" | "uint16" | "uint32"
-                | "uint64" | "usize" | "rune" => Ok(Value::Int(IntValue::new(llvm, None))),
+                | "uint64" | "usize" | "rune" => {
+                    let signed = IntegerType::from_type(ty, self.target.pointer_width_bits())
+                        .is_some_and(|int| int.signed);
+                    let wide = unsafe {
+                        llvm_sys::core::LLVMBuildIntCast2(
+                            self.builder,
+                            llvm,
+                            self.runtime_abi.int_type,
+                            i32::from(signed),
+                            c"integer_value".as_ptr(),
+                        )
+                    };
+                    Ok(Value::Int(IntValue::new(wide, None)))
+                }
                 "float32" | "float64" => Ok(Value::Float(FloatValue::new(llvm, None))),
                 "bool" => {
                     let constant = unsafe {

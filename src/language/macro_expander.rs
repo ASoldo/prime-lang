@@ -882,6 +882,7 @@ impl<'a> Expander<'a> {
                                         substitution_map.insert(
                                             param.name.clone(),
                                             Expr::Identifier(Identifier {
+                                                id: ExprId::fresh(),
                                                 name: binding_name,
                                                 span: *span,
                                             }),
@@ -998,7 +999,9 @@ impl<'a> Expander<'a> {
                 type_args,
                 args,
                 span,
+                ..
             } => Expr::Call {
+                id: ExprId::fresh(),
                 callee: Box::new(self.expand_expr(callee, depth + 1, scope_span, errors)),
                 type_args: type_args.clone(),
                 args: args
@@ -1012,18 +1015,24 @@ impl<'a> Expander<'a> {
                 left,
                 right,
                 span,
+                ..
             } => Expr::Binary {
+                id: ExprId::fresh(),
                 op: *op,
                 left: Box::new(self.expand_expr(left, depth + 1, scope_span, errors)),
                 right: Box::new(self.expand_expr(right, depth + 1, scope_span, errors)),
                 span: *span,
             },
-            Expr::Unary { op, expr, span } => Expr::Unary {
+            Expr::Unary { op, expr, span, .. } => Expr::Unary {
+                id: ExprId::fresh(),
                 op: *op,
                 expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
                 span: *span,
             },
-            Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
+            Expr::FieldAccess {
+                base, field, span, ..
+            } => Expr::FieldAccess {
+                id: ExprId::fresh(),
                 base: Box::new(self.expand_expr(base, depth + 1, scope_span, errors)),
                 field: field.clone(),
                 span: *span,
@@ -1059,6 +1068,7 @@ impl<'a> Expander<'a> {
                 variant,
                 values,
                 span,
+                ..
             } => Expr::EnumLiteral {
                 enum_name: enum_name.clone(),
                 variant: variant.clone(),
@@ -1093,7 +1103,10 @@ impl<'a> Expander<'a> {
                 *span,
             ),
             Expr::Range(range) => Expr::Range(self.expand_range(range, scope_span, errors)),
-            Expr::Index { base, index, span } => Expr::Index {
+            Expr::Index {
+                base, index, span, ..
+            } => Expr::Index {
+                id: ExprId::fresh(),
                 base: Box::new(self.expand_expr(base, depth + 1, scope_span, errors)),
                 index: Box::new(self.expand_expr(index, depth + 1, scope_span, errors)),
                 span: *span,
@@ -1114,7 +1127,8 @@ impl<'a> Expander<'a> {
                 expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
                 span: *span,
             },
-            Expr::Deref { expr, span } => Expr::Deref {
+            Expr::Deref { expr, span, .. } => Expr::Deref {
+                id: ExprId::fresh(),
                 expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
                 span: *span,
             },
@@ -1141,13 +1155,54 @@ impl<'a> Expander<'a> {
                     .collect(),
                 span: literal.span,
             }),
-            Expr::Identifier(_)
-            | Expr::Literal(_)
-            | Expr::Try { .. }
-            | Expr::TryPropagate { .. }
-            | Expr::Async { .. }
-            | Expr::Await { .. }
-            | Expr::Closure { .. } => expr.clone(),
+            Expr::Identifier(ident) => Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
+                name: ident.name.clone(),
+                span: ident.span,
+            }),
+            Expr::Try { block, span } => Expr::Try {
+                block: Box::new(self.expand_block(block, scope_span, errors)),
+                span: *span,
+            },
+            Expr::TryPropagate { expr, span, .. } => Expr::TryPropagate {
+                id: ExprId::fresh(),
+                expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
+                span: *span,
+            },
+            Expr::Async { block, span } => Expr::Async {
+                block: Box::new(self.expand_block(block, scope_span, errors)),
+                span: *span,
+            },
+            Expr::Await { expr, span, .. } => Expr::Await {
+                id: ExprId::fresh(),
+                expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
+                span: *span,
+            },
+            Expr::Closure {
+                params,
+                body,
+                ret,
+                captures,
+                span,
+            } => {
+                let body = match body {
+                    ClosureBody::Block(block) => {
+                        ClosureBody::Block(Box::new(self.expand_block(block, scope_span, errors)))
+                    }
+                    ClosureBody::Expr(e) => ClosureBody::Expr(Spanned::new(
+                        Box::new(self.expand_expr(&e.node, depth + 1, scope_span, errors)),
+                        e.span,
+                    )),
+                };
+                Expr::Closure {
+                    params: params.clone(),
+                    body,
+                    ret: ret.clone(),
+                    captures: captures.clone(),
+                    span: *span,
+                }
+            }
+            Expr::Literal(_) => expr.clone(),
         }
     }
 
@@ -1224,13 +1279,16 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             left,
             right,
             span,
+            ..
         } => Expr::Binary {
+            id: ExprId::fresh(),
             op,
             left: Box::new(substitute_expr(*left, subst)),
             right: Box::new(substitute_expr(*right, subst)),
             span,
         },
-        Expr::Unary { op, expr, span } => Expr::Unary {
+        Expr::Unary { op, expr, span, .. } => Expr::Unary {
+            id: ExprId::fresh(),
             op,
             expr: Box::new(substitute_expr(*expr, subst)),
             span,
@@ -1240,7 +1298,9 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             type_args,
             args,
             span,
+            ..
         } => Expr::Call {
+            id: ExprId::fresh(),
             callee: Box::new(substitute_expr(*callee, subst)),
             type_args,
             args: args
@@ -1249,7 +1309,10 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
                 .collect(),
             span,
         },
-        Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
+        Expr::FieldAccess {
+            base, field, span, ..
+        } => Expr::FieldAccess {
+            id: ExprId::fresh(),
             base: Box::new(substitute_expr(*base, subst)),
             field,
             span,
@@ -1280,6 +1343,7 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             variant,
             values,
             span,
+            ..
         } => Expr::EnumLiteral {
             enum_name,
             variant,
@@ -1335,7 +1399,10 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             inclusive: range.inclusive,
             span: range.span,
         }),
-        Expr::Index { base, index, span } => Expr::Index {
+        Expr::Index {
+            base, index, span, ..
+        } => Expr::Index {
+            id: ExprId::fresh(),
             base: Box::new(substitute_expr(*base, subst)),
             index: Box::new(substitute_expr(*index, subst)),
             span,
@@ -1349,7 +1416,8 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
-        Expr::Deref { expr, span } => Expr::Deref {
+        Expr::Deref { expr, span, .. } => Expr::Deref {
+            id: ExprId::fresh(),
             expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
@@ -1361,7 +1429,8 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             block: Box::new(substitute_block(*block, subst)),
             span,
         },
-        Expr::Await { expr, span } => Expr::Await {
+        Expr::Await { expr, span, .. } => Expr::Await {
+            id: ExprId::fresh(),
             expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
@@ -1942,7 +2011,8 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             block: Box::new(rename_block(*block, map)),
             span,
         },
-        Expr::TryPropagate { expr, span } => Expr::TryPropagate {
+        Expr::TryPropagate { expr, span, .. } => Expr::TryPropagate {
+            id: ExprId::fresh(),
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },
@@ -1951,13 +2021,16 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             left,
             right,
             span,
+            ..
         } => Expr::Binary {
+            id: ExprId::fresh(),
             op,
             left: Box::new(rename_expr(*left, map)),
             right: Box::new(rename_expr(*right, map)),
             span,
         },
-        Expr::Unary { op, expr, span } => Expr::Unary {
+        Expr::Unary { op, expr, span, .. } => Expr::Unary {
+            id: ExprId::fresh(),
             op,
             expr: Box::new(rename_expr(*expr, map)),
             span,
@@ -1967,7 +2040,9 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             type_args,
             args,
             span,
+            ..
         } => Expr::Call {
+            id: ExprId::fresh(),
             callee: Box::new(rename_expr(*callee, map)),
             type_args,
             args: args.into_iter().map(|arg| rename_expr(arg, map)).collect(),
@@ -1984,7 +2059,10 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
                 .collect(),
             span,
         },
-        Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
+        Expr::FieldAccess {
+            base, field, span, ..
+        } => Expr::FieldAccess {
+            id: ExprId::fresh(),
             base: Box::new(rename_expr(*base, map)),
             field,
             span,
@@ -2012,6 +2090,7 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             variant,
             values,
             span,
+            ..
         } => Expr::EnumLiteral {
             enum_name,
             variant,
@@ -2045,7 +2124,10 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             inclusive: range.inclusive,
             span: range.span,
         }),
-        Expr::Index { base, index, span } => Expr::Index {
+        Expr::Index {
+            base, index, span, ..
+        } => Expr::Index {
+            id: ExprId::fresh(),
             base: Box::new(rename_expr(*base, map)),
             index: Box::new(rename_expr(*index, map)),
             span,
@@ -2059,7 +2141,8 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },
-        Expr::Deref { expr, span } => Expr::Deref {
+        Expr::Deref { expr, span, .. } => Expr::Deref {
+            id: ExprId::fresh(),
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },
@@ -2071,7 +2154,8 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             block: Box::new(rename_block(*block, map)),
             span,
         },
-        Expr::Await { expr, span } => Expr::Await {
+        Expr::Await { expr, span, .. } => Expr::Await {
+            id: ExprId::fresh(),
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },

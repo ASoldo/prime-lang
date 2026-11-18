@@ -544,28 +544,15 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool, trace: bool) {
         Ok(package) => {
             let expanded_program =
                 expand_or_report(&package.program, |path| source.read_source(path));
-            let expanded_modules = expanded_program
-                .program
-                .modules
-                .iter()
-                .cloned()
-                .map(|module| project::ModuleUnit { module })
-                .collect();
-            let expanded_package = project::Package {
-                program: expanded_program.program.clone(),
-                modules: expanded_modules,
-            };
             let typecheck_options = TypecheckOptions {
                 target: run_options.target.clone(),
             };
-            if let Err(errors) =
-                typecheck::check_program_with_options(&expanded_program, &typecheck_options)
-            {
-                emit_type_errors_with_source(&errors, |path| source.read_source(path));
-                std::process::exit(1);
-            }
-            let mut interpreter =
-                Interpreter::with_target(expanded_package, run_options.target.clone());
+            let checked = typecheck::check_program_typed(&expanded_program, &typecheck_options)
+                .unwrap_or_else(|errors| {
+                    emit_type_errors_with_source(&errors, |path| source.read_source(path));
+                    std::process::exit(1)
+                });
+            let mut interpreter = Interpreter::from_checked(checked);
             if let Err(err) = interpreter.run_with_trace(trace) {
                 if trace {
                     TraceEvent::from(&err).emit();

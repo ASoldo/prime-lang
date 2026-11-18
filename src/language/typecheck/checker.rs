@@ -1,4 +1,5 @@
 use super::*;
+use crate::language::integer::{IntegerOp, IntegerType, Scalar};
 use crate::language::tcp_builtin::TcpBuiltin;
 
 #[path = "match_coverage.rs"]
@@ -29,6 +30,7 @@ pub fn check_program_typed<'a>(
     }
     let mut checker = Checker {
         registry,
+        folded_integers: HashMap::new(),
         facts: CheckedFacts::default(),
         errors: Vec::new(),
         current_module: None,
@@ -244,6 +246,7 @@ fn register_function(
 }
 
 struct Checker {
+    folded_integers: HashMap<ExprId, i128>,
     facts: CheckedFacts,
     registry: TypeRegistry,
     errors: Vec<TypeError>,
@@ -253,6 +256,55 @@ struct Checker {
 }
 
 impl Checker {
+    fn integer_constant(&self, expr: &Expr) -> Option<i128> {
+        match expr {
+            Expr::Literal(Literal::Int(n, _)) => Some(*n),
+            Expr::Identifier(ident) => self.folded_integers.get(&ident.id).copied(),
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                expr,
+                ..
+            } if matches!(expr.as_ref(), Expr::Literal(Literal::Int(..))) => {
+                self.integer_constant(expr)?.checked_neg()
+            }
+            Expr::Binary { id, .. } | Expr::Unary { id, .. } | Expr::Call { id, .. } => {
+                self.folded_integers.get(id).copied()
+            }
+            _ => None,
+        }
+    }
+
+    fn record_integer_op(
+        &mut self,
+        module: &Module,
+        span: Span,
+        id: ExprId,
+        op: IntegerOp,
+        a: &Expr,
+        b: Option<&Expr>,
+    ) {
+        self.facts.integers.operations.insert(id, op);
+        let Some(a) = self.integer_constant(a) else {
+            return;
+        };
+        let b = match b {
+            Some(expr) => match self.integer_constant(expr) {
+                Some(n) => Some(n),
+                None => return,
+            },
+            None => None,
+        };
+        match op.evaluate(a, b) {
+            Ok(Scalar::Int(n)) => {
+                self.folded_integers.insert(id, n);
+            }
+            Ok(Scalar::Bool(_)) => {}
+            Err(message) => self
+                .errors
+                .push(TypeError::new(&module.path, span, message)),
+        }
+    }
+
     fn resolve_enum_literal(
         &self,
         module: &Module,
@@ -1185,6 +1237,13 @@ impl Checker {
                                 stmt.span,
                                 &mut self.errors,
                             );
+                            if !stmt.mutability.is_mutable()
+                                && let Some(n) = self.integer_constant(value)
+                                && let Some(binding) =
+                                    env.scopes.last_mut().and_then(|scope| scope.get_mut(name))
+                            {
+                                binding.integer_constant = Some(n);
+                            }
                         } else {
                             env.declare(
                                 name,
@@ -1242,7 +1301,9 @@ impl Checker {
                         }
                     }
                 }
-                Expr::Index { base, index, span } => {
+                Expr::Index {
+                    base, index, span, ..
+                } => {
                     let base_ty = self.check_expression(module, base, None, returns, env);
                     let Some(container_ty) = base_ty.as_ref() else {
                         self.check_expression(module, &assign.value, None, returns, env);
@@ -1457,8 +1518,38 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
+        let actual = self.check_expression_hint(module, expr, expected, returns, env)?;
+        if let Some(dest_ty) = expected
+            && &actual != dest_ty
+            && let Some(dest) = IntegerType::from_type(dest_ty, self.pointer_bits())
+            && IntegerType::from_type(&actual, self.pointer_bits()).is_some()
+            && let Some(site) = crate::language::integer::value_site(expr)
+        {
+            self.facts.integers.narrowing.insert(site, dest);
+            if let Some(value) = self.integer_constant(expr)
+                && let Err(message) = dest.checked(value)
+            {
+                self.errors
+                    .push(TypeError::new(&module.path, expr_span(expr), message));
+            }
+            return Some(dest_ty.clone());
+        }
+        Some(actual)
+    }
+
+    fn check_expression_hint(
+        &mut self,
+        module: &Module,
+        expr: &Expr,
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) -> Option<TypeExpr> {
         match expr {
             Expr::Identifier(ident) => {
+                if let Some(n) = env.lookup(&ident.name).and_then(|b| b.integer_constant) {
+                    self.folded_integers.insert(ident.id, n);
+                }
                 if let Some(found_ty) = env
                     .lookup_with_captures(&ident.name)
                     .and_then(|entry| entry.ty.clone())
@@ -1517,19 +1608,30 @@ impl Checker {
                 left,
                 right,
                 span,
-            } => self.check_binary(module, *op, left, right, *span, expected, returns, env),
-            Expr::Unary { op, expr, span } => {
-                self.check_unary(module, *op, expr, *span, expected, returns, env)
+                id,
+            } => self.check_binary(module, *id, *op, left, right, *span, expected, returns, env),
+            Expr::Unary { op, expr, span, id } => {
+                let ty = self.check_unary(module, *op, expr, *span, expected, returns, env);
+                if let Some(int) = ty
+                    .as_ref()
+                    .and_then(|t| IntegerType::from_type(t, self.pointer_bits()))
+                {
+                    self.record_integer_op(module, *span, *id, IntegerOp::Neg(int), expr, None);
+                }
+                ty
             }
             Expr::Call {
                 callee,
                 args,
                 type_args,
                 span,
+                id,
             } => self.check_call(
-                module, callee, args, type_args, *span, expected, returns, env,
+                module, *id, callee, args, type_args, *span, expected, returns, env,
             ),
-            Expr::FieldAccess { base, field, span } => {
+            Expr::FieldAccess {
+                base, field, span, ..
+            } => {
                 if let Expr::Identifier(module_ident) = base.as_ref() {
                     if let Some(module_name) = self.resolve_module_name(env, &module_ident.name) {
                         return self.lookup_module_const_type(
@@ -1667,7 +1769,7 @@ impl Checker {
                         ty: Box::new(inner),
                     })
             }
-            Expr::Deref { expr, span } => {
+            Expr::Deref { expr, span, .. } => {
                 let ty = self.check_expression(module, expr, None, returns, env);
                 match ty {
                     Some(TypeExpr::Reference { ty, .. }) | Some(TypeExpr::Pointer { ty, .. }) => {
@@ -1701,7 +1803,7 @@ impl Checker {
                 }
                 None
             }
-            Expr::TryPropagate { expr, span } => {
+            Expr::TryPropagate { expr, span, .. } => {
                 let ty = self.check_expression(module, expr, None, returns, env);
                 if let Some(TypeExpr::Named(name, args)) = ty {
                     if name == "Result" && !args.is_empty() {
@@ -1779,7 +1881,7 @@ impl Checker {
                     .unwrap_or(TypeExpr::Unit);
                 Some(make_task_type(inner))
             }
-            Expr::Await { expr, span } => {
+            Expr::Await { expr, span, .. } => {
                 let awaited = self.check_expression(module, expr, None, returns, env);
                 // Check borrow/send rules at suspension.
                 if env.has_active_mut_borrows() {
@@ -1961,7 +2063,9 @@ impl Checker {
                 }
                 Some(closure_ty)
             }
-            Expr::Index { base, index, span } => {
+            Expr::Index {
+                base, index, span, ..
+            } => {
                 let base_ty = self.check_expression(module, base, None, returns, env);
                 let Some(container_ty) = base_ty.as_ref() else {
                     self.check_expression(module, index, None, returns, env);
@@ -2258,6 +2362,7 @@ impl Checker {
     fn check_call(
         &mut self,
         module: &Module,
+        id: ExprId,
         callee: &Expr,
         args: &[Expr],
         type_args: &[TypeExpr],
@@ -2337,6 +2442,7 @@ impl Checker {
                 if self.is_builtin_name(&ident.name) {
                     return self.check_builtin_call(
                         module,
+                        id,
                         &ident.name,
                         args,
                         type_args,
@@ -2496,7 +2602,10 @@ impl Checker {
             1 => returns_types[0].clone(),
             _ => TypeExpr::Tuple(returns_types.to_vec()),
         };
-        if let Some(expected) = expected {
+        if let Some(expected) = expected
+            && !(IntegerType::from_type(expected, self.pointer_bits()).is_some()
+                && IntegerType::from_type(&result_ty, self.pointer_bits()).is_some())
+        {
             self.ensure_type(module, span, expected, Some(&result_ty));
         }
         Some(result_ty)
@@ -2505,6 +2614,7 @@ impl Checker {
     fn check_builtin_call(
         &mut self,
         module: &Module,
+        id: ExprId,
         name: &str,
         args: &[Expr],
         type_args: &[TypeExpr],
@@ -3888,7 +3998,18 @@ impl Checker {
                 }
                 // An explicit conversion accepts an integer literal of any parsed magnitude.
                 // Its operand has no implicit integer destination, including the default int32.
+                let int_target = IntegerType::from_type(target, self.pointer_bits());
                 if is_integer_literal(&args[0]) {
+                    if let Some(int) = int_target {
+                        self.record_integer_op(
+                            module,
+                            span,
+                            id,
+                            IntegerOp::Cast(int),
+                            &args[0],
+                            None,
+                        );
+                    }
                     return Some(target.clone());
                 }
                 let value_ty = self.check_expression(module, &args[0], None, returns, env);
@@ -3905,6 +4026,14 @@ impl Checker {
                         .with_code("E0302"),
                     );
                     return Some(target.clone());
+                }
+                if let Some(int) = int_target
+                    && matches!(
+                        value_kind,
+                        Some(NumericKind::Signed(..) | NumericKind::Unsigned(..))
+                    )
+                {
+                    self.record_integer_op(module, span, id, IntegerOp::Cast(int), &args[0], None);
                 }
                 Some(target.clone())
             }
@@ -4352,7 +4481,10 @@ impl Checker {
                 returns.iter().map(|ret| ret.ty.clone()).collect(),
             )),
         };
-        if let (Some(expected), Some(actual)) = (expected, result.as_ref()) {
+        if let (Some(expected), Some(actual)) = (expected, result.as_ref())
+            && !(IntegerType::from_type(expected, self.pointer_bits()).is_some()
+                && IntegerType::from_type(actual, self.pointer_bits()).is_some())
+        {
             self.ensure_type(module, span, expected, Some(actual));
         }
         result
@@ -5359,6 +5491,25 @@ impl Checker {
         let left_kind = left.and_then(|ty| numeric_kind(ty, pointer_bits));
         let right_kind = right.and_then(|ty| numeric_kind(ty, pointer_bits));
 
+        if expected.is_some()
+            && (left != expected || right != expected)
+            && matches!(
+                expected_kind,
+                Some(NumericKind::Signed(..) | NumericKind::Unsigned(..))
+            )
+            && matches!(
+                left_kind,
+                Some(NumericKind::Signed(..) | NumericKind::Unsigned(..))
+            )
+            && matches!(
+                right_kind,
+                Some(NumericKind::Signed(..) | NumericKind::Unsigned(..))
+            )
+        {
+            return self
+                .unify_numeric_kinds(module, span, left, right, left_kind, right_kind)
+                .map(numeric_type_from_kind);
+        }
         if let Some(target) = expected_kind {
             let left_ok = self.numeric_operand_matches(module, span, left, left_kind, target);
             let right_ok = self.numeric_operand_matches(module, span, right, right_kind, target);
@@ -5381,26 +5532,10 @@ impl Checker {
         right: Option<&TypeExpr>,
     ) -> Option<TypeExpr> {
         let pointer_bits = self.pointer_bits();
-        if matches!(
-            expected.and_then(|ty| numeric_kind(ty, pointer_bits)),
-            Some(NumericKind::Float(_, _))
-        ) {
-            self.errors.push(
-                TypeError::new(
-                    &module.path,
-                    span,
-                    "bitwise operations require integer operands",
-                )
-                .with_code("E0206"),
-            );
-            return None;
-        }
-
-        let left_kind = left.and_then(|ty| numeric_kind(ty, pointer_bits));
-        let right_kind = right.and_then(|ty| numeric_kind(ty, pointer_bits));
-
-        if matches!(left_kind, Some(NumericKind::Float(_, _)))
-            || matches!(right_kind, Some(NumericKind::Float(_, _)))
+        if [expected, left, right]
+            .into_iter()
+            .flatten()
+            .any(|ty| matches!(numeric_kind(ty, pointer_bits), Some(NumericKind::Float(..))))
         {
             self.errors.push(
                 TypeError::new(
@@ -5412,34 +5547,7 @@ impl Checker {
             );
             return None;
         }
-
-        let kind = if let Some(target) = expected.and_then(|ty| numeric_kind(ty, pointer_bits)) {
-            let left_ok = self.numeric_operand_matches(module, span, left, left_kind, target);
-            let right_ok = self.numeric_operand_matches(module, span, right, right_kind, target);
-            if left_ok && right_ok {
-                Some(target)
-            } else {
-                None
-            }
-        } else {
-            self.unify_numeric_kinds(module, span, left, right, left_kind, right_kind)
-        };
-
-        match kind {
-            Some(NumericKind::Float(_, _)) => {
-                self.errors.push(
-                    TypeError::new(
-                        &module.path,
-                        span,
-                        "bitwise operations require integer operands",
-                    )
-                    .with_code("E0206"),
-                );
-                None
-            }
-            Some(other) => Some(numeric_type_from_kind(other)),
-            None => None,
-        }
+        self.resolve_numeric_type(module, span, expected, left, right)
     }
 
     fn numeric_operand_matches(
@@ -5623,6 +5731,7 @@ impl Checker {
     fn check_binary(
         &mut self,
         module: &Module,
+        id: ExprId,
         op: BinaryOp,
         left: &Expr,
         right: &Expr,
@@ -5632,12 +5741,13 @@ impl Checker {
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
         let pointer_bits = self.pointer_bits();
-        match op {
+        let mut comparison = false;
+        let ty = match op {
             BinaryOp::Add => {
                 let string_expected = expected.filter(|ty| is_string_type(ty));
                 let numeric_expected =
                     expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
-                let left_ty = self.check_expression(
+                let left_ty = self.check_expression_hint(
                     module,
                     left,
                     string_expected.or(numeric_expected),
@@ -5648,9 +5758,10 @@ impl Checker {
                 let right_expected = if left_ty.as_ref().is_some_and(is_string_type) {
                     Some(&string_ty)
                 } else {
-                    numeric_expected.or(left_ty.as_ref())
+                    left_ty.as_ref().or(numeric_expected)
                 };
-                let right_ty = self.check_expression(module, right, right_expected, returns, env);
+                let right_ty =
+                    self.check_expression_hint(module, right, right_expected, returns, env);
                 if left_ty.as_ref().is_some_and(is_string_type)
                     && right_ty.as_ref().is_some_and(is_string_type)
                 {
@@ -5668,11 +5779,12 @@ impl Checker {
             BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
                 let numeric_expected =
                     expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
-                let left_ty = self.check_expression(module, left, numeric_expected, returns, env);
-                let right_ty = self.check_expression(
+                let left_ty =
+                    self.check_expression_hint(module, left, numeric_expected, returns, env);
+                let right_ty = self.check_expression_hint(
                     module,
                     right,
-                    numeric_expected.or(left_ty.as_ref()),
+                    left_ty.as_ref().or(numeric_expected),
                     returns,
                     env,
                 );
@@ -5687,11 +5799,12 @@ impl Checker {
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
                 let numeric_expected =
                     expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
-                let left_ty = self.check_expression(module, left, numeric_expected, returns, env);
-                let right_ty = self.check_expression(
+                let left_ty =
+                    self.check_expression_hint(module, left, numeric_expected, returns, env);
+                let right_ty = self.check_expression_hint(
                     module,
                     right,
-                    numeric_expected.or(left_ty.as_ref()),
+                    left_ty.as_ref().or(numeric_expected),
                     returns,
                     env,
                 );
@@ -5704,39 +5817,56 @@ impl Checker {
                 )
             }
             BinaryOp::And | BinaryOp::Or => {
-                self.check_expression(module, left, Some(&bool_type()), returns, env);
-                self.check_expression(module, right, Some(&bool_type()), returns, env);
+                self.check_expression_hint(module, left, Some(&bool_type()), returns, env);
+                self.check_expression_hint(module, right, Some(&bool_type()), returns, env);
                 Some(bool_type())
             }
             BinaryOp::Eq | BinaryOp::NotEq => {
-                let left_ty = self.check_expression(module, left, None, returns, env);
-                let right_ty = self.check_expression(module, right, left_ty.as_ref(), returns, env);
+                let left_ty = self.check_expression_hint(module, left, None, returns, env);
+                let right_ty =
+                    self.check_expression_hint(module, right, left_ty.as_ref(), returns, env);
                 if let Some(left_ty) = left_ty.as_ref() {
                     self.ensure_type(module, span, left_ty, right_ty.as_ref());
                 }
-                Some(bool_type())
+                comparison = true;
+                left_ty
             }
             BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
                 let numeric_expected =
                     expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
-                let left_ty = self.check_expression(module, left, numeric_expected, returns, env);
-                let right_ty = self.check_expression(
+                let left_ty =
+                    self.check_expression_hint(module, left, numeric_expected, returns, env);
+                let right_ty = self.check_expression_hint(
                     module,
                     right,
-                    numeric_expected.or(left_ty.as_ref()),
+                    left_ty.as_ref().or(numeric_expected),
                     returns,
                     env,
                 );
+                comparison = true;
                 self.resolve_numeric_type(
                     module,
                     span,
                     numeric_expected,
                     left_ty.as_ref(),
                     right_ty.as_ref(),
-                );
-                Some(bool_type())
+                )
             }
+        };
+        if let Some(int) = ty
+            .as_ref()
+            .and_then(|t| IntegerType::from_type(t, pointer_bits))
+        {
+            self.record_integer_op(
+                module,
+                span,
+                id,
+                IntegerOp::Binary(op, int),
+                left,
+                Some(right),
+            );
         }
+        if comparison { Some(bool_type()) } else { ty }
     }
 
     fn check_literal(
@@ -5756,15 +5886,9 @@ impl Checker {
             return None;
         }
         if let Literal::Int(value, span) = lit {
-            let bounds = match numeric_kind(&ty, pointer_bits) {
-                Some(NumericKind::Signed(_, bits)) => {
-                    let limit = 1_i128 << (bits - 1);
-                    -limit..limit
-                }
-                Some(NumericKind::Unsigned(_, bits)) => 0..(1_i128 << bits),
-                _ => return Some(ty),
-            };
-            if !bounds.contains(value) {
+            if let Some(int) = IntegerType::from_type(&ty, pointer_bits)
+                && int.checked(*value).is_err()
+            {
                 self.errors.push(TypeError::new(
                     &module.path,
                     *span,
@@ -5803,7 +5927,7 @@ impl Checker {
                 {
                     return self.check_literal(module, &Literal::Int(-magnitude, span), expected);
                 }
-                let ty = self.check_expression(module, expr, numeric_expected, returns, env);
+                let ty = self.check_expression_hint(module, expr, numeric_expected, returns, env);
                 match ty.as_ref().and_then(|ty| numeric_kind(ty, pointer_bits)) {
                     Some(NumericKind::Unsigned(_, _)) | None => {
                         self.errors.push(
@@ -5829,6 +5953,7 @@ impl Checker {
 
 #[derive(Clone)]
 struct BindingInfo {
+    integer_constant: Option<i128>,
     ty: Option<TypeExpr>,
     mut_borrows: Vec<String>,
     moved: bool,
@@ -5840,6 +5965,7 @@ struct BindingInfo {
 impl BindingInfo {
     fn new(ty: Option<TypeExpr>, mutable: Mutability, origin: Span) -> Self {
         Self {
+            integer_constant: None,
             ty,
             mut_borrows: Vec::new(),
             moved: false,
@@ -6662,17 +6788,14 @@ fn unsigned_kind_for_bits(bits: u32, pointer_bits: u32) -> NumericKind {
 }
 
 fn numeric_kind_from_name(name: &str, pointer_bits: u32) -> Option<NumericKind> {
+    if let Some(int) = IntegerType::from_name(name, pointer_bits) {
+        return Some(if int.signed {
+            NumericKind::Signed(int.name, int.bits)
+        } else {
+            NumericKind::Unsigned(int.name, int.bits)
+        });
+    }
     match name {
-        "int8" => Some(NumericKind::Signed("int8", 8)),
-        "int16" => Some(NumericKind::Signed("int16", 16)),
-        "int32" => Some(NumericKind::Signed("int32", 32)),
-        "int64" => Some(NumericKind::Signed("int64", 64)),
-        "isize" => Some(NumericKind::Signed("isize", pointer_bits)),
-        "uint8" => Some(NumericKind::Unsigned("uint8", 8)),
-        "uint16" => Some(NumericKind::Unsigned("uint16", 16)),
-        "uint32" => Some(NumericKind::Unsigned("uint32", 32)),
-        "uint64" => Some(NumericKind::Unsigned("uint64", 64)),
-        "usize" => Some(NumericKind::Unsigned("usize", pointer_bits)),
         "float32" => Some(NumericKind::Float("float32", 32)),
         "float64" => Some(NumericKind::Float("float64", 64)),
         _ => None,
@@ -7588,7 +7711,7 @@ fn b(x: B[bool]) -> int32 { ~inspect(x) }
                 let Wrap[uint8] wrapped = Wrap::Item(255);
                 let Wrap[int8] unqualified = Item(-128);
                 let from_bound_owner = wrapped::Item(254);
-                let uint8 addition = 255 + 1;
+                let uint8 addition = 250 + 5;
                 let uint8 converted = cast[uint8](256);
                 let uint64 large_cast = cast[uint64](18446744073709551615);
                 let int8 negative_cast = cast[int8](-2147483649);

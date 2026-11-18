@@ -1,6 +1,7 @@
 use crate::language::tcp_builtin::TcpBuiltin;
 use crate::language::{
     ast::*,
+    integer::{CheckedIntegers, IntegerOp, IntegerType, Scalar},
     span::Span,
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
@@ -39,6 +40,7 @@ fn require_std_builtins(op: &str) -> RuntimeResult<()> {
 }
 
 pub struct Interpreter {
+    integers: Arc<CheckedIntegers>,
     package: Package,
     env: Environment,
     structs: HashMap<String, StructEntry>,
@@ -122,12 +124,39 @@ enum EvalOutcome<T> {
 }
 
 impl Interpreter {
+    pub fn from_checked(checked: crate::language::typecheck::CheckedProgram<'_>) -> Self {
+        let package = Package {
+            program: checked.program.clone(),
+            modules: checked
+                .program
+                .modules
+                .iter()
+                .cloned()
+                .map(|module| crate::project::ModuleUnit { module })
+                .collect(),
+        };
+        let mut interpreter = Self::with_target(package, checked.target);
+        interpreter.integers = Arc::new(checked.facts.integers);
+        interpreter
+    }
+
+    fn integer_value(op: IntegerOp, a: i128, b: Option<i128>) -> RuntimeResult<Value> {
+        match op
+            .evaluate(a, b)
+            .map_err(|message| RuntimeError::Panic { message })?
+        {
+            Scalar::Int(n) => Ok(Value::Int(n)),
+            Scalar::Bool(v) => Ok(Value::Bool(v)),
+        }
+    }
+
     pub fn new(package: Package) -> Self {
         Self::with_target(package, BuildTarget::host())
     }
 
     pub fn with_target(package: Package, target: BuildTarget) -> Self {
         Self {
+            integers: Arc::default(),
             package,
             env: Environment::new(),
             structs: HashMap::new(),
@@ -858,6 +887,7 @@ impl Interpreter {
 
     fn clone_for_spawn(&self) -> Interpreter {
         Interpreter {
+            integers: self.integers.clone(),
             package: self.package.clone(),
             env: self.env.clone(),
             structs: self.structs.clone(),
@@ -2769,8 +2799,9 @@ impl Interpreter {
             {
                 Value::Int(f as i128)
             }
-            (target, Value::Int(i)) if target.starts_with("int") || target.starts_with("uint") => {
-                Value::Int(i)
+            (_, Value::Int(i)) => {
+                let ty = IntegerType::from_type(target, self.target.pointer_width_bits()).unwrap();
+                Value::Int(ty.cast(i))
             }
             (_, other) => {
                 return Err(RuntimeError::TypeMismatch {
@@ -3240,11 +3271,22 @@ impl Interpreter {
     }
 
     fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<EvalOutcome<Value>> {
-        self.eval_expression_inner(expr).inspect_err(|_| {
-            if self.diagnose {
-                self.error_span.get_or_insert_with(|| expr_span(expr));
-            }
-        })
+        self.eval_expression_inner(expr)
+            .and_then(|result| {
+                if let EvalOutcome::Value(Value::Int(n)) = result
+                    && let Some(dest) = crate::language::integer::value_site(expr)
+                        .and_then(|id| self.integers.narrowing.get(&id))
+                {
+                    dest.checked(n)
+                        .map_err(|message| RuntimeError::Panic { message })?;
+                }
+                Ok(result)
+            })
+            .inspect_err(|_| {
+                if self.diagnose {
+                    self.error_span.get_or_insert_with(|| expr_span(expr));
+                }
+            })
     }
 
     fn eval_expression_inner(&mut self, expr: &Expr) -> RuntimeResult<EvalOutcome<Value>> {
@@ -3287,7 +3329,11 @@ impl Interpreter {
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::Binary {
-                op, left, right, ..
+                id,
+                op,
+                left,
+                right,
+                ..
             } => {
                 let lhs = match self.eval_expression(left)? {
                     EvalOutcome::Value(value) => value,
@@ -3297,13 +3343,22 @@ impl Interpreter {
                     EvalOutcome::Value(value) => value,
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
+                if let Some(&op) = self.integers.operations.get(id) {
+                    let a = Self::expect_int_value("integer operation", lhs)?;
+                    let b = Self::expect_int_value("integer operation", rhs)?;
+                    return Self::integer_value(op, a, Some(b)).map(EvalOutcome::Value);
+                }
                 self.eval_binary(*op, lhs, rhs).map(EvalOutcome::Value)
             }
-            Expr::Unary { op, expr, .. } => {
+            Expr::Unary { id, op, expr, .. } => {
                 let value = match self.eval_expression(expr)? {
                     EvalOutcome::Value(value) => value,
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
+                if let Some(&op) = self.integers.operations.get(id) {
+                    let a = Self::expect_int_value("integer negation", value)?;
+                    return Self::integer_value(op, a, None).map(EvalOutcome::Value);
+                }
                 let evaluated = match op {
                     UnaryOp::Neg => match value {
                         Value::Int(v) => Value::Int(-v),
@@ -3319,6 +3374,7 @@ impl Interpreter {
                 Ok(EvalOutcome::Value(evaluated))
             }
             Expr::Call {
+                id,
                 callee,
                 type_args,
                 args,
@@ -3328,6 +3384,13 @@ impl Interpreter {
                     EvalOutcome::Value(values) => values,
                     EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
                 };
+                if let Some(&op) = self.integers.operations.get(id) {
+                    let a = Self::expect_int_value(
+                        "integer cast",
+                        arg_values.into_iter().next().unwrap(),
+                    )?;
+                    return Self::integer_value(op, a, None).map(EvalOutcome::Value);
+                }
                 match callee.as_ref() {
                     Expr::Identifier(ident) => {
                         if let Some(variant) = self.enum_variants.get(&ident.name) {
@@ -3566,7 +3629,7 @@ impl Interpreter {
                 });
                 Ok(EvalOutcome::Value(Value::Task(Box::new(handle))))
             }
-            Expr::Await { expr, span: _ } => match self.eval_expression(expr)? {
+            Expr::Await { expr, .. } => match self.eval_expression(expr)? {
                 EvalOutcome::Value(Value::Task(task)) => {
                     if std::env::var_os("PRIME_DEBUG_ASYNC").is_some() {
                         eprintln!("[prime-debug] interpreter await start");
@@ -4118,10 +4181,7 @@ impl Interpreter {
             BitAnd | BitOr | BitXor => self.eval_bitwise(op, left, right),
             Eq => Ok(Value::Bool(self.values_equal(&left, &right)?)),
             NotEq => Ok(Value::Bool(!self.values_equal(&left, &right)?)),
-            Lt => self.eval_compare(left, right, |a, b| a < b),
-            LtEq => self.eval_compare(left, right, |a, b| a <= b),
-            Gt => self.eval_compare(left, right, |a, b| a > b),
-            GtEq => self.eval_compare(left, right, |a, b| a >= b),
+            Lt | LtEq | Gt | GtEq => self.eval_compare(op, left, right),
         }
     }
 
@@ -4188,19 +4248,26 @@ impl Interpreter {
         Ok(Value::Int(result))
     }
 
-    fn eval_compare<F>(&self, left: Value, right: Value, cmp: F) -> RuntimeResult<Value>
-    where
-        F: Fn(f64, f64) -> bool,
-    {
-        match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(cmp(a as f64, b as f64))),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(cmp(a, b))),
-            (Value::Int(a), Value::Float(b)) => Ok(Value::Bool(cmp(a as f64, b))),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Bool(cmp(a, b as f64))),
-            _ => Err(RuntimeError::TypeMismatch {
-                message: "Comparison expects numeric values".into(),
-            }),
-        }
+    fn eval_compare(&self, op: BinaryOp, left: Value, right: Value) -> RuntimeResult<Value> {
+        use std::cmp::Ordering::*;
+        let order = match (left, right) {
+            (Value::Int(a), Value::Int(b)) => Some(a.cmp(&b)),
+            (Value::Float(a), Value::Float(b)) => a.partial_cmp(&b),
+            (Value::Int(a), Value::Float(b)) => (a as f64).partial_cmp(&b),
+            (Value::Float(a), Value::Int(b)) => a.partial_cmp(&(b as f64)),
+            _ => {
+                return Err(RuntimeError::TypeMismatch {
+                    message: "Comparison expects numeric values".into(),
+                });
+            }
+        };
+        Ok(Value::Bool(matches!(
+            (op, order),
+            (BinaryOp::Lt, Some(Less))
+                | (BinaryOp::LtEq, Some(Less | Equal))
+                | (BinaryOp::Gt, Some(Greater))
+                | (BinaryOp::GtEq, Some(Greater | Equal))
+        )))
     }
 
     fn values_equal(&self, left: &Value, right: &Value) -> RuntimeResult<bool> {
@@ -4976,6 +5043,7 @@ fn stub() {}
                 FormatSegment::Literal("HP ".into()),
                 FormatSegment::Expr {
                     expr: Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "hp".into(),
                         span: Span::new(0, 0),
                     }),

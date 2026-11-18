@@ -476,8 +476,10 @@ fn build_spawn_join_returns_closure() {
             span,
         };
         let body_expr = Expr::Binary {
+            id: ExprId::fresh(),
             op: BinaryOp::Add,
             left: Box::new(Expr::Identifier(Identifier {
+                id: ExprId::fresh(),
                 name: "n".into(),
                 span,
             })),
@@ -631,7 +633,9 @@ fn build_spawn_join_applies_channel_effects_and_value() {
                 ),
                 ty: None,
                 value: Some(Expr::Call {
+                    id: ExprId::fresh(),
                     callee: Box::new(Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "channel".into(),
                         span,
                     })),
@@ -644,13 +648,16 @@ fn build_spawn_join_applies_channel_effects_and_value() {
             }),
             Statement::Expr(ExprStmt {
                 expr: Expr::Call {
+                    id: ExprId::fresh(),
                     callee: Box::new(Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "send".into(),
                         span,
                     })),
                     type_args: Vec::new(),
                     args: vec![
                         Expr::Identifier(Identifier {
+                            id: ExprId::fresh(),
                             name: "tx".into(),
                             span,
                         }),
@@ -661,12 +668,15 @@ fn build_spawn_join_applies_channel_effects_and_value() {
             }),
             Statement::Expr(ExprStmt {
                 expr: Expr::Call {
+                    id: ExprId::fresh(),
                     callee: Box::new(Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "close".into(),
                         span,
                     })),
                     type_args: Vec::new(),
                     args: vec![Expr::Identifier(Identifier {
+                        id: ExprId::fresh(),
                         name: "tx".into(),
                         span,
                     })],
@@ -675,6 +685,7 @@ fn build_spawn_join_applies_channel_effects_and_value() {
             }),
         ],
         tail: Some(Box::new(Expr::Identifier(Identifier {
+            id: ExprId::fresh(),
             name: "rx".into(),
             span,
         }))),
