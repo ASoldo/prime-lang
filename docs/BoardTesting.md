@@ -68,3 +68,25 @@ scripts/test_esp32_qemu.sh BOOTLOADER.bin PARTITIONS.bin PARITY_APP.bin
 The Xtensa print path writes literals and interpolated values in pieces using ROM `ets_printf`, then emits a newline. Expect guard values 0 and 1, the async join marker, `Ok(7)`, `Some(3)`, the joined value 11, then the three guarded wait errors. The async join probe discards its computed integer and prints only the marker. [Demo](../workspace/demos/no_std_parity/main.prime) · [Print lowering](../src/language/compiler/runtime.rs) · [Xtensa ABI](../src/runtime/abi.rs)
 
 At `c825d5f`, the generated Xtensa IR constructs the strings `timeout`, `cancelled`, `timeout` for those errors. In each corresponding match arm it calls `prime_value_as_int` and `prime_int_to_string` on the extracted string handle. The ABI reads that handle as an integer. The QEMU capture contains three numeric payloads and the final marker. Acceptance requires all three literal error strings. Physical UART and reset behavior require a run on the board. [Guarded wait lowering](../src/language/compiler/emit.rs)
+
+
+## Two-slot cancellation test
+
+Build the ownership demo with a pool of two live cancellation tokens.
+
+```sh
+PRIME_RT_CANCEL_TOKEN_SLOTS=2 prime-lang build workspace/demos/no_std_parity/token_owners.prime --name token_owners --no-flash
+```
+
+After booting this image, the last two UART lines must be:
+
+```text
+token owners shared 100/100 full 100/100
+token owners PASS
+```
+
+The probe holds one token throughout the loop. Each new token must start clear, share its flag with an alias, exhaust the remaining capacity and release its slot in time for the next iteration. [Probe source](../workspace/demos/no_std_parity/token_owners.prime)
+
+### Verified physical run
+
+On 18 November 2026, firmware built at `eb730ff` ran on a classic ESP32-D0WD-V3 revision 3. The parity probe emitted all 11 expected UART lines. The board I/O probe read GPIO2 as 0, 1 and 0 and observed a pending timer timeout, an immediately ready timer and an empty-channel timeout. The blink and nested-error programs reproduced their expected output, including `Some(0)`, channel payload `42` and `test-error`. The two-slot test produced both lines above. These observations cover the classic ESP32. The C3 tests execute RV32IMC code under Unicorn. [C3 executable tests](../scripts/test_c3_strings.py)
