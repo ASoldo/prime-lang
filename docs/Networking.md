@@ -17,7 +17,7 @@ The host socket builtins require std. An embedded program needs its target SDK t
 
 ## Running the browser suite
 
-On Linux, install Go 1.24 or later, Node.js 18 or later, Python with venv, and matching Chromium and ChromeDriver executables. The browser suite uses loopback and ephemeral ports. The default WebRTC example uses host ICE candidates. The first build needs access to the pinned Go and Python dependencies, or a prepared local cache.
+On Linux, install Go 1.24 or later, Node.js 18 or later, Python with venv, and matching Chromium and ChromeDriver executables. The browser suite uses loopback and ephemeral ports. The suite tests both direct ICE and a private loopback TURN server, including a relayed Opus and VP8 return path. It separately opens 99 direct WebRTC data channels and 99 WebSocket connections. The first build needs access to the pinned Go and Python dependencies, or a prepared local cache.
 
 ```sh
 cargo build --locked --bin prime-lang

@@ -15,3 +15,5 @@ go -C adapters/webrtc mod verify
 go -C adapters/webrtc test -mod=readonly -race ./...
 go -C adapters/webrtc build -mod=readonly -trimpath -o "$work/webrtc" .
 python3 adapters/webrtc/test_browser.py "$cli" "$work/webrtc" --chromium "$chrome"
+go -C adapters/webrtc build -mod=readonly -trimpath -o "$work/testrelay" ./testrelay
+python3 adapters/webrtc/test_transport.py "$cli" "$work/webrtc" "$work/testrelay" --chromium "$chrome"

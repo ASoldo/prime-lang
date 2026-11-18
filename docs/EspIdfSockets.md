@@ -41,7 +41,7 @@ Install Espressif QEMU `esp_develop_9.2.2_20250817` from the pinned SDK tool man
 ./scripts/test_esp32_idf_net_qemu.sh "$build"
 ```
 
-Two clean IDF build directories produced byte-identical bootloader, partition table and application images. The recorded QEMU execution produced the following UART lines. A classic rev3 board uses the same images and UART0 at 115200 baud. Physical execution requires its own UART capture.
+Two clean IDF build directories produced byte-identical bootloader, partition table and application images. Both Espressif QEMU and a physical ESP32-D0WD-V3 rev3 produced the following four UART lines. The board ran the same 259088-byte factory application (SHA-256 `66ea30d1f3c4231a7ee9bbca1699f38c05a3695d9f8fbd2526781581dad7ef39`) at 115200 baud. The test restored and verified the board’s original 4 MiB flash image after recording the result.
 
 ```text
 PRIME_IDF_BEGIN
