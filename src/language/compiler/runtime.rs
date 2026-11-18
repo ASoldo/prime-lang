@@ -137,7 +137,11 @@ impl Compiler {
             match &owned {
                 Value::Reference(reference) => {
                     if let Some(handle) = reference.handle {
-                        // Best-effort print via runtime handle (common for Option/Result payloads).
+                        if self.string_handles.contains(&handle) {
+                            self.emit_runtime_print(handle);
+                            return Ok(());
+                        }
+                        // Integer payloads need conversion to the board's printable string handle.
                         self.ensure_runtime_symbols();
                         let mut as_int_args = [handle];
                         let int_val = self.call_runtime(

@@ -120,6 +120,10 @@ pub struct Compiler {
     structs: HashMap<String, StructEntry>,
     functions: HashMap<FunctionKey, FunctionEntry>,
     enum_variants: HashMap<String, EnumVariantInfo>,
+    // Embedded handles carry no runtime type tag. Preserve known string fields
+    // so pattern bindings can render the selected payload without reading it as an int.
+    enum_string_fields: HashMap<LLVMValueRef, HashSet<(u32, usize)>>,
+    string_handles: HashSet<LLVMValueRef>,
     interfaces: HashMap<String, InterfaceEntry>,
     impls: HashSet<ImplKey>,
     consts: Vec<(String, ConstDef)>,
@@ -1602,6 +1606,8 @@ impl Compiler {
                 structs: HashMap::new(),
                 functions: HashMap::new(),
                 enum_variants: HashMap::new(),
+                enum_string_fields: HashMap::new(),
+                string_handles: HashSet::new(),
                 interfaces: HashMap::new(),
                 impls: HashSet::new(),
                 consts: Vec::new(),
@@ -2103,6 +2109,8 @@ impl Compiler {
             Self::log_rss("[prime-debug] compile_program/start", true);
         }
         self.reset_module();
+        self.enum_string_fields.clear();
+        self.string_handles.clear();
         self.force_runtime_handles = self.target.is_embedded();
         self.host_task_entry = None;
         self.pending_runtime = None;

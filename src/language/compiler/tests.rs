@@ -735,6 +735,99 @@ fn async_demo_compiles() {
 }
 
 #[test]
+fn async_match_returns_the_selected_enum_and_payload() {
+    use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
+
+    let source = r#"
+module tests::async_match;
+enum Option[T] { Some(T), None }
+enum Result[T, E] { Ok(T), Err(E) }
+
+fn probe(deliver: bool) {
+  let (tx, rx) = channel[int32]();
+  let worker = spawn async {
+    let Option[int32] received = await recv_task(rx);
+    match received {
+      Some(v) => Result::Ok(v),
+      None => Result::Err("empty"),
+    }
+  };
+  if deliver { let _ = send(tx, 7); }
+  close(tx);
+  let joined = await join(worker);
+  match joined {
+    Ok(v) => out(`ok {v}`),
+    Err(msg) => out(`err {msg}`),
+  }
+}
+
+fn main() {
+  probe(true);
+  probe(false);
+}
+"#;
+    let program = Program {
+        modules: vec![
+            parse_module("tests::async_match", PathBuf::from("main.prime"), source)
+                .expect("parse async match"),
+        ],
+    };
+    for target in [
+        BuildTarget::Host,
+        BuildTarget::Triple(crate::target::ESP32C3_TRIPLE.into()),
+    ] {
+        let host = target.is_host();
+        let mut compiler = Compiler::with_target(target);
+        compiler
+            .compile_program(&program)
+            .expect("compile async match");
+        assert_eq!(
+            unsafe {
+                LLVMVerifyModule(
+                    compiler.module,
+                    LLVMVerifierFailureAction::LLVMPrintMessageAction,
+                    ptr::null_mut(),
+                )
+            },
+            0,
+            "every match predecessor must supply a dominating value"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ir_path = dir.path().join("async_match.ll");
+        compiler.write_ir_to(&ir_path).expect("write IR");
+        let ir = std::fs::read_to_string(ir_path).expect("read IR");
+        let mut saw_result = false;
+        for line in ir.lines().filter(|line| line.contains(" = phi ptr ")) {
+            let (name, incoming) = line.trim().split_once(" = phi ptr ").unwrap();
+            if !incoming.contains("%enum_new") {
+                continue;
+            }
+            assert_eq!(incoming.matches("[ %enum_new").count(), 2, "{line}");
+            let consumer = if host {
+                format!("ret ptr {name}\n")
+            } else {
+                format!("call i32 @prime_enum_tag(ptr {name})")
+            };
+            assert!(
+                ir.contains(&consumer),
+                "missing consumer of selected Result: {consumer}"
+            );
+            saw_result = true;
+        }
+        assert!(
+            saw_result,
+            "the async body must merge the two Result values"
+        );
+        if !host {
+            // Keep the error string as a printable handle on the board. Reading
+            // the integer representation would corrupt this branch's payload.
+            assert!(ir.contains("call void @prime_print(ptr %enum_get"));
+        }
+    }
+}
+
+#[test]
 fn runtime_handles_cover_collections() {
     with_rt_handles(|| {
         let source = r#"
