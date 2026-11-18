@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Prime interpreter trace record v1",
+  "type": "object",
+  "required": ["schema_version", "event"],
+  "properties": {
+    "schema_version": { "const": 1 }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/frame",
+      "required": ["module", "depth"],
+      "properties": {
+        "event": { "const": "call" },
+        "module": { "type": "string" },
+        "depth": { "type": "integer", "minimum": 0 }
+      }
+    },
+    {
+      "required": ["message", "frames"],
+      "properties": {
+        "event": { "const": "runtime_error" },
+        "message": { "type": "string" },
+        "frames": { "type": "array", "items": { "$ref": "#/$defs/frame" } }
+      }
+    },
+    {
+      "required": ["message"],
+      "properties": { "event": { "const": "warning" }, "message": { "type": "string" } }
+    }
+  ],
+  "$defs": {
+    "frame": {
+      "type": "object",
+      "required": ["function", "path", "start", "end"],
+      "properties": {
+        "function": { "type": "string" },
+        "path": { "type": "string" },
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

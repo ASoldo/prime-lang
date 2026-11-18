@@ -1,5 +1,7 @@
 # Checking a Prime program
 
+Run `prime-lang schema check` to get the machine-readable contract from the installed CLI. [Version 1 JSON Schema](schemas/check-v1.json)
+
 Use `prime-lang check TARGET` to find errors before running a program. The command resolves the target, loads its imports, expands macros and checks types. It stops there. A program with a constant initializer that writes a file or a `main` that opens a window can be checked without triggering either effect. Libraries and modules without a `main` can be checked directly.
 
 ```sh

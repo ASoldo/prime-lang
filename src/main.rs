@@ -190,6 +190,11 @@ enum Commands {
         )]
         features: Vec<String>,
     },
+    /// Print the JSON Schema for a machine-readable CLI output
+    Schema {
+        #[arg(value_enum)]
+        format: OutputSchema,
+    },
     /// Print reference snippets for Prime language features
     Docs {
         #[arg(
@@ -283,6 +288,12 @@ enum Commands {
         #[arg(value_name = "PATH", default_value = ".")]
         path: PathBuf,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputSchema {
+    Check,
+    Trace,
 }
 
 #[derive(Debug, clap::Args)]
@@ -428,6 +439,16 @@ fn main() -> std::process::ExitCode {
             ) {
                 eprintln!("add failed: {err}");
                 std::process::exit(1);
+            }
+        }
+        Commands::Schema { format } => {
+            use std::io::Write;
+            let schema = match format {
+                OutputSchema::Check => include_str!("../docs/schemas/check-v1.json"),
+                OutputSchema::Trace => include_str!("../docs/schemas/trace-v1.json"),
+            };
+            if io::stdout().lock().write_all(schema.as_bytes()).is_err() {
+                return std::process::ExitCode::FAILURE;
             }
         }
         Commands::Docs {

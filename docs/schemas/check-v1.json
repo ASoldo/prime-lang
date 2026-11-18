@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Prime check report v1",
+  "type": "object",
+  "required": ["schema_version", "outcome", "target", "entry_path", "manifest_path", "paths", "diagnostics"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "outcome": { "enum": ["ok", "error"] },
+    "target": { "type": "string" },
+    "entry_path": { "type": ["string", "null"] },
+    "manifest_path": { "type": ["string", "null"] },
+    "paths": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "span", "phase", "message", "code", "help"],
+        "properties": {
+          "path": { "type": "string" },
+          "span": {
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "required": ["start", "end"],
+                "properties": {
+                  "start": { "type": "integer", "minimum": 0 },
+                  "end": { "type": "integer", "minimum": 0 }
+                }
+              }
+            ]
+          },
+          "phase": { "type": "string" },
+          "message": { "type": "string" },
+          "code": { "type": ["string", "null"] },
+          "help": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

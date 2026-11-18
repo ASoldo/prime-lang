@@ -1,5 +1,7 @@
 # Tracing the Prime interpreter
 
+Run `prime-lang schema trace` to get the machine-readable contract from the installed CLI. [Version 1 JSON Schema](schemas/trace-v1.json)
+
 `prime-lang run --trace TARGET` executes the program and writes a call record to stderr each time the interpreter enters a named Prime function. Program output still goes to stdout. The command exits with status 0 on success and 1 on a reported runtime error. It works with source paths and manifest module names.
 
 Save this program as `demo.prime`.
