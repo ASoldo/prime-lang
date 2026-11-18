@@ -41,9 +41,10 @@ class EmbeddedTimers(unittest.TestCase):
         def run(*args, **kw):
             return subprocess.run(args, cwd=work, check=True, **kw)
 
-        run("rustc", "--edition=2021", "--crate-type=staticlib", "-Copt-level=s",
+        # rustup selects the pinned project toolchain from the working directory.
+        subprocess.run(("rustc", "--edition=2021", "--crate-type=staticlib", "-Copt-level=s",
             "-Cpanic=abort", "-Astatic_mut_refs", "--target=riscv32imc-unknown-none-elf",
-            root / "src/runtime/abi.rs", "-o", "runtime.a",
+            root / "src/runtime/abi.rs", "-o", work / "runtime.a"), cwd=root, check=True,
             env=dict(os.environ, PRIME_RT_CANCEL_TOKEN_SLOTS="2", PRIME_RT_TASK_SLOTS="3",
                      PRIME_RT_CHANNEL_SLOTS="2", PRIME_RT_CHANNEL_CAP="3", PRIME_RT_CHANNEL_WAITERS="3",
                      PRIME_RT_RECV_POLL_MS="1"))
