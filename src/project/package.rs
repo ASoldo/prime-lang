@@ -102,6 +102,7 @@ pub(super) fn load_stdin_package(
 
 struct ModuleLoader {
     visited: HashSet<PathBuf>,
+    needs_bundled_core: bool,
     modules: Vec<ModuleUnit>,
     file_errors: Vec<FileErrors>,
     manifest: Option<PackageManifest>,
@@ -111,15 +112,23 @@ impl ModuleLoader {
     fn new(manifest: Option<PackageManifest>) -> Self {
         Self {
             visited: HashSet::new(),
+            needs_bundled_core: false,
             modules: Vec::new(),
             file_errors: Vec::new(),
             manifest,
         }
     }
 
-    fn finish(self) -> Result<Package, PackageError> {
+    fn finish(mut self) -> Result<Package, PackageError> {
         if !self.file_errors.is_empty() {
             return Err(PackageError::Syntax(self.file_errors));
+        }
+        // A relative import elsewhere in the graph may supply the project core
+        // after an earlier import requested the fallback.
+        if self.needs_bundled_core && !self.modules.iter().any(|unit| unit.module.name == "core") {
+            let module =
+                super::bundled::parse_core().map_err(|err| PackageError::Syntax(vec![err]))?;
+            self.modules.push(ModuleUnit { module });
         }
         let program = Program {
             modules: self
@@ -206,7 +215,11 @@ impl ModuleLoader {
                         self.load_module(&lib.path, Some(lib))?;
                     } else {
                         let resolved = self.resolve_import_path(directory, &import.path)?;
-                        self.load_module(&resolved, None)?;
+                        if resolved == Path::new(super::bundled::CORE_PATH) {
+                            self.needs_bundled_core = true;
+                        } else {
+                            self.load_module(&resolved, None)?;
+                        }
                     }
                 }
             }
@@ -303,7 +316,8 @@ impl ModuleLoader {
                 }
             }
         }
-        Ok(resolve_import_relative(directory, import_path))
+        Ok(super::bundled::relative_core(directory, import_path)
+            .unwrap_or_else(|| resolve_import_relative(directory, import_path)))
     }
 }
 

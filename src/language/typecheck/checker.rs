@@ -105,6 +105,7 @@ fn collect_public_type_imports(registry: &mut TypeRegistry, module: &Module) {
 fn collect_definitions(registry: &mut TypeRegistry, module: &Module) {
     {
         let symbols = registry.module_symbols_mut(&module.name);
+        symbols.path = module.path.clone();
         symbols.prelude = module.prelude.clone();
     }
     registry.set_module_no_std(&module.name, module.no_std);
@@ -418,6 +419,11 @@ impl Checker {
                 for selector in selectors {
                     match selector {
                         ImportSelector::Name { name, alias, span } => {
+                            let span = if import.selectors.is_some() {
+                                *span
+                            } else {
+                                import.span
+                            };
                             let local_name = alias.clone().unwrap_or_else(|| name.clone());
                             if let Some(existing) = scope.selected.get(&local_name) {
                                 if self.registry.type_origin(&existing.module, &existing.name)
@@ -427,12 +433,12 @@ impl Checker {
                                 }
                                 self.errors.push(TypeError::new(
                                     &module.path,
-                                    *span,
+                                    span,
                                     format!("duplicate import `{}`", local_name),
                                 ));
                                 continue;
                             }
-                            if !self.validate_public_symbol(&module_name, name, &module.path, *span)
+                            if !self.validate_public_symbol(&module_name, name, &module.path, span)
                             {
                                 continue;
                             }
@@ -448,7 +454,11 @@ impl Checker {
                             if scope.globs.contains(&module_name) {
                                 self.errors.push(TypeError::new(
                                     &module.path,
-                                    *span,
+                                    if import.selectors.is_some() {
+                                        *span
+                                    } else {
+                                        import.span
+                                    },
                                     format!("duplicate glob import from `{}`", module_name),
                                 ));
                                 continue;
@@ -476,7 +486,7 @@ impl Checker {
                     let prelude = symbols.prelude.clone();
                     for selector in prelude {
                         match selector {
-                            ImportSelector::Name { name, alias, span } => {
+                            ImportSelector::Name { name, alias, .. } => {
                                 let local_name = alias.clone().unwrap_or_else(|| name.clone());
                                 if let Some(existing) = scope.selected.get(&local_name) {
                                     if self.registry.type_origin(&existing.module, &existing.name)
@@ -486,7 +496,7 @@ impl Checker {
                                     }
                                     self.errors.push(TypeError::new(
                                         &module.path,
-                                        span,
+                                        import.span,
                                         format!("duplicate import `{}`", local_name),
                                     ));
                                     continue;
@@ -495,7 +505,7 @@ impl Checker {
                                     &module_name,
                                     &name,
                                     &module.path,
-                                    span,
+                                    import.span,
                                 ) {
                                     continue;
                                 }
@@ -528,6 +538,7 @@ impl Checker {
             return;
         };
         let prelude = symbols.prelude.clone();
+        let prelude_path = symbols.path.clone();
         for selector in prelude {
             match selector {
                 ImportSelector::Name { name, alias, span } => {
@@ -535,7 +546,7 @@ impl Checker {
                     if scope.selected.contains_key(&local_name) {
                         continue;
                     }
-                    if !self.validate_public_symbol(default, &name, &module.path, span) {
+                    if !self.validate_public_symbol(default, &name, &prelude_path, span) {
                         continue;
                     }
                     scope.selected.insert(

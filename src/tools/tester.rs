@@ -165,7 +165,7 @@ fn run_test_file(root: &Path, path: &Path) -> Result<(), String> {
             let file_errors: Vec<project::FileErrors> = errors
                 .into_iter()
                 .map(|err| project::FileErrors {
-                    source: fs::read_to_string(&err.path).unwrap_or_default(),
+                    source: crate::project::read_module_source(&err.path).unwrap_or_default(),
                     path: err.path,
                     errors: err.errors,
                 })

@@ -31,7 +31,7 @@ Both executions print `42`. Run `program | prime-lang run --trace - 2>calls.ndjs
 
 The checker writes one schema-version-1 JSON object on stdout, even for a program error. Success exits with 0. Source, import and type errors exit with 1. Invalid command usage exits with 2. Ordinary interpreter and build errors go to stderr. The native build writes artifacts under the current directory's `.build.prime`. Checking and interpreting a heredoc require no source file on disk.
 
-In the JSON report, `target` is `"-"`, and `entry_path` is `"<stdin>"` for a resolved stdin program. Diagnostics identify the original source using `<stdin>` or the actual imported file's path. `span.start` and `span.end` are zero-based, half-open byte offsets. To extract a diagnostic in Python, use `source.encode("utf-8")[start:end].decode("utf-8")`. See the [check report fields](Checking.md).
+In the JSON report, `target` is `"-"`, and `entry_path` is `"<stdin>"` for a resolved stdin program. Diagnostics identify the original source using `<stdin>`, an imported file path, or `<bundled>/core.prime` for the [installed core library](CoreLibrary.md). `span.start` and `span.end` are zero-based, half-open byte offsets. To extract a diagnostic in Python, use `source.encode("utf-8")[start:end].decode("utf-8")`. See the [check report fields](Checking.md).
 
 ## Script or module
 

@@ -140,6 +140,7 @@ impl TypeRegistry {
 }
 
 struct ModuleSymbols {
+    path: PathBuf,
     public_types: HashMap<String, (String, String)>,
     functions: HashMap<FunctionKey, FunctionInfo>,
     consts: HashMap<String, ConstInfo>,
@@ -150,6 +151,7 @@ struct ModuleSymbols {
 impl ModuleSymbols {
     fn new() -> Self {
         Self {
+            path: PathBuf::new(),
             public_types: HashMap::new(),
             functions: HashMap::new(),
             consts: HashMap::new(),

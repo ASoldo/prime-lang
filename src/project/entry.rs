@@ -225,7 +225,7 @@ impl EntrySource {
     pub fn read_source(&self, path: &Path) -> io::Result<String> {
         match self {
             Self::Stdin { text, .. } if path == self.path() => Ok(text.clone()),
-            _ => fs::read_to_string(path),
+            _ => super::read_module_source(path),
         }
     }
 

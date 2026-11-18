@@ -10,6 +10,7 @@ use crate::{
         typecheck::{TypeError, TypecheckOptions, check_program_with_options},
     },
     project::{
+        bundled,
         diagnostics::{
             CODE_DUPLICATE_IMPORT, CODE_MANIFEST_MISSING_MODULE, CODE_MISSING_MODULE_HEADER,
             CODE_UNKNOWN_IMPORT, ManifestIssue, ManifestIssueKind, analyze_manifest_issues,
@@ -335,13 +336,7 @@ fn type_diagnostics(
     current_path: Option<&Path>,
 ) -> Vec<Diagnostic> {
     let module_path = module.path.clone();
-    let program = if let Some(manifest) = manifest {
-        build_program_for_manifest(module, manifest, current_path)
-    } else {
-        Program {
-            modules: vec![module.clone()],
-        }
-    };
+    let program = build_program(module, manifest, current_path);
     let expanded = match macro_expander::expand_program(&program) {
         Ok(prog) => prog,
         Err(errors) => return macro_errors_to_lsp(errors, text, &module.path),
@@ -403,18 +398,19 @@ fn macro_errors_to_lsp(
         .collect()
 }
 
-fn build_program_for_manifest(
+fn build_program(
     current: &Module,
-    manifest: &PackageManifest,
+    manifest: Option<&PackageManifest>,
     current_path: Option<&Path>,
 ) -> Program {
     let mut modules = Vec::new();
     let mut queue = VecDeque::new();
     let mut scheduled = HashSet::new();
+    let mut needs_bundled_core = false;
     let mut visited = HashSet::new();
     let initial_path = current_path
         .map(|path| path.to_path_buf())
-        .or_else(|| manifest.module_path(&current.name))
+        .or_else(|| manifest.and_then(|m| m.module_path(&current.name)))
         .unwrap_or_else(|| current.path.clone());
     let canonical_initial = canonical_path(&initial_path);
     queue.push_back((current.clone(), canonical_initial.clone()));
@@ -428,17 +424,22 @@ fn build_program_for_manifest(
             if let Some(resolved) =
                 resolve_import_for_manifest(manifest, &module_path, &import.path)
             {
+                if resolved.path == Path::new(bundled::CORE_PATH) {
+                    needs_bundled_core = true;
+                    continue;
+                }
                 if visited.contains(&resolved.canonical_path)
                     || scheduled.contains(&resolved.canonical_path)
                 {
                     continue;
                 }
                 if let Ok(source) = fs::read_to_string(&resolved.path) {
-                    if let Ok(parsed) = parse_module(
+                    if let Ok(mut parsed) = parse_module(
                         &resolved.module_name,
                         resolved.canonical_path.clone(),
                         &source,
                     ) {
+                        parsed.no_std = manifest.is_some_and(|m| m.module_no_std(&parsed.name));
                         scheduled.insert(resolved.canonical_path.clone());
                         queue.push_back((parsed, resolved.canonical_path));
                     }
@@ -448,6 +449,12 @@ fn build_program_for_manifest(
         modules.push(module);
     }
 
+    if needs_bundled_core
+        && !modules.iter().any(|m| m.name == "core")
+        && let Ok(core) = bundled::parse_core()
+    {
+        modules.push(core);
+    }
     Program { modules }
 }
 
@@ -458,7 +465,7 @@ struct ResolvedImport {
 }
 
 fn resolve_import_for_manifest(
-    manifest: &PackageManifest,
+    manifest: Option<&PackageManifest>,
     base_path: &Path,
     import_path: &ImportPath,
 ) -> Option<ResolvedImport> {
@@ -474,18 +481,20 @@ fn resolve_import_for_manifest(
         lookup_path.segments.pop();
         module_name = lookup_path.to_string();
     }
-    if let Some(path) = manifest.module_path(&module_name) {
+    if let Some(path) = manifest.and_then(|m| m.module_path(&module_name)) {
         return Some(ResolvedImport {
             module_name,
             canonical_path: path.clone(),
             path,
         });
     }
-    let relative = resolve_relative_import_path(base_path, &lookup_path);
+    let relative =
+        bundled::relative_core(base_path.parent().unwrap_or(Path::new(".")), import_path)
+            .unwrap_or_else(|| resolve_relative_import_path(base_path, &lookup_path));
     let canonical = canonical_path(&relative);
     Some(ResolvedImport {
         module_name: manifest
-            .module_name_for_path(&canonical)
+            .and_then(|m| m.module_name_for_path(&canonical))
             .unwrap_or(module_name),
         path: relative,
         canonical_path: canonical,

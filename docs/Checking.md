@@ -65,7 +65,7 @@ For example, checking a standalone `hello.prime` containing `module hello;` from
 | `target` | Original target argument. |
 | `entry_path` | Canonical entry file path or `<stdin>`, or `null` if resolution failed. |
 | `manifest_path` | Selected manifest path, or `null` if no manifest was loaded. |
-| `paths` | Sorted, unique source paths, including `<stdin>` for a stdin entry. Empty until the entire import graph has loaded. |
+| `paths` | Sorted, unique source paths, including `<stdin>` for a stdin entry and `<bundled>/core.prime` for the portable core supplied by the CLI. Empty until the entire import graph has loaded. |
 | `diagnostics` | Errors from the first failing phase, sorted by path, byte range and diagnostic details. |
 
-Each diagnostic has a `phase` (`input`, `io`, `manifest`, `syntax`, `macro` or `type`), `path`, `message`, optional-valued `code` and `help`, and a `span`. A span is either `null` or an object with `start` and `end`. Both are zero-based UTF-8 **byte offsets** in the identified file. The start is inclusive and the end is exclusive. For example, if the lexer rejects `§`, its span covers two bytes. A missing file has a path and a `null` span.
+Each diagnostic has a `phase` (`input`, `io`, `manifest`, `syntax`, `macro` or `type`), `path`, `message`, optional-valued `code` and `help`, and a `span`. A span is either `null` or an object with `start` and `end`. Both are zero-based UTF-8 **byte offsets** in the identified source. The start is inclusive and the end is exclusive. For example, if the lexer rejects `§`, its span covers two bytes. A missing file has a path and a `null` span.

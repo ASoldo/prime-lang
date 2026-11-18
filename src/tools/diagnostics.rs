@@ -111,7 +111,7 @@ pub struct TypeDiagnostic {
 }
 
 pub fn emit_type_errors(errors: &[TypeError]) {
-    emit_type_errors_with_source(errors, |path| std::fs::read_to_string(path));
+    emit_type_errors_with_source(errors, crate::project::read_module_source);
 }
 
 pub fn emit_type_errors_with_source(

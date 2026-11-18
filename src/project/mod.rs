@@ -1,3 +1,4 @@
+pub(crate) mod bundled;
 pub mod deps;
 pub mod diagnostics;
 pub mod entry;
@@ -7,6 +8,7 @@ mod manifest_helpers;
 mod package;
 pub mod program;
 
+pub use bundled::read_module_source;
 pub use entry::{
     EntryPoint, EntrySource, load_manifest_for_entry, load_package_with_manifest,
     resolve_entry_path,

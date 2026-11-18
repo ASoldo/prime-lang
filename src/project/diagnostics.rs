@@ -202,7 +202,14 @@ fn import_issues(
         if manifest.module_path(&canonical_name).is_some() {
             continue;
         }
-        let resolved = resolve_import_path(file_path, &lookup_path);
+        let resolved = super::bundled::relative_core(
+            file_path.parent().unwrap_or(Path::new(".")),
+            &import.path,
+        )
+        .unwrap_or_else(|| resolve_import_path(file_path, &lookup_path));
+        if resolved == Path::new(super::bundled::CORE_PATH) {
+            continue;
+        }
         if resolved.exists() {
             let module_path = manifest_relative_string(&resolved, manifest);
             issues.push(ManifestIssue {

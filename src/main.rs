@@ -1643,7 +1643,7 @@ fn expand_entry(
     let has_position = offset.is_some() || line.is_some() || column.is_some();
     match load_package(path) {
         Ok(package) => {
-            let expanded = expand_or_report(&package.program, |path| fs::read_to_string(path));
+            let expanded = expand_or_report(&package.program, project::read_module_source);
             let canonical = canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
             let span = Span::new(resolved_offset, resolved_offset.saturating_add(1));
             let macro_names = expanded.traces.macro_names_for(&canonical, span);
@@ -1823,7 +1823,7 @@ fn main() {
 "#;
         fs::write(&file, src).expect("write");
         let package = load_package(&file).expect("load package");
-        let expanded = expand_or_report(&package.program, |path| fs::read_to_string(path));
+        let expanded = expand_or_report(&package.program, project::read_module_source);
         let canonical = canonicalize(&file).unwrap();
         let offset = src.find("~add_one").expect("find macro usage");
         let trace = expanded
