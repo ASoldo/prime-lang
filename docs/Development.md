@@ -18,6 +18,8 @@ A native `prime-lang build` compiles the bundled Rust runtime with its own lockf
 
 Note: `cargo test -- --format=json` and `cargo test -- --report-time` require nightly `-Z unstable-options`.
 
+The Linux runners use Xvfb to open a real X11 window for interpreted and compiled Tetris after the headless checks. Set `PRIME_CI_X11=1` when running `./scripts/ci.sh` on a host with `xvfb-run` and `xauth` installed. Each game exits after three frames.
+
 ## Dependency advisories
 
 Install the audit tool with `cargo install --locked --version 0.23.0 cargo-audit`, then run `./scripts/audit-dependencies.sh`. It refreshes the RustSec database once and checks four lockfiles against the same snapshot: the CLI, the bundled host and embedded runtimes, and the editor grammar. A reported vulnerability or failure to audit a file makes the command fail. The output also lists maintenance warnings. The **Dependency audit** workflow runs on changes to these lockfiles or the audit itself, and can be triggered manually for unchanged releases. [RustSec advisory database](https://rustsec.org/)

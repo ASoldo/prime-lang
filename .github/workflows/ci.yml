@@ -16,6 +16,7 @@ jobs:
     env:
       LLVM_SYS_211_PREFIX: /usr/lib/llvm-21
       PRIME_LLC: /usr/lib/llvm-21/bin/llc
+      PRIME_CI_X11: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install LLVM 21 and native runtime development headers
@@ -27,7 +28,7 @@ jobs:
           sudo install -m 0644 "$RUNNER_TEMP/llvm.asc" /usr/share/keyrings/llvm.asc
           echo 'deb [signed-by=/usr/share/keyrings/llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
-          sudo apt-get install -y lld-21 llvm-21-dev libasound2-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev pkg-config
+          sudo apt-get install -y lld-21 llvm-21-dev libasound2-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev pkg-config xvfb xauth
       - name: Install the repository toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3

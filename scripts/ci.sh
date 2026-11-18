@@ -39,3 +39,11 @@ entry=workspace/demos/tetris/tetris.prime
 ./prime-lang run "$entry"
 ./prime-lang build "$entry" --name prime_tetris
 ./.build.prime/prime_tetris/prime_tetris
+
+if [[ ${PRIME_CI_X11:-0} == 1 ]]; then
+  # Exercise the window backend without using the developer's desktop.
+  export PRIME_GFX_HEADLESS=0
+  unset WAYLAND_DISPLAY
+  xvfb-run -a ./prime-lang run "$entry"
+  xvfb-run -a ./.build.prime/prime_tetris/prime_tetris
+fi
