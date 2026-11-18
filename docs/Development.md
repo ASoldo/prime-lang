@@ -7,6 +7,8 @@ Prime-lang is a single Rust binary (`prime-lang`) plus a workspace of `.prime` d
 - Build (iterative): `cargo build --locked`
 - Install the CLI: `cargo install --locked --path .`
 
+A native `prime-lang build` compiles the bundled Rust runtime with its own lockfile. Set `CARGO_TARGET_DIR` to an absolute path to share compiled dependencies between Prime projects. Cargo recompiles the ABI when its bundled sources or build settings change. Graphics and audio libraries still need their system development headers.
+
 ## Checks
 
 - CI-equivalent (recommended): `./scripts/ci.sh`
