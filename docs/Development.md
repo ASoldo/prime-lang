@@ -7,7 +7,7 @@ Prime-lang is a single Rust binary (`prime-lang`) plus a workspace of `.prime` d
 - Build (iterative): `cargo build --locked`
 - Install the CLI: `cargo install --locked --path .`
 
-For a release candidate, run `./scripts/package_candidate.sh` on the target host with the project's Rust and LLVM prerequisites installed. It installs the CLI from the exact Cargo archive, checks a separate consumer project and executes its compiled binary. The verified source crate, host binary archive with the MIT notice, and `SHA256SUMS` are written to a new directory under `$CARGO_TARGET_DIR/prime-dist` (default `target/prime-dist`). The binary uses the compatible system LLVM and native libraries from the build environment. Tetris media are distributed separately from the source crate.
+For a release candidate, run `./scripts/package_candidate.sh` on the target host with the project's Rust and LLVM prerequisites installed. It installs the CLI from the exact Cargo archive, checks a separate consumer project and executes its compiled binary. The verified source crate, host binary archive with the MIT notice, and `SHA256SUMS` are written to a new directory under `$CARGO_TARGET_DIR/prime-dist` (default `target/prime-dist`). The binary uses the compatible system LLVM and native libraries from the build environment. Tetris artwork and audio are excluded from the source archive pending confirmation of their distribution terms.
 
 A native `prime-lang build` compiles the bundled Rust runtime with its own lockfile. Set `CARGO_TARGET_DIR` to an absolute path to share compiled dependencies between Prime projects. Cargo recompiles the ABI when its bundled sources or build settings change. Graphics and audio libraries still need their system development headers.
 
@@ -21,6 +21,8 @@ A native `prime-lang build` compiles the bundled Rust runtime with its own lockf
 Note: `cargo test -- --format=json` and `cargo test -- --report-time` require nightly `-Z unstable-options`.
 
 The Linux runners use Xvfb to open a real X11 window for interpreted and compiled Tetris after the headless checks. Set `PRIME_CI_X11=1` when running `./scripts/ci.sh` on a host with `xvfb-run` and `xauth` installed. Each game exits after three frames.
+
+Run `python3 scripts/stress_demos.py --rounds 32` for repeated interpreter/native comparisons. The script builds each executable once and gives each execution a fresh working directory. It checks closure captures, channel delivery, match results, heap values, destruction order, runtime file contents and varying stdin against expected results. Use repeated `--demo NAME` options to select cases. CI runs three rounds per demo.
 
 ## Dependency advisories
 

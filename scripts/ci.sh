@@ -23,6 +23,7 @@ env "CARGO_BIN_EXE_prime-lang=$PRIME_BIN" cargo test --locked --all -- --test-th
 cargo test --manifest-path tree-sitter/prime/Cargo.toml --locked -- --nocapture
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 ./scripts/check_examples.sh
+python3 scripts/stress_demos.py --rounds 3
 
 # Some Prime tests write files relative to their working directory.
 cp -R workspace prime.toml "$scratch/"
