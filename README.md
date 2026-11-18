@@ -30,6 +30,7 @@ Create and edit your own first program in [Getting Started](docs/GettingStarted.
 | Text and byte file I/O at execution time | [Host filesystem](docs/LanguageOutline.md#host-filesystem) and [file demo](workspace/demos/fs_demo/fs_demo.prime) |
 | A web server you can query with curl | [Run the loopback HTTP server](docs/LoopbackWebServer.md) |
 | Graphics and audio | [Tetris](workspace/demos/tetris/tetris.prime), [graphics](docs/GraphicsRuntime.md) and [audio](docs/AudioRuntime.md) |
+| Follow interpreted function calls and locate runtime errors | [Interpreter tracing](docs/Debugging.md) |
 | Type diagnostics, JSON output and frozen dependencies | [Checking a program](docs/Checking.md) |
 | Editor setup, workspace docs and CI | [Development workflow](docs/Development.md) |
 | How a checked program executes | [Architecture](docs/Architecture.md), [compiler flow](docs/CompilerFlow.md) and [runtime ABI](docs/RuntimeFFI.md) |

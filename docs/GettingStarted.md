@@ -43,6 +43,8 @@ prime-lang build main.prime --name score
 ./.build.prime/score/score
 ```
 
+To see which Prime functions the interpreter enters, run `prime-lang run --trace main.prime`. The trace goes to stderr and the score goes to stdout. [Reading a trace](Debugging.md)
+
 ## Try a bundled demo
 
 Return to the checkout root for the bundled examples. The channel example in the [README](../README.md#first-run) runs without input or assets. The [web server](LoopbackWebServer.md) reads its port and request count from stdin and serves real requests on loopback.
