@@ -7,21 +7,29 @@ export prelude {
   make_board,
   make_row_flags,
   board_get,
+  board_get_at,
   reset_board,
   reset_row_flags,
   normalize_rotation,
   cell_x,
   cell_y,
   can_move,
+  can_move_at,
   rotate_piece,
+  rotate_piece_at,
   lock_piece,
+  lock_piece_at,
   row_marked,
   mark_full_rows,
+  mark_full_rows_at,
   cleared_rows_below,
   apply_marked_clears,
+  apply_marked_clears_at,
   ghost_y,
+  ghost_y_at,
   make_bag,
   draw_from_bag,
+  draw_from_bag_at,
   add_score,
 };
 
@@ -48,20 +56,28 @@ pub fn make_row_flags() -> []int32 {
 }
 
 pub fn board_get(board: []int32, x: int32, y: int32) -> int32 {
+  board_get_at(board, 0, x, y)
+}
+
+pub fn board_get_at(board: []int32, base: int32, x: int32, y: int32) -> int32 {
   let mut int32 result = 1;
   if x >= 0 && x < COLS && y < ROWS {
     if y < 0 {
       result = 0;
     } else {
-      result = slice_get_int(board, y * COLS + x, 1);
+      result = slice_get_int(board, base + y * COLS + x, 1);
     }
   }
   result
 }
 
 fn board_set(board: []int32, x: int32, y: int32, value: int32) {
+  board_set_at(board, 0, x, y, value);
+}
+
+fn board_set_at(board: []int32, base: int32, x: int32, y: int32, value: int32) {
   if x >= 0 && x < COLS && y >= 0 && y < ROWS {
-    board[y * COLS + x] = value;
+    board[base + y * COLS + x] = value;
   }
 }
 
@@ -237,6 +253,10 @@ pub fn cell_y(kind: int32, rotation: int32, index: int32) -> int32 {
 }
 
 pub fn can_move(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) -> bool {
+  can_move_at(board, 0, kind, rotation, x, y)
+}
+
+pub fn can_move_at(board: []int32, base: int32, kind: int32, rotation: int32, x: int32, y: int32) -> bool {
   let mut bool valid = true;
   for index in 0..4 {
     let int32 px = x + cell_x(kind, rotation, index);
@@ -244,7 +264,7 @@ pub fn can_move(board: []int32, kind: int32, rotation: int32, x: int32, y: int32
     if px < 0 || px >= COLS || py >= ROWS {
       valid = false;
     }
-    if py >= 0 && board_get(board, px, py) != 0 {
+    if py >= 0 && board_get_at(board, base, px, py) != 0 {
       valid = false;
     }
   }
@@ -252,15 +272,19 @@ pub fn can_move(board: []int32, kind: int32, rotation: int32, x: int32, y: int32
 }
 
 pub fn rotate_piece(board: []int32, kind: int32, rotation: int32, x: int32, y: int32, direction: int32) -> (int32, int32) {
+  rotate_piece_at(board, 0, kind, rotation, x, y, direction)
+}
+
+pub fn rotate_piece_at(board: []int32, base: int32, kind: int32, rotation: int32, x: int32, y: int32, direction: int32) -> (int32, int32) {
   let desired = normalize_rotation(rotation + direction);
   let mut turned = rotation;
   let mut kicked_x = x;
-  if can_move(board, kind, desired, x, y) {
+  if can_move_at(board, base, kind, desired, x, y) {
     turned = desired;
-  } else if can_move(board, kind, desired, x - 1, y) {
+  } else if can_move_at(board, base, kind, desired, x - 1, y) {
     turned = desired;
     kicked_x = x - 1;
-  } else if can_move(board, kind, desired, x + 1, y) {
+  } else if can_move_at(board, base, kind, desired, x + 1, y) {
     turned = desired;
     kicked_x = x + 1;
   }
@@ -268,19 +292,23 @@ pub fn rotate_piece(board: []int32, kind: int32, rotation: int32, x: int32, y: i
 }
 
 pub fn lock_piece(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) {
+  lock_piece_at(board, 0, kind, rotation, x, y);
+}
+
+pub fn lock_piece_at(board: []int32, base: int32, kind: int32, rotation: int32, x: int32, y: int32) {
   for index in 0..4 {
     let int32 px = x + cell_x(kind, rotation, index);
     let int32 py = y + cell_y(kind, rotation, index);
     if py >= 0 {
-      board_set(board, px, py, kind);
+      board_set_at(board, base, px, py, kind);
     }
   }
 }
 
-fn row_full(board: []int32, row: int32) -> bool {
+fn row_full_at(board: []int32, base: int32, row: int32) -> bool {
   let mut bool full = true;
   for x in 0..COLS {
-    if board_get(board, x, row) == 0 {
+    if board_get_at(board, base, x, row) == 0 {
       full = false;
     }
   }
@@ -292,11 +320,15 @@ pub fn row_marked(clear_rows: []int32, row: int32) -> bool {
 }
 
 pub fn mark_full_rows(board: []int32, clear_rows: []int32) -> int32 {
+  mark_full_rows_at(board, 0, clear_rows)
+}
+
+pub fn mark_full_rows_at(board: []int32, base: int32, clear_rows: []int32) -> int32 {
   reset_row_flags(clear_rows);
 
   let mut int32 cleared = 0;
   for y in 0..ROWS {
-    if row_full(board, y) {
+    if row_full_at(board, base, y) {
       cleared = cleared + 1;
       clear_rows[y] = 1;
     }
@@ -317,12 +349,16 @@ pub fn cleared_rows_below(clear_rows: []int32, row: int32) -> int32 {
 }
 
 pub fn apply_marked_clears(board: []int32, clear_rows: []int32) {
+  apply_marked_clears_at(board, 0, clear_rows);
+}
+
+pub fn apply_marked_clears_at(board: []int32, base: int32, clear_rows: []int32) {
   let mut int32 write = ROWS - 1;
   let mut int32 read = ROWS - 1;
   while read >= 0 {
     if !row_marked(clear_rows, read) {
       for x in 0..COLS {
-        board_set(board, x, write, board_get(board, x, read));
+        board_set_at(board, base, x, write, board_get_at(board, base, x, read));
       }
       write = write - 1;
     }
@@ -330,7 +366,7 @@ pub fn apply_marked_clears(board: []int32, clear_rows: []int32) {
   }
   while write >= 0 {
     for x in 0..COLS {
-      board_set(board, x, write, 0);
+      board_set_at(board, base, x, write, 0);
     }
     write = write - 1;
   }
@@ -338,8 +374,12 @@ pub fn apply_marked_clears(board: []int32, clear_rows: []int32) {
 }
 
 pub fn ghost_y(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) -> int32 {
+  ghost_y_at(board, 0, kind, rotation, x, y)
+}
+
+pub fn ghost_y_at(board: []int32, base: int32, kind: int32, rotation: int32, x: int32, y: int32) -> int32 {
   let mut int32 drop_y = y;
-  while can_move(board, kind, rotation, x, drop_y + 1) {
+  while can_move_at(board, base, kind, rotation, x, drop_y + 1) {
     drop_y = drop_y + 1;
   }
   drop_y
@@ -365,9 +405,9 @@ pub fn make_bag() -> []int32 {
   bag
 }
 
-fn refill_bag(bag: []int32, seed: int32) -> int32 {
+fn refill_bag_at(bag: []int32, base: int32, seed: int32) -> int32 {
   for kind in 1..8 {
-    bag[kind - 1] = kind;
+    bag[base + kind - 1] = kind;
   }
 
   let mut int32 next = seed;
@@ -375,23 +415,27 @@ fn refill_bag(bag: []int32, seed: int32) -> int32 {
   while index > 0 {
     next = next_seed(next);
     let int32 swap_index = next % (index + 1);
-    let int32 value = slice_get_int(bag, index, 1);
-    bag[index] = slice_get_int(bag, swap_index, 1);
-    bag[swap_index] = value;
+    let int32 value = slice_get_int(bag, base + index, 1);
+    bag[base + index] = slice_get_int(bag, base + swap_index, 1);
+    bag[base + swap_index] = value;
     index = index - 1;
   }
   next
 }
 
 pub fn draw_from_bag(bag: []int32, bag_index: int32, seed: int32) -> (int32, int32, int32) {
+  draw_from_bag_at(bag, 0, bag_index, seed)
+}
+
+pub fn draw_from_bag_at(bag: []int32, base: int32, bag_index: int32, seed: int32) -> (int32, int32, int32) {
   let mut int32 index = bag_index;
   let mut int32 next = seed;
   if index >= 7 {
-    next = refill_bag(bag, next);
+    next = refill_bag_at(bag, base, next);
     index = 0;
   }
 
-  let int32 kind = slice_get_int(bag, index, 1);
+  let int32 kind = slice_get_int(bag, base + index, 1);
   return kind, index + 1, next;
 }
 

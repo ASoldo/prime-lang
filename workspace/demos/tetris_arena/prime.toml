@@ -1,0 +1,15 @@
+manifest_version = "3"
+
+[package]
+name = "demos::tetris_arena"
+version = "0.1.0"
+
+[module]
+name = "demos::tetris_arena"
+path = "main.prime"
+visibility = "pub"
+
+[libraries]
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }
+rules = { name = "tetris::rules", path = "../tetris/rules.prime", visibility = "pub" }
+ecs = { name = "tetris::ecs", path = "../tetris_ecs/ecs.prime", visibility = "pub" }

@@ -1,0 +1,187 @@
+//! Lockstep Tetris arena. Requests and records are documented in README.md.
+module demos::tetris_arena;
+
+import core::types::prelude::{*};
+import tetris::ecs::prelude::{*};
+import tetris::rules::prelude::{*};
+
+struct Arena {
+  world: World;
+  seed: int32;
+  actions: []int32;
+  ranks: []int32;
+  live: []int32;
+  winner: []int32;
+}
+
+fn eliminate(arena: Arena, id: int32, tick: int32) {
+  let world = arena.world;
+  let rank = slice_get_int(arena.live, 0, 0);
+  world.roster.alive[id] = 0;
+  arena.ranks[id] = rank;
+  arena.live[0] = rank - 1;
+  out(`X2 {tick} {id} {rank}`);
+  if rank == 2 {
+    let mut other = 0;
+    while other < world.count {
+      if slice_get_int(world.roster.alive, other, 0) == 1 {
+        arena.ranks[other] = 1;
+        arena.winner[0] = other;
+      }
+      other = other + 1;
+    }
+  }
+}
+
+fn attack(arena: Arena, sender: int32, tick: int32, number: int32) {
+  let world = arena.world;
+  let mut target = (sender + 1) % world.count;
+  while slice_get_int(world.roster.alive, target, 0) == 0 {
+    target = (target + 1) % world.count;
+  }
+  let base = target * 200;
+  let board = world.wells.board;
+  let mut overflow = false;
+  for x in 0..10 {
+    if slice_get_int(board, base + x, 0) != 0 {
+      overflow = true;
+    }
+  }
+  let mut i = 0;
+  while i < 190 {
+    board[base + i] = slice_get_int(board, base + i + 10, 0);
+    i = i + 1;
+  }
+  let hole = (arena.seed % 10 + tick + sender + target + number) % 10;
+  for x in 0..10 {
+    let mut cell = 8;
+    if x == hole {
+      cell = 0;
+    }
+    board[base + 190 + x] = cell;
+  }
+  world.wells.dirty[target] = 1;
+  out(`G2 {tick} {sender} {target} {hole}`);
+  let kind = slice_get_int(world.roster.kind, target, 0);
+  let rotation = slice_get_int(world.roster.rotation, target, 0);
+  let x = slice_get_int(world.roster.x, target, 0);
+  let y = slice_get_int(world.roster.y, target, 0);
+  if overflow || !can_move_at(board, base, kind, rotation, x, y) {
+    eliminate(arena, target, tick);
+  }
+}
+
+fn summary(arena: Arena) {
+  let tick = current_tick(arena.world);
+  let live = slice_get_int(arena.live, 0, 0);
+  let winner = slice_get_int(arena.winner, 0, -1);
+  out(`T2 {tick} {live} {winner}`);
+}
+
+// At the protocol tick limit the highest score wins, then lowest seat ID.
+fn finish_at_limit(arena: Arena, tick: int32) {
+  let world = arena.world;
+  while slice_get_int(arena.live, 0, 0) > 1 {
+    let mut last = -1;
+    let mut lowest = 0;
+    let mut id = 0;
+    while id < world.count {
+      if slice_get_int(world.roster.alive, id, 0) == 1 {
+        let score = slice_get_int(world.roster.score, id, 0);
+        if last < 0 || score <= lowest {
+          last = id;
+          lowest = score;
+        }
+      }
+      id = id + 1;
+    }
+    eliminate(arena, last, tick);
+  }
+}
+
+fn advance(arena: Arena, tick: int32) {
+  let world = arena.world;
+  let mut id = 0;
+  while id < world.count {
+    if slice_get_int(arena.live, 0, 0) > 1 && slice_get_int(world.roster.alive, id, 0) == 1 {
+      let before = slice_get_int(world.roster.lines, id, 0);
+      let action = slice_get_int(arena.actions, id, -1);
+      step_slot(world, id, tick, action);
+      let cleared = slice_get_int(world.roster.lines, id, 0) - before;
+      if slice_get_int(world.roster.alive, id, 0) == 0 {
+        eliminate(arena, id, tick);
+      } else {
+        let mut number = 0;
+        while number < cleared && slice_get_int(arena.live, 0, 0) > 1 {
+          attack(arena, id, tick, number);
+          number = number + 1;
+        }
+      }
+    }
+    arena.actions[id] = -1;
+    id = id + 1;
+  }
+  if tick == 99999 {
+    finish_at_limit(arena, tick);
+  }
+  world.tick[0] = tick;
+  summary(arena);
+}
+
+fn command(arena: Arena, word: int32) {
+  let world = arena.world;
+  let tick = current_tick(world);
+  if word == -2 || (word <= -100 && word > -100 - world.count) {
+    let mut first = 0;
+    let mut end = world.count;
+    if word != -2 {
+      first = -100 - word;
+      end = first + 1;
+    }
+    let mut id = first;
+    while id < end {
+      emit_slot(world, id, slice_get_int(arena.ranks, id, 0));
+      id = id + 1;
+    }
+    out(`Z2 {tick}`);
+  } else {
+    let next = word / 10000;
+    let code = word % 10000;
+    let id = code / 10 - 1;
+    let action = code % 10;
+    let ready = next == tick + 1 && next <= 99999 && slice_get_int(arena.live, 0, 0) > 1;
+    if ready && code == 0 {
+      advance(arena, next);
+    } else if ready && id >= 0 && id < world.count && action <= 4 &&
+              slice_get_int(world.roster.alive, id, 0) == 1 && slice_get_int(arena.actions, id, -2) == -1 {
+      arena.actions[id] = action;
+      out(`Q2 {next} {id}`);
+    } else {
+      out(`E2 {tick}`);
+    }
+  }
+}
+
+fn read_word() -> int32 {
+  match in[int32]("") {
+    Result::Ok(word) => word,
+    Result::Err(_) => -1,
+  }
+}
+
+fn main() {
+  let seed = read_word();
+  let n = read_word();
+  if seed >= 0 && n >= 2 && n <= 99 {
+    let arena = Arena{new_match(seed, n), seed, fill_column(n, -1), fill_column(n, 0),
+                      fill_column(1, n), fill_column(1, -1)};
+    summary(arena);
+    let mut word = read_word();
+    while word != -1 {
+      command(arena, word);
+      word = read_word();
+    }
+  } else {
+    out("E2 init");
+  }
+}

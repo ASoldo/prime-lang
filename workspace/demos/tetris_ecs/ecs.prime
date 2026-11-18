@@ -4,10 +4,10 @@ library tetris::ecs;
 import core::types::prelude::{*};
 import tetris::rules::prelude::{*};
 
-export prelude { World, new_world, current_tick, step_world, emit_world };
+export prelude { World, new_world, current_tick, step_world, emit_world, new_match, step_slot, fill_column, emit_slot };
 
-// Each column has exactly two rows. Row numbers remain valid until match end.
-struct Roster {
+// Row numbers remain valid until match end.
+pub struct Roster {
   kind: []int32;
   rotation: []int32;
   x: []int32;
@@ -19,9 +19,10 @@ struct Roster {
   rng: []int32;
 }
 
-struct Well {
+pub struct Wells {
   board: []int32;
   bag: []int32;
+  dirty: []int32;
   board_text: []string;
   bag_text: []string;
 }
@@ -29,16 +30,39 @@ struct Well {
 pub struct World {
   roster: Roster;
   tick: []int32;
-  first: Well;
-  second: Well;
+  wells: Wells;
+  count: int32;
 }
 
 pub fn new_world(seed: int32) -> World {
-  let roster = new_roster(seed);
-  let first = new_well(roster, 0);
-  let second = new_well(roster, 1);
+  new_match(seed, 2)
+}
+
+pub fn new_match(seed: int32, count: int32) -> World {
+  let roster = new_roster(seed, count);
+  let boards = fill_column(200 * count, 0);
+  let bags = fill_column(7 * count, 0);
+  let mut []string board_text = [];
+  let mut []string bag_text = [];
+  let empty_board = digits(boards, 0, 200);
+  let mut id = 0;
+  while id < count {
+    board_text.push(empty_board);
+    bag_text.push("");
+    id = id + 1;
+  }
+  let wells = Wells{boards, bags, fill_column(count, 0), board_text, bag_text};
+  id = 0;
+  while id < count {
+    spawn_piece(roster, wells, id);
+    id = id + 1;
+  }
   let mut []int32 tick = [0];
-  World{roster, tick, first, second}
+  World{roster, tick, wells, count}
+}
+
+pub fn step_slot(world: World, id: int32, tick: int32, action: int32) {
+  step_seat(world.roster, world.wells, id, tick, action);
 }
 
 pub fn current_tick(world: World) -> int32 {
@@ -49,37 +73,41 @@ pub fn step_world(world: World, tick: int32, action0: int32, action1: int32) -> 
   let valid = tick == current_tick(world) + 1 && tick <= 999999 &&
               action0 >= 0 && action0 <= 4 && action1 >= 0 && action1 <= 4;
   if valid {
-    step_seat(world.roster, world.first, 0, tick, action0);
-    step_seat(world.roster, world.second, 1, tick, action1);
+    step_slot(world, 0, tick, action0);
+    step_slot(world, 1, tick, action1);
     world.tick[0] = tick;
   }
   valid
 }
 
 pub fn emit_world(world: World) {
-  let tick = current_tick(world);
-  emit_seat(tick, 0, world.roster, world.first);
-  emit_seat(tick, 1, world.roster, world.second);
+  emit_slot(world, 0, -1);
+  emit_slot(world, 1, -1);
 }
 
-fn column(value: int32) -> []int32 {
-  let mut []int32 entries = [value, value];
+pub fn fill_column(count: int32, value: int32) -> []int32 {
+  let mut []int32 entries = [];
+  let mut i = 0;
+  while i < count {
+    entries.push(value);
+    i = i + 1;
+  }
   entries
 }
 
-fn new_roster(seed: int32) -> Roster {
+fn new_roster(seed: int32, count: int32) -> Roster {
   Roster{
-    kind: column(0), rotation: column(0), x: column(4), y: column(1),
-    lines: column(0), score: column(0), alive: column(1),
-    bag_index: column(7), rng: column(seed),
+    kind: fill_column(count, 0), rotation: fill_column(count, 0), x: fill_column(count, 4), y: fill_column(count, 1),
+    lines: fill_column(count, 0), score: fill_column(count, 0), alive: fill_column(count, 1),
+    bag_index: fill_column(count, 7), rng: fill_column(count, seed),
   }
 }
 
-fn spawn_piece(roster: Roster, well: Well, id: int32) {
-  let (kind, index, rng) = draw_from_bag(well.bag, slice_get_int(roster.bag_index, id, 7),
+fn spawn_piece(roster: Roster, well: Wells, id: int32) {
+  let (kind, index, rng) = draw_from_bag_at(well.bag, id * 7, slice_get_int(roster.bag_index, id, 7),
                                          slice_get_int(roster.rng, id, 0));
   if index == 1 {
-    well.bag_text[0] = digits(well.bag, 7);
+    well.bag_text[id] = digits(well.bag, id * 7, 7);
   }
   roster.kind[id] = kind;
   roster.bag_index[id] = index;
@@ -87,58 +115,49 @@ fn spawn_piece(roster: Roster, well: Well, id: int32) {
   roster.rotation[id] = 0;
   roster.x[id] = 4;
   roster.y[id] = 1;
-  if !can_move(well.board, kind, 0, 4, 1) {
+  if !can_move_at(well.board, id * 200, kind, 0, 4, 1) {
     roster.alive[id] = 0;
   }
 }
 
-fn new_well(roster: Roster, id: int32) -> Well {
-  let board = make_board();
-  let mut []string board_text = [digits(board, 200)];
-  let mut []string bag_text = [""];
-  let well = Well{board, make_bag(), board_text, bag_text};
-  spawn_piece(roster, well, id);
-  well
-}
-
-fn settle(roster: Roster, well: Well, id: int32, kind: int32, rotation: int32, x: int32, y: int32) {
-  lock_piece(well.board, kind, rotation, x, y);
+fn settle(roster: Roster, well: Wells, id: int32, kind: int32, rotation: int32, x: int32, y: int32) {
+  lock_piece_at(well.board, id * 200, kind, rotation, x, y);
   let flags = make_row_flags();
-  let cleared = mark_full_rows(well.board, flags);
+  let cleared = mark_full_rows_at(well.board, id * 200, flags);
   if cleared > 0 {
-    apply_marked_clears(well.board, flags);
+    apply_marked_clears_at(well.board, id * 200, flags);
     let lines = slice_get_int(roster.lines, id, 0) + cleared;
     roster.lines[id] = lines;
     roster.score[id] = add_score(slice_get_int(roster.score, id, 0), lines / 10 + 1, cleared);
   }
-  well.board_text[0] = digits(well.board, 200);
+  well.dirty[id] = 1;
   spawn_piece(roster, well, id);
 }
 
-fn step_seat(roster: Roster, well: Well, id: int32, tick: int32, action: int32) {
+fn step_seat(roster: Roster, well: Wells, id: int32, tick: int32, action: int32) {
   if slice_get_int(roster.alive, id, 0) == 1 {
     let kind = slice_get_int(roster.kind, id, 0);
     let mut rotation = slice_get_int(roster.rotation, id, 0);
     let mut x = slice_get_int(roster.x, id, 4);
     let mut y = slice_get_int(roster.y, id, 1);
-    if action == 1 && can_move(well.board, kind, rotation, x - 1, y) {
+    if action == 1 && can_move_at(well.board, id * 200, kind, rotation, x - 1, y) {
       x = x - 1;
     }
-    if action == 2 && can_move(well.board, kind, rotation, x + 1, y) {
+    if action == 2 && can_move_at(well.board, id * 200, kind, rotation, x + 1, y) {
       x = x + 1;
     }
     if action == 3 {
-      let (turned, kicked_x) = rotate_piece(well.board, kind, rotation, x, y, 1);
+      let (turned, kicked_x) = rotate_piece_at(well.board, id * 200, kind, rotation, x, y, 1);
       rotation = turned;
       x = kicked_x;
     }
     if action == 4 {
-      y = ghost_y(well.board, kind, rotation, x, y);
+      y = ghost_y_at(well.board, id * 200, kind, rotation, x, y);
     }
     roster.rotation[id] = rotation;
     roster.x[id] = x;
     if action == 4 || tick % 4 == 0 {
-      if can_move(well.board, kind, rotation, x, y + 1) {
+      if can_move_at(well.board, id * 200, kind, rotation, x, y + 1) {
         roster.y[id] = y + 1;
       } else {
         settle(roster, well, id, kind, rotation, x, y);
@@ -147,11 +166,11 @@ fn step_seat(roster: Roster, well: Well, id: int32, tick: int32, action: int32) 
   }
 }
 
-fn digits(values: []int32, count: int32) -> string {
-  let []string symbols = ["0", "1", "2", "3", "4", "5", "6", "7"];
+fn digits(values: []int32, base: int32, count: int32) -> string {
+  let mut []string symbols = ["0", "1", "2", "3", "4", "5", "6", "7", "8"];
   let mut string result = "";
   for i in 0..count {
-    let digit = slice_get_int(values, i, 0);
+    let digit = slice_get_int(values, base + i, 0);
     match symbols[digit] {
       Option::Some(symbol) => { result = result + symbol; },
       Option::None => { return ""; },
@@ -160,7 +179,20 @@ fn digits(values: []int32, count: int32) -> string {
   result
 }
 
-fn emit_seat(tick: int32, id: int32, roster: Roster, well: Well) {
+fn projected(kind: int32, rotation: int32, x: int32, y: int32, cell: int32, alive: int32) -> int32 {
+  let col = x + cell_x(kind, rotation, cell);
+  let row = y + cell_y(kind, rotation, cell);
+  let mut index = -1;
+  if alive == 1 && row >= 0 && row < ROWS && col >= 0 && col < COLS {
+    index = row * COLS + col;
+  }
+  index
+}
+
+pub fn emit_slot(world: World, id: int32, rank: int32) {
+  let tick = current_tick(world);
+  let roster = world.roster;
+  let well = world.wells;
   let kind = slice_get_int(roster.kind, id, 0);
   let rotation = slice_get_int(roster.rotation, id, 0);
   let x = slice_get_int(roster.x, id, 0);
@@ -170,13 +202,25 @@ fn emit_seat(tick: int32, id: int32, roster: Roster, well: Well) {
   let alive = slice_get_int(roster.alive, id, 0);
   let rng = slice_get_int(roster.rng, id, 0);
   let bag_index = slice_get_int(roster.bag_index, id, 0);
-  let bag = match well.bag_text[0] {
+  let bag = match well.bag_text[id] {
     Option::Some(text) => text,
     Option::None => "",
   };
-  let board = match well.board_text[0] {
+  if slice_get_int(well.dirty, id, 0) == 1 {
+    well.board_text[id] = digits(well.board, id * 200, 200);
+    well.dirty[id] = 0;
+  }
+  let board = match well.board_text[id] {
     Option::Some(text) => text,
     Option::None => "",
   };
-  out(`S1 {tick} {id} {kind} {rotation} {x} {y} {lines} {score} {alive} {rng} {bag_index} {bag} {board}`);
+  if rank < 0 {
+    out(`S1 {tick} {id} {kind} {rotation} {x} {y} {lines} {score} {alive} {rng} {bag_index} {bag} {board}`);
+  } else {
+    let c0 = projected(kind, rotation, x, y, 0, alive);
+    let c1 = projected(kind, rotation, x, y, 1, alive);
+    let c2 = projected(kind, rotation, x, y, 2, alive);
+    let c3 = projected(kind, rotation, x, y, 3, alive);
+    out(`V2 {tick} {id} {kind} {rotation} {x} {y} {lines} {score} {alive} {rng} {bag_index} {bag} {board} {rank} {c0} {c1} {c2} {c3}`);
+  }
 }
