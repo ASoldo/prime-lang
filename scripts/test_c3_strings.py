@@ -352,6 +352,15 @@ class C3ProjectedBorrow(C3Program):
         self.assert_output(self.observe_print())
 
 
+class C3ProjectedLookup(C3Program):
+    module = "projected_lookup"
+    source = (FIXTURE.parent / module / "main.prime").read_text()
+    expected_output = (FIXTURE.parent / module / "expected.txt").read_bytes()
+
+    def test_fixed_array_get_after_mutation(self):
+        self.assert_output(self.observe_print())
+
+
 class C3IntegerOverflow(C3Program):
     source = """module c3_strings;
         fn byte(n: uint8) -> uint8 { n }

@@ -165,6 +165,20 @@ fn main() {
         """)
         self.compare("", "false\ntrue\n")
 
+    def test_fixed_array_get_after_mutation(self):
+        fixture = ROOT / "scripts/tests/fixtures/projected_lookup"
+        self.check_and_build((fixture / "main.prime").read_text())
+        self.compare("", (fixture / "expected.txt").read_text())
+
+    def test_fixed_array_get_requires_one_integer(self):
+        for lookup, message in (("values.get(false)", "an array index must be an integer"),
+                                ("values.get(0, 1)", "`get` expects one array index")):
+            with self.subTest(lookup=lookup):
+                self.source.write_text("module example; import core::prelude::{Option};\n"
+                                       "fn main() { let [1]int32 values = [7]; " + lookup + "; }")
+                report = json.loads(self.execute(self.cli, "check", self.source, "--format", "json", success=False))
+                self.assertEqual([d["message"] for d in report["diagnostics"]], [message])
+
     def test_projected_constant_initializer(self):
         self.check_and_build("""module example;
             struct Pair { x: int32; y: int32; }

@@ -2471,7 +2471,7 @@ impl Checker {
                         Some(make_option_type(args[1].clone()))
                     }
                     TypeExpr::Array { ty, .. } => {
-                        self.check_expression(module, index, Some(&int_type()), returns, env);
+                        self.check_array_index(module, index, returns, env);
                         Some(make_option_type((**ty).clone()))
                     }
                     other => {
@@ -4848,6 +4848,18 @@ impl Checker {
     ) -> Option<TypeExpr> {
         let target = strip_references(receiver);
         match target {
+            TypeExpr::Array { ty, .. } if method == "get" => {
+                if let [index] = args {
+                    self.check_array_index(module, index, returns, env);
+                } else {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        span,
+                        "`get` expects one array index",
+                    ));
+                }
+                Some(make_option_type((**ty).clone()))
+            }
             TypeExpr::Slice(inner) => {
                 self.check_slice_method(module, inner.as_ref(), method, args, returns, env, span)
             }
@@ -4870,6 +4882,25 @@ impl Checker {
                 self.check_float_method(module, method, args, returns, env, span)
             }
             _ => None,
+        }
+    }
+
+    fn check_array_index(
+        &mut self,
+        module: &Module,
+        index: &Expr,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) {
+        // Bounds checks use the index's own width, including on 32-bit targets.
+        if let Some(ty) = self.check_expression(module, index, None, returns, env)
+            && IntegerType::from_type(&ty, self.pointer_bits()).is_none()
+        {
+            self.errors.push(TypeError::new(
+                &module.path,
+                expr_span(index),
+                "an array index must be an integer",
+            ));
         }
     }
 

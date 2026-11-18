@@ -1,0 +1,26 @@
+module projected_lookup;
+import core::prelude::{Option};
+const WIDE: uint64 = 4294967297;
+
+fn bump(value: &mut int32) { *value = *value + 10; }
+
+fn main() {
+  let mut [3]int32 values = [3, 5, 7];
+  let mut int32 i = 0;
+  while i < 2 {
+    bump(&mut values[i]);
+    match values.get(i) { Some(x) => out(x), None => out("missing"), }
+    i = i + 1;
+  }
+  match values.get(0) { Some(x) => out(x), None => out("missing"), }
+  match values.get(1) { Some(x) => out(x), None => out("missing"), }
+  match values.get(i) { Some(x) => out(x), None => out("missing"), }
+
+  match values.get(-1) { Some(x) => out(x), None => out("negative"), }
+  match values.get(i - 3) { Some(x) => out(x), None => out("dynamic negative"), }
+  match values.get(i + 1) { Some(x) => out(x), None => out("at end"), }
+  match values.get(WIDE) { Some(x) => out(x), None => out("wide"), }
+  let mut uint64 wide = WIDE;
+  match values.get(wide) { Some(x) => out(x), None => out("dynamic wide"), }
+  match values[wide] { Some(x) => out(x), None => out("wide bracket"), }
+}
