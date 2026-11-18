@@ -1170,7 +1170,8 @@ impl<'a> Expander<'a> {
                 expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
                 span: *span,
             },
-            Expr::Async { block, span } => Expr::Async {
+            Expr::Async { block, span, .. } => Expr::Async {
+                captures: Default::default(),
                 block: Box::new(self.expand_block(block, scope_span, errors)),
                 span: *span,
             },

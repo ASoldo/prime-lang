@@ -55,11 +55,16 @@ tar -C "$scratch/unpacked" -xzf "$scratch/dist/$binary_bundle.tar.gz"
 cd "$scratch/consumer"
 cli="$scratch/unpacked/$binary_bundle/prime-lang"
 cat > main.prime <<'PRIME'
-out(6 * 7);
+import core;
+let answer = Option::Some(6 * 7);
+match answer {
+  Option::Some(n) => out(n),
+  Option::None => out(0),
+}
 PRIME
 printf '42\n' > expected
 "$cli" check - --format json < main.prime | python3 -c \
-  'import json, sys; r=json.load(sys.stdin); assert r["schema_version"] == 1 and r["outcome"] == "ok"'
+  'import json, sys; r=json.load(sys.stdin); assert r["schema_version"] == 1 and r["outcome"] == "ok" and "<bundled>/core.prime" in r["paths"]'
 "$cli" < main.prime > actual
 cmp expected actual
 "$cli" run - < main.prime > actual
