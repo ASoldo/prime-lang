@@ -327,14 +327,21 @@ class EmbeddedTimers(unittest.TestCase):
         self.assertEqual(elf[:6], b"\x7fELF\x01\x01")
         phoff = struct.unpack_from("<I", elf, 28)[0]
         phsize, phnum = struct.unpack_from("<HH", elf, 42)
+        # ELF load segments can share an aligned page, including the headers.
+        pages = {page for first, last, _ in self.cpu.mem_regions()
+                 for page in range(first, last + 1, 4096)}
         for i in range(phnum):
             kind, offset, addr, _, size, memsize, _, _ = struct.unpack_from(
                 "<8I", elf, phoff + i * phsize)
             if kind == 1 and memsize:
                 start = addr & ~4095
                 end = (addr + memsize + 4095) & ~4095
-                self.cpu.mem_map(start, end - start)
-                self.cpu.mem_write(addr, elf[offset:offset + size])
+                for page in range(start, end, 4096):
+                    if page not in pages:
+                        self.cpu.mem_map(page, 4096)
+                        pages.add(page)
+                if size:
+                    self.cpu.mem_write(addr, elf[offset:offset + size])
         symbols = subprocess.check_output(["llvm-nm", "--defined-only", path], text=True)
         names = {name: int(address, 16) for address, _, name in
                  (line.split() for line in symbols.splitlines())}
