@@ -1,0 +1,11 @@
+no_std parity demo start
+defer probe start guard=0
+defer ran guard=1
+async result parity joined
+async try parity ok 7
+match some 3
+timeout parity join 11
+await_timeout parity err 2000505063154167820296574927073
+await_cancel parity err 1921276901931175567871289524517
+await_cancel_timeout parity err 2555102203281222121549591150954
+no_std parity demo done
