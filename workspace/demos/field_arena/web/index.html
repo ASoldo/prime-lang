@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Riftwell · Prime Field Arena</title>
+<link rel="stylesheet" href="/arena.css">
+<header><div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span> PRIME FIELD ARENA</div><span id="linkState" role="status">Connecting…</span></header>
+<main>
+  <div class="title"><h1>Riftwell<span>.</span></h1><p id="phase">Joining arena</p></div>
+  <div class="arena">
+    <section class="local">
+      <div class="section-head"><h2>Your well</h2><span id="player">—</span></div>
+      <div class="well-wrap"><canvas id="well" width="240" height="480" aria-label="Your 10 by 20 playing field"></canvas></div>
+      <div class="controls" aria-label="Move controls">
+        <button data-action="1" aria-label="Move left" title="Move left (left arrow)">←</button>
+        <button data-action="2" aria-label="Move right" title="Move right (right arrow)">→</button>
+        <button data-action="3" title="Rotate (up arrow)">Rotate ↑</button>
+        <button data-action="4" title="Hard drop (space)">Drop ␣</button>
+      </div>
+    </section>
+    <section class="field">
+      <div class="metrics">
+        <div><span>Survivors</span><strong id="alive">—</strong></div>
+        <div><span>Your lines</span><strong id="lines">—</strong></div>
+        <div><span>Your score</span><strong id="score">—</strong></div>
+      </div>
+      <div class="section-head"><h2>Opposing wells</h2><span id="roster">—</span></div>
+      <div id="opponents" aria-label="Opponent boards"></div>
+      <div class="section-head"><h2>Match log</h2><span id="tick">Tick —</span></div>
+      <ol id="events"><li>Waiting for a snapshot.</li></ol>
+      <button id="start" hidden>Start match</button>
+      <button id="reconnect" hidden>Reconnect</button>
+    </section>
+  </div>
+  <footer><span id="transport"></span><span id="frameHash"></span></footer>
+</main>
+<script type="module" src="/arena.js"></script>
+</html>

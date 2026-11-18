@@ -1,0 +1,40 @@
+:root{color-scheme:dark;--paper:#f4efe5;--ink:#121715;--panel:#1c2420;--line:#39463e;--muted:#b3c2b7;--lime:#d6f283;--orange:#ffa27a;font-family:"Barlow",system-ui,sans-serif;color:var(--paper);background:var(--ink)}
+*{box-sizing:border-box}
+body{margin:0}
+header,main{max-width:1020px;margin:auto;padding:0 clamp(16px,4vw,54px)}
+header{height:62px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);font-size:.74rem;letter-spacing:.11em}
+.brand,.section-head,.title,footer{display:flex;align-items:center;justify-content:space-between;gap:.65rem}
+.brand{font-weight:800}
+.mark{display:grid;grid-template-columns:repeat(3,6px);gap:2px;transform:skewY(-9deg)}
+.mark i{height:7px;background:var(--lime)}
+.mark i:last-child{grid-column:2}
+#linkState{color:var(--muted);letter-spacing:0}
+#linkState[data-live="true"]{color:var(--lime)}
+.title{align-items:baseline;padding:22px 0 17px;flex-wrap:wrap}
+h1,h2,p{margin:0}
+h1{font-family:"Barlow Condensed",Impact,"Arial Narrow",sans-serif;font-size:clamp(3.5rem,8vw,5rem);font-weight:850;letter-spacing:-.07em;line-height:1}
+h1 span{color:var(--orange)}
+#phase{color:var(--orange);font:600 .95rem ui-monospace,monospace}
+.arena{display:grid;grid-template-columns:minmax(195px, .78fr) minmax(280px,1.35fr);gap:clamp(18px,4vw,46px)}
+.section-head{border-top:1px solid var(--line);padding:12px 0}
+h2{font-size:1.03rem;letter-spacing:-.02em}
+.section-head span,footer,.metrics span,.opponent figcaption,#events{font: .74rem/1.4 ui-monospace,monospace;color:var(--muted)}
+.well-wrap{display:grid;place-items:center;background:var(--panel);padding:14px;border:1px solid var(--line);border-radius:6px}
+#well{width:min(100%,23vh,208px);height:auto;display:block;border:1px solid #657363;box-sizing:content-box}
+.controls{display:flex;gap:4px;margin-top:8px;flex-wrap:wrap}
+button{font:600 .82rem system-ui;color:var(--paper);background:#27312b;border:1px solid #56655a;padding:7px 11px;border-radius:4px;cursor:pointer}
+button:hover,button:focus-visible{color:var(--ink);background:var(--lime)}
+button:disabled{opacity:.55;cursor:default}
+#start,#reconnect{background:var(--lime);color:var(--ink);padding:9px 16px;margin-top:12px}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:20px}
+.metrics div{background:var(--panel);padding:14px 10px;border-radius:5px}
+.metrics strong{display:block;color:var(--lime);font-size:clamp(1.35rem,3vw,2.25rem);font-variant-numeric:tabular-nums;letter-spacing:-.05em}
+#opponents{display:flex;gap:8px;flex-wrap:wrap;align-content:start;max-height:280px;overflow:auto;padding:0 0 12px}
+.opponent{margin:0;background:var(--panel);padding:6px;border-radius:4px}
+.opponent canvas{display:block;width:36px;height:72px;margin:auto}
+.opponent figcaption{text-align:center;font-size:.64rem;margin-top:3px}
+.opponent[data-out="true"] canvas{opacity:.4}
+#events{padding:0;list-style:none;margin:0;max-height:94px;overflow:auto}
+#events li{padding:3px 0}
+footer{border-top:1px solid var(--line);margin-top:20px;padding:11px 0;flex-wrap:wrap}
+@media(max-width:580px){.arena{grid-template-columns:minmax(150px,.92fr) minmax(126px,1fr);gap:12px}.metrics{grid-template-columns:1fr;gap:2px;margin-bottom:12px}.metrics div{display:flex;align-items:center;justify-content:space-between;padding:4px 8px}.metrics strong{font-size:1.1rem}.well-wrap{padding:5px}.section-head{align-items:start;flex-wrap:wrap;gap:2px}.controls button{padding:5px 7px}header{height:44px}#opponents{max-height:165px}.title{padding:15px 0}}
