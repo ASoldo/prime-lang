@@ -1,0 +1,26 @@
+//! Two-slot cancellation token lifetime probe for classic ESP32 UART0.
+module demos::esp32_token_owners;
+
+fn main() {
+  out("token owners start");
+  let anchor = cancel_token();
+  let mut int32 shared = 0;
+  let mut int32 full = 0;
+  for i in 0..100 {
+    let token = cancel_token();
+    let alias = token;
+    let extra = cancel_token();
+    if is_cancelled(extra) { full = full + 1; }
+    if !is_cancelled(alias) {
+      cancel(token);
+      if is_cancelled(alias) && !is_cancelled(anchor) { shared = shared + 1; }
+    }
+  }
+  out(`token owners shared {shared}/100 full {full}/100`);
+  let next = cancel_token();
+  if shared == 100 && full == 100 && !is_cancelled(anchor) && !is_cancelled(next) {
+    out("token owners PASS");
+  } else {
+    out("token owners FAIL");
+  }
+}

@@ -1,0 +1,11 @@
+module demo;
+struct Leaf { address: *int32; }
+enum Packet[T] { Item(T), Empty }
+struct Envelope { nested: Packet[Leaf]; }
+fn captured(e: Envelope) { let task = async { let copy = e; 1 }; }
+fn returned(t: Task[Envelope]) { let e = await t; }
+fn guarded(t: Task[Envelope]) { let e = await_timeout(t, 1); }
+fn inferred(x: int32) { let p = Packet::Item(&x); let t = async { let q = p; 1 }; }
+fn explicit(x: int32) { let t = async { return &x; }; }
+fn assign(x: int32) { let mut updated = Packet::Empty(); updated = Packet::Item(&x); let t = async { let r = updated; 1 }; }
+fn spawned(e: Envelope) { let t = spawn e; }

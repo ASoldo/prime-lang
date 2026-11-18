@@ -96,14 +96,7 @@ fn parity_probe() -> Result[int32, string] {
   let _ = send(tx, 7);
   close(tx);
 
-  let joined = join(worker);
-  match joined {
-    Result::Ok(v) => Result::Ok(v),
-    Result::Err(msg) => Result::Err(msg),
-    Option::Some(v) => Result::Ok(v),
-    Option::None => Result::Err("empty channel (join)"),
-    _ => Result::Err("parity probe unexpected join value"),
-  }
+  await join(worker)
 }
 
 /// Exercises sending a `Result` through a channel and transforming it in a task.

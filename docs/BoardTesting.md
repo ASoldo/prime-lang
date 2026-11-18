@@ -29,6 +29,22 @@ The program drives GPIO2 low, high and low again, sampling the physical pad afte
 
 On an ESP32-D0WD-V3 revision 3.0 with a CP2102 UART bridge, this probe originally read zero after driving GPIO2 high. After the GPIO runtime fix the same board returned all eight expected lines. The test fixture preserves the boot and application output with line endings and trailing whitespace normalized. [Physical UART capture](../scripts/tests/fixtures/esp32_d0wd_v3_board_io.uart)
 
+## Two-slot cancellation token probe
+
+On the classic ESP32, build the probe with two runtime slots. The program keeps one token alive while it repeatedly allocates the second slot, checks that a third allocation is cancelled, and observes cancellation of the second token through its alias. The last check allocates the second slot once more. [Probe source](../workspace/demos/no_std_parity/token_owners.prime)
+
+```sh
+PRIME_RT_CANCEL_TOKEN_SLOTS=2 prime-lang build workspace/demos/no_std_parity/token_owners.prime --name token_owners --no-flash
+```
+
+After installing the application with the normal ESP32 bootloader and partition table, capture UART0 at 115200 baud, 8N1. A successful run prints the following lines.
+
+```text
+token owners start
+token owners shared 100/100 full 100/100
+token owners PASS
+```
+
 ## Offline check
 
 The first fixture is a synthetic transcript of the eleven required lines, in order. It should exit 0. The second is the application output from an Espressif QEMU run of `c825d5f`, saved with LF line endings. It should exit 1 at `await_timeout parity err`, where the firmware printed `2000505063154167820296574927073` in place of `timeout`. Both commands run without a board.

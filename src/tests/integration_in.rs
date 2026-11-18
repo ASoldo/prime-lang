@@ -957,3 +957,28 @@ fn esp32_blink_smoke_builds_when_enabled() {
         .expect("run esp32 blink build");
     assert!(status.success(), "esp32 blink build failed");
 }
+
+#[test]
+fn token_owners_agree_in_host_interpreter_and_native_binary() {
+    let dir = tempdir().unwrap();
+    let entry = dir.path().join("main.prime");
+    fs::write(
+        &entry,
+        include_str!("../../scripts/tests/fixtures/task_ownership/main.prime"),
+    )
+    .unwrap();
+    let interpreted = Command::new(bin_path())
+        .current_dir(dir.path())
+        .args(["run", "main.prime"])
+        .output()
+        .unwrap();
+    assert!(interpreted.status.success(), "{interpreted:?}");
+    let program = build_demo(dir.path(), &entry, "owners");
+    let native = Command::new(program).output().unwrap();
+    assert!(native.status.success(), "{native:?}");
+    assert_eq!(native.stdout, interpreted.stdout);
+    assert_eq!(
+        String::from_utf8(native.stdout).unwrap(),
+        "serial ok\nold alias ok\nloop exits ok\nescaping capture ok\ncapture ok\npool available\nguard ran\nindependent ok\nreuse ok\n"
+    );
+}

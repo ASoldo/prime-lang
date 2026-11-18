@@ -444,7 +444,7 @@ impl Compiler {
                 Ok(())
             }
             Value::CancelToken(token) => {
-                if let Some(handle) = token.handle {
+                if let Some(handle) = token.handle.filter(|_| self.target.is_host()) {
                     self.emit_runtime_print(handle);
                     Ok(())
                 } else {
@@ -697,6 +697,11 @@ impl Compiler {
                 }
                 Err("join handle missing runtime backing".into())
             }
+            // Token values and static Prime aggregates carry an ownership claim.
+            // The embedded ABI's scratch aggregates have no payload destructor.
+            Value::CancelToken(_) if self.target.is_embedded() => Err(
+                "cannot store CancelToken in an embedded ABI container; capture the owned token in an async block".into()
+            ),
             Value::CancelToken(token) => token
                 .handle
                 .ok_or_else(|| "cancel token missing runtime backing".to_string()),

@@ -147,6 +147,7 @@ pub struct Compiler {
     build_clock_ms: i128,
     pending_runtime: Option<LLVMValueRef>,
     force_runtime_handles: bool,
+    token_owners: Vec<TokenOwner>,
     host_task_entry: Option<LLVMValueRef>,
     loop_controls: Vec<LoopControl>,
 }
@@ -272,8 +273,18 @@ struct PointerValue {
     origin: Option<String>,
 }
 
+// One runtime ownership claim backs immutable copies of a compiler value. The
+// weak marker follows ordinary Value clones, including nested values and captures.
+struct TokenOwner {
+    lifetime: std::sync::Weak<AtomicBool>,
+    loop_depth: usize,
+    early_exits: Vec<(LLVMBasicBlockRef, LLVMValueRef)>,
+    slot: LLVMValueRef,
+}
+
 #[derive(Clone)]
 struct CancelTokenValue {
+    binding_slot: Option<LLVMValueRef>,
     handle: Option<LLVMValueRef>,
     cancelled: Arc<AtomicBool>,
 }
@@ -281,6 +292,7 @@ struct CancelTokenValue {
 impl CancelTokenValue {
     fn new_build() -> Self {
         Self {
+            binding_slot: None,
             handle: None,
             cancelled: Arc::new(AtomicBool::new(false)),
         }
@@ -288,6 +300,7 @@ impl CancelTokenValue {
 
     fn with_handle(handle: LLVMValueRef) -> Self {
         Self {
+            binding_slot: None,
             handle: Some(handle),
             cancelled: Arc::new(AtomicBool::new(false)),
         }
@@ -406,7 +419,7 @@ struct TaskValue {
 #[derive(Clone)]
 struct DeferredTask {
     block: Block,
-    capture_names: Vec<String>,
+    captures: Vec<(String, EvaluatedValue)>,
 }
 
 struct ChannelState {
@@ -622,15 +635,12 @@ impl TaskValue {
         }
     }
 
-    fn deferred(block: Block, capture_names: Vec<String>) -> Self {
+    fn deferred(block: Block, captures: Vec<(String, EvaluatedValue)>) -> Self {
         Self {
             state: Rc::new((Mutex::new(None), Condvar::new())),
             handle: None,
             kind: TaskResultKind::Deferred,
-            pending: Some(Rc::new(Mutex::new(Some(DeferredTask {
-                block,
-                capture_names,
-            })))),
+            pending: Some(Rc::new(Mutex::new(Some(DeferredTask { block, captures })))),
         }
     }
 
@@ -687,13 +697,7 @@ impl TaskValue {
                     .map_err(|_| "deferred task poisoned".to_string())?
                     .take()
                     .ok_or_else(|| "deferred task already taken".to_string())?;
-                let mut captures = Vec::new();
-                for name in task.capture_names {
-                    if let Some(value) = compiler.get_var(&name) {
-                        captures.push((name, value));
-                    }
-                }
-                compiler.eval_async_block(&task.block, &captures)
+                compiler.eval_async_block(&task.block, &task.captures)
             }
         }
     }
@@ -1682,6 +1686,7 @@ impl Compiler {
                 build_clock_ms: 0,
                 pending_runtime: None,
                 force_runtime_handles: false,
+                token_owners: Vec::new(),
                 host_task_entry: None,
                 loop_controls: Vec::new(),
             };
@@ -2193,6 +2198,7 @@ impl Compiler {
         self.host_task_entry = None;
         self.pending_runtime = None;
         self.loop_controls.clear();
+        self.token_owners.clear();
         self.scopes.clear();
         self.active_mut_borrows.clear();
         self.borrow_frames.clear();

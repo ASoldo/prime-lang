@@ -442,6 +442,7 @@ fn build_spawn_join_returns_value() {
     with_build_parallel(|| {
         let mut compiler = Compiler::new();
         let expr = Expr::Spawn {
+            captures: Default::default(),
             expr: Box::new(Expr::Literal(Literal::Int(9, Span::new(0, 0)))),
             span: Span::new(0, 0),
         };
@@ -497,6 +498,7 @@ fn build_spawn_join_returns_closure() {
             span,
         };
         let spawn_expr = Expr::Spawn {
+            captures: Default::default(),
             expr: Box::new(closure_expr),
             span,
         };
@@ -536,7 +538,9 @@ fn build_nested_spawn_join_roundtrips() {
         let mut compiler = Compiler::new();
         let span = Span::new(0, 0);
         let expr = Expr::Spawn {
+            captures: Default::default(),
             expr: Box::new(Expr::Spawn {
+                captures: Default::default(),
                 expr: Box::new(Expr::Literal(Literal::Int(3, span))),
                 span,
             }),

@@ -15,9 +15,13 @@ Each allocation issues a pointer-sized opaque channel ID. Earlier IDs continue t
 
 ## Token pool lifetime
 
-The embedded ABI reserves 16 token slots by default (`PRIME_RT_CANCEL_TOKEN_SLOTS`). Allocation returns a null handle on exhaustion. Cancelling that handle returns `Invalid` and querying it returns false. Cancelling a live token leaves it available to every task sharing the token.
+The default embedded capacity is 16 simultaneously live cancellation tokens. Set `PRIME_RT_CANCEL_TOKEN_SLOTS` when building to change it. A successful `cancel_token()` starts clear. Bindings, function results and deferred task captures keep the token alive. All copies see the same cancellation flag. The slot becomes available on final release, including when a scope drops an unawaited task.
 
-The compiler passes the same raw handle for token uses. Its current scope cleanup schedules drops for structs and enums, and emits no final release when a token binding goes out of scope. The embedded retain/release operations also carry no ownership accounting. Recycling on first cancellation, await, or apparent last use could make an existing alias observe or cancel a later token. A compiler/runtime contract for the last owner is required before a slot can be safely reused.
+The Prime API keeps its `CancelToken` return type. When all slots are occupied, the returned token is already cancelled and stays cancelled. Existing tokens keep their state. A pending guarded wait observes cancellation immediately. A deferred block checks the token before starting. As with an explicitly cancelled token, a completed task takes precedence.
+
+At the C ABI, a successful `prime_cancel_token_new` or `prime_value_retain` returns one owned handle. Balance each with `prime_value_release`. Handles encode a slot and its generation. Cancellation of a released generation returns `Invalid`, and release of a stale generation is harmless. Exhaustion returns null, which queries as cancelled. A token supports 511 simultaneous ABI claims. An additional retain returns null. A slot retires when its generation can no longer fit in the state or handle. Neither counter wraps.
+
+Static Prime aggregates can contain tokens and can be captured by an embedded async block. The embedded channel and scratch runtime aggregate formats have no owned token fields. Native code generation diagnoses attempts to store tokens through those formats. Share the token directly with the async block in this case.
 
 ## Host regression
 
@@ -26,6 +30,8 @@ With Rust's `riscv32imc-unknown-none-elf` target, `ld.lld`, `llvm-objcopy`, `llv
 ```sh
 python3 scripts/test_embedded_timers.py
 ```
+
+To exercise the compiler and ABI together, copy [the Prime fixture](../scripts/tests/fixtures/task_ownership/main.prime) into a C3 project with its linker script and startup object configured. Build it with `PRIME_RT_CANCEL_TOKEN_SLOTS=2 prime-lang build main.prime --name ownership --no-flash`. Set `PRIME_TOKEN_PROBE_ELF` to the absolute path of the resulting ELF and run the Python probe. It executes the CLI-linked `main`, observes the selected string arguments at the C3 print boundary, and checks 100 serial allocations, shared and escaped owners, loop exits, exhaustion and reuse. The host integration test runs the same fixture with the interpreter and emitted x86-64 binary. The unbounded host allocator also satisfies the third simultaneous allocation.
 
 The probe runs the real RV32IMC ABI in host emulation with a controlled SYSTIMER snapshot. It exercises submillisecond starts, counter rollover, distant deadlines, cancellation, task slot reuse, channel FIFO wrap and draining, simultaneous waiters, stale handles, receive timeouts and token exhaustion. Board startup, electrical clock accuracy and the Xtensa peripheral still require hardware verification.
 

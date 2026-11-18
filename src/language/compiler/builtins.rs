@@ -46,7 +46,7 @@ impl Compiler {
             );
             Ok(())
         } else {
-            *reference.cell.lock().unwrap() = value;
+            self.store_cell(&reference.cell, value);
             Ok(())
         }
     }
@@ -208,7 +208,9 @@ impl Compiler {
                     );
                     Ok(CancelTokenValue::with_handle(handle))
                 } else {
-                    let inner = reference.cell.lock().unwrap().clone().into_value();
+                    let inner = self
+                        .read_token_binding(reference.cell.lock().unwrap().clone())
+                        .into_value();
                     self.expect_cancel_token(inner, ctx)
                 }
             }
@@ -1621,7 +1623,11 @@ impl Compiler {
                 &mut call_args,
                 "cancel_token_new",
             );
-            return Ok(Value::CancelToken(CancelTokenValue::with_handle(handle)));
+            let token = CancelTokenValue::with_handle(handle);
+            if self.target.is_embedded() {
+                self.track_owned_token(&token, handle);
+            }
+            return Ok(Value::CancelToken(token));
         }
         Ok(Value::CancelToken(CancelTokenValue::new_build()))
     }

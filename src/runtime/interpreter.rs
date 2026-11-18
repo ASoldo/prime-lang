@@ -885,11 +885,14 @@ impl Interpreter {
         Ok(())
     }
 
-    fn clone_for_spawn(&self) -> Interpreter {
+    fn clone_for_spawn(&self, captures: Option<&[String]>) -> Interpreter {
         Interpreter {
             integers: self.integers.clone(),
             package: self.package.clone(),
-            env: self.env.clone(),
+            env: captures.map_or_else(
+                || self.env.clone(),
+                |names| self.env.task_environment(names),
+            ),
             structs: self.structs.clone(),
             enum_variants: self.enum_variants.clone(),
             functions: self.functions.clone(),
@@ -3599,11 +3602,13 @@ impl Interpreter {
             },
             Expr::ArrayLiteral(values, _) => self.eval_array_literal(values),
             Expr::Move { expr, .. } => self.eval_move_expression(expr).map(EvalOutcome::Value),
-            Expr::Async { block, .. } => {
+            Expr::Async {
+                block, captures, ..
+            } => {
                 require_std_builtins("async")?;
                 self.bootstrap()?;
                 let block_clone = block.clone();
-                let child = self.clone_for_spawn();
+                let child = self.clone_for_spawn(captures.read().unwrap().as_deref());
                 let rt = self.async_runtime.clone();
                 let handle = rt.spawn(move || {
                     let mut runner = child;
@@ -3648,11 +3653,11 @@ impl Interpreter {
                 }),
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
-            Expr::Spawn { expr, .. } => {
+            Expr::Spawn { expr, captures, .. } => {
                 require_std_builtins("spawn")?;
                 self.bootstrap()?;
                 let expr_clone = expr.clone();
-                let child = self.clone_for_spawn();
+                let child = self.clone_for_spawn(captures.read().unwrap().as_deref());
                 let handle = thread::spawn(move || {
                     let mut runner = child;
                     match runner.eval_expression(&expr_clone) {

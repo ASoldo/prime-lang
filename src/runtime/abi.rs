@@ -271,11 +271,94 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    #[repr(align(2))] // The low bit of an embedded handle identifies a channel.
-    #[derive(Debug)]
-    struct CancelTokenSlot {
-        used: AtomicBool,
-        cancelled: AtomicBool,
+    mod tokens {
+        use super::*;
+
+        // One atomic word makes generation checks and ownership changes indivisible.
+        // A token ID ends in 10, channel IDs are odd and ABI objects are word-aligned.
+        const CANCELLED: usize = 1;
+        const OWNER: usize = 2;
+        const EPOCH: usize = 1 << 10;
+        const OWNERS: usize = EPOCH - OWNER;
+        static SLOTS: [AtomicUsize; PRIME_CANCEL_TOKEN_SLOTS] =
+            [const { AtomicUsize::new(0) }; PRIME_CANCEL_TOKEN_SLOTS];
+
+        fn update(slot: &AtomicUsize, change: impl Fn(usize) -> Option<usize>) -> Option<usize> {
+            #[cfg(target_arch = "xtensa")]
+            {
+                slot.fetch_update(Ordering::SeqCst, Ordering::SeqCst, change)
+                    .ok()
+            }
+            #[cfg(target_arch = "riscv32")]
+            with_interrupts_masked(|| {
+                let old = slot.load(Ordering::SeqCst);
+                slot.store(change(old)?, Ordering::SeqCst);
+                Some(old)
+            })
+        }
+
+        pub fn new() -> PrimeHandle {
+            for (index, slot) in SLOTS.iter().enumerate() {
+                let allocated = update(slot, |old| {
+                    if old & OWNERS != 0 {
+                        return None;
+                    }
+                    let epoch = (old / EPOCH).checked_add(1)?;
+                    let id = epoch.checked_mul(SLOTS.len())?.checked_add(index)?;
+                    id.checked_mul(4)?.checked_add(2)?;
+                    Some(epoch.checked_mul(EPOCH)? | OWNER)
+                });
+                if let Some(old) = allocated {
+                    let id = ((old / EPOCH + 1) * SLOTS.len() + index) * 4 + 2;
+                    return PrimeHandle(ptr::without_provenance_mut(id));
+                }
+            }
+            PrimeHandle::null()
+        }
+
+        pub fn is_handle(handle: PrimeHandle) -> bool {
+            handle.0.addr() & 3 == 2
+        }
+
+        fn change(handle: PrimeHandle, f: impl Fn(usize) -> Option<usize>) -> Option<usize> {
+            let raw = handle.0.addr();
+            if !is_handle(handle) {
+                return None;
+            }
+            let id = raw / 4;
+            update(&SLOTS[id % SLOTS.len()], |state| {
+                if state & OWNERS != 0 && state / EPOCH == id / SLOTS.len() {
+                    f(state)
+                } else {
+                    None
+                }
+            })
+        }
+
+        pub fn retain(handle: PrimeHandle) -> PrimeHandle {
+            if is_handle(handle)
+                && change(handle, |s| (s & OWNERS != OWNERS).then(|| s + OWNER)).is_none()
+            {
+                return PrimeHandle::null();
+            }
+            handle
+        }
+
+        pub fn release(handle: PrimeHandle) {
+            change(handle, |s| Some(s - OWNER));
+        }
+
+        pub fn cancel(handle: PrimeHandle) -> PrimeStatus {
+            if change(handle, |s| Some(s | CANCELLED)).is_some() {
+                PrimeStatus::Ok
+            } else {
+                PrimeStatus::Invalid
+            }
+        }
+
+        pub fn is_cancelled(handle: PrimeHandle) -> bool {
+            change(handle, Some).is_none_or(|s| s & CANCELLED != 0)
+        }
     }
 
     #[cfg(any(
@@ -301,18 +384,6 @@ mod embedded {
             result: UnsafeCell::new(PrimeHandle::null()),
         }
     }; PRIME_TASK_SLOTS];
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    static CANCEL_TOKEN_SLOTS: [CancelTokenSlot; PRIME_CANCEL_TOKEN_SLOTS] = [const {
-        CancelTokenSlot {
-            used: AtomicBool::new(false),
-            cancelled: AtomicBool::new(false),
-        }
-    };
-        PRIME_CANCEL_TOKEN_SLOTS];
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -573,34 +644,6 @@ mod embedded {
         slot.used.store(false, Ordering::SeqCst);
     }
 
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn alloc_cancel_token_slot() -> Option<&'static CancelTokenSlot> {
-        for slot in CANCEL_TOKEN_SLOTS.iter() {
-            if claim_slot(&slot.used) {
-                slot.cancelled.store(false, Ordering::SeqCst);
-                return Some(slot);
-            }
-        }
-        None
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn cancel_token_from_handle(handle: PrimeHandle) -> Option<&'static CancelTokenSlot> {
-        if handle.0.is_null() {
-            return None;
-        }
-        let ptr = handle.0 as *const CancelTokenSlot;
-        CANCEL_TOKEN_SLOTS
-            .iter()
-            .find(|slot| slot.used.load(Ordering::SeqCst) && *slot as *const CancelTokenSlot == ptr)
-    }
-
     // Required FFI entry points used by the compiler (embedded).
     #[cfg(any(
         target_arch = "xtensa",
@@ -608,7 +651,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_value_retain")]
     pub unsafe extern "C" fn prime_value_retain(value: PrimeHandle) -> PrimeHandle {
-        value
+        tokens::retain(value)
     }
 
     #[cfg(any(
@@ -616,7 +659,9 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     #[unsafe(export_name = "prime_value_release")]
-    pub unsafe extern "C" fn prime_value_release(_value: PrimeHandle) {}
+    pub unsafe extern "C" fn prime_value_release(value: PrimeHandle) {
+        tokens::release(value);
+    }
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -681,6 +726,10 @@ mod embedded {
         } else {
             PrimeHandle::null()
         };
+        if tokens::is_handle(payload) {
+            // This scratch ABI record cannot own or release payloads.
+            return PrimeHandle::null();
+        }
         alloc_enum(_tag, payload, _values_len)
     }
 
@@ -773,6 +822,10 @@ mod embedded {
         };
         if slot.closed.load(Ordering::SeqCst) {
             return PrimeStatus::Closed;
+        }
+        if tokens::is_handle(_value) {
+            // recv_task wraps channel payloads in a scratch Option record.
+            return PrimeStatus::Invalid;
         }
         let len = unsafe { *slot.len.get() };
         if len >= PRIME_CHANNEL_CAP {
@@ -1446,7 +1499,8 @@ mod embedded {
     ) -> PrimeStatus {
         if let Some(slot) = task_from_handle(_task) {
             detach_channel_waiters(slot);
-            unsafe { *slot.result.get() = _value };
+            let owned = prime_value_retain(_value);
+            prime_value_release(unsafe { slot.result.get().replace(owned) });
             slot.done.store(true, Ordering::SeqCst);
             return PrimeStatus::Ok;
         }
@@ -1465,7 +1519,7 @@ mod embedded {
         detach_channel_waiters(slot);
         slot.done.store(false, Ordering::SeqCst);
         unsafe {
-            *slot.result.get() = PrimeHandle::null();
+            prime_value_release(slot.result.get().replace(PrimeHandle::null()));
             *slot.deadline_ticks.get() = 0;
         }
         slot.used.store(false, Ordering::SeqCst);
@@ -1482,10 +1536,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_cancel_token_new")]
     pub unsafe extern "C" fn prime_cancel_token_new() -> PrimeHandle {
-        let Some(slot) = alloc_cancel_token_slot() else {
-            return PrimeHandle::null();
-        };
-        PrimeHandle(slot as *const CancelTokenSlot as *mut c_void)
+        tokens::new()
     }
 
     #[cfg(any(
@@ -1494,11 +1545,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_cancel_token_cancel")]
     pub unsafe extern "C" fn prime_cancel_token_cancel(token: PrimeHandle) -> PrimeStatus {
-        let Some(slot) = cancel_token_from_handle(token) else {
-            return PrimeStatus::Invalid;
-        };
-        slot.cancelled.store(true, Ordering::SeqCst);
-        PrimeStatus::Ok
+        tokens::cancel(token)
     }
 
     #[cfg(any(
@@ -1507,9 +1554,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_cancel_token_is_cancelled")]
     pub unsafe extern "C" fn prime_cancel_token_is_cancelled(token: PrimeHandle) -> bool {
-        cancel_token_from_handle(token)
-            .map(|slot| slot.cancelled.load(Ordering::SeqCst))
-            .unwrap_or(false)
+        tokens::is_cancelled(token)
     }
 
     #[cfg(any(

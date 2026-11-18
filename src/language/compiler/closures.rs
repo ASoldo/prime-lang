@@ -555,6 +555,7 @@ impl Compiler {
             LLVMPositionBuilderAtEnd(self.builder, entry_block);
         }
 
+        let outer_owners = mem::take(&mut self.token_owners);
         self.push_scope();
         self.push_return_types(&info.signature.returns);
 
@@ -640,6 +641,8 @@ impl Compiler {
             }
         }
 
+        self.release_dead_tokens();
+        self.token_owners = outer_owners;
         if saved_block.is_null() {
             unsafe {
                 LLVMPositionBuilderAtEnd(self.builder, entry_block);

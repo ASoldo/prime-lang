@@ -1136,7 +1136,8 @@ impl<'a> Expander<'a> {
                 expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
                 span: *span,
             },
-            Expr::Spawn { expr, span } => Expr::Spawn {
+            Expr::Spawn { expr, span, .. } => Expr::Spawn {
+                captures: Default::default(),
                 expr: Box::new(self.expand_expr(expr, depth + 1, scope_span, errors)),
                 span: *span,
             },
@@ -1425,7 +1426,8 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
-        Expr::Async { block, span } => Expr::Async {
+        Expr::Async { block, span, .. } => Expr::Async {
+            captures: Default::default(),
             block: Box::new(substitute_block(*block, subst)),
             span,
         },
@@ -1434,7 +1436,8 @@ fn substitute_expr(expr: Expr, subst: &Substitution) -> Expr {
             expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
-        Expr::Spawn { expr, span } => Expr::Spawn {
+        Expr::Spawn { expr, span, .. } => Expr::Spawn {
+            captures: Default::default(),
             expr: Box::new(substitute_expr(*expr, subst)),
             span,
         },
@@ -2150,7 +2153,8 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },
-        Expr::Async { block, span } => Expr::Async {
+        Expr::Async { block, span, .. } => Expr::Async {
+            captures: Default::default(),
             block: Box::new(rename_block(*block, map)),
             span,
         },
@@ -2159,7 +2163,8 @@ fn rename_expr(expr: Expr, map: &HashMap<String, String>) -> Expr {
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },
-        Expr::Spawn { expr, span } => Expr::Spawn {
+        Expr::Spawn { expr, span, .. } => Expr::Spawn {
+            captures: Default::default(),
             expr: Box::new(rename_expr(*expr, map)),
             span,
         },

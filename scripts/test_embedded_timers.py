@@ -6,13 +6,14 @@ Python's unicorn package (2.1+). Run with python3 scripts/test_embedded_timers.p
 
 from pathlib import Path
 import os
+import struct
 import subprocess
 import tempfile
 import unittest
 
-from unicorn import Uc, UC_ARCH_RISCV, UC_MODE_RISCV32
+from unicorn import Uc, UC_ARCH_RISCV, UC_MODE_RISCV32, UC_HOOK_CODE
 from unicorn.riscv_const import (
-    UC_RISCV_REG_A0, UC_RISCV_REG_MSTATUS, UC_RISCV_REG_PC,
+    UC_RISCV_REG_A0, UC_RISCV_REG_GP, UC_RISCV_REG_MSTATUS, UC_RISCV_REG_PC,
     UC_RISCV_REG_RA, UC_RISCV_REG_SP,
 )
 
@@ -283,6 +284,80 @@ class EmbeddedTimers(unittest.TestCase):
         self.assertTrue(self.call("cancel_token_is_cancelled", alias))
         self.assertFalse(self.call("cancel_token_is_cancelled", second))
         self.assertEqual(self.call("cancel_token_new"), 0)
+
+        self.assertTrue(self.call("cancel_token_is_cancelled", 0))
+        self.assertEqual(self.call("cancel_token_cancel", 0), 1)
+        self.call("value_release", alias)
+        for _ in range(100):
+            fresh = self.call("cancel_token_new")
+            self.assertTrue(fresh)
+            self.assertNotEqual(fresh, first)
+            self.assertEqual(self.call("cancel_token_cancel", first), 1)
+            self.call("value_release", first)
+            self.assertFalse(self.call("cancel_token_is_cancelled", fresh))
+            self.call("value_release", fresh)
+        self.assertFalse(self.call("cancel_token_is_cancelled", second))
+        self.call("value_release", second)
+
+    def test_token_retain_overflow_and_task_result(self):
+        owner = self.call("cancel_token_new")
+        claims = [self.call("value_retain", owner) for _ in range(510)]
+        self.assertEqual(claims, [owner] * 510)
+        self.assertEqual(self.call("value_retain", owner), 0)
+        for alias in claims:
+            self.call("value_release", alias)
+        self.assertFalse(self.call("cancel_token_is_cancelled", owner))
+
+        task = self.sleep_task(100)
+        self.assertEqual(self.call("task_wake", task, owner), 0)
+        self.call("value_release", owner)
+        self.assertEqual(self.call("task_poll", task, OUT), 0)
+        returned = self.read_word(OUT)
+        self.assertEqual(returned, owner)
+        self.assertFalse(self.call("cancel_token_is_cancelled", returned))
+        self.call("value_release", returned)
+        self.assertEqual(self.call("cancel_token_cancel", owner), 1)
+
+    @unittest.skipUnless(os.environ.get("PRIME_TOKEN_PROBE_ELF"), "supply two-slot Prime firmware ELF")
+    def test_compiled_token_owners(self):
+        # Execute the CLI-linked firmware and read the C3 PrimeString passed to
+        # each print call before any later call can affect the observed output.
+        path = Path(os.environ["PRIME_TOKEN_PROBE_ELF"])
+        elf = path.read_bytes()
+        self.assertEqual(elf[:6], b"\x7fELF\x01\x01")
+        phoff = struct.unpack_from("<I", elf, 28)[0]
+        phsize, phnum = struct.unpack_from("<HH", elf, 42)
+        for i in range(phnum):
+            kind, offset, addr, _, size, memsize, _, _ = struct.unpack_from(
+                "<8I", elf, phoff + i * phsize)
+            if kind == 1 and memsize:
+                start = addr & ~4095
+                end = (addr + memsize + 4095) & ~4095
+                self.cpu.mem_map(start, end - start)
+                self.cpu.mem_write(addr, elf[offset:offset + size])
+        symbols = subprocess.check_output(["llvm-nm", "--defined-only", path], text=True)
+        names = {name: int(address, 16) for address, _, name in
+                 (line.split() for line in symbols.splitlines())}
+        messages = []
+
+        def print_string(cpu, _addr, _size, _data):
+            handle = cpu.reg_read(UC_RISCV_REG_A0)
+            ptr, length = struct.unpack("<II", cpu.mem_read(handle, 8))
+            value = bytes(cpu.mem_read(ptr, length)).decode()
+            if value.strip():
+                messages.append(value)
+
+        address = names["prime_print"]
+        self.cpu.hook_add(UC_HOOK_CODE, print_string, begin=address, end=address)
+        self.cpu.reg_write(UC_RISCV_REG_GP, names["__global_pointer$"])
+        self.cpu.reg_write(UC_RISCV_REG_SP, OUT - 16)
+        self.cpu.reg_write(UC_RISCV_REG_RA, STOP)
+        self.cpu.emu_start(names["main"], STOP, count=2_000_000)
+        self.assertEqual(self.cpu.reg_read(UC_RISCV_REG_PC), STOP)
+        self.assertEqual(messages, [
+            "serial ok", "old alias ok", "loop exits ok", "escaping capture ok",
+            "capture ok", "pool full", "guard cancelled", "independent ok", "reuse ok",
+        ])
 
 
 if __name__ == "__main__":

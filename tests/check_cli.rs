@@ -305,3 +305,39 @@ fn main() {
     );
     assert!(diagnostic["message"].as_str().unwrap().contains("match"));
 }
+
+#[test]
+fn task_boundaries_diagnose_nested_borrows_on_host_and_embedded() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("main.prime"),
+        include_str!("../scripts/tests/fixtures/task_ownership/borrowed.prime"),
+    )
+    .unwrap();
+    for build in ["", "[build]\ntarget='riscv32imc-unknown-none-elf'\n"] {
+        fs::write(
+            dir.path().join("prime.toml"),
+            format!(
+                "[package]\nname='borrowed'\n[module]\nname='demo'\npath='main.prime'\n{build}"
+            ),
+        )
+        .unwrap();
+        let result = report(&check(dir.path(), &["main.prime", "--format=json"], 1));
+        let errors = result["diagnostics"].as_array().unwrap();
+        for context in [
+            "capture `e`",
+            "await result",
+            "guarded await result",
+            "capture `p`",
+            "capture `updated`",
+            "async result",
+            "spawn result",
+        ] {
+            assert!(
+                errors.iter().any(|e| e["code"] == "E0ASYNCSEND"
+                    && e["message"].as_str().unwrap().contains(context)),
+                "{context}: {result}"
+            );
+        }
+    }
+}

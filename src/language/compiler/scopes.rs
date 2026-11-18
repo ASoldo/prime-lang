@@ -1,6 +1,152 @@
 use super::*;
 
 impl Compiler {
+    pub(super) fn retain_handle(&mut self, handle: LLVMValueRef) -> LLVMValueRef {
+        self.call_runtime(
+            self.runtime_abi.prime_value_retain,
+            self.runtime_abi.prime_value_retain_ty,
+            &mut [handle],
+            "retain_token",
+        )
+    }
+
+    // Initialize in the entry block so cleanup is valid at a control-flow merge,
+    // including paths on which the owning expression never ran.
+    fn token_owner_slot(&mut self) -> LLVMValueRef {
+        let ty = self.runtime_abi.handle_type;
+        let slot = self.build_entry_alloca(ty, "token_owner");
+        unsafe {
+            let init = LLVMCreateBuilderInContext(self.context);
+            let next = llvm_sys::core::LLVMGetNextInstruction(slot);
+            if next.is_null() {
+                LLVMPositionBuilderAtEnd(init, LLVMGetInsertBlock(self.builder));
+            } else {
+                LLVMPositionBuilderBefore(init, next);
+            }
+            LLVMBuildStore(init, LLVMConstNull(ty), slot);
+            LLVMDisposeBuilder(init);
+        }
+        slot
+    }
+
+    fn clear_token_slot(&mut self, slot: LLVMValueRef) {
+        unsafe {
+            let ty = self.runtime_abi.handle_type;
+            let old = LLVMBuildLoad2(self.builder, ty, slot, c"old_token".as_ptr());
+            LLVMBuildStore(self.builder, LLVMConstNull(ty), slot);
+            self.runtime_release(old);
+        }
+    }
+
+    pub(super) fn track_owned_token(
+        &mut self,
+        token: &CancelTokenValue,
+        handle: LLVMValueRef,
+    ) -> LLVMValueRef {
+        let slot = self.token_owner_slot();
+        self.clear_token_slot(slot);
+        unsafe {
+            LLVMBuildStore(self.builder, handle, slot);
+        }
+        self.token_owners.push(TokenOwner {
+            lifetime: Arc::downgrade(&token.cancelled),
+            loop_depth: self.loop_controls.len(),
+            early_exits: Vec::new(),
+            slot,
+        });
+        slot
+    }
+
+    pub(super) fn copy_token(&mut self, handle: LLVMValueRef) -> Value {
+        let owned = self.retain_handle(handle);
+        let token = CancelTokenValue::with_handle(owned);
+        if self.target.is_embedded() {
+            self.track_owned_token(&token, owned);
+        }
+        Value::CancelToken(token)
+    }
+
+    pub(super) fn read_token_binding(&mut self, value: EvaluatedValue) -> EvaluatedValue {
+        if let Value::CancelToken(token) = value.value()
+            && let Some(slot) = token.binding_slot
+        {
+            let loaded = unsafe {
+                LLVMBuildLoad2(
+                    self.builder,
+                    self.runtime_abi.handle_type,
+                    slot,
+                    c"token_read".as_ptr(),
+                )
+            };
+            return self.copy_token(loaded).into();
+        }
+        value
+    }
+
+    pub(super) fn store_cell(&mut self, cell: &Mutex<EvaluatedValue>, value: EvaluatedValue) {
+        let mut current = cell.lock().unwrap();
+        if let Value::CancelToken(token) = current.value()
+            && let Some(slot) = token.binding_slot
+            && let Value::CancelToken(new) = value.value()
+            && let Some(handle) = new.handle
+        {
+            let owned = self.retain_handle(handle);
+            self.clear_token_slot(slot);
+            unsafe {
+                LLVMBuildStore(self.builder, owned, slot);
+            }
+        } else {
+            *current = value;
+        }
+    }
+
+    pub(super) fn token_loop_exit(&mut self, control: LoopControl, branch: LLVMValueRef) {
+        for owner in &mut self.token_owners {
+            if owner.loop_depth >= self.loop_controls.len() {
+                owner.early_exits.push((control.break_block, branch));
+            }
+        }
+    }
+
+    pub(super) fn release_dead_tokens(&mut self) {
+        if self.token_owners.is_empty() {
+            return;
+        }
+        unsafe {
+            let block = LLVMGetInsertBlock(self.builder);
+            let terminator = LLVMGetBasicBlockTerminator(block);
+            if !terminator.is_null() {
+                LLVMPositionBuilderBefore(self.builder, terminator);
+            }
+            let mut owners = mem::take(&mut self.token_owners);
+            owners.retain(|owner| {
+                if owner.lifetime.strong_count() > 0 {
+                    return true;
+                }
+                for (after_loop, branch) in &owner.early_exits {
+                    if *branch != terminator
+                        && self
+                            .loop_controls
+                            .iter()
+                            .any(|c| c.break_block == *after_loop)
+                    {
+                        LLVMPositionBuilderBefore(self.builder, *branch);
+                        self.clear_token_slot(owner.slot);
+                    }
+                }
+                if terminator.is_null() {
+                    LLVMPositionBuilderAtEnd(self.builder, block);
+                } else {
+                    LLVMPositionBuilderBefore(self.builder, terminator);
+                }
+                self.clear_token_slot(owner.slot);
+                false
+            });
+            self.token_owners = owners;
+            LLVMPositionBuilderAtEnd(self.builder, block);
+        }
+    }
+
     pub(super) fn execute_block_contents(&mut self, block: &Block) -> Result<BlockEval, String> {
         let trace = env::var_os("PRIME_DEBUG_TRACE").is_some();
         for statement in &block.statements {
@@ -22,7 +168,9 @@ impl Compiler {
                 };
                 eprintln!("[prime-debug] stmt {kind}");
             }
-            if let Some(flow) = self.emit_statement(statement)? {
+            let flow = self.emit_statement(statement)?;
+            self.release_dead_tokens();
+            if let Some(flow) = flow {
                 return Ok(BlockEval::Flow(flow));
             }
         }
@@ -114,7 +262,7 @@ impl Compiler {
                         _ => {}
                     }
                 }
-                *cell.lock().unwrap() = updated;
+                self.store_cell(&cell, updated);
                 return Ok(());
             }
         }
@@ -334,6 +482,7 @@ impl Compiler {
     pub(super) fn exit_scope(&mut self) -> Result<(), String> {
         self.run_cleanups()?;
         self.pop_scope();
+        self.release_dead_tokens();
         Ok(())
     }
 
@@ -391,8 +540,23 @@ impl Compiler {
         }
         Self::attach_origin(&mut value, name);
         let mut slot = None;
+        if !mutable
+            && self.target.is_embedded()
+            && let Value::CancelToken(token) = value.value()
+            && let Some(handle) = token.handle
+        {
+            value = self.copy_token(handle).into();
+        }
         if mutable {
             match value.value().clone() {
+                Value::CancelToken(token) if self.target.is_embedded() => {
+                    if let Some(handle) = token.handle {
+                        let owned = self.retain_handle(handle);
+                        let mut binding = CancelTokenValue::with_handle(owned);
+                        binding.binding_slot = Some(self.track_owned_token(&binding, owned));
+                        value = Value::CancelToken(binding).into();
+                    }
+                }
                 Value::Int(int_val) => {
                     let wide = self.int_to_runtime_int(&int_val, "integer_initial_value")?;
                     let alloca =
@@ -500,7 +664,8 @@ impl Compiler {
                         _ => {}
                     }
                 }
-                return Some(binding.cell.lock().unwrap().clone());
+                let value = binding.cell.lock().unwrap().clone();
+                return Some(self.read_token_binding(value));
             }
         }
         None

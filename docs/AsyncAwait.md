@@ -17,7 +17,7 @@ fn delayed_value() -> Task[int32] {
 
 ## Guarded waits on the host
 
-`cancel_token()` creates a shared `CancelToken` whose flag is initially clear. `cancel(token)` sets the flag, and `is_cancelled(token)` reads it. Code observing any copy of the token sees the same flag.
+`cancel_token()` creates a shared `CancelToken` whose flag is initially clear on successful allocation. `cancel(token)` sets the flag, and `is_cancelled(token)` reads it. Code observing any copy of the token sees the same flag.
 
 | Helper | Result |
 | --- | --- |
@@ -47,10 +47,21 @@ This prints `timeout` while the 150 ms timer is pending. With enough time, the t
 
 The host interpreter starts async blocks on worker threads. The native host compiler emits an entry function for each block and transfers captured values to the runtime at task creation. A waiter sleeps on a condition variable and checks an optional token periodically. Timer and receive tasks observe cancellation. Prime code already executing on a worker can still produce side effects after its caller stops waiting. Cancellation does not unwind the worker's stack.
 
-At an `await` expression, the type checker reports an active mutable borrow (`E0ASYNCBORROW`) or a task whose immediate result type is a reference or pointer (`E0ASYNCSEND`). Those checks apply to the await expression. Native host code transfers immutable bindings and preserves the identity of runtime-backed tokens and channel handles. It diagnoses mutable captures because it cannot yet share their binding cells with the worker. Transitive sendability of captures and values inside aggregates remains open.
+The checker reports `E0ASYNCSEND` when an async or spawn capture or result contains a reference or raw pointer. It inspects tuple elements, container arguments and the fields of named structs and enum variants, including generic and recursive types. Ordinary and guarded awaits and `join` check the payload type as well. A function value, an interface value or an unconstrained type parameter carries insufficient information to establish ownership. An active mutable borrow at `await` still produces `E0ASYNCBORROW`.
 
-Embedded LLVM targets use a fixed pool of tasks, channel waiters and a target-specific timer and polling ABI. Embedded async blocks still use deferred evaluation. Device timing depends on the board runtime. The [no_std parity probe](../workspace/demos/no_std_parity/main.prime) covers a subset of these APIs under the host interpreter.
+For example, a worker may capture an owned integer read through a reference before the task starts. Borrowing a worker-local value also works.
+
+```prime
+fn copied(input: &int32) -> Task[int32] {
+  let value = *input;
+  async { let local = &value; *local }
+}
+```
+
+Capturing `input` directly, including inside a struct or enum, produces `E0ASYNCSEND`. Native host code transfers immutable bindings and preserves the identity of tokens and channel handles. It diagnoses mutable captures because the native worker cannot yet share their binding cells.
+
+Embedded LLVM targets evaluate async blocks on demand. They capture their bindings at task creation, so an immutable token captured in a function remains usable after that function returns. The embedded pool and its exhaustion behavior are described in [Embedded timers](EmbeddedTimers.md#token-pool-lifetime).
 
 ## Proposed extensions
 
-`async fn` syntax, `select` arms, a `Task::join()` method, transitive `Send` checks and a cooperative fiber scheduler are design proposals. The current host runtime uses OS threads and explicit task results.
+`async fn` syntax, `select` arms, a `Task::join()` method, generic `Send` bounds and a cooperative fiber scheduler are design proposals. The current host runtime uses OS threads and explicit task results.

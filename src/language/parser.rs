@@ -362,7 +362,7 @@ pub fn shift_expr_spans(expr: &mut Expr, delta: isize) {
             shift_span(span, delta);
             shift_expr_spans(inner, delta);
         }
-        Expr::Async { block, span } => {
+        Expr::Async { block, span, .. } => {
             shift_span(span, delta);
             shift_block_spans(block, delta);
         }
@@ -2202,6 +2202,7 @@ impl Parser {
             let expr = self.parse_unary()?;
             let span = Span::new(start, expr_span(&expr).end);
             return Ok(Expr::Spawn {
+                captures: Default::default(),
                 expr: Box::new(expr),
                 span,
             });
@@ -2619,6 +2620,7 @@ impl Parser {
         let block = self.parse_block()?;
         let span = Span::new(start, block.span.end);
         Ok(Expr::Async {
+            captures: Default::default(),
             block: Box::new(block),
             span,
         })

@@ -1,0 +1,84 @@
+module task_ownership;
+
+enum Result[T, E] { Ok(T), Err(E) }
+
+struct Shared {
+  token: CancelToken;
+}
+
+fn capture(shared: Shared) -> Task[bool] {
+  async {
+    let fresh = !is_cancelled(shared.token);
+    cancel(shared.token);
+    fresh && is_cancelled(shared.token)
+  }
+}
+
+fn fresh() -> CancelToken {
+  let token = cancel_token();
+  token
+}
+
+fn main() {
+  let mut int32 good = 0;
+  for i in 0..100 {
+    let token = fresh();
+    let alias = token;
+    if !is_cancelled(alias) {
+      cancel(token);
+      if is_cancelled(alias) { good = good + 1; }
+    }
+  }
+  if good == 100 { out("serial ok"); } else { out("serial failed"); }
+
+  {
+    let mut current = fresh();
+    let old = current;
+    current = fresh();
+    cancel(old);
+    if is_cancelled(old) && !is_cancelled(current) { out("old alias ok"); } else { out("old alias failed"); }
+  }
+  for i in 0..100 {
+    let local = fresh();
+    if i < 50 { continue; }
+    if !is_cancelled(local) { out("loop exits ok"); } else { out("loop exits failed"); }
+    break;
+  }
+  {
+    let sole = {
+      let token = fresh();
+      capture(Shared { token: token })
+    };
+    let rival = fresh();
+    let observed = await sole;
+    let next = fresh();
+    if observed && !is_cancelled(rival) && !is_cancelled(next) {
+      out("escaping capture ok");
+    } else { out("escaping capture failed"); }
+  }
+  {
+    let abandoned = capture(Shared { token: fresh() });
+  }
+  let shared = fresh();
+  let task = {
+    let wrapped = Shared { token: shared };
+    capture(wrapped)
+  };
+  let observed = await task;
+  if observed && is_cancelled(shared) { out("capture ok"); } else { out("capture failed"); }
+
+  {
+    let other = fresh();
+    let full = fresh();
+    if is_cancelled(full) { out("pool full"); } else { out("pool available"); }
+    let result = await_cancel(async { 41 }, full);
+    match result {
+      Ok(n) => { if n == 41 { out("guard ran"); } else { out("guard failed"); } },
+      Err(msg) => out("guard cancelled"),
+    }
+    cancel(full);
+    if !is_cancelled(other) { out("independent ok"); } else { out("independent failed"); }
+  }
+  let reused = fresh();
+  if !is_cancelled(reused) { out("reuse ok"); } else { out("reuse failed"); }
+}

@@ -33,6 +33,7 @@ pub fn check_program_typed<'a>(
         folded_integers: HashMap::new(),
         facts: CheckedFacts::default(),
         errors: Vec::new(),
+        imports: HashMap::new(),
         current_module: None,
         current_no_std: false,
         target: options.target.clone(),
@@ -250,6 +251,7 @@ struct Checker {
     facts: CheckedFacts,
     registry: TypeRegistry,
     errors: Vec<TypeError>,
+    imports: HashMap<String, ImportScope>,
     current_module: Option<String>,
     current_no_std: bool,
     target: BuildTarget,
@@ -1074,6 +1076,10 @@ impl Checker {
         for module in &program.modules {
             self.current_module = Some(module.name.clone());
             self.current_no_std = module.no_std;
+            let imports = self.build_import_scope(module);
+            self.imports.insert(module.name.clone(), imports);
+        }
+        for module in &program.modules {
             self.check_module(module);
         }
         self.current_module = None;
@@ -1096,7 +1102,7 @@ impl Checker {
     fn check_module(&mut self, module: &Module) {
         self.current_module = Some(module.name.clone());
         self.current_no_std = module.no_std;
-        let import_scope = self.build_import_scope(module);
+        let import_scope = self.imports[&module.name].clone();
         for item in &module.items {
             match item {
                 Item::Function(def) => self.check_function(module, def, &import_scope),
@@ -1149,7 +1155,16 @@ impl Checker {
                     [single] => Some(single),
                     _ => None,
                 };
-                self.check_block(module, block, expected, &return_types, &mut env);
+                let tail = self.check_block(module, block, expected, &return_types, &mut env);
+                if let Some(expected) = expected {
+                    self.check_ownership_coercion(
+                        module,
+                        &env,
+                        block.span,
+                        expected,
+                        tail.as_ref(),
+                    );
+                }
             }
             FunctionBody::Expr(expr) => {
                 let expected = return_types.first();
@@ -1281,7 +1296,9 @@ impl Checker {
                 Expr::Identifier(ident) => {
                     env.clear_binding_borrows(&ident.name);
                     env.reset_moved(&ident.name);
-                    let expected_type = env.lookup(&ident.name).and_then(|info| info.ty.clone());
+                    let expected_type = env
+                        .lookup_with_captures(&ident.name)
+                        .and_then(|info| info.ty.clone());
                     if let Some(expected) = expected_type {
                         let ty = self.check_expression(
                             module,
@@ -1291,6 +1308,17 @@ impl Checker {
                             env,
                         );
                         self.ensure_type(module, ident.span, &expected, ty.as_ref());
+                        if let Some(actual) = ty.as_ref()
+                            && actual != &expected
+                            && let Some(refined) = merge_variant_types(&expected, actual)
+                            && let Some(binding) = env
+                                .scopes
+                                .iter_mut()
+                                .rev()
+                                .find_map(|scope| scope.get_mut(&ident.name))
+                        {
+                            binding.ty = Some(refined);
+                        }
                         for target in expression_borrow_targets(&assign.value, env) {
                             env.register_binding_borrow(&ident.name, target, ident.span);
                         }
@@ -1387,6 +1415,23 @@ impl Checker {
                 self.check_expression(module, &expr.node, None, returns, env);
             }
             Statement::Return(ret) => {
+                if env.task_returns.is_some() {
+                    let values: Vec<_> = ret
+                        .values
+                        .iter()
+                        .filter_map(|v| self.check_expression(module, v, None, returns, env))
+                        .collect();
+                    let ty = match values.as_slice() {
+                        [] => TypeExpr::Unit,
+                        [ty] => ty.clone(),
+                        _ => TypeExpr::Tuple(values),
+                    };
+                    env.task_returns
+                        .as_mut()
+                        .unwrap()
+                        .push((stmt_span(statement), ty));
+                    return;
+                }
                 if returns.is_empty() && !ret.values.is_empty() {
                     self.errors.push(TypeError::new(
                         &module.path,
@@ -1510,6 +1555,179 @@ impl Checker {
         }
     }
 
+    // Some call sites accept numeric coercions. A borrowed value cannot be
+    // retyped as owned at those sites and later captured under the owned type.
+    fn check_ownership_coercion(
+        &mut self,
+        module: &Module,
+        env: &FnEnv,
+        span: Span,
+        expected: &TypeExpr,
+        actual: Option<&TypeExpr>,
+    ) {
+        if let Some(actual) = actual
+            && expected != actual
+            && self
+                .task_transfer_error(actual, env, &mut HashSet::new())
+                .is_some()
+            && self
+                .task_transfer_error(expected, env, &mut HashSet::new())
+                .is_none()
+        {
+            self.ensure_type(module, span, expected, Some(actual));
+        }
+    }
+
+    fn check_task_transfer(
+        &mut self,
+        module: &Module,
+        env: &FnEnv,
+        span: Span,
+        ty: &TypeExpr,
+        context: &str,
+    ) {
+        if let Some(reason) = self.task_transfer_error(ty, env, &mut HashSet::new()) {
+            self.errors.push(
+                TypeError::new(
+                    &module.path,
+                    span,
+                    format!(
+                        "{context} of type `{}` cannot cross a task boundary: {reason}",
+                        ty.canonical_name()
+                    ),
+                )
+                .with_code("E0ASYNCSEND")
+                .with_help("transfer an owned value, such as the value read through the reference"),
+            );
+        }
+    }
+
+    fn task_transfer_error(
+        &self,
+        ty: &TypeExpr,
+        env: &FnEnv,
+        visiting: &mut HashSet<String>,
+    ) -> Option<String> {
+        self.transfer_error_in(ty, env, &env.imports, &[], visiting)
+    }
+
+    fn transfer_error_in(
+        &self,
+        ty: &TypeExpr,
+        env: &FnEnv,
+        imports: &ImportScope,
+        checked_params: &[String],
+        visiting: &mut HashSet<String>,
+    ) -> Option<String> {
+        let mut check =
+            |t: &TypeExpr| self.transfer_error_in(t, env, imports, checked_params, visiting);
+        match ty {
+            TypeExpr::Reference { .. } | TypeExpr::Pointer { .. } => {
+                Some(format!("contains `{}`", ty.canonical_name()))
+            }
+            TypeExpr::Function { .. } => {
+                Some("the function type does not describe its captures".into())
+            }
+            TypeExpr::Slice(inner) | TypeExpr::Array { ty: inner, .. } => check(inner),
+            TypeExpr::Tuple(items) => items.iter().find_map(&mut check),
+            TypeExpr::Named(name, args) => {
+                // Check arguments even on recursive edges (e.g. List[&T]).
+                if let Some(reason) = args.iter().find_map(&mut check) {
+                    return Some(reason);
+                }
+                // The enclosing application already checked these arguments.
+                if checked_params.contains(name) {
+                    return None;
+                }
+                if env.type_params.contains(name) {
+                    return Some(format!(
+                        "type parameter `{name}` has no ownership constraint"
+                    ));
+                }
+                let name = imports
+                    .selected
+                    .get(name)
+                    .map(|i| i.name.as_str())
+                    .unwrap_or(name)
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(name);
+                if self.registry.find_interface(name).is_some() {
+                    return Some(
+                        "the interface does not describe the concrete value's fields".into(),
+                    );
+                }
+                if !visiting.insert(name.to_string()) {
+                    return None;
+                }
+                let mut check_field = |module: &str, params: &[String], field: &TypeAnnotation| {
+                    self.transfer_error_in(&field.ty, env, &self.imports[module], params, visiting)
+                };
+                let reason = if let Some(info) = self.registry.structs.get(name) {
+                    info.def
+                        .fields
+                        .iter()
+                        .find_map(|f| check_field(&info._module, &info.def.type_params, &f.ty))
+                } else if let Some(info) = self.registry.enums.get(name) {
+                    info.def
+                        .variants
+                        .iter()
+                        .flat_map(|v| &v.fields)
+                        .find_map(|f| check_field(&info.module, &info.def.type_params, f))
+                } else {
+                    None
+                };
+                visiting.remove(name);
+                reason
+            }
+            TypeExpr::Unit | TypeExpr::SelfType => None,
+        }
+    }
+
+    fn visible_constant(&self, env: &FnEnv, name: &str) -> Option<TypeExpr> {
+        env.imported_item(name)
+            .and_then(|i| self.lookup_const_in_module(&i.module, &i.name))
+            .or_else(|| self.lookup_const_in_module(self.current_module.as_deref()?, name))
+            .or_else(|| {
+                env.glob_modules()
+                    .find_map(|m| self.lookup_const_in_module(m, name))
+            })
+            .or_else(|| {
+                let (m, n) = name.rsplit_once("::")?;
+                self.lookup_const_in_module(m, n)
+            })
+    }
+
+    fn check_task_captures(&mut self, module: &Module, span: Span, env: &mut FnEnv) -> Vec<String> {
+        let mut names = env.end_closure_capture();
+        names.sort();
+        for name in &names {
+            if let Some(binding) = env.lookup(name)
+                && binding.mutable
+                && binding.ty.as_ref().is_some_and(has_inferred_variant_param)
+            {
+                self.errors.push(
+                    TypeError::new(
+                        &module.path,
+                        span,
+                        format!("mutable capture `{name}` has unresolved payload types"),
+                    )
+                    .with_code("E0ASYNCSEND")
+                    .with_help("annotate the binding with its concrete type"),
+                );
+                continue;
+            }
+            if let Some(ty) = env
+                .lookup(name)
+                .and_then(|binding| binding.ty.clone())
+                .or_else(|| self.visible_constant(env, name))
+            {
+                self.check_task_transfer(module, env, span, &ty, &format!("capture `{name}`"));
+            }
+        }
+        names
+    }
+
     fn check_expression(
         &mut self,
         module: &Module,
@@ -1557,25 +1775,9 @@ impl Checker {
                     env.ensure_not_moved(module, ident.span, &ident.name, &mut self.errors);
                     return Some(found_ty);
                 }
-                if let Some(import) = env.imported_item(&ident.name) {
-                    if let Some(ty) = self.lookup_const_in_module(&import.module, &import.name) {
-                        return Some(ty);
-                    }
-                }
-                if let Some(module_name) = self.current_module.as_deref() {
-                    if let Some(ty) = self.lookup_const_in_module(module_name, &ident.name) {
-                        return Some(ty);
-                    }
-                }
-                for module_name in env.glob_modules() {
-                    if let Some(ty) = self.lookup_const_in_module(module_name, &ident.name) {
-                        return Some(ty);
-                    }
-                }
-                if let Some((module_name, const_name)) = ident.name.rsplit_once("::") {
-                    if let Some(ty) = self.lookup_const_in_module(module_name, const_name) {
-                        return Some(ty);
-                    }
+                if let Some(ty) = self.visible_constant(env, &ident.name) {
+                    env.capture_global(&ident.name);
+                    return Some(ty);
                 }
                 self.errors.push(TypeError::new(
                     &module.path,
@@ -1675,11 +1877,7 @@ impl Checker {
                         }
                     };
                 let owner = owner_type.as_ref().or(expected);
-                self.check_variant_fields(module, &info, values, owner, returns, env);
-                match owner {
-                    Some(TypeExpr::Named(name, _)) if name == &info.enum_name => owner.cloned(),
-                    _ => Some(TypeExpr::Named(info.enum_name, Vec::new())),
-                }
+                Some(self.check_variant_fields(module, &info, values, owner, returns, env))
             }
             Expr::MapLiteral { entries, span } => {
                 self.check_map_literal(module, entries, *span, expected, returns, env)
@@ -1700,6 +1898,7 @@ impl Checker {
             Expr::Match(match_expr) => {
                 self.check_match_expression(module, match_expr, expected, returns, env)
             }
+            Expr::Tuple(values, _) if values.is_empty() => Some(TypeExpr::Unit),
             Expr::Tuple(values, _) => {
                 let mut types = Vec::new();
                 for (idx, value) in values.iter().enumerate() {
@@ -1720,7 +1919,20 @@ impl Checker {
             Expr::ArrayLiteral(values, span) => match expected {
                 Some(TypeExpr::Slice(inner)) => {
                     for value in values {
-                        self.check_expression(module, value, Some(inner.as_ref()), returns, env);
+                        let actual = self.check_expression(
+                            module,
+                            value,
+                            Some(inner.as_ref()),
+                            returns,
+                            env,
+                        );
+                        self.check_ownership_coercion(
+                            module,
+                            env,
+                            expr_span(value),
+                            inner,
+                            actual.as_ref(),
+                        );
                     }
                     Some(TypeExpr::Slice(inner.clone()))
                 }
@@ -1732,7 +1944,19 @@ impl Checker {
                     ));
                     None
                 }
-                None => None,
+                None => {
+                    let mut element = None;
+                    for value in values {
+                        let ty =
+                            self.check_expression(module, value, element.as_ref(), returns, env);
+                        if let Some(first) = &element {
+                            self.ensure_type(module, expr_span(value), first, ty.as_ref());
+                        } else {
+                            element = ty;
+                        }
+                    }
+                    element.map(|ty| TypeExpr::Slice(Box::new(ty)))
+                }
             },
             Expr::Range(range) => {
                 let expected_inner = match expected {
@@ -1842,7 +2066,11 @@ impl Checker {
                 }
                 ty
             }
-            Expr::Spawn { expr, span } => {
+            Expr::Spawn {
+                expr,
+                span,
+                captures,
+            } => {
                 if self.current_no_std && !self.target.is_embedded() {
                     self.errors.push(
                         TypeError::new(
@@ -1857,7 +2085,12 @@ impl Checker {
                     );
                     return None;
                 }
+                env.begin_capture(true);
                 let inner = self.check_expression(module, expr, None, returns, env);
+                *captures.write().unwrap() = Some(self.check_task_captures(module, *span, env));
+                if let Some(ty) = &inner {
+                    self.check_task_transfer(module, env, *span, ty, "spawn result");
+                }
                 let handle_ty = TypeExpr::Named(
                     "JoinHandle".into(),
                     vec![inner.clone().unwrap_or(TypeExpr::Unit)],
@@ -1871,14 +2104,30 @@ impl Checker {
                 }
                 Some(handle_ty)
             }
-            Expr::Async { block, span: _ } => {
+            Expr::Async {
+                block,
+                span,
+                captures,
+            } => {
                 let expected_inner = match expected {
                     Some(TypeExpr::Named(name, args)) if name == "Task" => args.first(),
                     _ => None,
                 };
-                let inner = self
-                    .check_block(module, block, expected_inner, returns, env)
+                env.begin_capture(true);
+                let outer_returns = env.task_returns.replace(Vec::new());
+                let tail = self.check_block(module, block, expected_inner, returns, env);
+                let explicit = std::mem::replace(&mut env.task_returns, outer_returns).unwrap();
+                *captures.write().unwrap() = Some(self.check_task_captures(module, *span, env));
+                let inner = tail
+                    .or_else(|| explicit.first().map(|(_, ty)| ty.clone()))
                     .unwrap_or(TypeExpr::Unit);
+                self.check_task_transfer(module, env, *span, &inner, "async result");
+                for (span, ty) in explicit {
+                    self.ensure_type(module, span, &inner, Some(&ty));
+                    if ty != inner {
+                        self.check_task_transfer(module, env, span, &ty, "async return");
+                    }
+                }
                 Some(make_task_type(inner))
             }
             Expr::Await { expr, span, .. } => {
@@ -1898,20 +2147,7 @@ impl Checker {
                 match awaited {
                     Some(TypeExpr::Named(name, args)) if name == "Task" => {
                         if let Some(inner) = args.first() {
-                            if matches!(
-                                inner,
-                                TypeExpr::Reference { .. } | TypeExpr::Pointer { .. }
-                            ) {
-                                self.errors.push(
-                                    TypeError::new(
-                                        &module.path,
-                                        *span,
-                                        "`await` cannot hold reference/pointer types across suspension",
-                                    )
-                                    .with_code("E0ASYNCSEND")
-                                    .with_help("move owned data into the task or clone before awaiting"),
-                                );
-                            }
+                            self.check_task_transfer(module, env, *span, inner, "await result");
                             Some(inner.clone())
                         } else {
                             None
@@ -1940,7 +2176,7 @@ impl Checker {
                     }
                     _ => None,
                 };
-                env.begin_closure_capture();
+                env.begin_capture(false);
                 env.push_scope();
                 let mut param_types = Vec::new();
                 let closure_span = *span;
@@ -1983,6 +2219,7 @@ impl Checker {
                         .as_ref()
                         .and_then(|(_, returns)| returns.first())
                 });
+                let task_returns = env.task_returns.take();
                 let body_ty = match body {
                     ClosureBody::Block(block) => {
                         self.check_block(module, block, expected_ret, returns, env)
@@ -1995,6 +2232,7 @@ impl Checker {
                         env,
                     ),
                 };
+                env.task_returns = task_returns;
                 if let (Some(annotation), Some(actual)) = (ret, body_ty.as_ref()) {
                     self.ensure_type(module, annotation.span, &annotation.ty, Some(actual));
                 }
@@ -2135,6 +2373,12 @@ impl Checker {
                 }
             });
             env.merge_branch_borrows(&[then_state, else_state]);
+            if let (Some(left), Some(right)) = (&then_ty, &else_ty) {
+                if let Some(merged) = merge_variant_types(left, right) {
+                    return Some(merged);
+                }
+                self.ensure_type(module, expr.span, left, Some(right));
+            }
             if let (Some(expected), Some(actual)) = (expected, else_ty.as_ref()) {
                 self.ensure_type(module, expr.span, expected, Some(actual));
                 return Some(actual.clone());
@@ -2199,7 +2443,11 @@ impl Checker {
             if arm_type.is_none() {
                 arm_type = value_ty.clone();
             } else if let (Some(a), Some(b)) = (arm_type.as_ref(), value_ty.as_ref()) {
-                self.ensure_type(module, pattern_span(&arm.pattern), a, Some(b));
+                if let Some(merged) = merge_variant_types(a, b) {
+                    arm_type = Some(merged);
+                } else {
+                    self.ensure_type(module, pattern_span(&arm.pattern), a, Some(b));
+                }
             }
             borrow_states.push(state);
         }
@@ -2595,7 +2843,8 @@ impl Checker {
             ));
         }
         for (expr, param_ty) in args.iter().zip(params.iter()) {
-            self.check_expression(module, expr, Some(param_ty), returns, env);
+            let actual = self.check_expression(module, expr, Some(param_ty), returns, env);
+            self.check_ownership_coercion(module, env, expr_span(expr), param_ty, actual.as_ref());
         }
         let result_ty = match returns_types.len() {
             0 => TypeExpr::Unit,
@@ -3125,7 +3374,15 @@ impl Checker {
                             "`send` expects Sender[T] as first argument",
                         ));
                     } else {
-                        self.check_expression(module, &args[1], Some(&params[0]), returns, env);
+                        let actual =
+                            self.check_expression(module, &args[1], Some(&params[0]), returns, env);
+                        self.check_ownership_coercion(
+                            module,
+                            env,
+                            expr_span(&args[1]),
+                            &params[0],
+                            actual.as_ref(),
+                        );
                     }
                 } else {
                     self.check_expression(module, &args[1], None, returns, env);
@@ -3338,6 +3595,13 @@ impl Checker {
                 );
                 if let Some(TypeExpr::Named(name, params)) = task_ty {
                     if name == "Task" && params.len() == 1 {
+                        self.check_task_transfer(
+                            module,
+                            env,
+                            span,
+                            &params[0],
+                            "guarded await result",
+                        );
                         return Some(TypeExpr::Named(
                             "Result".into(),
                             vec![params[0].clone(), string_type()],
@@ -3376,6 +3640,13 @@ impl Checker {
                 );
                 if let Some(TypeExpr::Named(name, params)) = task_ty {
                     if name == "Task" && params.len() == 1 {
+                        self.check_task_transfer(
+                            module,
+                            env,
+                            span,
+                            &params[0],
+                            "guarded await result",
+                        );
                         return Some(TypeExpr::Named(
                             "Result".into(),
                             vec![params[0].clone(), string_type()],
@@ -3421,6 +3692,13 @@ impl Checker {
                 );
                 if let Some(TypeExpr::Named(name, params)) = task_ty {
                     if name == "Task" && params.len() == 1 {
+                        self.check_task_transfer(
+                            module,
+                            env,
+                            span,
+                            &params[0],
+                            "guarded await result",
+                        );
                         return Some(TypeExpr::Named(
                             "Result".into(),
                             vec![params[0].clone(), string_type()],
@@ -3926,6 +4204,7 @@ impl Checker {
                 let handle_ty = self.check_expression(module, &args[0], None, returns, env);
                 if let Some(TypeExpr::Named(name, params)) = handle_ty {
                     if name == "JoinHandle" && params.len() == 1 {
+                        self.check_task_transfer(module, env, span, &params[0], "join result");
                         return Some(params[0].clone());
                     }
                 }
@@ -4067,7 +4346,8 @@ impl Checker {
             ));
         }
         for (expr, param) in args.iter().zip(instantiated.params.iter()) {
-            self.check_expression(module, expr, Some(&param.ty), returns, env);
+            let actual = self.check_expression(module, expr, Some(&param.ty), returns, env);
+            self.check_ownership_coercion(module, env, expr_span(expr), &param.ty, actual.as_ref());
         }
         self.select_call_result(module, span, &instantiated.returns, expected)
     }
@@ -4112,7 +4392,8 @@ impl Checker {
             ));
         }
         for (expr, param) in args.iter().zip(instantiated.params.iter().skip(1)) {
-            self.check_expression(module, expr, Some(&param.ty), returns, env);
+            let actual = self.check_expression(module, expr, Some(&param.ty), returns, env);
+            self.check_ownership_coercion(module, env, expr_span(expr), &param.ty, actual.as_ref());
         }
         self.select_call_result(module, span, &instantiated.returns, expected)
     }
@@ -4443,13 +4724,7 @@ impl Checker {
                 ));
             }
         }
-        self.check_variant_fields(module, &variant, args, expected, returns, env);
-        expected.cloned().or_else(|| {
-            Some(TypeExpr::Named(
-                variant.enum_name.clone(),
-                variant.def.fields.iter().map(|f| f.ty.clone()).collect(),
-            ))
-        })
+        Some(self.check_variant_fields(module, &variant, args, expected, returns, env))
     }
 
     fn check_variant_fields(
@@ -4460,11 +4735,42 @@ impl Checker {
         expected: Option<&TypeExpr>,
         returns: &[TypeExpr],
         env: &mut FnEnv,
-    ) {
-        let fields = instantiate_variant_fields(variant, expected, &self.registry);
-        for (expr, field) in args.iter().zip(fields) {
-            self.check_expression(module, expr, Some(&field.ty), returns, env);
+    ) -> TypeExpr {
+        let canonical = env
+            .imported_item(&variant.enum_name)
+            .map(|i| i.name.as_str())
+            .unwrap_or(&variant.enum_name);
+        let canonical = canonical.rsplit("::").next().unwrap_or(canonical);
+        let params = self.registry.enums[canonical].def.type_params.clone();
+        let mut subst: HashMap<_, _> = match expected {
+            Some(TypeExpr::Named(name, args)) if name == &variant.enum_name => {
+                params.iter().cloned().zip(args.iter().cloned()).collect()
+            }
+            _ => HashMap::new(),
+        };
+        for (expr, field) in args.iter().zip(&variant.def.fields) {
+            let hint = field.ty.substitute(&subst);
+            if let Some(actual) = self.check_expression(module, expr, Some(&hint), returns, env) {
+                infer_variant_params(&field.ty, &actual, &params, &mut subst);
+                self.ensure_type(
+                    module,
+                    expr_span(expr),
+                    &field.ty.substitute(&subst),
+                    Some(&actual),
+                );
+            }
         }
+        TypeExpr::Named(
+            variant.enum_name.clone(),
+            params
+                .iter()
+                .map(|p| {
+                    subst
+                        .remove(p)
+                        .unwrap_or_else(|| TypeExpr::named(INFERRED_VARIANT_PARAM))
+                })
+                .collect(),
+        )
     }
 
     fn select_call_result(
@@ -4498,7 +4804,7 @@ impl Checker {
         actual: Option<&TypeExpr>,
     ) {
         if let Some(actual) = actual {
-            if expected == actual {
+            if expected == actual || merge_variant_types(expected, actual).is_some() {
                 return;
             }
             if self.interface_compatible(expected, actual) {
@@ -5991,11 +6297,12 @@ struct ImportScope {
 
 struct FnEnv {
     path: PathBuf,
-    _type_params: HashSet<String>,
+    type_params: HashSet<String>,
     scopes: Vec<HashMap<String, BindingInfo>>,
     active_mut_borrows: HashMap<String, Vec<BorrowRecord>>,
     imports: ImportScope,
     capture_stack: Vec<ClosureCaptureContext>,
+    task_returns: Option<Vec<(Span, TypeExpr)>>,
 }
 
 #[derive(Clone)]
@@ -6012,6 +6319,7 @@ struct BorrowRecord {
 }
 
 struct ClosureCaptureContext {
+    task: bool,
     base_depth: usize,
     captured: HashSet<String>,
 }
@@ -6020,17 +6328,27 @@ impl FnEnv {
     fn new(path: PathBuf, type_params: Vec<String>, imports: ImportScope) -> Self {
         Self {
             path,
-            _type_params: type_params.into_iter().collect(),
+            type_params: type_params.into_iter().collect(),
             scopes: vec![HashMap::new()],
             active_mut_borrows: HashMap::new(),
             imports,
             capture_stack: Vec::new(),
+            task_returns: None,
         }
     }
 
-    fn begin_closure_capture(&mut self) {
+    fn capture_global(&mut self, name: &str) {
+        for ctx in &mut self.capture_stack {
+            if ctx.task {
+                ctx.captured.insert(name.to_owned());
+            }
+        }
+    }
+
+    fn begin_capture(&mut self, task: bool) {
         let base_depth = self.scopes.len();
         self.capture_stack.push(ClosureCaptureContext {
+            task,
             base_depth,
             captured: HashSet::new(),
         });
@@ -6388,7 +6706,7 @@ impl FnEnv {
         for (rev_idx, scope) in self.scopes.iter().rev().enumerate() {
             if let Some(info) = scope.get(name) {
                 let scope_index = len.saturating_sub(rev_idx + 1);
-                if let Some(ctx) = self.capture_stack.last_mut() {
+                for ctx in &mut self.capture_stack {
                     if scope_index < ctx.base_depth {
                         ctx.captured.insert(name.to_string());
                     }
@@ -6548,6 +6866,71 @@ fn instantiate_function(
             .collect(),
         span: sig.span,
     }
+}
+
+const INFERRED_VARIANT_PARAM: &str = "<inferred>";
+
+fn has_inferred_variant_param(ty: &TypeExpr) -> bool {
+    match ty {
+        TypeExpr::Named(name, args) => {
+            name == INFERRED_VARIANT_PARAM || args.iter().any(has_inferred_variant_param)
+        }
+        TypeExpr::Slice(t) | TypeExpr::Array { ty: t, .. } => has_inferred_variant_param(t),
+        TypeExpr::Tuple(items) => items.iter().any(has_inferred_variant_param),
+        _ => false,
+    }
+}
+
+fn infer_variant_params(
+    field: &TypeExpr,
+    actual: &TypeExpr,
+    params: &[String],
+    subst: &mut HashMap<String, TypeExpr>,
+) {
+    match (field, actual) {
+        (TypeExpr::Named(n, args), _) if args.is_empty() && params.contains(n) => {
+            let bound = subst.entry(n.clone()).or_insert_with(|| actual.clone());
+            if *bound == TypeExpr::named(INFERRED_VARIANT_PARAM) {
+                *bound = actual.clone();
+            }
+        }
+        (TypeExpr::Tuple(fs), TypeExpr::Tuple(ts))
+        | (TypeExpr::Named(_, fs), TypeExpr::Named(_, ts)) => {
+            for (f, t) in fs.iter().zip(ts) {
+                infer_variant_params(f, t, params, subst);
+            }
+        }
+        (TypeExpr::Slice(f), TypeExpr::Slice(t))
+        | (TypeExpr::Array { ty: f, .. }, TypeExpr::Array { ty: t, .. })
+        | (TypeExpr::Reference { ty: f, .. }, TypeExpr::Reference { ty: t, .. })
+        | (TypeExpr::Pointer { ty: f, .. }, TypeExpr::Pointer { ty: t, .. }) => {
+            infer_variant_params(f, t, params, subst)
+        }
+        _ => {}
+    }
+}
+
+// A variant can leave a type argument unspecified, e.g. Err(e) has no Ok payload.
+// A branch contributing a concrete instantiation determines that argument.
+fn merge_variant_types(a: &TypeExpr, b: &TypeExpr) -> Option<TypeExpr> {
+    if a == b || b == &TypeExpr::named(INFERRED_VARIANT_PARAM) {
+        return Some(a.clone());
+    }
+    if a == &TypeExpr::named(INFERRED_VARIANT_PARAM) {
+        return Some(b.clone());
+    }
+    if let (TypeExpr::Named(an, aa), TypeExpr::Named(bn, ba)) = (a, b)
+        && an == bn
+        && aa.len() == ba.len()
+    {
+        let args = aa
+            .iter()
+            .zip(ba)
+            .map(|(l, r)| merge_variant_types(l, r))
+            .collect::<Option<Vec<_>>>()?;
+        return Some(TypeExpr::Named(an.clone(), args));
+    }
+    None
 }
 
 fn lookup_struct_field(registry: &TypeRegistry, def: &StructDef, field: &str) -> Option<TypeExpr> {
@@ -7047,6 +7430,22 @@ mod tests {
             item_origins: std::collections::HashMap::new(),
         };
         check_program(&expanded)
+    }
+
+    #[test]
+    fn task_boundaries_accept_owned_recursion_and_local_borrows() {
+        typecheck_source(
+            r#"
+module demo;
+enum Chain { End, Next(Box[Chain]) }
+struct Packet { chain: Chain; token: CancelToken; }
+fn inspect(p: Packet, unused: &int32) -> Task[bool] {
+  async { let local = 7; let borrow = &local; let n = *borrow; is_cancelled(p.token) }
+}
+fn main() {}
+"#,
+        )
+        .unwrap();
     }
 
     #[test]

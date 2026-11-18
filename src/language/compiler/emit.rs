@@ -351,7 +351,8 @@ impl Compiler {
             Statement::Break => {
                 if let Some(control) = self.loop_controls.last().copied() {
                     unsafe {
-                        LLVMBuildBr(self.builder, control.break_block);
+                        let branch = LLVMBuildBr(self.builder, control.break_block);
+                        self.token_loop_exit(control, branch);
                     }
                 }
                 return Ok(Some(FlowSignal::Break));
@@ -359,7 +360,8 @@ impl Compiler {
             Statement::Continue => {
                 if let Some(control) = self.loop_controls.last().copied() {
                     unsafe {
-                        LLVMBuildBr(self.builder, control.continue_block);
+                        let branch = LLVMBuildBr(self.builder, control.continue_block);
+                        self.token_loop_exit(control, branch);
                     }
                 }
                 return Ok(Some(FlowSignal::Continue));
@@ -407,7 +409,7 @@ impl Compiler {
                                 EvalOutcome::Value(value) => value,
                                 EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                             };
-                            *pointer.cell.lock().unwrap() = value;
+                            self.store_cell(&pointer.cell, value);
                         }
                         _ => {
                             return Err(
@@ -1055,17 +1057,24 @@ impl Compiler {
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::Move { expr, .. } => self.emit_move_expression(expr),
-            Expr::Async { block, .. } => {
+            Expr::Async {
+                block, captures, ..
+            } => {
                 self.ensure_async_supported()?;
                 self.force_runtime_handles = true;
-                let mut locals = HashSet::new();
-                let mut free = HashSet::new();
-                self.collect_free_in_block(block, &mut locals, &mut free);
-                let capture_names: Vec<String> = free.into_iter().collect();
+                let capture_names = captures.read().unwrap().clone().unwrap_or_else(|| {
+                    let mut free = HashSet::new();
+                    self.collect_free_in_block(block, &mut HashSet::new(), &mut free);
+                    free.into_iter().collect()
+                });
                 let task = if self.target.is_host() {
                     self.emit_host_async(block, capture_names)?
                 } else {
-                    TaskValue::deferred((**block).clone(), capture_names)
+                    let captures = capture_names
+                        .into_iter()
+                        .filter_map(|name| self.get_var(&name).map(|value| (name, value)))
+                        .collect();
+                    TaskValue::deferred((**block).clone(), captures)
                 };
                 Ok(EvalOutcome::Value(Value::Task(Box::new(task)).into()))
             }
@@ -1644,6 +1653,88 @@ impl Compiler {
         ))
     }
 
+    // A deferred embedded block has not started. Test its real token before
+    // emitting the work on the runnable path; a failed allocation is cancelled.
+    fn guard_deferred_task(
+        &mut self,
+        task: &TaskValue,
+        token: LLVMValueRef,
+        millis: Option<&IntValue>,
+    ) -> Result<EvalOutcome<EvaluatedValue>, String> {
+        let cancelled = self.call_runtime(
+            self.runtime_abi.prime_cancel_token_is_cancelled,
+            self.runtime_abi.prime_cancel_token_is_cancelled_ty,
+            &mut [token],
+            "deferred_cancelled",
+        );
+        let function = unsafe { LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)) };
+        let block = |name: &CStr| unsafe {
+            LLVMAppendBasicBlockInContext(self.context, function, name.as_ptr())
+        };
+        let cancel = block(c"deferred_cancel");
+        let check_time = block(c"deferred_check_time");
+        let run = block(c"deferred_run");
+        let merge = block(c"deferred_merge");
+        let mut incoming = Vec::new();
+        unsafe {
+            LLVMBuildCondBr(self.builder, cancelled, cancel, check_time);
+            LLVMPositionBuilderAtEnd(self.builder, cancel);
+        }
+        let message = self.make_string_value("cancelled")?;
+        incoming.push((
+            self.instantiate_enum_variant("Err", vec![message])?.into(),
+            cancel,
+        ));
+        unsafe {
+            LLVMBuildBr(self.builder, merge);
+            LLVMPositionBuilderAtEnd(self.builder, check_time);
+        }
+        if let Some(millis) = millis {
+            let duration = millis.llvm();
+            let expired = unsafe {
+                LLVMBuildICmp(
+                    self.builder,
+                    llvm_sys::LLVMIntPredicate::LLVMIntSLE,
+                    duration,
+                    LLVMConstNull(LLVMTypeOf(duration)),
+                    c"expired".as_ptr(),
+                )
+            };
+            let timeout = unsafe {
+                LLVMAppendBasicBlockInContext(self.context, function, c"deferred_timeout".as_ptr())
+            };
+            unsafe {
+                LLVMBuildCondBr(self.builder, expired, timeout, run);
+                LLVMPositionBuilderAtEnd(self.builder, timeout);
+            }
+            let message = self.make_string_value("timeout")?;
+            incoming.push((
+                self.instantiate_enum_variant("Err", vec![message])?.into(),
+                timeout,
+            ));
+            unsafe {
+                LLVMBuildBr(self.builder, merge);
+            }
+        } else {
+            unsafe {
+                LLVMBuildBr(self.builder, run);
+            }
+        }
+        unsafe {
+            LLVMPositionBuilderAtEnd(self.builder, run);
+        }
+        let result = task.take(self)?;
+        let ok = self.instantiate_enum_variant("Ok", vec![result.into_value()])?;
+        incoming.push((ok.into(), unsafe { LLVMGetInsertBlock(self.builder) }));
+        unsafe {
+            LLVMBuildBr(self.builder, merge);
+            LLVMPositionBuilderAtEnd(self.builder, merge);
+        }
+        Ok(EvalOutcome::Value(
+            self.merge_match_values(&incoming, merge)?,
+        ))
+    }
+
     fn load_guarded_await_result(
         &mut self,
         result_slot: LLVMValueRef,
@@ -2004,6 +2095,11 @@ impl Compiler {
         if self.target.is_host() {
             return self.emit_host_guarded_await(&task, Some(&token), None);
         }
+        if matches!(task.kind, TaskResultKind::Deferred)
+            && let Some(handle) = token.handle
+        {
+            return self.guard_deferred_task(&task, handle, None);
+        }
         if task.handle.is_none() || !self.runtime_handles_enabled() {
             if token.is_cancelled() {
                 let err = self
@@ -2257,6 +2353,11 @@ impl Compiler {
 
         if self.target.is_host() {
             return self.emit_host_guarded_await(&task, Some(&token), Some(&millis));
+        }
+        if matches!(task.kind, TaskResultKind::Deferred)
+            && let Some(handle) = token.handle
+        {
+            return self.guard_deferred_task(&task, handle, Some(&millis));
         }
         if task.handle.is_none() || !self.runtime_handles_enabled() {
             if token.is_cancelled() {
@@ -3228,6 +3329,18 @@ impl Compiler {
                     .and_then(|(lhs, rhs)| if lhs == rhs { Some(lhs) } else { None });
                 Ok(self.evaluated(Value::Bool(BoolValue::new(phi, constant))))
             }
+            (Value::CancelToken(a), Value::CancelToken(b)) => {
+                let phi = build_phi(self.runtime_abi.handle_type, "if_token");
+                let mut values = [
+                    a.handle.ok_or("missing token handle")?,
+                    b.handle.ok_or("missing token handle")?,
+                ];
+                let mut blocks = [then_block, else_block];
+                unsafe {
+                    LLVMAddIncoming(phi, values.as_mut_ptr(), blocks.as_mut_ptr(), 2);
+                }
+                Ok(self.copy_token(phi).into())
+            }
             (Value::Enum(a), Value::Enum(b)) => {
                 if a.enum_name != b.enum_name {
                     return Err(format!(
@@ -3475,10 +3588,14 @@ impl Compiler {
         matches!(value, Value::Boxed(_) | Value::Slice(_) | Value::Map(_))
     }
 
-    pub(super) fn deref_value(&self, value: Value) -> Result<EvaluatedValue, String> {
+    pub(super) fn deref_value(&mut self, value: Value) -> Result<EvaluatedValue, String> {
         match value {
-            Value::Reference(reference) => Ok(reference.cell.lock().unwrap().clone()),
-            Value::Pointer(pointer) => Ok(pointer.cell.lock().unwrap().clone()),
+            Value::Reference(reference) => {
+                Ok(self.read_token_binding(reference.cell.lock().unwrap().clone()))
+            }
+            Value::Pointer(pointer) => {
+                Ok(self.read_token_binding(pointer.cell.lock().unwrap().clone()))
+            }
             _ => Err("Cannot dereference non-reference value in build mode".into()),
         }
     }
@@ -3817,6 +3934,7 @@ impl Compiler {
                     )
                 },
                 Value::Bool(v) if same_kind => self.bool_llvm_value(v),
+                Value::CancelToken(v) if same_kind => v.handle.ok_or("missing token handle")?,
                 _ => self.task_value_handle(value)?,
             };
             values.push(operand);
@@ -3837,6 +3955,7 @@ impl Compiler {
             Value::Int(_) if same_kind => Ok(Value::Int(IntValue::new(phi, None)).into()),
             Value::Float(_) if same_kind => Ok(Value::Float(FloatValue::new(phi, None)).into()),
             Value::Bool(_) if same_kind => Ok(Value::Bool(BoolValue::new(phi, None)).into()),
+            Value::CancelToken(_) if same_kind => Ok(self.copy_token(phi).into()),
             shape => {
                 if self.target.is_embedded() && matches!(shape, Value::Enum(_)) {
                     self.record_merged_enum_fields(phi, incoming);

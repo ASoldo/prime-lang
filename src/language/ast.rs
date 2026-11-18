@@ -504,6 +504,7 @@ pub enum Expr {
         span: Span,
     },
     Async {
+        captures: Arc<RwLock<Option<Vec<String>>>>,
         block: Box<Block>,
         span: Span,
     },
@@ -513,6 +514,7 @@ pub enum Expr {
         span: Span,
     },
     Spawn {
+        captures: Arc<RwLock<Option<Vec<String>>>>,
         expr: Box<Expr>,
         span: Span,
     },

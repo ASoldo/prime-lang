@@ -61,6 +61,23 @@ impl Environment {
         }
     }
 
+    pub fn task_environment(&self, captures: &[String]) -> Self {
+        let mut child = Environment::new();
+        // Module constants are available to functions invoked by the task.
+        child.scopes[0]
+            .bindings
+            .clone_from(&self.scopes[0].bindings);
+        child.push_scope();
+        for name in captures {
+            if let Some((cell, mutable)) = self.get_cell(name) {
+                child.scopes[1]
+                    .bindings
+                    .insert(name.clone(), Binding { cell, mutable });
+            }
+        }
+        child
+    }
+
     pub fn push_scope(&mut self) {
         self.scopes.push(Scope::new());
         self.borrow_frames.push(Vec::new());
