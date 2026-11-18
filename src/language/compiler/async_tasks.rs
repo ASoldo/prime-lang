@@ -148,6 +148,7 @@ impl Compiler {
                 Value::Str(s.clone())
             }
             Value::Str(_) | Value::Reference(_) => Value::Reference(ReferenceValue {
+                slot: None,
                 cell: Rc::new(Mutex::new(Value::Unit.into())),
                 mutable: false,
                 origin: None,
@@ -213,7 +214,7 @@ impl Compiler {
         let mut handles = Vec::new();
         for name in capture_names {
             if let Some(value) = self.get_var(&name) {
-                if self.get_binding(&name).is_some_and(|(_, mutable)| mutable)
+                if self.get_binding(&name).is_some_and(|binding| binding.mutable)
                     || matches!(value.value(), Value::Reference(r) if r.mutable)
                     || matches!(value.value(), Value::Pointer(p) if p.mutable)
                 {

@@ -595,11 +595,10 @@ impl Interpreter {
         let result = (|| {
             self.env.push_scope();
             for (param, value) in info.def.params.iter().zip(args) {
-                self.declare_with_drop(
-                    &param.name,
-                    value,
-                    param.mutability == Mutability::Mutable,
-                )?;
+                self.env.bind(&param.name, value.clone(), param.mutability == Mutability::Mutable, true)?;
+                if !self.suppress_drop_schedule {
+                    self.schedule_drop_for_value(&param.name, &value);
+                }
             }
 
             let result = match &info.def.body {
@@ -3738,6 +3737,9 @@ impl Interpreter {
                         name: ident.name.clone(),
                     });
                 }
+                if self.env.is_mut_borrowed(&ident.name) {
+                    return Err(RuntimeError::Panic { message: format!("`{}` is already mutably borrowed", ident.name) });
+                }
                 if matches!(*cell.lock().unwrap(), Value::Moved) {
                     return Err(RuntimeError::MovedValue {
                         name: ident.name.clone(),
@@ -3847,7 +3849,6 @@ impl Interpreter {
                     });
                 }
                 let moved = std::mem::replace(&mut *slot, Value::Moved);
-                self.env.register_move(&ident.name);
                 Ok(moved)
             }
             _ => Err(RuntimeError::Unsupported {

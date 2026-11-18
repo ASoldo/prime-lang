@@ -9,6 +9,7 @@ use crate::target::{BuildTarget, embedded_target_hint};
 use crate::{
     language::{
         ast::*,
+        borrows::MutableBorrows,
         build::{
             BuildBinding, BuildCaptured, BuildChannelReceiver, BuildChannelSender,
             BuildChannelState, BuildCleanup, BuildClosure, BuildDropRecord, BuildEffect,
@@ -134,8 +135,7 @@ pub struct Compiler {
     impls: HashSet<ImplKey>,
     consts: Vec<(String, ConstDef)>,
     drop_impls: HashMap<String, FunctionKey>,
-    active_mut_borrows: HashSet<String>,
-    borrow_frames: Vec<Vec<String>>,
+    borrows: MutableBorrows,
     cleanup_stack: Vec<Vec<CleanupAction>>,
     deprecated_warnings: HashSet<String>,
     module_stack: Vec<String>,
@@ -197,6 +197,7 @@ enum Value {
 impl Value {
     fn from_runtime_payload(handle: LLVMValueRef) -> Self {
         Self::Reference(ReferenceValue {
+            slot: None,
             cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
             mutable: false,
             origin: None,
@@ -262,6 +263,7 @@ struct FloatValue {
 
 #[derive(Clone)]
 struct ReferenceValue {
+    slot: Option<LLVMValueRef>,
     cell: Rc<Mutex<EvaluatedValue>>,
     mutable: bool,
     origin: Option<String>,
@@ -716,7 +718,7 @@ struct StructValue {
 struct Binding {
     cell: Rc<Mutex<EvaluatedValue>>,
     mutable: bool,
-    slot: Option<LLVMValueRef>, // Optional alloca backing for mutable scalars (embedded loops).
+    slot: Option<LLVMValueRef>,
 }
 
 #[derive(Clone, Copy)]
@@ -1684,8 +1686,7 @@ impl Compiler {
                 impls: HashSet::new(),
                 consts: Vec::new(),
                 drop_impls: HashMap::new(),
-                active_mut_borrows: HashSet::new(),
-                borrow_frames: Vec::new(),
+                borrows: MutableBorrows::default(),
                 cleanup_stack: Vec::new(),
                 deprecated_warnings: HashSet::new(),
                 module_stack: Vec::new(),
@@ -1925,6 +1926,7 @@ impl Compiler {
                 )?;
                 let cell = Rc::new(Mutex::new(EvaluatedValue::from_value(inner)));
                 Ok(Value::Reference(ReferenceValue {
+                    slot: None,
                     cell,
                     mutable: reference.mutable,
                     origin: None,
@@ -2214,8 +2216,7 @@ impl Compiler {
         self.loop_controls.clear();
         self.token_owners.clear();
         self.scopes.clear();
-        self.active_mut_borrows.clear();
-        self.borrow_frames.clear();
+        self.borrows = MutableBorrows::default();
         self.cleanup_stack.clear();
         self.return_type_stack.clear();
         self.exits.clear();

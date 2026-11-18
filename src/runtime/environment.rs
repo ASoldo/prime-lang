@@ -1,9 +1,9 @@
-use crate::language::ast::Expr;
+use crate::language::{ast::Expr, borrows::MutableBorrows};
 use crate::runtime::{
     error::RuntimeError,
     value::{FormatRuntimeSegment, Value},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -42,8 +42,7 @@ impl Scope {
 #[derive(Clone)]
 pub struct Environment {
     scopes: Vec<Scope>,
-    active_mut_borrows: HashSet<String>,
-    borrow_frames: Vec<Vec<String>>,
+    borrows: MutableBorrows,
 }
 
 impl Default for Environment {
@@ -54,11 +53,9 @@ impl Default for Environment {
 
 impl Environment {
     pub fn new() -> Self {
-        Self {
-            scopes: vec![Scope::new()],
-            active_mut_borrows: HashSet::new(),
-            borrow_frames: vec![Vec::new()],
-        }
+        let mut env = Self { scopes: Vec::new(), borrows: MutableBorrows::default() };
+        env.push_scope();
+        env
     }
 
     pub fn task_environment(&self, captures: &[String]) -> Self {
@@ -80,30 +77,27 @@ impl Environment {
 
     pub fn push_scope(&mut self) {
         self.scopes.push(Scope::new());
-        self.borrow_frames.push(Vec::new());
+        self.borrows.push_scope();
     }
 
     pub fn pop_scope(&mut self) {
         self.scopes.pop();
-        if let Some(frame) = self.borrow_frames.pop() {
-            for name in frame {
-                self.active_mut_borrows.remove(&name);
-            }
-        }
+        self.borrows.pop_scope();
         if self.scopes.is_empty() {
-            self.scopes.push(Scope::new());
-        }
-        if self.borrow_frames.is_empty() {
-            self.borrow_frames.push(Vec::new());
+            self.push_scope();
         }
     }
 
     pub fn declare(&mut self, name: &str, value: Value, mutable: bool) -> Result<(), RuntimeError> {
+        self.bind(name, value, mutable, false)
+    }
+
+    pub(super) fn bind(&mut self, name: &str, value: Value, mutable: bool, parameter: bool) -> Result<(), RuntimeError> {
         let scope_index = self.scopes.len().saturating_sub(1);
         let cell = Arc::new(Mutex::new(value));
         {
             let stored = cell.lock().unwrap();
-            self.track_reference_borrow_in_scope(&stored, scope_index)?;
+            self.track_reference_borrow_in_scope(&stored, scope_index, parameter)?;
         }
         if let Some(scope) = self.scopes.last_mut() {
             scope
@@ -126,10 +120,10 @@ impl Environment {
                     });
                 }
                 let cell = binding.cell.clone();
-                self.track_reference_borrow_in_scope(&value, index)?;
+                self.track_reference_borrow_in_scope(&value, index, false)?;
                 {
                     let current = cell.lock().unwrap();
-                    self.release_reference_borrow(&current);
+                    self.release_reference_borrow(&current, index);
                 }
                 *cell.lock().unwrap() = value;
                 return Ok(());
@@ -158,50 +152,26 @@ impl Environment {
         None
     }
 
-    fn begin_mut_borrow_in_scope(
-        &mut self,
-        name: &str,
-        scope_index: usize,
-    ) -> Result<(), RuntimeError> {
-        if self.active_mut_borrows.contains(name) {
-            return Err(RuntimeError::Panic {
-                message: format!("`{name}` is already mutably borrowed"),
-            });
-        }
-        self.active_mut_borrows.insert(name.to_string());
-        if let Some(frame) = self.borrow_frames.get_mut(scope_index) {
-            frame.push(name.to_string());
-        }
-        Ok(())
-    }
-
-    pub fn end_mut_borrow(&mut self, name: &str) {
-        self.active_mut_borrows.remove(name);
-    }
-
     pub fn is_mut_borrowed(&self, name: &str) -> bool {
-        self.active_mut_borrows.contains(name)
-    }
-
-    pub fn register_move(&mut self, name: &str) {
-        self.end_mut_borrow(name);
+        self.get_cell(name).is_some_and(|(cell, _)| self.borrows.contains(Arc::as_ptr(&cell)))
     }
 
     fn track_reference_borrow_in_scope(
         &mut self,
         value: &Value,
         scope_index: usize,
+        parameter: bool,
     ) -> Result<(), RuntimeError> {
         match value {
             Value::Reference(reference) if reference.mutable => {
                 if let Some(origin) = &reference.origin {
-                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
+                    self.borrows.acquire(scope_index, Arc::as_ptr(&reference.cell), origin, parameter).map_err(|message| RuntimeError::Panic {message})?;
                 }
             }
             Value::FormatTemplate(template) => {
                 for segment in &template.segments {
                     if let FormatRuntimeSegment::Named(named) = segment {
-                        self.track_reference_borrow_in_scope(named, scope_index)?;
+                        self.track_reference_borrow_in_scope(named, scope_index, false)?;
                     }
                 }
             }
@@ -210,17 +180,15 @@ impl Environment {
         Ok(())
     }
 
-    fn release_reference_borrow(&mut self, value: &Value) {
+    fn release_reference_borrow(&mut self, value: &Value, scope: usize) {
         match value {
             Value::Reference(reference) if reference.mutable => {
-                if let Some(origin) = &reference.origin {
-                    self.end_mut_borrow(origin);
-                }
+                self.borrows.release(scope, Arc::as_ptr(&reference.cell));
             }
             Value::FormatTemplate(template) => {
                 for segment in &template.segments {
                     if let FormatRuntimeSegment::Named(named) = segment {
-                        self.release_reference_borrow(named);
+                        self.release_reference_borrow(named, scope);
                     }
                 }
             }

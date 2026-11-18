@@ -54,7 +54,7 @@ impl Compiler {
     }
 
     pub(super) fn take_binding_value(&mut self, name: &str) -> Result<EvaluatedValue, String> {
-        let (cell, _) = self
+        let Binding {cell, ..} = self
             .get_binding(name)
             .ok_or_else(|| format!("Unknown variable {}", name))?;
         if self.is_mut_borrowed(name) {
@@ -68,7 +68,6 @@ impl Compiler {
             return Err(format!("Value `{}` has been moved", name));
         }
         let moved = std::mem::replace(&mut *slot, EvaluatedValue::from_value(Value::Moved));
-        self.register_move(name);
         Ok(moved)
     }
 
@@ -276,6 +275,7 @@ impl Compiler {
             TypeExpr::Reference { mutable, .. } => {
                 self.handle_types.insert(llvm, ty.clone());
                 Ok(Value::Reference(ReferenceValue {
+                    slot: None,
                     cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                     mutable: *mutable,
                     origin: None,
@@ -1009,7 +1009,7 @@ impl Compiler {
             if captures_vec.iter().any(|c| c.name == name) {
                 continue;
             }
-            if let Some((cell, _)) = self.get_binding(&name) {
+            if let Some(Binding {cell, ..}) = self.get_binding(&name) {
                 let value = cell.lock().unwrap().clone().into_value();
                 let ty = self.value_type_hint(&value).ok_or_else(|| {
                     format!(

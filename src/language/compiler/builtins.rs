@@ -15,7 +15,7 @@ impl Compiler {
                 "reference_retain",
             ));
         }
-        let inner = reference.cell.lock().unwrap().clone().into_value();
+        let inner = self.load_binding_value(&reference.cell, reference.slot).into_value();
         let target = self.build_runtime_handle(inner)?;
         let mut_flag =
             unsafe { LLVMConstInt(self.runtime_abi.bool_type, reference.mutable as u64, 0) };
@@ -46,8 +46,7 @@ impl Compiler {
             );
             Ok(())
         } else {
-            self.store_cell(&reference.cell, value);
-            Ok(())
+            self.store_binding_value(&reference.cell, reference.slot, value)
         }
     }
 
@@ -382,6 +381,7 @@ impl Compiler {
                 return self.instantiate_enum_variant("None", Vec::new());
             }
             let reference = ReferenceValue {
+                slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,
@@ -539,6 +539,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
+                slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,
@@ -639,6 +640,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
+                slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,
@@ -723,6 +725,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
+                slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,
@@ -2246,6 +2249,7 @@ impl Compiler {
                 )
             };
             let reference = ReferenceValue {
+                slot: None,
                 cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
                 mutable: false,
                 origin: None,

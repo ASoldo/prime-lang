@@ -55,7 +55,7 @@ impl Compiler {
         let result = (|| {
             self.push_scope();
             for (param, value) in func.params.iter().zip(evaluated_args) {
-                self.insert_var(&param.name, value, param.mutability == Mutability::Mutable)?;
+                self.bind_var(&param.name, value, param.mutability == Mutability::Mutable, true)?;
             }
             let result = match &func.body {
                 FunctionBody::Block(block) => self.execute_block_contents(block)?,
@@ -493,47 +493,25 @@ impl Compiler {
             }
         }
     }
-    pub(super) fn begin_mut_borrow_in_scope(
-        &mut self,
-        name: &str,
-        scope_index: usize,
-    ) -> Result<(), String> {
-        if self.active_mut_borrows.contains(name) {
-            return Err(format!("`{}` is already mutably borrowed", name));
-        }
-        self.active_mut_borrows.insert(name.to_string());
-        if let Some(frame) = self.borrow_frames.get_mut(scope_index) {
-            frame.push(name.to_string());
-        }
-        Ok(())
-    }
-
-    pub(super) fn end_mut_borrow(&mut self, name: &str) {
-        self.active_mut_borrows.remove(name);
-    }
-
     pub(super) fn is_mut_borrowed(&self, name: &str) -> bool {
-        self.active_mut_borrows.contains(name)
-    }
-
-    pub(super) fn register_move(&mut self, name: &str) {
-        self.end_mut_borrow(name);
+        self.get_binding(name).is_some_and(|binding| self.borrows.contains(Rc::as_ptr(&binding.cell)))
     }
 
     pub(super) fn track_reference_borrow_in_scope(
         &mut self,
         value: &Value,
         scope_index: usize,
+        parameter: bool,
     ) -> Result<(), String> {
         match value {
             Value::Reference(reference) if reference.mutable => {
                 if let Some(origin) = &reference.origin {
-                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
+                    self.borrows.acquire(scope_index, Rc::as_ptr(&reference.cell), origin, parameter)?;
                 }
             }
             Value::Pointer(pointer) if pointer.mutable => {
                 if let Some(origin) = &pointer.origin {
-                    self.begin_mut_borrow_in_scope(origin, scope_index)?;
+                    self.borrows.acquire(scope_index, Rc::as_ptr(&pointer.cell), origin, false)?;
                 }
             }
             Value::Boxed(_boxed) => {
@@ -543,7 +521,7 @@ impl Compiler {
             Value::FormatTemplate(template) => {
                 for segment in &template.segments {
                     if let FormatRuntimeSegment::Named(named) = segment {
-                        self.track_reference_borrow_in_scope(named.value(), scope_index)?;
+                        self.track_reference_borrow_in_scope(named.value(), scope_index, false)?;
                     }
                 }
             }
@@ -552,35 +530,14 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn release_reference_borrow(&mut self, value: &Value) {
+    pub(super) fn release_reference_borrow(&mut self, value: &Value, scope: usize) {
         match value {
-            Value::Reference(reference) if reference.mutable => {
-                if let Some(origin) = &reference.origin {
-                    self.end_mut_borrow(origin);
-                }
-            }
-            Value::Pointer(pointer) if pointer.mutable => {
-                if let Some(origin) = &pointer.origin {
-                    self.end_mut_borrow(origin);
-                }
-            }
-            Value::Boxed(_boxed) => {
-                // Box lifetimes are managed via inner references; no explicit borrow release needed.
-            }
-            Value::Sender(sender) => {
-                if let Some(origin) = &sender.origin {
-                    self.end_mut_borrow(origin);
-                }
-            }
-            Value::Receiver(receiver) => {
-                if let Some(origin) = &receiver.origin {
-                    self.end_mut_borrow(origin);
-                }
-            }
+            Value::Reference(reference) if reference.mutable => self.borrows.release(scope, Rc::as_ptr(&reference.cell)),
+            Value::Pointer(pointer) if pointer.mutable => self.borrows.release(scope, Rc::as_ptr(&pointer.cell)),
             Value::FormatTemplate(template) => {
                 for segment in &template.segments {
                     if let FormatRuntimeSegment::Named(named) = segment {
-                        self.release_reference_borrow(named.value());
+                        self.release_reference_borrow(named.value(), scope);
                     }
                 }
             }

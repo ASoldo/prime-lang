@@ -3353,6 +3353,7 @@ impl Compiler {
                         LLVMAddIncoming(phi, vals.as_mut_ptr(), blocks.as_mut_ptr(), 2);
                     }
                     return Ok(self.evaluated(Value::Reference(ReferenceValue {
+                        slot: None,
                         cell: a.cell.clone(),
                         mutable: a.mutable || b.mutable,
                         origin: a.origin.clone().or(b.origin.clone()),
@@ -3404,7 +3405,7 @@ impl Compiler {
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Identifier(ident) => {
-                let (cell, binding_mut) = self
+                let Binding {cell, mutable: binding_mut, slot} = self
                     .get_binding(&ident.name)
                     .ok_or_else(|| format!("Unknown variable {}", ident.name))?;
                 if mutable && !binding_mut {
@@ -3413,11 +3414,15 @@ impl Compiler {
                         ident.name
                     ));
                 }
+                if self.borrows.contains(Rc::as_ptr(&cell)) {
+                    return Err(format!("`{}` is already mutably borrowed", ident.name));
+                }
                 if matches!(cell.lock().unwrap().value(), Value::Moved) {
                     return Err(format!("Value `{}` has been moved", ident.name));
                 }
                 Ok(EvalOutcome::Value(
                     Value::Reference(ReferenceValue {
+                        slot,
                         cell,
                         mutable,
                         origin: Some(ident.name.clone()),
@@ -3429,6 +3434,7 @@ impl Compiler {
             _ => match self.emit_expression(expr)? {
                 EvalOutcome::Value(value) => Ok(EvalOutcome::Value(
                     Value::Reference(ReferenceValue {
+                        slot: None,
                         cell: Rc::new(Mutex::new(value)),
                         mutable,
                         origin: None,
@@ -3485,7 +3491,7 @@ impl Compiler {
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Identifier(ident) => {
-                let (cell, _) = self
+                let Binding {cell, ..} = self
                     .get_binding(&ident.name)
                     .ok_or_else(|| format!("Unknown variable {}", ident.name))?;
                 if self.is_mut_borrowed(&ident.name) {
@@ -3505,7 +3511,6 @@ impl Compiler {
                     ));
                 }
                 let moved = std::mem::replace(&mut *slot, EvaluatedValue::from_value(Value::Moved));
-                self.register_move(&ident.name);
                 Ok(EvalOutcome::Value(moved))
             }
             _ => Err("move expressions require identifiers in build mode".into()),
@@ -3518,12 +3523,8 @@ impl Compiler {
 
     pub(super) fn deref_value(&mut self, value: Value) -> Result<EvaluatedValue, String> {
         match value {
-            Value::Reference(reference) => {
-                Ok(self.read_token_binding(reference.cell.lock().unwrap().clone()))
-            }
-            Value::Pointer(pointer) => {
-                Ok(self.read_token_binding(pointer.cell.lock().unwrap().clone()))
-            }
+            Value::Reference(reference) => Ok(self.load_binding_value(&reference.cell, reference.slot)),
+            Value::Pointer(pointer) => Ok(self.read_token_binding(pointer.cell.lock().unwrap().clone())),
             _ => Err("Cannot dereference non-reference value in build mode".into()),
         }
     }
