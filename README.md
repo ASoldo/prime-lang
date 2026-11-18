@@ -2,10 +2,7 @@
 
 # Prime Language
 
-Prime is a learning-oriented language and toolchain for experimenting with
-parsing, interpretation, LLVM code generation, and Neovim integrations. This
-repository contains the compiler/interpreter (`prime-lang`), the LSP server, and
-the CLI utilities you use while editing `.prime` files.
+Prime is an expression-oriented language with an interpreter, an LLVM compiler and a language server. The CLI checks, formats, tests and builds Prime packages. The [language outline](docs/LanguageOutline.md) describes the implemented language and target limitations.
 
 ### Project Layout
 
@@ -14,13 +11,9 @@ src/
  ├─ language/   # parser + AST + compiler lowering
  ├─ runtime/    # interpreter + value/runtime support
  ├─ project/    # manifest + package loader shared by CLI/LSP
- ├─ lsp/        # standalone LSP crate (backend, completion, hover, diagnostics)
+ ├─ lsp/        # language server (backend, completion, hover, diagnostics)
  └─ tools/      # CLI helpers: formatter, lint, diagnostics bridge
 ```
-
-The `tools` module now owns the previously huge `formatter.rs`, `lint.rs`,
-`diagnostics.rs`, and `lsp.rs` files, which keeps the main binary lean and makes
-each tool easier to navigate.
 
 ---
 
@@ -29,32 +22,19 @@ each tool easier to navigate.
 ```bash
 git clone https://github.com/asoldo/prime-lang.git
 cd prime-lang
-cargo install --path .
+cargo install --locked --path .
+prime-lang check workspace/app/main.prime --format json
 prime-lang run workspace/app/main.prime   # interpret the packaged app::main module
 prime-lang build workspace/app/main.prime # emit LLVM, link to ./.build.prime/output
 ./.build.prime/output/output              # run the native binary
 # Try another module: prime-lang run workspace/demos/error_handling/error_handling_demo.prime
 ```
 
-The repository ships with `main.prime` so you can confirm the full toolchain
-works end‑to‑end immediately after building. As of the April 2026 compiler
-updates the emitted native binary now exits with status code `0`, so scripting
-and CI integrations no longer see spurious failures after a successful build.
-Build-mode now mirrors the interpreter for control flow (`return`/`break`/`continue`)
-and for the new `try {}` / `?` sugar, so you can rely on identical semantics in both
-`prime run` and `prime build`.
-Build-mode also executes concurrency the same way: `spawn`/`join` plus channels work
-while compiling (deterministically unless you opt into `PRIME_BUILD_PARALLEL=1`), and
-the emitted binary uses real OS threads. Async/await + channels automatically attach
-runtime handles when async appears, so `recv_task`/`sleep_task` block correctly in
-build mode, the host binary, and the ESP32 runtime (no stubs or hangs).
+### Execution targets
 
-### Execution Parity (run vs build vs embedded no_std)
+The host interpreter and native compiler load the same package graph, expand macros and check types. The native compiler emits LLVM IR, then links an executable with a Rust runtime bundled in the CLI. Conformance tests compare observable output on both backends for specific programs. The full test command and host prerequisites are in [Getting Started](docs/GettingStarted.md).
 
-- **Core semantics (run/build)**: control flow (`if`/`match`/loops), `return`/`break`/`continue`, pattern matching across tuples/maps/structs/slices, generics/interfaces, macros, Option/Result with `try {}`/`?`, Drop + `defer`, mutable scalars (stack slots kept for ints/bools so loop mutations print correctly), channels + spawn/join, async/await (`sleep_task`/`recv_task`), and SSA-backed booleans/ints all mirror between interpreter and host builds.
-- **Embedded/no_std (ESP32 Xtensa)**: `out` (strings + format strings + ints/bools), channels, async (`sleep_task`/`recv_task`), `spawn`/`join` (task runtime, not OS threads), GPIO (`pin_mode`/`digital_write`), `delay_ms`/`now_ms`, mutable scalars (stack slots), Option/Result + `?`, pattern matching, and macro-expanded code work the same as host. Panic unwinds are host-only; embedded panics abort/loop. The ESP32 demo also exercises channel/task pool recycling and async Result propagation so build/run/embedded stay aligned.
-- **Host-only**: filesystem built-ins (`fs_exists`/`fs_read`/`fs_write`) and direct OS threads; embedded `spawn`/`join` run on the task runtime instead of OS threads, and other std-dependent hooks stay disabled (you’ll get clear errors when they’re unavailable).
-- **Manifests**: set `no_std = true` per module in `prime.toml` for embedded targets. `workspace/demos/esp32_blink/prime.toml` and `workspace/demos/bare_metal_embedded/prime.toml` show the expected flags and toolchain entries; CLI also auto-detects esp-clang/Xtensa under `~/.espressif` when not provided.
+ESP32 uses a separate, bounded runtime. The Xtensa demos exercise channels, tasks, GPIO and ROM timers. Filesystem, windowing and host audio require a host target. Building a firmware image checks code generation and linking. Physical timing, GPIO and audio need device tests. See the [async contract](docs/AsyncAwait.md) for the supported wait operations and their limits.
 
 ### Example Programs
 
@@ -89,7 +69,7 @@ Validated outputs (fresh run, current syntax; files live under `workspace/demos/
 - `pointer_demo.prime` — pointer-based HP tweaks and stored ranges.
 - `parallel_demo.prime` — channels + spawn/join demo showing build/run parity for concurrency.
 - `fs_demo.prime` / `time_demo.prime` / `iter_demo.prime` — minimal built-in samples for file I/O, timers, and iterator helpers.
-- `workspace/demos/no_std_parity/main.prime` — host-run parity fixture for embedded async/Result/timeouts (channels, `recv_task`/`recv_timeout`, defers) so `no_std` behavior stays locked while developing on a desktop.
+- `workspace/demos/no_std_parity/main.prime` — host-run parity fixture for embedded async/Result/timeouts (channels, `recv_task`/`recv_timeout`, defers) for comparison with device execution.
 - `workspace/demos/bare_metal_embedded` — smallest `no_std` sample (sums/filters on-device) showing manifest flags plus channels + async `recv_task` + `Result` parity without GPIO.
 - `workspace/demos/esp32_blink` — ESP32 Xtensa no_std blink demo with async/await, spawn/join, channel reuse probe, and calibrated delay; manifest includes toolchains and flash settings. Build uses
   `llc -relocation-model=static -mtriple=xtensa-esp32-elf -mcpu=esp32 -mattr=+windowed`
@@ -154,6 +134,7 @@ fresh. Highlights:
 
 | Command | Purpose |
 | --- | --- |
+| `prime-lang check <target> [--project pkg] [--frozen] [--format text\|json]` | Check a module and its imports without executing it. [Machine-readable diagnostics](docs/Checking.md) |
 | `prime-lang run <target> [--project pkg]` | Interpret a module by manifest name or path after loading workspace dependencies (modules only; libraries are rejected) |
 | `prime-lang build <target> [--project pkg] --name demo` | Compile a module (by name or path) to LLVM IR/object code and write a runnable binary below `./.build.prime/demo` (modules only) |
 | `prime-lang lint <file> [--watch]` | Single-shot or watch-mode linting with the same parser used by the LSP |
@@ -169,7 +150,7 @@ fresh. Highlights:
 | `prime-lang sync [path]` | Resolve dependencies and write `prime.lock`; pair with `--frozen` on run/build to require the lock |
 | `prime-lang expand <file> [--offset N | --line L --column C] [--print-expanded]` | Show macro expansion trace at a cursor (line/column or byte offset). With a position, prints only the expanded items from that macro; without a position or with `--print-expanded`, prints the fully expanded module. |
 | `in[T](prompt, ...) -> Result[T, string]` | Built-in input helper. Reads a line from stdin, parses to `T`, and returns `Ok(value)`/`Err(message)`. Formatting rules mirror `out`; type arguments are required. |
-| Concurrency | `spawn expr` → `JoinHandle[T]`; `channel[T]()` → `(Sender[T], Receiver[T])`; `send` returns `Result[(), string]`; `recv` yields `Option[T]` (run uses real threads; build evaluates deterministically with the same blocking semantics; embedded maps spawn/join to the task runtime for parity) |
+| Concurrency | `spawn expr` → `JoinHandle[T]`; `channel[T]()` → `(Sender[T], Receiver[T])`; `send` returns `Result[(), string]`; `recv` yields `Option[T]` |
 
 Dev workflow (build/test/lint + docs server): `docs/Development.md`.
 
@@ -181,7 +162,7 @@ match in[int32](`Temperature for { "Soldo" }: `) {
   Result::Err(msg) => out(`temp error: {msg}`),
 }
 
-// Async + channel parity (build/run/embedded):
+// Async and channels:
 fn main() {
   let (tx, rx) = channel[int32]();
   let task = async {
@@ -320,46 +301,15 @@ compiler, and LSP share the same package graph.
 
 ### Embedded / ESP32 (Xtensa) Quickstart
 
-The workspace ships an ESP32 classic (Xtensa) demo at `workspace/demos/esp32_blink/esp32_blink.prime`. The manifest carries everything needed to build and flash when you have the ESP-IDF toolchains installed under `~/.espressif`:
+The [blink manifest](workspace/demos/esp32_blink/prime.toml) targets classic Xtensa ESP32. Install the Espressif Rust toolchain (`esp`), esp-clang, the Xtensa GCC tools and ESP-IDF. Build ESP-IDF's blink example once for `esp32` to generate `sections.ld` and `memory.ld`. Set these paths for the shell that runs the Prime CLI:
 
-```toml
-[build]
-target = "xtensa-esp32-espidf"
-platform = "esp32"
-
-[build.toolchain]
-cc = "xtensa-esp32-elf-gcc"
-ar = "xtensa-esp32-elf-ar"
-objcopy = "xtensa-esp32-elf-objcopy"
-esptool = "esptool"
-ld_script = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/sections.ld"
-ld_flags = """
-  -Wl,--gc-sections
-  -T/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf/esp_system/ld/memory.ld
-  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.ld
-  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.api.ld
-  -T/home/rootster/esp/esp-idf/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld"""
-
-[build.toolchain.env]
-RUSTUP_TOOLCHAIN = "esp"
-CARGO_TARGET_DIR = "/home/rootster/.cache/prime-xtensa"
-LLVM_SYS_201_PREFIX = "/home/rootster/.espressif/tools/esp-clang/esp-clang"
-LD_LIBRARY_PATH = "/usr/lib64:/usr/lib:/lib:/home/rootster/.espressif/tools/esp-clang/esp-clang/lib"
-PATH = "/home/rootster/.espressif/tools/esp-clang/esp-clang/bin:/home/rootster/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-elf/bin:$PATH"
-CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER = "xtensa-esp32-elf-gcc"
-
-[build.flash]
-enabled = true
-port = "/dev/ttyUSB0"
-baud = 460800
-address = "0x10000"
+```sh
+. "$HOME/esp/esp-idf/export.sh"
+export IDF_BUILD_ROOT="$IDF_PATH/examples/get-started/blink/build/esp-idf"
+prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink --no-flash
 ```
 
-What it does:
-- Toolchain/ROM scripts point at the IDF-generated `sections.ld`/`memory.ld` plus ROM ld files so Xtensa ROM symbols (e.g., `ets_delay_us`, `ets_printf`) resolve correctly.
-- `[build.toolchain.env]` injects the esp-clang/Xtensa toolchains, LLVM prefix, linker choice, and a dedicated cache dir. `$PATH` is expanded in-place so existing PATH is preserved.
-- The CLI also autodetects the same defaults under `~/.espressif` if you omit them; keep these entries if your layout differs or you want a self-contained manifest.
- - UART logging: `out(...)` prints over UART via ROM `ets_printf`. Strings, format strings, ints (mutable/SSA-backed, so loop counters stay fresh), and bools are rendered; each `out` appends its own newline so successive calls separate cleanly. The blink demo now prints your format strings (e.g., `hello ... {my_var}`) plus per-loop state booleans—no extra boot banner is injected by the runtime.
+The manifest uses `IDF_PATH` for ROM linker scripts and `IDF_BUILD_ROOT` for the generated memory layout. Set `CARGO_TARGET_DIR` to choose a runtime build cache. UART logging uses ROM `ets_printf`.
   - For the bundled demo, the runtime disables RTC/TIMG watchdogs once at startup so the tight blink loop can run indefinitely without resets. Remove that if you want watchdog coverage in your own projects.
 
 How to build/flash (after installing ESP-IDF tools):
@@ -367,9 +317,9 @@ How to build/flash (after installing ESP-IDF tools):
 2. Run the demo: `prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink`
    - The runtime prints your `out(...)` lines on UART (115200) with newlines per call (`hello ... {my_var}`, loop state toggles, etc.), and the on-board blue LED (GPIO2, active-low) blinks.
    - External button input: wire GPIO18 -> momentary switch -> GND (active-low) for in-loop logging; BOOT/EN buttons are reserved by auto-boot/reset on many boards.
-   - Concurrency parity: the demo runs async `recv_task`, `spawn`/`join`, a Result + `?` async probe, a timeout probe, and a small channel/task pool reuse probe so embedded output matches run/build semantics.
+   - Concurrency parity: the demo runs async `recv_task`, `spawn`/`join`, a Result + `?` async probe, a timeout probe, and a small channel/task pool reuse probe for comparison against host output.
    - The demo disables hardware watchdogs once on boot to keep the loop alive; re-enable or adjust if your project needs watchdog protection.
-   - Flashing is on by default for the demo; disable with `--no-flash` or set `[build.flash].enabled = false`.
+   - To write the image to a board, set `[build.flash].enabled = true` and select the serial port in your local manifest.
 3. If your board’s user LED sits on another pin (some use GPIO4/5), edit the `led` constant in `esp32_blink.prime`.
 
 Environment handling:

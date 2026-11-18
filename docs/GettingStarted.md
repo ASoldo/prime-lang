@@ -2,19 +2,22 @@
 
 ## Prerequisites
 
-- Rust (stable). Prime-lang is a single Rust CLI (`prime-lang`).
+- Install Rust with rustup. The repository selects Rust 1.100.0 for development. The locked host CLI supports Rust 1.91 and newer.
 - LLVM 21 available for `llvm-sys` (build-mode uses `llc`). On Linux you can set `LLVM_SYS_211_PREFIX` and/or `PRIME_LLC` if LLVM is not in the default path.
+
+On Linux the host runtime also needs a C linker, pkg-config, ALSA and X11/Wayland development headers. The [CI workflow](../.github/workflows/ci.yml) lists the Ubuntu packages. The example inventory requires Python 3.11 or newer.
 
 ## Install the CLI
 
 ```bash
-cargo install --path . --force
+cargo install --locked --path .
 prime-lang --help
 ```
 
 ## Run a demo
 
 ```bash
+prime-lang check workspace/demos/tetris/tetris.prime --format json
 prime-lang run workspace/demos/closures/closure_demo.prime
 prime-lang run workspace/demos/macro/macro_demo.prime
 prime-lang run workspace/demos/channel_demo/channel_demo.prime
@@ -56,5 +59,4 @@ auto-reloads the page as docs regenerate on save.
 
 ```bash
 ./scripts/ci.sh
-./scripts/check_examples.sh
 ```

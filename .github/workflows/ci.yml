@@ -1,78 +1,46 @@
 name: CI
 
-on:
-  push:
-  pull_request:
+on: [push, pull_request]
 
 permissions:
   contents: read
 
 jobs:
   host:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      LLVM_SYS_211_PREFIX: /usr/lib/llvm-21
+      PRIME_LLC: /usr/lib/llvm-21/bin/llc
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Install LLVM 21 (for llvm-sys)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install LLVM 21 and native runtime development headers
         run: |
+          set -euo pipefail
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.asc"
+          fingerprint=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.asc" | awk -F: '$1=="fpr" {print $10; exit}')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo install -m 0644 "$RUNNER_TEMP/llvm.asc" /usr/share/keyrings/llvm.asc
+          echo 'deb [signed-by=/usr/share/keyrings/llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
-          sudo apt-get install -y wget lsb-release software-properties-common
-          wget https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 21
-          sudo apt-get install -y clang-21 lld-21 llvm-21-dev libpolly-21-dev
-          {
-            echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21";
-            echo "LLVM_SYS_211_FEATURES=all-targets";
-            echo "LLVM_SYS_211_PREFER_DYNAMIC=1";
-            echo "PRIME_LLC=/usr/lib/llvm-21/bin/llc";
-          } >> $GITHUB_ENV
-      - name: Checks
-        run: ./scripts/ci.sh
-
-  # esp32-smoke:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - name: Install LLVM 21 (for llvm-sys)
-  #       run: |
-  #         sudo apt-get update
-  #         sudo apt-get install -y wget lsb-release software-properties-common
-  #         wget https://apt.llvm.org/llvm.sh
-  #         chmod +x llvm.sh
-  #         sudo ./llvm.sh 21
-  #         sudo apt-get install -y clang-21 lld-21 llvm-21-dev libpolly-21-dev
-  #         {
-  #           echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21";
-  #           echo "LLVM_SYS_211_FEATURES=all-targets";
-  #           echo "LLVM_SYS_211_PREFER_DYNAMIC=1";
-  #           echo "PRIME_LLC=/usr/lib/llvm-21/bin/llc";
-  #           echo "CC=clang-21";
-  #           echo "CXX=clang++-21";
-  #           echo "AR=llvm-ar-21";
-  #           echo "RANLIB=llvm-ranlib-21";
-  #         } >> $GITHUB_ENV
-  #     - name: Install ESP-IDF toolchain
-  #       uses: espressif/install-esp-idf-action@v1
-  #       with:
-  #         version: v5.2
-  #     - name: Install ESP-IDF tools (esp32)
-  #       run: |
-  #         "$IDF_PYTHON_ENV_PATH/bin/python3" "$IDF_PATH/tools/idf_tools.py" install esp32 esp-rom-elfs
-  #     - name: Install Rust esp toolchain via espup
-  #       run: |
-  #         cargo install espup --locked
-  #         yes | espup install
-  #         rustup toolchain list
-  #     - name: Build CLI
-  #       run: cargo build --release --locked
-  #     - name: Smoke build ESP32 blink demo (no flash)
-  #       env:
-  #         PRIME_EMBEDDED_SMOKE: "1"
-  #       run: |
-  #         source $IDF_PATH/export.sh
-  #         ./target/release/prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name ci-esp32 --no-flash
+          sudo apt-get install -y lld-21 llvm-21-dev libasound2-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev pkg-config
+      - name: Install the repository toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: ./scripts/ci.sh
+      - name: Verify minimum supported Rust
+        if: matrix.runner == 'ubuntu-24.04'
+        run: |
+          rustup toolchain install 1.91.0 --profile minimal
+          cargo +1.91.0 check --locked --all-targets
+      - name: Exercise the embedded runtime on a simulated ESP32-C3 timer
+        if: matrix.runner == 'ubuntu-24.04'
+        run: |
+          rustup target add riscv32imc-unknown-none-elf
+          python3 -m venv "$RUNNER_TEMP/prime-emulator"
+          "$RUNNER_TEMP/prime-emulator/bin/pip" install unicorn==2.1.4
+          PATH="/usr/lib/llvm-21/bin:$PATH" "$RUNNER_TEMP/prime-emulator/bin/python" scripts/test_embedded_timers.py
