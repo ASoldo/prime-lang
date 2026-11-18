@@ -1,0 +1,29 @@
+//! Echo to the sender. A text "both" broadcasts "ready" to all peers.
+module ws_echo;
+enum Result[T, E] { Ok(T), Err(E) }
+
+fn next_event() -> bool {
+  match in[int32]("") {
+    Result::Ok(id) => match in[string]("") {
+      Result::Ok(kind) => match in[string]("") {
+        Result::Ok(hex) => {
+          if kind == "text" && hex == "626f7468" {
+            out("all text 7265616479");
+          } else if kind == "binary" || kind == "text" {
+            out(`{id} {kind} {hex}`);
+          } else {
+            out("drop");
+          }
+          true
+        },
+        Result::Err(_) => false,
+      },
+      Result::Err(_) => false,
+    },
+    Result::Err(_) => false,
+  }
+}
+
+fn main() {
+  while next_event() {}
+}
