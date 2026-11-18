@@ -28,6 +28,17 @@ case all players lock real pieces, seat 0 finishes 99th, and tick 15
 has 98 survivors. Reversing submission order produces the same final
 snapshots. Use `--bots` to emit the 99-seat input log.
 
+The `--final` fixture plays a match through victory. With seed 137,
+seats 0–97 hard-drop each tick and seat 98 waits. All 99 seats survive
+tick 9. On tick 10 identical stacks block 98 spawns; ascending simulation
+order eliminates seat 0 first (rank 99) and seat 97 last (rank 2).
+Seat 98 wins. The check requires every rank 1–99 exactly once and compares
+the full event stream and snapshots after replaying both submission orders
+on both backends. The SHA-256 of the canonical transcript is
+`0de9a45d253197e7c35a37fe8538468cbf3cfb8771884e639d7f95c81cfc3d34`.
+The 99 final V2 lines alone, including their LF terminators, hash to
+`455d5e81a1a239c1bf396b644a2502bd2d380d729f9dad4eaa4a2a173a78b02b`.
+
 In the two-seat chain, gravity brings seat 1's J to row 19, while
 seat 0 places J, I and L across the floor. At tick 73 seat 0 clears a
 line for 100 points. The garbage row overlaps seat 1's falling piece;

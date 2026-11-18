@@ -8,6 +8,7 @@ import time
 
 DEMO = Path(__file__).resolve().parent
 GOLDEN = {
+    "99 to 1": "0de9a45d253197e7c35a37fe8538468cbf3cfb8771884e639d7f95c81cfc3d34",
     "chain": "342a6835b8b67836857de631dee88c6a1cf38489cdf64df679b42a0bb4904b63",
     "99 bots": "1eddcd39b88787568943c4dcb0684e1696138d4ed27ac2970ebf4652aac650e6",
 }
@@ -40,6 +41,16 @@ def bots(reverse=False):
             if seat == 0 or tick == 3:
                 action = 4
             words.append(move(tick, seat, action))
+        words.append(10000 * tick)
+    return words + [-2, -1]
+
+
+def final_match(reverse=False):
+    words = [137, 99]
+    order = range(97, -1, -1) if reverse else range(98)
+    for tick in range(1, 11):
+        for seat in order:
+            words.append(move(tick, seat, 4))
         words.append(10000 * tick)
     return words + [-2, -1]
 
@@ -78,12 +89,31 @@ def verify_bots(text):
     assert "T2 15 98 -1\n" in text
 
 
+def verify_final_match(text):
+    lines = text.splitlines()
+    assert "T2 9 99 -1" in lines and "T2 10 1 98" in lines
+    deaths = [line for line in lines if line.startswith("X2 ")]
+    assert deaths == [f"X2 10 {seat} {99 - seat}" for seat in range(98)]
+    final = states(text, 10)
+    assert [int(s[2]) for s in final] == list(range(99))
+    ranks = [int(s[14]) for s in final]
+    assert sorted(ranks) == list(range(1, 100))
+    assert ranks == list(range(99, 0, -1))
+    assert [int(s[2]) for s in final if s[9] == "1"] == [98]
+
+
+def authoritative_records(text):
+    # Acknowledgements identify the sender, so their arrival order is expected to vary.
+    return [line for line in text.splitlines() if not line.startswith("Q2 ")]
+
+
 def main():
-    if len(sys.argv) == 2 and sys.argv[1] in ("--chain", "--bots"):
-        print(*({"--chain": chain, "--bots": bots}[sys.argv[1]])(), sep="\n")
+    samples = {"--chain": chain, "--bots": bots, "--final": final_match}
+    if len(sys.argv) == 2 and sys.argv[1] in samples:
+        print(*samples[sys.argv[1]](), sep="\n")
         return
     if len(sys.argv) != 3:
-        sys.exit("usage: verify.py PRIME_LANG NATIVE_ARENA | --chain | --bots")
+        sys.exit("usage: verify.py PRIME_LANG NATIVE_ARENA | --chain | --bots | --final")
     commands = [[sys.argv[1], "run", DEMO / "main.prime"], [sys.argv[2]]]
     for label, words, verify in [("chain", chain(), verify_chain), ("99 bots", bots(), verify_bots)]:
         (interp, itime), (native, ntime) = [run(cmd, words) for cmd in commands]
@@ -95,6 +125,20 @@ def main():
               f"interpreter {itime:.3f}s, native {ntime:.3f}s", flush=True)
     reordered, _ = run(commands[1], bots(reverse=True))
     assert states(native, 15) == states(reordered, 15)
+    canonical, native_time = run(commands[1], final_match())
+    verify_final_match(canonical)
+    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    assert digest == GOLDEN["99 to 1"], f"99 to 1: replay digest {digest}"
+    expected = authoritative_records(canonical)
+    for label, cmd in zip(("interpreter", "native"), commands):
+        replay, normal_time = run(cmd, final_match())
+        assert replay == canonical, f"{label}: replay divergence"
+        reversed_replay, reversed_time = run(cmd, final_match(reverse=True))
+        assert authoritative_records(reversed_replay) == expected, f"{label}: submission-order divergence"
+        print(f"99 to 1 ({label}): canonical replay {normal_time:.3f}s, "
+              f"reversed submission {reversed_time:.3f}s", flush=True)
+    print(f"tick 10: winner seat 98, 98 eliminations, ranks 1..99, "
+          f"sha256 {digest}, first native run {native_time:.3f}s", flush=True)
     # Duplicate, future tick, invalid id/action and stale advance leave state intact.
     for cmd in commands:
         clean, _ = run(cmd, [137, 2, 10013, 10000, -2, -1])
