@@ -31,7 +31,7 @@ The interpreter uses an in-process runtime. Native code calls C-compatible symbo
 | `prime_delay_ms` | `i32` milliseconds | `PrimeStatus` |
 | `prime_recv_timeout` | Receiver handle, `i128` milliseconds, output pointer | `PrimeStatus` |
 
-Native `?` reads the variant with `prime_enum_tag`. Only the success edge calls `prime_enum_get(handle, 0)` for the payload. Tuples inside a Result use positional enum records. Struct records use field-name order, the same representation used for task results. A nested Result retains its own tag and payload handle. The embedded enum ABI stores one payload per record.
+Native `?` reads the variant with `prime_enum_tag`. Only the success edge calls `prime_enum_get(handle, 0)` for the payload. Tuples inside a Result use positional enum records. Struct records use field-name order, the same representation used for task results. A nested Result retains its own tag and payload handle. The outer Result stores one payload handle. On embedded targets, a tuple or struct payload can use up to four fields in its own record.
 
 The host runtime uses OS threads. The embedded runtime uses statically initialized pools and a target-specific clock. Closing a channel preserves its queued values. After those values have been read, the channel releases its slot. [Embedded timers and channels](EmbeddedTimers.md)
 
