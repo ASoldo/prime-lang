@@ -9,6 +9,7 @@ Start with the transport your peer speaks. Prime programs use the same entry poi
 | REST client or EventSource | [REST and SSE](RestSse.md) | Prime owns the reading and revision. A Go HTTP/1.1 adapter handles requests, JSON and event streams. A subscriber can resume within the last 16 revisions. |
 | Browser WebSocket | [WebSocket SDK](../sdk/websocket/README.md) | A Python host adapter delivers text, binary and close events to a Prime process. The peer cap is configurable. Frames can arrive fragmented. |
 | Browser RTCPeerConnection | [WebRTC SDK](WebRTC.md) | A Pion host adapter negotiates ICE, DTLS and SCTP. The application receives data-channel events and can address an individual peer. |
+| Classic ESP32 with ESP-IDF | [Prime component using lwIP](EspIdfSockets.md) | The Prime application exchanges TCP and UDP bytes between local endpoints under FreeRTOS. |
 
 The WebSocket and WebRTC adapters use the same application protocol. Each incoming event has three lines containing its kind, peer ID and payload. The Prime process can issue a send or close command independently of incoming events. Each new connection receives a transport peer ID. A game that supports reconnecting tracks the player's seat separately from this ID. Keep a WebSocket application message within 4096 decoded bytes when sharing code between the two transports.
 

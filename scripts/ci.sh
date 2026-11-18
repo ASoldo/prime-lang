@@ -31,6 +31,8 @@ python3 scripts/test_host_sockets.py "$PRIME_BIN"
   cd "$scratch"
   "$PRIME_BIN" build "$root/workspace/demos/tetris_ecs/main.prime" --name tetris_ecs
   python3 "$root/workspace/demos/tetris_ecs/verify.py" "$PRIME_BIN" "$scratch/.build.prime/tetris_ecs/tetris_ecs"
+  "$PRIME_BIN" build "$root/workspace/demos/tetris_arena/main.prime" --name tetris_arena
+  python3 "$root/workspace/demos/tetris_arena/verify.py" "$PRIME_BIN" "$scratch/.build.prime/tetris_arena/tetris_arena"
 )
 
 # Some Prime tests write files relative to their working directory.
