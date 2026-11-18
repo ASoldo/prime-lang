@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Prime data channel</title>
+<h1>Prime data channel</h1>
+<form><label>Message <input id="message" value="move"></label> <button disabled>Send</button></form>
+<pre aria-live="polite"></pre>
+<script type="module">
+  import { connectPrime } from "./browser.js";
+  const log = document.querySelector("pre");
+  const button = document.querySelector("button");
+  const input = document.querySelector("input");
+  try {
+    const connection = await connectPrime(({data}) => {
+      const text = typeof data === "string" ? data : new Uint8Array(data).join(" ");
+      log.append(document.createTextNode(text + "\n"));
+    });
+    button.disabled = false;
+    connection.dc.onclose = () => {
+      button.disabled = true;
+      log.append("Disconnected. Reload to join again.\n");
+    };
+    document.querySelector("form").onsubmit = event => {
+      event.preventDefault();
+      connection.dc.send(input.value);
+    };
+    window.addEventListener("pagehide", () => connection.close(), { once: true });
+  } catch (error) {
+    log.textContent = error.message;
+  }
+</script>

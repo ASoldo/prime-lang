@@ -1,0 +1,41 @@
+//! A shared move counter served to real browser data channels.
+module demos::webrtc;
+
+import core::types::prelude::{*};
+import prime::webrtc::prelude::{*};
+
+fn play() -> Result[(), string] {
+  let mut int32 moves = 0;
+  let mut int32 closed = 0;
+  while let Result::Ok(kind) = rtc_kind() {
+    let int64 peer = rtc_peer()?;
+    let string data = rtc_data()?;
+    if kind == "open" {
+      out(`text {peer} joined {peer}`);
+    } else if kind == "close" {
+      closed = closed + 1;
+    } else if kind == "text" {
+      if data == "move" {
+        moves = moves + 1;
+        out(`text {peer} moves {moves}`);
+      } else if data == "stats" {
+        out(`text {peer} moves {moves} closed {closed}`);
+      } else if data == "bye" {
+        rtc_close(peer);
+      } else {
+        rtc_text(peer, data);
+      }
+    } else if kind == "text64" {
+      rtc_text64(peer, data);
+    } else if kind == "bytes" {
+      rtc_bytes(peer, data);
+    } else if kind == "audio" || kind == "video" {
+      out(`text {peer} media {data}`);
+    }
+  }
+  Ok(())
+}
+
+fn main() {
+  let Result[(), string] ended = play();
+}

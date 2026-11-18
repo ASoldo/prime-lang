@@ -1,0 +1,48 @@
+//! Blocking host events from the optional prime-webrtc adapter.
+library prime::webrtc;
+
+import core::types::prelude::{*};
+
+export prelude {
+  rtc_kind,
+  rtc_peer,
+  rtc_data,
+  rtc_text,
+  rtc_text64,
+  rtc_bytes,
+  rtc_close,
+};
+
+/// Read the first line of the next event. EOF ends the event loop.
+pub fn rtc_kind() -> Result[string, string] {
+  in[string]("")
+}
+
+/// Read the event's destination/source peer ID after rtc_kind.
+pub fn rtc_peer() -> Result[int64, string] {
+  in[int64]("")
+}
+
+/// Read the event's payload (also present for open and close).
+pub fn rtc_data() -> Result[string, string] {
+  in[string]("")
+}
+
+/// Send single-line UTF-8 text. Use rtc_text64 for multiline or control bytes.
+pub fn rtc_text(peer: int64, data: string) {
+  out(`text {peer} {data}`);
+}
+
+/// Send a text message from padded standard base64 of its UTF-8 bytes.
+pub fn rtc_text64(peer: int64, encoded: string) {
+  out(`text64 {peer} {encoded}`);
+}
+
+/// Send a binary message from padded standard base64.
+pub fn rtc_bytes(peer: int64, encoded: string) {
+  out(`bytes {peer} {encoded}`);
+}
+
+pub fn rtc_close(peer: int64) {
+  out(`close {peer}`);
+}

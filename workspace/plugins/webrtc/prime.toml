@@ -1,0 +1,9 @@
+manifest_version = "3"
+
+[package]
+name = "prime::webrtc"
+version = "0.1.0"
+
+[libraries]
+prime_webrtc = { name = "prime::webrtc", path = "webrtc.prime", visibility = "pub" }
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }

@@ -92,6 +92,8 @@ Each scope registers cleanups as bindings and `defer` statements are evaluated. 
 
 The host supports operating-system threads, files, graphics, audio, [binary TCP and UDP sockets](HostSockets.md), and bounded loopback TCP with concurrent reads via `tcp_next_frame(delimiter, limit)`. The [TCP built-ins and HTTP example](LoopbackWebServer.md) describe the live interpreter and native calls. ESP32 uses fixed-capacity runtime storage and architecture-specific timing. Host conformance results and an ESP32 firmware build establish different properties. The [embedded timer tests](EmbeddedTimers.md) exercise the RV32IMC ABI against a controlled clock. Embedded tokens use reference-counted slots. Pending and ready timer outcomes, GPIO readback and two-slot token reuse have also been checked on a physical classic ESP32. [Board results](BoardTesting.md#verified-physical-run)
 
+An optional [WebRTC host adapter](WebRTC.md) connects browser data channels to a running Prime program through its standard input and output. The same event API works with the interpreter and a native host executable.
+
 ## Macros, source positions and tools
 
 Pattern macros expand before type checking. `//` introduces a comment, `///` documents an item, and `//!` documents its module. The formatter and language server use the Rust parser. LSP positions count UTF-16 code units. The [check JSON format](Checking.md) uses half-open UTF-8 byte spans suitable for slicing the original source. For executable examples see [workspace tests](../workspace/tests), [Tetris](../workspace/demos/tetris) and the [host checks](../scripts/ci.sh).

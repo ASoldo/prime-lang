@@ -1,0 +1,14 @@
+manifest_version = "3"
+
+[package]
+name = "demos::webrtc"
+version = "0.1.0"
+
+[module]
+name = "demos::webrtc"
+path = "game.prime"
+visibility = "pub"
+
+[libraries]
+core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }
+prime_webrtc = { name = "prime::webrtc", path = "../../plugins/webrtc/webrtc.prime", visibility = "pub" }
