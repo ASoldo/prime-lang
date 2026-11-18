@@ -17,3 +17,11 @@ go -C adapters/webrtc build -mod=readonly -trimpath -o "$work/webrtc" .
 python3 adapters/webrtc/test_browser.py "$cli" "$work/webrtc" --chromium "$chrome"
 go -C adapters/webrtc build -mod=readonly -trimpath -o "$work/testrelay" ./testrelay
 python3 adapters/webrtc/test_transport.py "$cli" "$work/webrtc" "$work/testrelay" --chromium "$chrome"
+
+entry="$root/workspace/demos/tetris_arena/main.prime"
+game="$root/workspace/demos/field_arena"
+(cd "$work" && "$cli" build "$entry" --name riftwell)
+native="$work/.build.prime/riftwell/riftwell"
+python3 "$game/test_browser.py" --ws-service "$root/sdk/websocket/service.py" --rtc-bin "$work/webrtc" \
+  --prime "$cli" --entry "$entry" --native "$native"
+python3 "$game/test_replay.py" --prime "$cli" --entry "$entry" --native "$native"
