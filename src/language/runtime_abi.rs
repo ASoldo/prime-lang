@@ -23,6 +23,18 @@ pub struct RuntimeAbi {
     pub thread_fn_type: LLVMTypeRef,
     pub channel_out_type: LLVMTypeRef,
     pub string_data_type: LLVMTypeRef,
+    pub prime_frame_adopt: LLVMValueRef,
+    pub prime_frame_adopt_ty: LLVMTypeRef,
+    pub prime_frame_copy: LLVMValueRef,
+    pub prime_frame_copy_ty: LLVMTypeRef,
+    pub prime_frame_out: LLVMValueRef,
+    pub prime_frame_out_ty: LLVMTypeRef,
+    pub prime_frame_clear: LLVMValueRef,
+    pub prime_frame_clear_ty: LLVMTypeRef,
+    pub prime_token_release: LLVMValueRef,
+    pub prime_token_release_ty: LLVMTypeRef,
+    pub prime_token_retain: LLVMValueRef,
+    pub prime_token_retain_ty: LLVMTypeRef,
     pub prime_value_retain: LLVMValueRef,
     pub prime_value_retain_ty: LLVMTypeRef,
     pub prime_value_release: LLVMValueRef,
@@ -245,6 +257,34 @@ impl RuntimeAbi {
         let usize_type = LLVMIntTypeInContext(context, pointer_width_bits);
         let i32_type = LLVMInt32TypeInContext(context);
 
+        let (prime_frame_adopt, prime_frame_adopt_ty) = declare_fn(
+            module,
+            "prime_frame_adopt",
+            void_type,
+            &mut [handle_type, handle_type],
+        );
+        let (prime_frame_copy, prime_frame_copy_ty) = declare_fn(
+            module,
+            "prime_frame_copy",
+            void_type,
+            &mut [handle_type, handle_type],
+        );
+        let (prime_frame_out, prime_frame_out_ty) = declare_fn(
+            module,
+            "prime_frame_out",
+            void_type,
+            &mut [handle_type, handle_type, status_type],
+        );
+        let (prime_frame_clear, prime_frame_clear_ty) =
+            declare_fn(module, "prime_frame_clear", void_type, &mut [handle_type]);
+        let (prime_token_release, prime_token_release_ty) =
+            declare_fn(module, "prime_token_release", void_type, &mut [handle_type]);
+        let (prime_token_retain, prime_token_retain_ty) = declare_fn(
+            module,
+            "prime_token_retain",
+            handle_type,
+            &mut [handle_type],
+        );
         let (prime_value_retain, prime_value_retain_ty) = declare_fn(
             module,
             "prime_value_retain",
@@ -779,6 +819,18 @@ impl RuntimeAbi {
             thread_fn_type,
             channel_out_type,
             string_data_type,
+            prime_frame_adopt,
+            prime_frame_adopt_ty,
+            prime_frame_copy,
+            prime_frame_copy_ty,
+            prime_frame_out,
+            prime_frame_out_ty,
+            prime_frame_clear,
+            prime_frame_clear_ty,
+            prime_token_release,
+            prime_token_release_ty,
+            prime_token_retain,
+            prime_token_retain_ty,
             prime_value_retain,
             prime_value_retain_ty,
             prime_value_release,
@@ -985,6 +1037,18 @@ impl RuntimeAbi {
             thread_fn_type: std::ptr::null_mut(),
             channel_out_type: std::ptr::null_mut(),
             string_data_type: std::ptr::null_mut(),
+            prime_frame_adopt: std::ptr::null_mut(),
+            prime_frame_adopt_ty: std::ptr::null_mut(),
+            prime_frame_copy: std::ptr::null_mut(),
+            prime_frame_copy_ty: std::ptr::null_mut(),
+            prime_frame_out: std::ptr::null_mut(),
+            prime_frame_out_ty: std::ptr::null_mut(),
+            prime_frame_clear: std::ptr::null_mut(),
+            prime_frame_clear_ty: std::ptr::null_mut(),
+            prime_token_release: std::ptr::null_mut(),
+            prime_token_release_ty: std::ptr::null_mut(),
+            prime_token_retain: std::ptr::null_mut(),
+            prime_token_retain_ty: std::ptr::null_mut(),
             prime_value_retain: std::ptr::null_mut(),
             prime_value_retain_ty: std::ptr::null_mut(),
             prime_value_release: std::ptr::null_mut(),

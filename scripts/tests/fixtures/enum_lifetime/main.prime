@@ -1,0 +1,54 @@
+module enum_lifetime;
+
+pub enum Option[T] { Some(T), None, }
+pub enum Packet { Word(Option[uint16]), Empty, }
+struct Stored { word: Option[uint16]; }
+pub enum Message { Text(string), Silent, }
+
+fn word(n: uint16) -> Option[uint16] {
+    if n > 0 { Option::Some(n) } else { Option::None() }
+}
+
+fn read(o: Option[uint16]) -> uint16 {
+    match o { Option::Some(n) => n, Option::None => 0, }
+}
+
+fn packet(n: uint16) -> Packet {
+    if n > 0 { Packet::Word(word(n)) } else { Packet::Empty() }
+}
+
+fn main() {
+    let mut uint16 n = 513;
+    let saved = word(n);
+    let alias = saved;
+    let holder = Stored { word: saved };
+    let nested = packet(n);
+    let message = if n > 0 { Message::Text("retained") } else { Message::Silent() };
+    let mut Packet stored = Packet::Empty();
+    let mut uint16 i = 1;
+    while i <= 300 {
+        let fresh = word(i);
+        let next = packet(i);
+        let temporary = if i > 0 { Message::Text("temporary") } else { Message::Silent() };
+        if i == 17 { stored = next; }
+        if read(fresh) != i { out("fresh mismatch"); }
+        i = i + 1;
+    }
+    let copy = stored;
+    stored = Packet::Empty();
+    match copy {
+        Packet::Word(o) => out(read(o)),
+        Packet::Empty => out("lost stored packet"),
+    }
+    match message {
+        Message::Text(s) => out(s),
+        Message::Silent => out("lost message"),
+    }
+    out(read(saved));
+    out(read(alias));
+    out(read(holder.word));
+    match nested {
+        Packet::Word(o) => out(read(o)),
+        Packet::Empty => out("lost packet"),
+    }
+}

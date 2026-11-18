@@ -248,6 +248,68 @@ class C3SavedRecordFields(C3Program):
         self.assert_output(self.observe_print())
 
 
+class RetainedOption(C3Program):
+    module = "enum_lifetime"
+    source = (FIXTURE.parent / "enum_lifetime/minimal.prime").read_text()
+    expected_output = b"513\n513\n"
+
+    def test_scalar_then_enum_wrap(self):
+        self.assert_output(self.observe_print())
+
+
+class RetainedEnum(C3Program):
+    module = "enum_lifetime"
+    source = (FIXTURE.parent / "enum_lifetime/main.prime").read_text()
+    expected_output = b"17\nretained\n513\n513\n513\n513\n"
+
+    def test_retained_payloads(self):
+        self.assert_output(self.observe_print())
+
+
+class C3SavedChannelOption(C3Program):
+    source = """module c3_strings;
+        import core::{Option};
+        fn main() {
+            let (tx, rx) = channel[int32]();
+            send(tx, 513);
+            let Option[int32] field = await recv_task(rx);
+            let mut int32 n = 0;
+            while n < 20 {
+                send(tx, n);
+                let Option[int32] later = await recv_task(rx);
+                n = n + 1;
+            }
+            match field { Some(v) => out(v), None => out("missing"), }
+        }"""
+    expected_output = b"513\n"
+
+    def test_saved_field(self):
+        self.assert_output(self.observe_print())
+
+
+class C3TypedRecord(C3Program):
+    source = """module c3_strings;
+        import core::{Result};
+        struct Reading { n: uint16; selected: bool; weight: float64; count: int32; }
+        fn read(take: bool) -> Result[Reading, float64] {
+            if take { Ok(Reading{513, true, 1.5, 42}) } else { Err(2.5) }
+        }
+        fn relay(take: bool) -> Result[bool, float64] {
+            let Reading r = read(take)?;
+            Ok(r.selected && r.n == 513 && r.count == 42 && r.weight == 1.5)
+        }
+        fn main() {
+            let mut bool take = true;
+            match relay(take) { Ok(flag) => out(flag), Err(_) => out("missing"), }
+            take = false;
+            match relay(take) { Ok(_) => out("missing"), Err(x) => out(x == 2.5), }
+        }"""
+    expected_output = b"true\ntrue\n"
+
+    def test_four_fields_and_float_error(self):
+        self.assert_output(self.observe_print())
+
+
 class C3TokenOwners(C3Program):
     module = "task_ownership"
     source = (FIXTURE.parent / "task_ownership/main.prime").read_text()

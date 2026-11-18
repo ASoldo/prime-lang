@@ -17,7 +17,6 @@ mod embedded {
     #![allow(unused_imports)]
     use core::cell::UnsafeCell;
     use core::ffi::c_void;
-    use core::mem::MaybeUninit;
     use core::ptr;
     #[cfg(target_arch = "xtensa")]
     use core::sync::atomic::AtomicU32;
@@ -51,17 +50,21 @@ mod embedded {
         })
     }
 
-    #[cfg(target_arch = "xtensa")]
-    fn next_handle_index(next: &AtomicUsize) -> usize {
-        next.fetch_add(1, Ordering::Relaxed)
-    }
-
-    #[cfg(all(target_arch = "riscv32", target_os = "none"))]
-    fn next_handle_index(next: &AtomicUsize) -> usize {
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn update_word(slot: &AtomicUsize, change: impl Fn(usize) -> Option<usize>) -> Option<usize> {
+        #[cfg(target_arch = "xtensa")]
+        {
+            slot.fetch_update(Ordering::SeqCst, Ordering::SeqCst, change)
+                .ok()
+        }
+        #[cfg(target_arch = "riscv32")]
         with_interrupts_masked(|| {
-            let index = next.load(Ordering::Relaxed);
-            next.store(index.wrapping_add(1), Ordering::Relaxed);
-            index
+            let old = slot.load(Ordering::SeqCst);
+            slot.store(change(old)?, Ordering::SeqCst);
+            Some(old)
         })
     }
 
@@ -178,44 +181,12 @@ mod embedded {
         Some(out)
     }
 
-    // Simple handle pool for tiny, no_std-friendly async/enum support on embedded targets.
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    const PRIME_INT_SLOTS: usize = 16;
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    #[derive(Copy, Clone)]
-    #[repr(C)]
-    struct PrimeInt {
-        value: i128,
-    }
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    static mut INT_HANDLES: [MaybeUninit<PrimeInt>; PRIME_INT_SLOTS] =
-        [const { MaybeUninit::uninit() }; PRIME_INT_SLOTS];
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    static INT_HANDLE_NEXT: AtomicUsize = AtomicUsize::new(0);
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn alloc_int(value: i128) -> PrimeHandle {
-        let slot = next_handle_index(&INT_HANDLE_NEXT) % PRIME_INT_SLOTS;
-        unsafe {
-            let handle = (&raw mut INT_HANDLES[slot]).cast::<PrimeInt>();
-            handle.write(PrimeInt { value });
-            PrimeHandle(handle.cast())
-        }
+    mod values {
+        include!("embedded_values.rs");
     }
 
     #[cfg(any(
@@ -283,23 +254,9 @@ mod embedded {
         static SLOTS: [AtomicUsize; PRIME_CANCEL_TOKEN_SLOTS] =
             [const { AtomicUsize::new(0) }; PRIME_CANCEL_TOKEN_SLOTS];
 
-        fn update(slot: &AtomicUsize, change: impl Fn(usize) -> Option<usize>) -> Option<usize> {
-            #[cfg(target_arch = "xtensa")]
-            {
-                slot.fetch_update(Ordering::SeqCst, Ordering::SeqCst, change)
-                    .ok()
-            }
-            #[cfg(target_arch = "riscv32")]
-            with_interrupts_masked(|| {
-                let old = slot.load(Ordering::SeqCst);
-                slot.store(change(old)?, Ordering::SeqCst);
-                Some(old)
-            })
-        }
-
         pub fn new() -> PrimeHandle {
             for (index, slot) in SLOTS.iter().enumerate() {
-                let allocated = update(slot, |old| {
+                let allocated = update_word(slot, |old| {
                     if old & OWNERS != 0 {
                         return None;
                     }
@@ -326,7 +283,7 @@ mod embedded {
                 return None;
             }
             let id = raw / 4;
-            update(&SLOTS[id % SLOTS.len()], |state| {
+            update_word(&SLOTS[id % SLOTS.len()], |state| {
                 if state & OWNERS != 0 && state / EPOCH == id / SLOTS.len() {
                     f(state)
                 } else {
@@ -470,36 +427,8 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    #[derive(Copy, Clone)]
-    #[repr(C)]
-    struct PrimeEnum {
-        tag: u32,
-        value: PrimeHandle,
-        len: usize,
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
     static PRIME_UNIT_HANDLE: PrimeHandle = PrimeHandle::null();
 
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    const PRIME_ENUM_SLOTS: usize = 128;
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    static mut ENUM_HANDLES: [MaybeUninit<PrimeEnum>; PRIME_ENUM_SLOTS] =
-        [const { MaybeUninit::uninit() }; PRIME_ENUM_SLOTS];
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    static ENUM_HANDLE_NEXT: AtomicUsize = AtomicUsize::new(0);
     #[cfg(target_arch = "xtensa")]
     static PRINT_COUNT: AtomicU32 = AtomicU32::new(0);
     #[cfg(target_arch = "xtensa")]
@@ -518,23 +447,6 @@ mod embedded {
     static TASK_ALLOC_COUNT: AtomicU32 = AtomicU32::new(0);
     #[cfg(target_arch = "xtensa")]
     static TASK_FREE_COUNT: AtomicU32 = AtomicU32::new(0);
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn alloc_enum(tag: u32, value: PrimeHandle, len: usize) -> PrimeHandle {
-        unsafe {
-            let idx = next_handle_index(&ENUM_HANDLE_NEXT) % PRIME_ENUM_SLOTS;
-            let handle_ptr = (&raw mut ENUM_HANDLES[idx]).cast::<PrimeEnum>();
-            handle_ptr.write(PrimeEnum { tag, value, len });
-            #[cfg(target_arch = "xtensa")]
-            {
-                ENUM_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            PrimeHandle(handle_ptr as *mut core::ffi::c_void)
-        }
-    }
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -580,13 +492,13 @@ mod embedded {
     fn alloc_channel_handle() -> Option<PrimeHandle> {
         for (index, slot) in CHANNEL_SLOTS.iter().enumerate() {
             if claim_slot(&slot.used) {
-                // All other embedded handle objects are at least two-byte aligned.
+                // Channel IDs end in 01, scalar immediates in 11 and tokens in 10.
                 // Each slot has its own sequence of odd IDs. Retire an exhausted
                 // slot permanently so that a previous handle stays closed.
                 let previous = slot.handle_id.load(Ordering::SeqCst);
                 let id = if previous == 0 {
-                    index * 2 + 1
-                } else if let Some(next) = previous.checked_add(PRIME_CHANNEL_SLOTS * 2) {
+                    index * 4 + 1
+                } else if let Some(next) = previous.checked_add(PRIME_CHANNEL_SLOTS * 4) {
                     next
                 } else {
                     slot.used.store(false, Ordering::SeqCst);
@@ -620,10 +532,10 @@ mod embedded {
     ))]
     fn channel_from_handle(handle: PrimeHandle) -> Result<&'static ChannelSlot, PrimeStatus> {
         let id = handle.0.addr();
-        if id & 1 == 0 {
+        if id & 3 != 1 {
             return Err(PrimeStatus::Invalid);
         }
-        let slot = &CHANNEL_SLOTS[(id >> 1) % PRIME_CHANNEL_SLOTS];
+        let slot = &CHANNEL_SLOTS[(id >> 2) % PRIME_CHANNEL_SLOTS];
         let current = slot.handle_id.load(Ordering::SeqCst);
         if id == current && slot.used.load(Ordering::SeqCst) {
             Ok(slot)
@@ -651,7 +563,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_value_retain")]
     pub unsafe extern "C" fn prime_value_retain(value: PrimeHandle) -> PrimeHandle {
-        tokens::retain(value)
+        values::retain(tokens::retain(value))
     }
 
     #[cfg(any(
@@ -660,6 +572,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_value_release")]
     pub unsafe extern "C" fn prime_value_release(value: PrimeHandle) {
+        values::release(value);
         tokens::release(value);
     }
 
@@ -678,7 +591,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_int_new")]
     pub unsafe extern "C" fn prime_int_new(_value: i128) -> PrimeHandle {
-        alloc_int(_value)
+        values::int(_value)
     }
 
     #[cfg(any(
@@ -686,8 +599,8 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     #[unsafe(export_name = "prime_float_new")]
-    pub unsafe extern "C" fn prime_float_new(_value: f64) -> PrimeHandle {
-        PrimeHandle::null()
+    pub unsafe extern "C" fn prime_float_new(value: f64) -> PrimeHandle {
+        values::float(value)
     }
 
     #[cfg(any(
@@ -695,8 +608,8 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     #[unsafe(export_name = "prime_bool_new")]
-    pub unsafe extern "C" fn prime_bool_new(_value: bool) -> PrimeHandle {
-        PrimeHandle::null()
+    pub unsafe extern "C" fn prime_bool_new(value: bool) -> PrimeHandle {
+        values::boolean(value)
     }
 
     #[cfg(any(
@@ -721,16 +634,16 @@ mod embedded {
         _values_len: usize,
         _tag: u32,
     ) -> PrimeHandle {
-        let payload = if !_values_ptr.is_null() && _values_len > 0 {
-            *_values_ptr
-        } else {
-            PrimeHandle::null()
-        };
-        if tokens::is_handle(payload) {
-            // This scratch ABI record cannot own or release payloads.
+        let fields = if _values_len == 0 {
+            &[]
+        } else if _values_ptr.is_null() || _values_len > values::MAX_FIELDS {
             return PrimeHandle::null();
-        }
-        alloc_enum(_tag, payload, _values_len)
+        } else {
+            core::slice::from_raw_parts(_values_ptr, _values_len)
+        };
+        #[cfg(target_arch = "xtensa")]
+        ENUM_COUNT.fetch_add(1, Ordering::Relaxed);
+        values::variant(_tag, fields)
     }
 
     #[cfg(any(
@@ -739,11 +652,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_enum_tag")]
     pub unsafe extern "C" fn prime_enum_tag(handle: PrimeHandle) -> u32 {
-        if handle.0.is_null() {
-            return 0;
-        }
-        let enum_ptr = handle.0 as *const PrimeEnum;
-        (*enum_ptr).tag
+        values::tag(handle)
     }
 
     #[cfg(any(
@@ -752,14 +661,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_enum_get")]
     pub unsafe extern "C" fn prime_enum_get(handle: PrimeHandle, idx: usize) -> PrimeHandle {
-        if handle.0.is_null() {
-            return PrimeHandle::null();
-        }
-        let enum_ptr = handle.0 as *const PrimeEnum;
-        if idx == 0 && (*enum_ptr).len > 0 {
-            return (*enum_ptr).value;
-        }
-        PrimeHandle::null()
+        values::get(handle, idx)
     }
 
     #[cfg(any(
@@ -824,7 +726,7 @@ mod embedded {
             return PrimeStatus::Closed;
         }
         if tokens::is_handle(_value) {
-            // recv_task wraps channel payloads in a scratch Option record.
+            // Token ownership inside arbitrary channel payloads is unsupported.
             return PrimeStatus::Invalid;
         }
         let len = unsafe { *slot.len.get() };
@@ -832,7 +734,11 @@ mod embedded {
             return PrimeStatus::Invalid;
         }
         let tail = unsafe { *slot.tail.get() };
-        unsafe { (*slot.queue.get())[tail] = _value };
+        let owned = values::retain(_value);
+        if owned.0.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        unsafe { (*slot.queue.get())[tail] = owned };
         unsafe { *slot.tail.get() = (tail + 1) % PRIME_CHANNEL_CAP };
         unsafe { *slot.len.get() = len + 1 };
         let _ = poll_channel_waiters();
@@ -958,13 +864,16 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     fn option_handle_from_payload(payload: Option<PrimeHandle>) -> PrimeHandle {
-        match payload {
+        let result = match payload {
             Some(value) => {
-                let mut buf = [value];
-                unsafe { prime_enum_new(buf.as_mut_ptr(), 1, 0) }
+                let result = values::variant(0, &[value]);
+                values::release(value);
+                result
             }
-            None => unsafe { prime_enum_new(core::ptr::null(), 0, 1) },
-        }
+            None => values::variant(1, &[]),
+        };
+        values::require_value(result);
+        result
     }
 
     #[cfg(any(
@@ -1293,7 +1202,7 @@ mod embedded {
         if c3_strings::lookup(_handle).is_some() {
             return PrimeTag::String;
         }
-        PrimeTag::Unit
+        values::kind(_handle).unwrap_or(PrimeTag::Unit)
     }
 
     #[cfg(any(
@@ -1302,12 +1211,10 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_value_as_int")]
     pub unsafe extern "C" fn prime_value_as_int(_handle: PrimeHandle) -> i128 {
-        if _handle.0.is_null() {
-            return 0;
+        match values::scalar(_handle) {
+            Some(values::Scalar::Int(n)) => n,
+            _ => 0,
         }
-        let int_ptr = _handle.0 as *const PrimeInt;
-        // Safety: handles are produced by alloc_int and point into INT_HANDLES backing storage.
-        unsafe { (*int_ptr).value }
     }
 
     #[cfg(any(
@@ -1316,7 +1223,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_value_as_bool")]
     pub unsafe extern "C" fn prime_value_as_bool(_handle: PrimeHandle) -> bool {
-        false
+        values::as_bool(_handle)
     }
 
     #[cfg(any(
@@ -1325,7 +1232,10 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_value_as_float")]
     pub unsafe extern "C" fn prime_value_as_float(_handle: PrimeHandle) -> f64 {
-        0.0
+        match values::scalar(_handle) {
+            Some(values::Scalar::Float(n)) => n,
+            _ => 0.0,
+        }
     }
 
     #[cfg(any(
@@ -1338,9 +1248,12 @@ mod embedded {
         ptr_out: *mut *const u8,
         len_out: *mut usize,
     ) -> PrimeStatus {
-        #[cfg(all(target_arch = "riscv32", target_os = "none"))]
         if !ptr_out.is_null() && !len_out.is_null() {
-            if let Some(string) = c3_strings::lookup(_handle) {
+            #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+            let string = c3_strings::lookup(_handle);
+            #[cfg(target_arch = "xtensa")]
+            let string = values::captured_string(_handle);
+            if let Some(string) = string {
                 ptr_out.write(string.ptr);
                 len_out.write(string.len);
                 return PrimeStatus::Ok;
@@ -1498,8 +1411,11 @@ mod embedded {
         _value: PrimeHandle,
     ) -> PrimeStatus {
         if let Some(slot) = task_from_handle(_task) {
-            detach_channel_waiters(slot);
             let owned = prime_value_retain(_value);
+            if owned.0.is_null() {
+                return PrimeStatus::Invalid;
+            }
+            detach_channel_waiters(slot);
             prime_value_release(unsafe { slot.result.get().replace(owned) });
             slot.done.store(true, Ordering::SeqCst);
             return PrimeStatus::Ok;
@@ -1798,7 +1714,8 @@ mod embedded {
         }
         #[cfg(target_arch = "xtensa")]
         {
-            let s = &*(value.0 as *const PrimeString);
+            let s =
+                values::captured_string(value).unwrap_or_else(|| *(value.0 as *const PrimeString));
             let count = PRINT_COUNT.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
             ets_printf(b"%s\0".as_ptr(), s.ptr);
             let should_log = count % 64 == 0

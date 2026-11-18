@@ -1,0 +1,21 @@
+module enum_lifetime;
+
+enum Option[T] { Some(T), None, }
+
+fn word(n: uint16) -> Option[uint16] {
+    if n > 0 { Option::Some(n) } else { Option::None() }
+}
+
+fn main() {
+    let mut uint16 n = 513;
+    let saved = word(n);
+    let mut uint16 i = 1;
+    while i <= 140 {
+        let fresh = word(i);
+        if i == 20 {
+            match saved { Option::Some(v) => out(v), Option::None => out(0), }
+        }
+        i = i + 1;
+    }
+    match saved { Option::Some(v) => out(v), Option::None => out(0), }
+}

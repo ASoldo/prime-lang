@@ -25,14 +25,6 @@ impl Compiler {
         parents: &mut Vec<TypeExpr>,
     ) -> Result<PayloadLayout, String> {
         if *ty == TypeExpr::Unit || self.type_code_for(ty).is_ok() {
-            if self.target.is_embedded()
-                && matches!(ty, TypeExpr::Named(name, _) if matches!(name.as_str(), "bool" | "float32" | "float64"))
-            {
-                return Err(format!(
-                    "cannot box `{}` in the embedded value ABI",
-                    ty.canonical_name()
-                ));
-            }
             return Ok(PayloadLayout::Scalar(ty.clone()));
         }
         // A repeated declaration can still be finite, e.g. Option[Option[T]].
@@ -112,9 +104,9 @@ impl Compiler {
     }
 
     fn check_record_width(&self, ty: &TypeExpr, count: usize) -> Result<(), String> {
-        if self.target.is_embedded() && count > 1 {
+        if self.target.is_embedded() && count > 4 {
             return Err(format!(
-                "cannot represent `{}` with {count} fields in the single-field embedded record ABI",
+                "cannot represent `{}` with {count} fields in the four-field embedded record ABI",
                 ty.canonical_name()
             ));
         }
@@ -129,7 +121,17 @@ impl Compiler {
         let value = match layout {
             PayloadLayout::Scalar(ty) => {
                 self.handle_types.insert(handle, ty.clone());
-                self.decode_enum_field(handle)?
+                let value = self.decode_enum_field(handle)?;
+                if self.target.is_embedded()
+                    && matches!(
+                        value,
+                        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Unit
+                    )
+                {
+                    self.release_consumed_value(handle);
+                    return Ok(value.into());
+                }
+                value
             }
             PayloadLayout::Enum(name, args) => {
                 self.handle_types
@@ -248,8 +250,8 @@ impl Compiler {
             return Err(self.try_diagnostic(span, "requires a Result operand"));
         }
         let layout = self.payload_layout(ok_ty, &mut Vec::new());
-        // Embedded handles have no dynamic type information and several boxing
-        // operations are stubs. Forwarding an Err must preserve its value too.
+        // Check the inactive variant too, since forwarding an Err must preserve
+        // its payload under the embedded record capacity.
         if self.target.is_embedded() {
             self.payload_layout(err_ty, &mut Vec::new())
                 .map_err(|reason| self.try_diagnostic(span, &format!("of Err payload {reason}")))?;

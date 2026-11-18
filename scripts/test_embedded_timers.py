@@ -26,7 +26,7 @@ TICKS_PER_MS = 16_000
 PERIOD = 1 << 52
 SYMBOLS = """
 now_ms delay_ms sleep_task task_poll task_wake task_cancel join unit_new int_new
-channel_new send recv recv_task recv_timeout close enum_tag enum_get
+channel_new send recv recv_task recv_timeout close enum_new enum_tag enum_get value_as_int bool_new value_as_bool float_new value_as_float
 cancel_token_new cancel_token_cancel cancel_token_is_cancelled value_retain value_release
 """.split()
 
@@ -114,6 +114,83 @@ class EmbeddedTimers(unittest.TestCase):
         self.cpu.mem_write(ARG, value.to_bytes(16, "little", signed=True))
         return ARG
 
+    def wrap(self, field, tag=0):
+        self.cpu.mem_write(OUT + 8, field.to_bytes(4, "little"))
+        return self.call("enum_new", OUT + 8, 1, tag)
+
+    def unbox_int(self, handle):
+        self.call("value_as_int", OUT, handle)
+        return self.read_word(OUT, 16)
+
+    def test_retained_scalar_after_crc_sized_workload(self):
+        scalar = self.call("int_new", self.arg128(513))
+        saved = self.wrap(scalar)
+        self.call("value_release", scalar)
+        for n in range(1, 21):
+            self.call("value_release", self.call("int_new", self.arg128(n)))
+        self.assertEqual(self.call("enum_tag", saved), 0)
+        field = self.call("enum_get", saved, 0)
+        self.assertEqual(self.unbox_int(field), 513)
+        self.call("value_release", field)
+        self.call("value_release", saved)
+
+    def test_nested_enum_owns_projected_field_across_reuse(self):
+        # A non-immediate scalar also exercises recycling of wide numeric slots.
+        scalar = self.call("int_new", self.arg128((1 << 62) + 513))
+        inner = self.wrap(scalar, 5)
+        outer = self.wrap(inner, 7)
+        alias = self.call("value_retain", outer)
+        for value in (scalar, inner, outer):
+            self.call("value_release", value)
+        projected = self.call("enum_get", alias, 0)
+        self.call("value_release", alias)
+        for n in range(300):
+            leaf = self.call("int_new", self.arg128((1 << 62) + n))
+            temp = self.wrap(leaf, 11)
+            self.call("value_release", leaf)
+            self.assertEqual(self.call("enum_tag", temp), 11)
+            self.call("value_release", temp)
+        self.assertEqual(self.call("enum_tag", projected), 5)
+        field = self.call("enum_get", projected, 0)
+        self.assertEqual(self.unbox_int(field), (1 << 62) + 513)
+        self.call("value_release", field)
+        self.call("value_release", projected)
+
+    def test_multiple_typed_fields(self):
+        bits = struct.unpack("<II", struct.pack("<d", -3.125))
+        fields = [self.call("bool_new", 1), self.call("float_new", *bits),
+                  self.call("int_new", self.arg128(-(1 << 110)))]
+        self.cpu.mem_write(OUT + 32, struct.pack("<III", *fields))
+        self.assertEqual(self.call("enum_new", OUT + 32, 5, 1), 0)
+        saved = self.call("enum_new", OUT + 32, 3, 1)
+        for field in fields:
+            self.call("value_release", field)
+        b, f, n = [self.call("enum_get", saved, i) for i in range(3)]
+        self.call("value_release", saved)
+        self.assertEqual(self.call("value_as_bool", b), 1)
+        low = self.call("value_as_float", f)
+        self.assertEqual((low, self.cpu.reg_read(UC_RISCV_REG_A0 + 1)), bits)
+        self.assertEqual(self.unbox_int(n), (1 << 128) - (1 << 110))
+        for field in (b, f, n):
+            self.call("value_release", field)
+
+    def test_owner_capacity_and_recovery(self):
+        for capacity, make, read in (
+            (16, lambda n: self.call("int_new", self.arg128((1 << 60) + n)),
+             lambda h: self.unbox_int(h) - (1 << 60)),
+            (128, lambda n: self.call("enum_new", 0, 0, n),
+             lambda h: self.call("enum_tag", h)),
+        ):
+            held = [make(n) for n in range(capacity)]
+            self.assertTrue(all(held))
+            self.assertEqual(make(capacity), 0)
+            self.assertEqual([read(h) for h in held], list(range(capacity)))
+            self.call("value_release", held.pop())
+            replacement = make(capacity + 1)
+            self.assertEqual(read(replacement), capacity + 1)
+            for h in [*held, replacement]:
+                self.call("value_release", h)
+
     def sleep_task(self, millis):
         return self.call("sleep_task", self.arg128(millis))
 
@@ -200,7 +277,10 @@ class EmbeddedTimers(unittest.TestCase):
             self.assertEqual(self.call("enum_tag", result), 1)
         else:
             self.assertEqual(self.call("enum_tag", result), 0)
-            self.assertEqual(self.call("enum_get", result, 0), expected)
+            field = self.call("enum_get", result, 0)
+            self.assertEqual(field, expected)
+            self.call("value_release", field)
+        self.call("value_release", result)
 
     def test_close_preserves_wrapped_fifo_for_all_receive_paths(self):
         tx, rx = self.channel()

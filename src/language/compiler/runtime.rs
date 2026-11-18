@@ -123,7 +123,11 @@ impl Compiler {
 
     pub(super) fn print_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         let mut value = value;
-        let runtime_handle = if self.target.is_embedded() {
+        let runtime_handle = if self.target.is_embedded()
+            && !matches!(
+                value.value(),
+                Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_)
+            ) {
             value
                 .runtime_handle()
                 .or_else(|| self.maybe_attach_runtime_handle(&mut value))
@@ -609,12 +613,18 @@ impl Compiler {
                     return Err(format!("missing runtime handle for enum `{}`", enum_value.enum_name));
                 }
                 let mut elements = Vec::new();
-                for v in enum_value.values {
-                    let handle = match v {
-                        Value::Struct(_) | Value::Tuple(_) => self.task_value_handle(&v.into())?,
-                        _ => self.build_runtime_handle(v)?,
+                let mut temporary_fields = Vec::new();
+                for value in enum_value.values {
+                    let fresh = matches!(value, Value::Int(_) | Value::Float(_) | Value::Struct(_) | Value::Tuple(_))
+                        || matches!(&value, Value::Enum(e) if e.runtime.is_none());
+                    let field = match value {
+                        Value::Struct(_) | Value::Tuple(_) => self.task_value_handle(&value.into())?,
+                        _ => self.build_runtime_handle(value)?,
                     };
-                    elements.push(handle);
+                    if self.target.is_embedded() && fresh {
+                        temporary_fields.push(field);
+                    }
+                    elements.push(field);
                 }
                 let tag = unsafe {
                     LLVMConstInt(
@@ -634,12 +644,16 @@ impl Compiler {
                 let arr_ptr = self.alloc_handle_array(&elements);
                 let len_const =
                     unsafe { LLVMConstInt(self.runtime_abi.usize_type, elements.len() as u64, 0) };
-                Ok(self.call_runtime(
+                let handle = self.call_runtime(
                     self.runtime_abi.prime_enum_new,
                     self.runtime_abi.prime_enum_new_ty,
                     &mut [arr_ptr, len_const, tag],
                     "enum_new",
-                ))
+                );
+                for field in temporary_fields {
+                    self.release_consumed_value(field);
+                }
+                Ok(handle)
             }
             Value::Range(range) => {
                 let start = range
@@ -869,6 +883,16 @@ impl Compiler {
         args: &mut [LLVMValueRef],
         name: &str,
     ) -> LLVMValueRef {
+        // Generated aggregate and scalar handles borrow their frame owner.
+        // Cancellation tokens retain their independent lexical ownership.
+        let abi = self.runtime_abi;
+        let func = if self.target.is_embedded() && func == abi.prime_value_release {
+            abi.prime_token_release
+        } else if self.target.is_embedded() && func == abi.prime_value_retain {
+            abi.prime_token_retain
+        } else {
+            func
+        };
         let is_void = unsafe {
             let ret = LLVMGetReturnType(func_type);
             LLVMGetTypeKind(ret) == LLVMTypeKind::LLVMVoidTypeKind
@@ -898,7 +922,7 @@ impl Compiler {
                 );
             }
         }
-        unsafe {
+        let result = unsafe {
             let mut fn_type = func_type;
             if fn_type.is_null()
                 && LLVMGetTypeKind(LLVMTypeOf(func)) == LLVMTypeKind::LLVMPointerTypeKind
@@ -919,7 +943,11 @@ impl Compiler {
                 args.len() as u32,
                 name_c.as_ptr(),
             )
+        };
+        if self.target.is_embedded() {
+            self.own_embedded_result(func, args, result);
         }
+        result
     }
 
     pub(super) fn build_runtime_bytes(

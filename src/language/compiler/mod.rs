@@ -71,6 +71,7 @@ use std::{
 mod async_tasks;
 mod builtins;
 mod closures;
+mod embedded_values;
 mod emit;
 mod flow;
 mod integers;
@@ -152,6 +153,7 @@ pub struct Compiler {
     pending_runtime: Option<LLVMValueRef>,
     force_runtime_handles: bool,
     token_owners: Vec<TokenOwner>,
+    value_owners: embedded_values::ValueOwners,
     host_task_entry: Option<LLVMValueRef>,
     loop_controls: Vec<LoopControl>,
 }
@@ -1628,13 +1630,7 @@ impl Compiler {
                 return Err("await requires active IR builder".into());
             }
         }
-        let slot = unsafe {
-            LLVMBuildAlloca(
-                self.builder,
-                self.runtime_abi.handle_type,
-                CString::new("task_result").unwrap().as_ptr(),
-            )
-        };
+        let slot = self.build_entry_alloca(self.runtime_abi.handle_type, "task_result");
         let function = unsafe { LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder)) };
         let poll_block = unsafe {
             LLVMAppendBasicBlockInContext(
@@ -1772,6 +1768,7 @@ impl Compiler {
                 pending_runtime: None,
                 force_runtime_handles: false,
                 token_owners: Vec::new(),
+                value_owners: Default::default(),
                 host_task_entry: None,
                 loop_controls: Vec::new(),
             };
@@ -2280,6 +2277,7 @@ impl Compiler {
         self.pending_runtime = None;
         self.loop_controls.clear();
         self.token_owners.clear();
+        self.value_owners = Default::default();
         self.scopes.clear();
         self.borrows = MutableBorrows::default();
         self.cleanup_stack.clear();
@@ -2446,6 +2444,7 @@ impl Compiler {
             let zero = LLVMConstInt(self.i32_type, 0, 0);
             LLVMBuildRet(self.builder, zero);
         }
+        self.finish_value_owners();
 
         Ok(())
     }

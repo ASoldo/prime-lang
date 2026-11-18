@@ -678,7 +678,7 @@ fn read_hp(target: &Player) -> int32 {
 let Box[int32] counter = box_new(0);
 bump_counter(&counter, 5);
 out(`box counter -> {}`, counter.box_get());"#,
-                explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. In Result-returning functions and try blocks, runtime `?` unwraps successes and preserves the error. Host payloads include nested Results, tuples and named-field structs. ESP32 and ESP32-C3 support nested Results and single-field records containing embedded ABI values. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and either `.get(key)` or bracket indexing for safe ownership transfers; the same APIs work in build/run modes.",
+                explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. In Result-returning functions and try blocks, runtime `?` unwraps successes and preserves the error. Host payloads include nested Results, tuples and named-field structs. ESP32 and ESP32-C3 support nested Results and records of up to four fields containing embedded ABI values. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and either `.get(key)` or bracket indexing for safe ownership transfers; the same APIs work in build/run modes.",
             },
             TopicSection {
                 title: "Collections and indexing",
@@ -907,7 +907,7 @@ out(roster); // error points at the move site"#,
             title: "Checking and building",
             snippet: r#"prime-lang check workspace/demos/channel_demo/channel_demo.prime
 prime-lang build workspace/demos/channel_demo/channel_demo.prime --name channel_demo"#,
-            explanation: "The checker validates the expanded AST. Native lowering can still report a code generation error, for example E0NATIVETRY when runtime `?` would unwrap a Box or an embedded record wider than one field. See docs/CompilerFlow.md and docs/Checking.md.",
+            explanation: "The checker validates the expanded AST. Native lowering can still report a code generation error, for example E0NATIVETRY when runtime `?` would unwrap a Box or an embedded record wider than four fields. See docs/CompilerFlow.md and docs/Checking.md.",
         }],
     },
 ];

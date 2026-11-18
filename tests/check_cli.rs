@@ -374,25 +374,24 @@ fn embedded_runtime_try_identifies_unrepresentable_payloads() {
     )).unwrap();
     for (ok_ty, ok, err_ty, err, reason) in [
         (
-            "Pair",
-            "Pair { a: 1, b: 2 }",
+            "Wide",
+            "Wide { a: 1, b: 2, c: 3, d: 4, e: 5 }",
             "int32",
             "3",
-            "Ok payload cannot represent `Pair` with 2 fields",
+            "Ok payload cannot represent `Wide` with 5 fields",
         ),
         (
             "int32",
             "2",
-            "float64",
-            "1.5",
-            "Err payload cannot box `float64`",
+            "Wide",
+            "Wide { a: 1, b: 2, c: 3, d: 4, e: 5 }",
+            "Err payload cannot represent `Wide` with 5 fields",
         ),
-        ("bool", "true", "int32", "3", "Ok payload cannot box `bool`"),
     ] {
         let source = format!(
             r#"module demo;
 enum Result[T, E] {{ Err(E), Ok(T) }}
-struct Pair {{ a: int32; b: int32; }}
+struct Wide {{ a: int32; b: int32; c: int32; d: int32; e: int32; }}
 fn choose(take: bool) -> Result[{ok_ty}, {err_ty}] {{
   if take {{ Ok({ok}) }} else {{ Err({err}) }}
 }}

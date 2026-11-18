@@ -263,8 +263,7 @@ impl Compiler {
         }
         unsafe {
             let array_type = LLVMArrayType2(self.runtime_abi.handle_type, handles.len() as u64);
-            let name = CString::new("enum_values").unwrap();
-            let alloca = LLVMBuildAlloca(self.builder, array_type, name.as_ptr());
+            let alloca = self.build_entry_alloca(array_type, "enum_values");
             let zero = LLVMConstInt(self.i32_type, 0, 0);
             for (idx, handle) in handles.iter().enumerate() {
                 let idx_const = LLVMConstInt(self.i32_type, idx as u64, 0);

@@ -12,14 +12,15 @@ impl Compiler {
 
     // Initialize in the entry block so cleanup is valid at a control-flow merge,
     // including paths on which the owning expression never ran.
-    fn token_owner_slot(&mut self) -> LLVMValueRef {
+    pub(super) fn null_handle_slot(&mut self, name: &str) -> LLVMValueRef {
         let ty = self.runtime_abi.handle_type;
-        let slot = self.build_entry_alloca(ty, "token_owner");
+        let slot = self.build_entry_alloca(ty, name);
         unsafe {
             let init = LLVMCreateBuilderInContext(self.context);
             let next = llvm_sys::core::LLVMGetNextInstruction(slot);
             if next.is_null() {
-                LLVMPositionBuilderAtEnd(init, LLVMGetInsertBlock(self.builder));
+                let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
+                LLVMPositionBuilderAtEnd(init, LLVMGetFirstBasicBlock(function));
             } else {
                 LLVMPositionBuilderBefore(init, next);
             }
@@ -43,7 +44,7 @@ impl Compiler {
         token: &CancelTokenValue,
         handle: LLVMValueRef,
     ) -> LLVMValueRef {
-        let slot = self.token_owner_slot();
+        let slot = self.null_handle_slot("token_owner");
         self.clear_token_slot(slot);
         unsafe {
             LLVMBuildStore(self.builder, handle, slot);
@@ -203,6 +204,22 @@ impl Compiler {
         }
     }
 
+    fn store_enum_handle(
+        &mut self,
+        slot: LLVMValueRef,
+        value: &EvaluatedValue,
+    ) -> Result<(), String> {
+        let handle = self.task_value_handle(value)?;
+        if self.target.is_embedded() {
+            self.copy_embedded_handle(slot, handle);
+        } else {
+            unsafe {
+                LLVMBuildStore(self.builder, handle, slot);
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn assign_var(&mut self, name: &str, value: EvaluatedValue) -> Result<(), String> {
         let (index, binding) = self
             .scopes
@@ -260,6 +277,9 @@ impl Compiler {
             }
         }
         if let Some(slot) = slot {
+            if slot.ty == self.runtime_abi.handle_type && matches!(value.value(), Value::Enum(_)) {
+                return self.store_enum_handle(slot.ptr, &value);
+            }
             value = self.store_slot(slot, value)?;
         }
         Self::clear_scalar_constant(&mut value);
@@ -701,6 +721,21 @@ impl Compiler {
                         value = Value::CancelToken(binding).into();
                     }
                 }
+                Value::Enum(enumeration) => {
+                    let ty = self.runtime_abi.handle_type;
+                    let ptr = if self.target.is_embedded() {
+                        self.embedded_owner_slot()
+                    } else {
+                        self.build_entry_alloca(ty, "enum_binding")
+                    };
+                    self.store_enum_handle(ptr, &value)?;
+                    value = Value::runtime_enum(&enumeration.enum_name).into();
+                    slot = Some(StorageSlot {
+                        ptr,
+                        ty,
+                        projected: false,
+                    });
+                }
                 Value::Slice(slice)
                     if self
                         .checked
@@ -829,6 +864,17 @@ impl Compiler {
             }
             return self.read_token_binding(value);
         };
+        if slot.ty == self.runtime_abi.handle_type
+            && matches!(cell.lock().unwrap().value(), Value::Enum(_))
+        {
+            let handle =
+                unsafe { LLVMBuildLoad2(self.builder, slot.ty, slot.ptr, c"enum_read".as_ptr()) };
+            if self.target.is_embedded() {
+                let snapshot = self.embedded_owner_slot();
+                self.copy_embedded_handle(snapshot, handle);
+            }
+            return cell.lock().unwrap().clone().with_runtime(handle);
+        }
         self.load_slot(slot)
     }
 

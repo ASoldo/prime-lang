@@ -87,7 +87,10 @@ impl RuntimePackage {
             RuntimeKind::Embedded => (
                 include_str!("embedded.Cargo.toml"),
                 include_str!("embedded.Cargo.lock"),
-                &[][..],
+                &[(
+                    "embedded_values.rs",
+                    include_bytes!("../embedded_values.rs").as_slice(),
+                )][..],
             ),
             RuntimeKind::Minimal => (
                 include_str!("minimal.Cargo.toml"),

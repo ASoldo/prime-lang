@@ -52,6 +52,14 @@ On x86-64 Arch Linux with Rust 1.100.0, LLVM 23.1.3 and two Cargo build jobs, th
 | Full runtime for every program (7a09ff2) | 42.999 s | 0.090 s |
 | Automatically selected minimal runtime | 0.842 s | 0.051 s |
 
+## Embedded enum and scalar ownership
+
+On RV32IMC and Xtensa, copying an integer in the range `-2^28 .. 2^28-1` or a boolean copies its bits in the handle. The ABI stores wider integers and floats in 16 shared numeric slots. Each of the 128 enum slots holds a tag and up to four owned fields. An enum retains each field, including nested enums. A successful `prime_enum_get` returns an independent owner of the selected field. The final release returns the slot and releases its children. Channels own queued values and transfer ownership on receive.
+
+Generated code maintains owners in stack slots, replaces them when the same expression runs again, and clears them on function exit. Mutable enum bindings and reads have independent owners. Capacity counts currently held ABI records, including frame temporaries. A raw constructor returns a null handle on exhaustion or an unsupported payload. The generated program reports the storage error and halts. These limits are independent of the number of loop iterations. The embedded ABI rejects token fields. Xtensa copies UART scratch strings crossing an ownership boundary into up to 16 owned strings of up to 255 bytes each. C3 uses its immutable string storage described below.
+
+The RV32 ABI tests retain integer and nested enum values across 300 allocations and verify exhaustion and reuse. The linked Prime fixture stores a value from one loop iteration and reads it after subsequent iterations. Run `python3 scripts/test_embedded_timers.py` and `PRIME_BIN="$PWD/target/debug/prime-lang" python3 scripts/test_c3_strings.py RetainedOption RetainedEnum` with the tools listed below.
+
 ## ESP32-C3 strings
 
 On RV32IMC, `prime_string_new(data, len)` copies exactly `len` bytes into immutable storage. Identical byte sequences share a handle, even after the pool fills. The pool holds 64 distinct strings and 8192 payload bytes in total per boot. An empty string uses one handle and zero bytes. A null input pointer, an oversized string, or a new value that exceeds either limit returns a null handle. Existing values stay readable, including through a channel, task or enum payload. Embedded handle release currently provides no last-owner signal for reclaiming strings.

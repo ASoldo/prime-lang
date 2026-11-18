@@ -21,7 +21,7 @@ The Prime API keeps its `CancelToken` return type. When all slots are occupied, 
 
 At the C ABI, a successful `prime_cancel_token_new` or `prime_value_retain` returns one owned handle. Balance each with `prime_value_release`. Handles encode a slot and its generation. Cancellation of a released generation returns `Invalid`, and release of a stale generation is harmless. Exhaustion returns null, which queries as cancelled. A token supports 511 simultaneous ABI claims. An additional retain returns null. A slot retires when its generation can no longer fit in the state or handle. Neither counter wraps.
 
-Static Prime aggregates can contain tokens and can be captured by an embedded async block. The embedded channel and scratch runtime aggregate formats have no owned token fields. Native code generation diagnoses attempts to store tokens through those formats. Share the token directly with the async block in this case.
+Static Prime aggregates can contain tokens and can be captured by an embedded async block. The embedded channel and enum ABIs reject token fields. Native code generation diagnoses attempts to store tokens through those formats. Share the token directly with the async block in this case.
 
 ## Host regression
 
