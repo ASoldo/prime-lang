@@ -24,8 +24,8 @@ ARG = OUT + 16
 TICKS_PER_MS = 16_000
 PERIOD = 1 << 52
 SYMBOLS = """
-now_ms delay_ms sleep_task task_poll task_cancel join unit_new
-channel_new send recv_task recv_timeout close enum_tag enum_get
+now_ms delay_ms sleep_task task_poll task_wake task_cancel join unit_new int_new
+channel_new send recv recv_task recv_timeout close enum_tag enum_get
 cancel_token_new cancel_token_cancel cancel_token_is_cancelled value_retain value_release
 """.split()
 
@@ -45,6 +45,7 @@ class EmbeddedTimers(unittest.TestCase):
             "-Cpanic=abort", "-Astatic_mut_refs", "--target=riscv32imc-unknown-none-elf",
             root / "src/runtime/abi.rs", "-o", "runtime.a",
             env=dict(os.environ, PRIME_RT_CANCEL_TOKEN_SLOTS="2", PRIME_RT_TASK_SLOTS="3",
+                     PRIME_RT_CHANNEL_SLOTS="2", PRIME_RT_CHANNEL_CAP="3", PRIME_RT_CHANNEL_WAITERS="3",
                      PRIME_RT_RECV_POLL_MS="1"))
         (work / "map.ld").write_text(
             "SECTIONS { . = 0x10000; .text : { *(.text*) } .rodata : { *(.rodata*) } "
@@ -184,6 +185,93 @@ class EmbeddedTimers(unittest.TestCase):
         self.assertEqual(self.call("enum_get", self.read_word(OUT), 0), self.call("unit_new"))
         self.assertEqual(self.call("task_cancel", sleeper), 0)
         self.assertEqual(self.call("close", rx), 0)
+
+    def channel(self):
+        self.assertEqual(self.call("channel_new", OUT, OUT + 4), 0)
+        return self.read_word(OUT), self.read_word(OUT + 4)
+
+    def assert_recv_result(self, task, expected):
+        self.assertEqual(self.call("task_poll", task, OUT), 0)
+        result = self.read_word(OUT)
+        self.assertTrue(result)
+        if expected is None:
+            self.assertEqual(self.call("enum_tag", result), 1)
+        else:
+            self.assertEqual(self.call("enum_tag", result), 0)
+            self.assertEqual(self.call("enum_get", result, 0), expected)
+
+    def test_close_preserves_wrapped_fifo_for_all_receive_paths(self):
+        tx, rx = self.channel()
+        payloads = [self.call("int_new", self.arg128(n)) for n in [12, 16, 20, 24]]
+        for payload in payloads[:3]:
+            self.assertEqual(self.call("send", tx, payload), 0)
+        self.assertEqual(self.call("send", tx, payloads[3]), 1)  # full
+        self.assertEqual(self.call("recv", rx, OUT), 0)
+        self.assertEqual(self.read_word(OUT), payloads[0])
+        self.assertEqual(self.call("send", tx, payloads[3]), 0)  # wraps the tail
+        self.assertEqual(self.call("close", tx), 0)
+        self.assertEqual(self.call("send", tx, payloads[0]), 2)
+        self.assertEqual(self.call("recv_timeout", rx, self.arg128(0), OUT), 0)
+        self.assertEqual(self.read_word(OUT), payloads[1])
+        self.assert_recv_result(self.call("recv_task", rx), payloads[2])
+        self.assertEqual(self.call("recv", rx, OUT), 0)
+        self.assertEqual(self.read_word(OUT), payloads[3])
+        self.assertEqual(self.call("recv", rx, OUT), 2)
+        self.assertEqual(self.call("recv_timeout", rx, self.arg128(100), OUT), 2)
+        self.assert_recv_result(self.call("recv_task", rx), None)
+
+    def test_only_drained_slots_recycle_and_old_handles_stay_closed(self):
+        tx, rx = self.channel()
+        other_tx, other_rx = self.channel()
+        self.assertEqual(self.call("send", tx, 40), 0)
+        self.assertEqual(self.call("close", tx), 0)
+        self.assertEqual(self.call("channel_new", OUT, OUT + 4), 1)
+        self.assertEqual((self.read_word(OUT), self.read_word(OUT + 4)), (0, 0))
+        self.assert_recv_result(self.call("recv_task", rx), 40)
+        for _ in range(50):
+            new_tx, new_rx = self.channel()
+            self.assertEqual(self.call("send", new_tx, 44), 0)
+            self.assertEqual(self.call("send", tx, 48), 2)
+            self.call("close", tx)
+            self.assertEqual(self.call("recv", rx, OUT), 2)
+            self.assertEqual(self.call("recv_timeout", rx, self.arg128(1), OUT), 2)
+            self.assert_recv_result(self.call("recv_task", rx), None)
+            self.assertEqual(self.call("send", new_tx, 52), 0)
+            self.assertEqual(self.call("close", new_tx), 0)
+            self.assert_recv_result(self.call("recv_task", new_rx), 44)
+            self.assert_recv_result(self.call("recv_task", new_rx), 52)
+        self.assertEqual(self.call("send", other_tx, 56), 0)
+        self.assert_recv_result(self.call("recv_task", other_rx), 56)
+        self.assertEqual(self.call("send", 0, 40), 1)
+        self.assertEqual(self.call("recv", self.call("unit_new"), OUT), 1)
+
+    def test_close_completes_multiple_waiters_before_slot_reuse(self):
+        tx, rx = self.channel()
+        tasks = [self.call("recv_task", rx) for _ in range(3)]
+        for task in tasks:
+            self.assertEqual(self.call("task_poll", task, OUT), 1)
+        self.assertEqual(self.call("send", tx, 60), 0)
+        self.assertEqual(self.call("close", tx), 0)
+        new_tx, new_rx = self.channel()
+        self.assertEqual(self.call("send", new_tx, 64), 0)
+        for task, expected in zip(tasks, [60, None, None]):
+            self.assert_recv_result(task, expected)
+        self.assert_recv_result(self.call("recv_task", new_rx), 64)
+        self.assert_recv_result(self.call("recv_task", rx), None)
+
+    def test_closing_channel_cannot_complete_a_reused_task(self):
+        first_tx, first_rx = self.channel()
+        next_tx, next_rx = self.channel()
+        task = self.call("recv_task", first_rx)
+        ready_value = self.call("unit_new")
+        self.assertEqual(self.call("task_wake", task, ready_value), 0)
+        self.assertEqual(self.call("task_poll", task, OUT), 0)
+        self.assertEqual(self.read_word(OUT), ready_value)
+        next_task = self.call("recv_task", next_rx)
+        self.assertEqual(self.call("close", first_tx), 0)
+        self.assertEqual(self.call("task_poll", next_task, OUT), 1)
+        self.assertEqual(self.call("send", next_tx, ready_value), 0)
+        self.assert_recv_result(next_task, ready_value)
 
     def test_token_exhaustion_and_aliases(self):
         first, second = self.call("cancel_token_new"), self.call("cancel_token_new")

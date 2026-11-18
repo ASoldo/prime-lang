@@ -271,6 +271,7 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
+    #[repr(align(2))] // The low bit of an embedded handle identifies a channel.
     #[derive(Debug)]
     struct CancelTokenSlot {
         used: AtomicBool,
@@ -312,6 +313,7 @@ mod embedded {
     ))]
     #[derive(Debug)]
     struct ChannelSlot {
+        handle_id: AtomicUsize,
         used: AtomicBool,
         closed: AtomicBool,
         queue: UnsafeCell<[PrimeHandle; PRIME_CHANNEL_CAP]>,
@@ -347,7 +349,7 @@ mod embedded {
     #[derive(Debug)]
     struct ChannelWaiterSlot {
         used: AtomicBool,
-        channel: UnsafeCell<*const ChannelSlot>,
+        channel: UnsafeCell<PrimeHandle>,
         task: UnsafeCell<*const TaskSlot>,
         deadline_ms: UnsafeCell<i128>,
         has_deadline: AtomicBool,
@@ -500,10 +502,23 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    fn alloc_channel_slot() -> Option<&'static ChannelSlot> {
-        ensure_channel_slots();
-        for slot in channel_slots().iter() {
+    fn alloc_channel_handle() -> Option<PrimeHandle> {
+        for (index, slot) in channel_slots().iter().enumerate() {
             if claim_slot(&slot.used) {
+                // All other embedded handle objects are at least two-byte aligned.
+                // Each slot has its own sequence of odd IDs. Retire an exhausted
+                // slot permanently so that a previous handle stays closed.
+                let previous = slot.handle_id.load(Ordering::SeqCst);
+                let id = if previous == 0 {
+                    index * 2 + 1
+                } else if let Some(next) = previous.checked_add(PRIME_CHANNEL_SLOTS * 2) {
+                    next
+                } else {
+                    slot.used.store(false, Ordering::SeqCst);
+                    continue;
+                };
+                slot.handle_id.store(id, Ordering::SeqCst);
+
                 #[cfg(target_arch = "xtensa")]
                 {
                     CHANNEL_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -518,7 +533,7 @@ mod embedded {
                         *elem = PrimeHandle::null();
                     }
                 }
-                return Some(slot);
+                return Some(PrimeHandle(ptr::without_provenance_mut(id)));
             }
         }
         None
@@ -528,15 +543,30 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    fn channel_from_handle(handle: PrimeHandle) -> Option<&'static ChannelSlot> {
-        if handle.0.is_null() {
-            return None;
+    fn channel_from_handle(handle: PrimeHandle) -> Result<&'static ChannelSlot, PrimeStatus> {
+        let id = handle.0.addr();
+        if id & 1 == 0 {
+            return Err(PrimeStatus::Invalid);
         }
-        let ptr = handle.0 as *const ChannelSlot;
-        channel_slots().iter().find(|slot| {
-            // Guard against stale handles after a slot is recycled.
-            slot.used.load(Ordering::SeqCst) && *slot as *const ChannelSlot == ptr
-        })
+        let slot = &channel_slots()[(id >> 1) % PRIME_CHANNEL_SLOTS];
+        let current = slot.handle_id.load(Ordering::SeqCst);
+        if id == current && slot.used.load(Ordering::SeqCst) {
+            Ok(slot)
+        } else if id <= current {
+            Err(PrimeStatus::Closed)
+        } else {
+            Err(PrimeStatus::Invalid)
+        }
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn release_drained_channel(slot: &ChannelSlot) {
+        #[cfg(target_arch = "xtensa")]
+        CHANNEL_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
+        slot.used.store(false, Ordering::SeqCst);
     }
 
     #[cfg(any(
@@ -639,6 +669,7 @@ mod embedded {
         unsafe {
             for slot in CHANNEL_SLOTS.iter_mut() {
                 slot.write(ChannelSlot {
+                    handle_id: AtomicUsize::new(0),
                     used: AtomicBool::new(false),
                     closed: AtomicBool::new(false),
                     queue: UnsafeCell::new(array::from_fn(|_| PrimeHandle::null())),
@@ -672,7 +703,7 @@ mod embedded {
             for slot in CHANNEL_WAITERS.iter_mut() {
                 slot.write(ChannelWaiterSlot {
                     used: AtomicBool::new(false),
-                    channel: UnsafeCell::new(core::ptr::null()),
+                    channel: UnsafeCell::new(PrimeHandle::null()),
                     task: UnsafeCell::new(core::ptr::null()),
                     deadline_ms: UnsafeCell::new(0),
                     has_deadline: AtomicBool::new(false),
@@ -852,8 +883,7 @@ mod embedded {
         if sender_out.is_null() || receiver_out.is_null() {
             return PrimeStatus::Invalid;
         }
-        if let Some(slot) = alloc_channel_slot() {
-            let handle = PrimeHandle(slot as *const ChannelSlot as *mut c_void);
+        if let Some(handle) = alloc_channel_handle() {
             sender_out.write(handle);
             receiver_out.write(handle);
             return PrimeStatus::Ok;
@@ -869,8 +899,9 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_send")]
     pub unsafe extern "C" fn prime_send(_sender: PrimeHandle, _value: PrimeHandle) -> PrimeStatus {
-        let Some(slot) = channel_from_handle(_sender) else {
-            return PrimeStatus::Invalid;
+        let slot = match channel_from_handle(_sender) {
+            Ok(slot) => slot,
+            Err(status) => return status,
         };
         if slot.closed.load(Ordering::SeqCst) {
             return PrimeStatus::Closed;
@@ -899,8 +930,9 @@ mod embedded {
         if value_out.is_null() {
             return PrimeStatus::Invalid;
         }
-        let Some(slot) = channel_from_handle(_receiver) else {
-            return PrimeStatus::Invalid;
+        let slot = match channel_from_handle(_receiver) {
+            Ok(slot) => slot,
+            Err(status) => return status,
         };
         match dequeue_channel(slot) {
             ChannelPoll::Item(v) => {
@@ -925,11 +957,12 @@ mod embedded {
         if value_out.is_null() {
             return PrimeStatus::Invalid;
         }
-        let Some(slot) = channel_from_handle(_receiver) else {
-            return PrimeStatus::Invalid;
-        };
         let deadline = deadline_after_ms(millis);
         loop {
+            let slot = match channel_from_handle(_receiver) {
+                Ok(slot) => slot,
+                Err(status) => return status,
+            };
             match dequeue_channel(slot) {
                 ChannelPoll::Item(v) => {
                     value_out.write(v);
@@ -954,34 +987,17 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_close")]
     pub unsafe extern "C" fn prime_close(_handle: PrimeHandle) -> PrimeStatus {
-        if let Some(slot) = channel_from_handle(_handle) {
-            slot.closed.store(true, Ordering::SeqCst);
-            let _ = poll_channel_waiters();
-            // Drop any waiters that were bound to this channel to avoid stale pointers
-            // keeping the slot “in use” after we recycle it.
-            for waiter in channel_waiters().iter() {
-                let channel_ptr = unsafe { *waiter.channel.get() };
-                if channel_ptr == slot as *const ChannelSlot {
-                    waiter.used.store(false, Ordering::SeqCst);
-                }
-            }
-            #[cfg(target_arch = "xtensa")]
-            {
-                CHANNEL_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            unsafe {
-                *slot.head.get() = 0;
-                *slot.tail.get() = 0;
-                *slot.len.get() = 0;
-                let buf = &mut *slot.queue.get();
-                for elem in buf.iter_mut() {
-                    *elem = PrimeHandle::null();
-                }
-            }
-            slot.used.store(false, Ordering::SeqCst);
-            return PrimeStatus::Ok;
+        let slot = match channel_from_handle(_handle) {
+            Ok(slot) => slot,
+            Err(PrimeStatus::Closed) => return PrimeStatus::Ok,
+            Err(status) => return status,
+        };
+        slot.closed.store(true, Ordering::SeqCst);
+        if *slot.len.get() == 0 {
+            release_drained_channel(slot);
         }
-        PrimeStatus::Invalid
+        poll_channel_waiters();
+        PrimeStatus::Ok
     }
 
     #[cfg(any(
@@ -1010,6 +1026,9 @@ mod embedded {
         let value = unsafe { (*slot.queue.get())[head] };
         unsafe { *slot.head.get() = (head + 1) % PRIME_CHANNEL_CAP };
         unsafe { *slot.len.get() = len - 1 };
+        if len == 1 && slot.closed.load(Ordering::SeqCst) {
+            release_drained_channel(slot);
+        }
         ChannelPoll::Item(value)
     }
 
@@ -1032,14 +1051,14 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     fn register_channel_waiter(
-        channel: &ChannelSlot,
+        channel: PrimeHandle,
         task: &TaskSlot,
         deadline_ms: Option<i128>,
     ) -> bool {
         for waiter in channel_waiters().iter() {
             if claim_slot(&waiter.used) {
                 unsafe {
-                    *waiter.channel.get() = channel as *const ChannelSlot;
+                    *waiter.channel.get() = channel;
                     *waiter.task.get() = task as *const TaskSlot;
                     *waiter.deadline_ms.get() = deadline_ms.unwrap_or(0);
                 }
@@ -1050,6 +1069,18 @@ mod embedded {
             }
         }
         false
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    fn detach_channel_waiters(task: &TaskSlot) {
+        for waiter in channel_waiters() {
+            if waiter.used.load(Ordering::SeqCst) && ptr::eq(unsafe { *waiter.task.get() }, task) {
+                waiter.used.store(false, Ordering::SeqCst);
+            }
+        }
     }
 
     #[cfg(any(
@@ -1082,14 +1113,18 @@ mod embedded {
             if !waiter.used.load(Ordering::SeqCst) {
                 continue;
             }
-            let channel_ptr = unsafe { *waiter.channel.get() };
+            let handle = unsafe { *waiter.channel.get() };
             let task_ptr = unsafe { *waiter.task.get() };
-            if channel_ptr.is_null() || task_ptr.is_null() {
+            if task_ptr.is_null() {
                 waiter.used.store(false, Ordering::SeqCst);
                 continue;
             }
-            let channel = unsafe { &*channel_ptr };
-            match dequeue_channel(channel) {
+            // An empty closed channel may already have yielded its pool slot.
+            // Resolve the original handle so all of its waiters still see EOF.
+            let state = channel_from_handle(handle)
+                .map(dequeue_channel)
+                .unwrap_or(ChannelPoll::Closed);
+            match state {
                 ChannelPoll::Item(v) => {
                     complete_channel_waiter(waiter, task_ptr, Some(v));
                     progressed = true;
@@ -1530,6 +1565,7 @@ mod embedded {
         _value: PrimeHandle,
     ) -> PrimeStatus {
         if let Some(slot) = task_from_handle(_task) {
+            detach_channel_waiters(slot);
             unsafe { *slot.result.get() = _value };
             slot.done.store(true, Ordering::SeqCst);
             return PrimeStatus::Ok;
@@ -1546,16 +1582,7 @@ mod embedded {
         let Some(slot) = task_from_handle(task) else {
             return PrimeStatus::Invalid;
         };
-        // Detach any channel waiters bound to this task so recycled slots don't get woken.
-        for waiter in channel_waiters().iter() {
-            if !waiter.used.load(Ordering::SeqCst) {
-                continue;
-            }
-            let task_ptr = unsafe { *waiter.task.get() };
-            if task_ptr == slot as *const TaskSlot {
-                waiter.used.store(false, Ordering::SeqCst);
-            }
-        }
+        detach_channel_waiters(slot);
         slot.done.store(false, Ordering::SeqCst);
         unsafe {
             *slot.result.get() = PrimeHandle::null();
@@ -1632,7 +1659,7 @@ mod embedded {
         let Some(slot) = alloc_task_slot() else {
             return PrimeHandle::null();
         };
-        if let Some(ch) = channel_from_handle(_receiver) {
+        if let Ok(ch) = channel_from_handle(_receiver) {
             match dequeue_channel(ch) {
                 ChannelPoll::Item(v) => {
                     unsafe {
@@ -1647,7 +1674,7 @@ mod embedded {
                     slot.done.store(true, Ordering::SeqCst);
                 }
                 ChannelPoll::Empty => {
-                    if !register_channel_waiter(ch, slot, None) {
+                    if !register_channel_waiter(_receiver, slot, None) {
                         unsafe {
                             *slot.result.get() = option_handle_from_payload(None);
                         }
@@ -1776,6 +1803,11 @@ mod embedded {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_print(value: PrimeHandle) {
         if value.0.is_null() {
+            return;
+        }
+        if value.0.addr() & 1 != 0 {
+            #[cfg(target_arch = "xtensa")]
+            ets_printf(b"<channel>\0".as_ptr());
             return;
         }
         let s = &*(value.0 as *const PrimeString);
