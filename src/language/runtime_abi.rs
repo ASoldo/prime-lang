@@ -103,6 +103,12 @@ pub struct RuntimeAbi {
     pub prime_join_ty: LLVMTypeRef,
     pub prime_task_new: LLVMValueRef,
     pub prime_task_new_ty: LLVMTypeRef,
+    pub prime_host_task_wait: LLVMValueRef,
+    pub prime_host_task_wait_ty: LLVMTypeRef,
+    pub prime_host_task_error: LLVMValueRef,
+    pub prime_host_task_error_ty: LLVMTypeRef,
+    pub prime_host_task_abort: LLVMValueRef,
+    pub prime_host_task_abort_ty: LLVMTypeRef,
     pub prime_task_poll: LLVMValueRef,
     pub prime_task_poll_ty: LLVMTypeRef,
     pub prime_task_wake: LLVMValueRef,
@@ -225,7 +231,7 @@ impl RuntimeAbi {
             module,
             "prime_string_new",
             handle_type,
-            &mut [string_data_type, int_type],
+            &mut [string_data_type, usize_type],
         );
         let (prime_slice_new, prime_slice_new_ty) =
             declare_fn(module, "prime_slice_new", handle_type, &mut []);
@@ -429,6 +435,24 @@ impl RuntimeAbi {
             "prime_task_new",
             handle_type,
             &mut [thread_fn_type, handle_type],
+        );
+        let (prime_host_task_wait, prime_host_task_wait_ty) = declare_fn(
+            module,
+            "prime_host_task_wait",
+            status_type,
+            &mut [handle_type, handle_type, int_type, channel_out_type],
+        );
+        let (prime_host_task_error, prime_host_task_error_ty) = declare_fn(
+            module,
+            "prime_host_task_error",
+            handle_type,
+            &mut [handle_type],
+        );
+        let (prime_host_task_abort, prime_host_task_abort_ty) = declare_fn(
+            module,
+            "prime_host_task_abort",
+            void_type,
+            &mut [handle_type],
         );
         let (prime_task_poll, prime_task_poll_ty) = declare_fn(
             module,
@@ -707,6 +731,12 @@ impl RuntimeAbi {
             prime_join_ty,
             prime_task_new,
             prime_task_new_ty,
+            prime_host_task_wait,
+            prime_host_task_wait_ty,
+            prime_host_task_error,
+            prime_host_task_error_ty,
+            prime_host_task_abort,
+            prime_host_task_abort_ty,
             prime_task_poll,
             prime_task_poll_ty,
             prime_task_wake,
@@ -873,6 +903,12 @@ impl RuntimeAbi {
             prime_join_ty: std::ptr::null_mut(),
             prime_task_new: std::ptr::null_mut(),
             prime_task_new_ty: std::ptr::null_mut(),
+            prime_host_task_wait: std::ptr::null_mut(),
+            prime_host_task_wait_ty: std::ptr::null_mut(),
+            prime_host_task_error: std::ptr::null_mut(),
+            prime_host_task_error_ty: std::ptr::null_mut(),
+            prime_host_task_abort: std::ptr::null_mut(),
+            prime_host_task_abort_ty: std::ptr::null_mut(),
             prime_task_poll: std::ptr::null_mut(),
             prime_task_poll_ty: std::ptr::null_mut(),
             prime_task_wake: std::ptr::null_mut(),

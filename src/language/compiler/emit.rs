@@ -221,7 +221,7 @@ impl Compiler {
 
     pub(super) fn alloc_handle_array(&mut self, handles: &[LLVMValueRef]) -> LLVMValueRef {
         if handles.is_empty() {
-            return std::ptr::null_mut();
+            return self.null_handle_ptr();
         }
         unsafe {
             let array_type = LLVMArrayType2(self.runtime_abi.handle_type, handles.len() as u64);
@@ -918,7 +918,11 @@ impl Compiler {
                 let mut free = HashSet::new();
                 self.collect_free_in_block(block, &mut locals, &mut free);
                 let capture_names: Vec<String> = free.into_iter().collect();
-                let task = TaskValue::deferred((**block).clone(), capture_names);
+                let task = if self.target.is_host() {
+                    self.emit_host_async(block, capture_names)?
+                } else {
+                    TaskValue::deferred((**block).clone(), capture_names)
+                };
                 Ok(EvalOutcome::Value(Value::Task(Box::new(task)).into()))
             }
             Expr::Await { expr, .. } => {
@@ -1175,7 +1179,7 @@ impl Compiler {
     ) -> Result<EvaluatedValue, String> {
         self.push_scope();
         for (name, value) in captures {
-            self.insert_var(name, value.clone(), true)?;
+            self.insert_var(name, value.clone(), !self.in_host_task())?;
         }
         let result = self.execute_block_contents(block)?;
         self.exit_scope()?;
@@ -1191,6 +1195,11 @@ impl Compiler {
                     }
                     Ok(self.evaluated(Value::Tuple(items)))
                 }
+            }
+            BlockEval::Flow(FlowSignal::Propagate(_)) if self.in_host_task() => {
+                let never = unsafe { LLVMConstNull(self.runtime_abi.bool_type) };
+                self.host_task_check(never, "async task encountered error propagation")?;
+                Ok(self.evaluated(Value::Unit))
             }
             BlockEval::Flow(FlowSignal::Propagate(value)) => Err(format!(
                 "async block propagated error: {}",
@@ -1493,7 +1502,9 @@ impl Compiler {
         };
         let millis = self.expect_int(millis_eval.into_value())?;
 
-        // Build-mode / deferred tasks: await immediately and wrap in Result::Ok.
+        if self.target.is_host() {
+            return self.emit_host_guarded_await(&task, None, Some(&millis));
+        }
         if task.handle.is_none() || !self.runtime_handles_enabled() {
             let value = task.take(self)?;
             let ok = self.instantiate_enum_variant("Ok", vec![value.into_value()])?;
@@ -1806,6 +1817,9 @@ impl Compiler {
             }
         };
 
+        if self.target.is_host() {
+            return self.emit_host_guarded_await(&task, Some(&token), None);
+        }
         if task.handle.is_none() || !self.runtime_handles_enabled() {
             if token.is_cancelled() {
                 let err = self
@@ -2074,6 +2088,9 @@ impl Compiler {
         };
         let millis = self.expect_int(millis_eval.into_value())?;
 
+        if self.target.is_host() {
+            return self.emit_host_guarded_await(&task, Some(&token), Some(&millis));
+        }
         if task.handle.is_none() || !self.runtime_handles_enabled() {
             if token.is_cancelled() {
                 let err = self
@@ -2506,6 +2523,17 @@ impl Compiler {
             "iter" => Some(self.invoke_builtin(args, |this, values| this.builtin_iter(values))),
             "next" => {
                 Some(self.invoke_builtin(args, |this, values| this.builtin_iter_next(values)))
+            }
+            "panic" if self.in_host_task() => {
+                Some(self.invoke_builtin(args, |this, mut values| {
+                    if values.len() != 1 {
+                        return Err("panic expects a message".into());
+                    }
+                    let message = Self::expect_string_value(values.remove(0), "panic")?;
+                    let never = unsafe { LLVMConstNull(this.runtime_abi.bool_type) };
+                    this.host_task_check(never, &message)?;
+                    Ok(Value::Unit)
+                }))
             }
             "assert" => Some(self.invoke_builtin(args, |this, values| this.builtin_assert(values))),
             "expect" => Some(self.invoke_builtin(args, |this, values| this.builtin_expect(values))),
@@ -3183,13 +3211,31 @@ impl Compiler {
             EvalOutcome::Value(value) => value,
             EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
         };
-        if let Some(runtime_handle) = target.runtime_handle() {
-            if let Value::Enum(enum_value) = target.value() {
-                if let Some(result) =
-                    self.emit_runtime_enum_match(runtime_handle, enum_value, match_expr)?
-                {
-                    return Ok(result);
-                }
+        let runtime_enum = match target.value() {
+            Value::Enum(e) => target
+                .runtime_handle()
+                .map(|handle| (handle, e.enum_name.clone())),
+            Value::Reference(reference) if self.target.is_host() => {
+                reference.handle.and_then(|handle| {
+                    match_expr.arms.iter().find_map(|arm| match &arm.pattern {
+                        Pattern::EnumVariant { variant, .. } => self
+                            .enum_variants
+                            .get(variant)
+                            .map(|info| (handle, info.enum_name.clone())),
+                        _ => None,
+                    })
+                })
+            }
+            _ => None,
+        };
+        if let Some((handle, name)) = runtime_enum {
+            if let Some(result) = self.emit_runtime_enum_match(handle, &name, match_expr)? {
+                return Ok(result);
+            }
+            if matches!(target.value(), Value::Enum(e) if e.variant == "<runtime>")
+                || matches!(target.value(), Value::Reference(r) if r.handle.is_some())
+            {
+                return Err("unsupported pattern for a runtime enum".into());
             }
         }
         for arm in &match_expr.arms {
@@ -3232,46 +3278,25 @@ impl Compiler {
     pub(super) fn emit_runtime_enum_match(
         &mut self,
         handle: LLVMValueRef,
-        enum_value: &EnumValue,
+        enum_name: &str,
         match_expr: &MatchExpr,
     ) -> Result<Option<EvalOutcome<EvaluatedValue>>, String> {
-        let mut variant_tags = HashMap::new();
-        match enum_value.enum_name.as_str() {
-            "Result" => {
-                let ok_tag = self
-                    .enum_variants
-                    .get("Ok")
-                    .map(|v| v.variant_index)
-                    .ok_or_else(|| "Result::Ok variant not found in build mode".to_string())?;
-                let err_tag = self
-                    .enum_variants
-                    .get("Err")
-                    .map(|v| v.variant_index)
-                    .ok_or_else(|| "Result::Err variant not found in build mode".to_string())?;
-                variant_tags.insert("Ok", ok_tag);
-                variant_tags.insert("Err", err_tag);
-            }
-            "Option" => {
-                let some_tag = self
-                    .enum_variants
-                    .get("Some")
-                    .map(|v| v.variant_index)
-                    .ok_or_else(|| "Option::Some variant not found in build mode".to_string())?;
-                let none_tag = self
-                    .enum_variants
-                    .get("None")
-                    .map(|v| v.variant_index)
-                    .ok_or_else(|| "Option::None variant not found in build mode".to_string())?;
-                variant_tags.insert("Some", some_tag);
-                variant_tags.insert("None", none_tag);
-            }
-            _ => return Ok(None),
-        }
+        let variant_tags: HashMap<_, _> = self
+            .enum_variants
+            .iter()
+            .filter(|(_, info)| info.enum_name == enum_name)
+            .map(|(name, info)| (name.clone(), info.variant_index))
+            .collect();
 
         let supported_patterns = match_expr.arms.iter().all(|arm| match &arm.pattern {
-            Pattern::EnumVariant { bindings, .. } => bindings
-                .iter()
-                .all(|b| matches!(b, Pattern::Identifier(_, _) | Pattern::Wildcard)),
+            Pattern::EnumVariant {
+                variant, bindings, ..
+            } => {
+                variant_tags.contains_key(variant)
+                    && bindings
+                        .iter()
+                        .all(|b| matches!(b, Pattern::Identifier(_, _) | Pattern::Wildcard))
+            }
             Pattern::Wildcard => true,
             _ => false,
         });
@@ -3297,6 +3322,8 @@ impl Compiler {
 
         let mut current_block = unsafe { LLVMGetInsertBlock(self.builder) };
         let mut result_value: Option<EvaluatedValue> = None;
+        let mut arm_handles = Vec::new();
+        let mut arm_blocks = Vec::new();
 
         for (idx, arm) in match_expr.arms.iter().enumerate() {
             let (expected_tag, bindings) = match &arm.pattern {
@@ -3320,7 +3347,7 @@ impl Compiler {
                     CString::new(format!("match_arm_{idx}")).unwrap().as_ptr(),
                 )
             };
-            let else_block = if idx == match_expr.arms.len() - 1 {
+            let else_block = if idx == match_expr.arms.len() - 1 && !self.target.is_host() {
                 merge_block
             } else {
                 unsafe {
@@ -3381,11 +3408,18 @@ impl Compiler {
             self.exit_scope()?;
             match arm_value {
                 EvalOutcome::Value(val) => {
+                    if self.target.is_host() && !matches!(val.value(), Value::Unit) {
+                        arm_handles.push(self.task_value_handle(&val)?);
+                        arm_blocks.push(unsafe { LLVMGetInsertBlock(self.builder) });
+                    }
                     result_value = Some(val);
                     unsafe { LLVMBuildBr(self.builder, merge_block) };
                 }
                 EvalOutcome::Flow(flow @ FlowSignal::Return(_))
                 | EvalOutcome::Flow(flow @ FlowSignal::Propagate(_)) => {
+                    if self.target.is_host() {
+                        return Err("cannot exit early from a runtime match arm in native code; return the match expression instead".into());
+                    }
                     unsafe {
                         LLVMPositionBuilderAtEnd(self.builder, merge_block);
                     }
@@ -3405,6 +3439,34 @@ impl Compiler {
             current_block = else_block;
         }
 
+        if self.target.is_host() {
+            unsafe {
+                LLVMPositionBuilderAtEnd(self.builder, current_block);
+                llvm_sys::core::LLVMBuildUnreachable(self.builder);
+                LLVMPositionBuilderAtEnd(self.builder, merge_block);
+            }
+            if let Some(template) = result_value.as_ref().filter(|_| !arm_handles.is_empty()) {
+                let handle = unsafe {
+                    let phi = LLVMBuildPhi(
+                        self.builder,
+                        self.runtime_abi.handle_type,
+                        c"match_value".as_ptr(),
+                    );
+                    LLVMAddIncoming(
+                        phi,
+                        arm_handles.as_mut_ptr(),
+                        arm_blocks.as_mut_ptr(),
+                        arm_blocks.len() as u32,
+                    );
+                    phi
+                };
+                return Ok(Some(EvalOutcome::Value(self.task_value_from_handle(
+                    template.value(),
+                    handle,
+                    false,
+                )?)));
+            }
+        }
         unsafe { LLVMPositionBuilderAtEnd(self.builder, merge_block) };
         Ok(Some(EvalOutcome::Value(
             result_value.unwrap_or_else(|| self.evaluated(Value::Unit)),
@@ -3474,7 +3536,8 @@ impl Compiler {
                         "Err" => Some(err_tag.variant_index),
                         _ => None,
                     })
-                    .unwrap_or(ok_tag.variant_index);
+                    .or_else(|| (!self.target.is_host()).then_some(ok_tag.variant_index))
+                    .ok_or("native code cannot yet propagate a runtime-selected Result with `?`; use `match` to handle Ok and Err")?;
                     if trace_try {
                         let is_const = unsafe { !LLVMIsAConstantInt(tag).is_null() };
                         eprintln!(
@@ -3661,7 +3724,6 @@ impl Compiler {
             Pattern::Struct {
                 struct_name,
                 fields,
-                has_spread: _,
                 ..
             } => {
                 let concrete = match value {

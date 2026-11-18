@@ -586,7 +586,7 @@ impl Compiler {
                     unsafe { LLVMConstInt(self.runtime_abi.usize_type, elements.len() as u64, 0) };
                 let tag = unsafe {
                     LLVMConstInt(
-                        self.runtime_abi.int_type,
+                        self.runtime_abi.status_type,
                         enum_value.variant_index as u64,
                         0,
                     )
@@ -1106,11 +1106,7 @@ impl Compiler {
             Expr::Tuple(values, _) => {
                 let mut types = Vec::with_capacity(values.len());
                 for expr in values {
-                    if let Some(ty) = self.infer_expr_type(expr, bindings) {
-                        types.push(ty);
-                    } else {
-                        return None;
-                    }
+                    types.push(self.infer_expr_type(expr, bindings)?);
                 }
                 Some(TypeExpr::Tuple(types))
             }

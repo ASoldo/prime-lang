@@ -133,7 +133,12 @@ impl Compiler {
         ctx: &str,
     ) -> Result<ChannelSender, String> {
         match value {
-            Value::Sender(tx) => Ok(tx),
+            Value::Sender(mut tx) => {
+                tx.handle = tx
+                    .handle
+                    .or_else(|| tx.inner.0.lock().unwrap().runtime_pair.map(|p| p.0));
+                Ok(tx)
+            }
             Value::Reference(reference) => {
                 if let Some(reference_handle) = reference.handle {
                     let mut call_args = [reference_handle];
@@ -159,7 +164,12 @@ impl Compiler {
         ctx: &str,
     ) -> Result<ChannelReceiver, String> {
         match value {
-            Value::Receiver(rx) => Ok(rx),
+            Value::Receiver(mut rx) => {
+                rx.handle = rx
+                    .handle
+                    .or_else(|| rx.inner.0.lock().unwrap().runtime_pair.map(|p| p.1));
+                Ok(rx)
+            }
             Value::Reference(reference) => {
                 if let Some(reference_handle) = reference.handle {
                     let mut call_args = [reference_handle];
@@ -1596,6 +1606,7 @@ impl Compiler {
         if !args.is_empty() {
             return Err("cancel_token expects 0 arguments".into());
         }
+        self.force_runtime_handles = true;
         if self.runtime_handles_enabled() {
             self.ensure_runtime_symbols();
             let mut call_args: [LLVMValueRef; 0] = [];
@@ -1799,6 +1810,11 @@ impl Compiler {
             return Err("assert expects 1 argument".into());
         }
         let cond_value = self.value_to_bool(args.pop().unwrap())?;
+        if self.in_host_task() {
+            let condition = self.bool_llvm_value(&cond_value);
+            self.host_task_check(condition, "assertion failed")?;
+            return Ok(Value::Unit);
+        }
         let cond = self.bool_constant_or_llvm(&cond_value, "assert condition")?;
         if !cond {
             return Err("assertion failed".into());
@@ -1811,8 +1827,13 @@ impl Compiler {
             return Err("expect expects 2 arguments".into());
         }
         let cond_value = self.value_to_bool(args.remove(0))?;
-        let cond = self.bool_constant_or_llvm(&cond_value, "expect condition")?;
         let msg = Self::expect_string_value(args.remove(0), "expect")?;
+        if self.in_host_task() {
+            let condition = self.bool_llvm_value(&cond_value);
+            self.host_task_check(condition, &msg)?;
+            return Ok(Value::Unit);
+        }
+        let cond = self.bool_constant_or_llvm(&cond_value, "expect condition")?;
         if !cond {
             return Err(msg);
         }
@@ -1987,6 +2008,7 @@ impl Compiler {
             }
         }
         let state = ChannelState {
+            runtime_pair: None,
             queue: VecDeque::new(),
             closed: false,
         };
@@ -2248,19 +2270,24 @@ impl Compiler {
             return Err("recv_task expects 1 argument".into());
         }
         let receiver = self.expect_receiver(args.pop().unwrap(), "recv_task")?;
-        if let Some(handle) = receiver.handle {
-            if self.runtime_handles_enabled() {
-                self.ensure_runtime_symbols();
-                let mut call_args = [handle];
-                let task_handle = self.call_runtime(
-                    self.runtime_abi.prime_recv_task,
-                    self.runtime_abi.prime_recv_task_ty,
-                    &mut call_args,
-                    "recv_task",
-                );
-                let task = TaskValue::with_handle(task_handle, TaskResultKind::RuntimeOption);
-                return Ok(Value::Task(Box::new(task)));
-            }
+        let handle = if self.target.is_host() {
+            self.force_runtime_handles = true;
+            Some(self.async_channel_handle(&receiver.inner, receiver.handle, false)?)
+        } else {
+            receiver.handle.filter(|_| self.runtime_handles_enabled())
+        };
+        if let Some(handle) = handle {
+            self.ensure_runtime_symbols();
+            let task = self.call_runtime(
+                self.runtime_abi.prime_recv_task,
+                self.runtime_abi.prime_recv_task_ty,
+                &mut [handle],
+                "recv_task",
+            );
+            return Ok(Value::Task(Box::new(TaskValue::with_handle(
+                task,
+                TaskResultKind::RuntimeOption,
+            ))));
         }
         let option = match receiver.recv() {
             Some(value) => self.instantiate_enum_variant("Some", vec![value])?,
@@ -2276,7 +2303,10 @@ impl Compiler {
         }
         match args.pop().unwrap() {
             Value::Sender(tx) => {
-                if let Some(handle) = tx.handle {
+                if let Some(handle) = tx
+                    .handle
+                    .or_else(|| tx.inner.0.lock().unwrap().runtime_pair.map(|p| p.0))
+                {
                     let mut call_args = [handle];
                     let _ = self.call_runtime(
                         self.runtime_abi.prime_close,
@@ -2290,7 +2320,10 @@ impl Compiler {
                 Ok(Value::Unit)
             }
             Value::Receiver(rx) => {
-                if let Some(handle) = rx.handle {
+                if let Some(handle) = rx
+                    .handle
+                    .or_else(|| rx.inner.0.lock().unwrap().runtime_pair.map(|p| p.1))
+                {
                     let mut call_args = [handle];
                     let _ = self.call_runtime(
                         self.runtime_abi.prime_close,

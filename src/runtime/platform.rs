@@ -1,3 +1,4 @@
+use crate::runtime::abi::prime_delay_ms;
 use crate::target::{BuildOptions, embedded_target_hint};
 use std::sync::OnceLock;
 
@@ -149,7 +150,6 @@ pub struct Esp32Platform;
 unsafe extern "C" {
     fn prime_pin_mode(pin: i32, mode: i32) -> i32;
     fn prime_digital_write(pin: i32, level: i32) -> i32;
-    fn prime_delay_ms(ms: i32);
     fn prime_now_ms() -> i128;
 }
 
@@ -159,10 +159,11 @@ impl Platform for Esp32Platform {
     }
 
     fn sleep_ms(&self, millis: i128) {
-        if millis > 0 {
-            unsafe {
-                prime_delay_ms(millis as i32);
-            }
+        let mut remaining = millis;
+        while remaining > 0 {
+            let chunk = remaining.min(i32::MAX.into()) as i32;
+            unsafe { prime_delay_ms(chunk) };
+            remaining -= i128::from(chunk);
         }
     }
 

@@ -1,75 +1,56 @@
-# Async/Await Design (v1.0)
+# Async tasks, cancellation and timeouts
 
-This note captures the intended shape of async/await for Prime. It is a checkpoint for implementation and diagnostics work; update it as pieces land.
+## Creating and awaiting tasks
 
-## Goals
-- No function coloring: existing `fn` signatures stay `-> T`; suspension is an internal transform.
-- Go-like ergonomics: `spawn` remains for concurrent fire-and-forget; `async {}` creates a first-class task.
-- Parity: interpreter, build snapshots, and emitted binaries share semantics; build stays deterministic.
-- Ownership safety: borrows across suspension are rejected unless proven local; values crossing `await` must satisfy sendability rules.
-- Tooling-ready: parser/formatter/LSP understand the syntax; diagnostics surface precise spans and hints.
+`async { ... }` creates a `Task[T]`. The block's tail expression supplies `T`. A regular function can return a task, and a caller can use `await task` to take its value. `sleep_task(millis)` produces a `Task[()]` and `recv_task(rx)` produces a task containing the next channel item as an `Option`.
 
-## Syntax and Surface Types
-- `async { expr }` yields `Task[T]` when the block produces `T`.
-- `await expr` suspends the current fiber until `expr` is ready; desugars over `Task` and select-ready primitives (channels/timers/fs).
-- `async fn foo(args) -> T { ... }` desugars to `fn foo(args) -> Task[T] { async { ... } }` for authoring convenience; callers are not forced to use it.
-- `spawn expr` accepts sync or async bodies; async bodies run on the fiber scheduler, sync bodies stay on OS threads (unchanged).
-- `Task[T]` gains `join() -> Result[T, Panic]` and is directly awaitable; `Result` propagation with `?` works inside async the same as sync.
+```prime
+fn delayed_value() -> Task[int32] {
+  async {
+    await sleep_task(150);
+    7
+  }
+}
+```
 
-## Cancellation and Timeouts
+`spawn expr` produces a `JoinHandle`. If `expr` produces a task, `join(handle)` returns that task, and `await` takes its result. The [async demo](../workspace/demos/async_demo/async_demo.prime) shows timer and channel tasks together.
 
-Prime keeps cancellation explicit (no unwind/exception model): cancellation and timeouts surface as `Result[T, string]`.
+## Guarded waits on the host
 
-### CancelToken
-- `cancel_token() -> CancelToken`: create a new cancellation token (initially not cancelled).
-- `cancel(token: CancelToken) -> ()`: mark the token as cancelled.
-- `is_cancelled(token: CancelToken) -> bool`: read the cancellation flag.
+`cancel_token()` creates a shared `CancelToken` whose flag is initially clear. `cancel(token)` sets the flag, and `is_cancelled(token)` reads it. Code observing any copy of the token sees the same flag.
 
-`CancelToken` is just a shared flag; it does not stop work on its own. It becomes effective when code checks it (via `is_cancelled`) or when you await a `Task` with the helpers below.
+| Helper | Result |
+| --- | --- |
+| `await_timeout(task, millis)` | `Result[T, string]` |
+| `await_cancel(task, token)` | `Result[T, string]` |
+| `await_cancel_timeout(task, token, millis)` | `Result[T, string]` |
 
-### Await Helpers
-- `await_timeout[T](task: Task[T], millis: int64) -> Result[T, string]`
-- `await_cancel[T](task: Task[T], token: CancelToken) -> Result[T, string]`
-- `await_cancel_timeout[T](task: Task[T], token: CancelToken, millis: int64) -> Result[T, string]`
+These helpers accept a `Task[T]`. The timeout argument has type `int64` and measures milliseconds from the start of the wait. Both the interpreter and native host binaries check the following conditions in order.
 
-Semantics (interpreter/build output/embedded no_std should match):
-- If `task` completes first, return `Ok(value)`.
-- On timeout, cancel the task and return `Err("timeout")`.
-- On cancellation, cancel the task and return `Err("cancelled")`.
-- Task failures bubble out as `Err(message)` (panic payload as a string) and do not unwind the caller.
-- `millis <= 0` behaves like an immediate timeout check.
-- In `await_cancel_timeout`, cancellation wins if both become true in the same tick.
+1. If the task has finished, return its result. Success yields `Ok(value)`. A task failure yields `Err(message)`. A task whose **value** is `Err(e)` therefore yields `Ok(Err(e))`.
+2. If the task is pending and its token is cancelled, mark the task cancelled and return `Err("cancelled")`.
+3. If the task is pending and the deadline has expired, mark the task cancelled and return `Err("timeout")`.
 
-## Typing and Borrowing Rules
-- Any `await` introduces a suspension point; the checker ensures no `&mut` (or unique ownership that implies exclusivity) lives across it unless the lifetime is proven disjoint.
-- Captured values that cross suspension must be `Send` (and `'static` if moved into detached tasks). Non-sendable values must be scoped before the `await` or cloned.
-- Drop/RAII and `defer` run in scope order on task completion or panic; suspension does not trigger drops.
-- `select` will later allow `await` arms; same borrow rules apply per arm.
+A zero or negative duration requests an immediate check. With `await_cancel_timeout`, an already-complete task wins even when the token is set and the deadline is zero. Cancellation wins a tie with the deadline for a pending task.
 
-## Runtime Model
-- Add a cooperative, stackful fiber scheduler in `runtime`: ready queue + timer wheel + channel wakeups. Fibers yield on `await`.
-- Builtins gain non-blocking variants for timers/channels/fs; blocking host ops fall back to a small thread pool to avoid starving the event loop.
-- Build mode records wakeups deterministically; emitted binaries map fibers to an event loop plus OS threads for blocking work.
-- Panics inside fibers surface through `Task::join()`; unjoined tasks propagate panic to the parent runtime on shutdown.
+```prime
+let Result[int32, string] result = await_timeout(delayed_value(), 2);
+match result {
+  Ok(value) => out(value),
+  Err(message) => out(message),
+}
+```
 
-## Compiler/Interpreter Integration
-- Parser/AST: tokens for `async`/`await`; expression node for async block; marker for suspension sites.
-- Typechecker: rewrites `fn` bodies containing `await` into state-machine lowering; ensures borrow/send rules above.
-- Interpreter: executes fibers cooperatively; shares the same drop/defer ordering as sync execution.
-- LLVM lowering: emit stackful coroutines or equivalent state machines; preserve build/run parity.
+This prints `timeout` while the 150 ms timer is pending. With enough time, the task returns `7`. In native output, use a `match` for a guarded result whose variant is determined at runtime. The compiler diagnoses runtime-selected `?` propagation until it can emit both paths. A task supplies one consumable result. A second guarded wait after a successful join returns `Err("task missing result")`.
 
-## Tooling
-- Formatter/LSP: recognize `async`/`await`, provide hover/diagnostics for illegal borrows across `await`, and signature help for `Task`.
-- Docs/Demos: add `workspace/demos/async_demo` showing `async {}`, `await`, channel/timer integration, and `spawn` interop.
+## Execution and ownership
 
-## Open Items
-- Decide on `select` syntax (`select { await a => ..., await b => ... }`) and fairness policy.
-- Finalize panic contract: abort vs unwind inside fibers; current leaning is panic-as-error surfaced via `Task::join()`.
-- ABI hooks for embedded: define the minimal async surface (timers/channels) for Xtensa.
+The host interpreter starts async blocks on worker threads. The native host compiler emits an entry function for each block and transfers captured values to the runtime at task creation. A waiter sleeps on a condition variable and checks an optional token periodically. Timer and receive tasks observe cancellation. Prime code already executing on a worker can still produce side effects after its caller stops waiting. Cancellation does not unwind the worker's stack.
 
-## Current Status (2026-04 prototype)
-- Syntax + formatter/LSP/typechecker paths are in place; `async {}` returns `Task[T]`, `await` unwraps.
-- Runtime uses `AsyncRuntime` with a task state + condvar handle; the cooperative scheduler now polls timers and channel inboxes instead of relying on blocking helper threads.
-- Build mode lowers `async`/`await` into the same runtime calls; `sleep_task`/`recv_task` now compile for LLVM output while keeping deterministic snapshots.
-- Borrow/send checks across suspension points are not enforced yet; add these once the scheduler is wired.
-- Xtensa builds drive `recv_task`/`recv_timeout` through a small waiter queue plus a configurable poll interval; channel/task pool sizes live under `[build.runtime]` or `PRIME_RT_*` with defaults tuned for the demos.
+At an `await` expression, the type checker reports an active mutable borrow (`E0ASYNCBORROW`) or a task whose immediate result type is a reference or pointer (`E0ASYNCSEND`). Those checks apply to the await expression. Native host code transfers immutable bindings and preserves the identity of runtime-backed tokens and channel handles. It diagnoses mutable captures because it cannot yet share their binding cells with the worker. Transitive sendability of captures and values inside aggregates remains open.
+
+Embedded LLVM targets use a fixed pool of tasks, channel waiters and a target-specific timer and polling ABI. Embedded async blocks still use deferred evaluation. Device timing depends on the board runtime. The [no_std parity probe](../workspace/demos/no_std_parity/main.prime) covers a subset of these APIs under the host interpreter.
+
+## Proposed extensions
+
+`async fn` syntax, `select` arms, a `Task::join()` method, transitive `Send` checks and a cooperative fiber scheduler are design proposals. The current host runtime uses OS threads and explicit task results.

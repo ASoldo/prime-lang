@@ -2082,11 +2082,12 @@ impl Interpreter {
     fn builtin_sleep_task(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
         require_std_builtins("sleep_task")?;
         self.expect_arity("sleep_task", &args, 1)?;
-        let millis = self.expect_i32_value("sleep_task", args.remove(0))?;
+        let millis = Self::expect_int_value("sleep_task", args.remove(0))?
+            .clamp(0, i128::from(i64::MAX)) as i64;
         if std::env::var_os("PRIME_DEBUG_ASYNC").is_some() {
             eprintln!("[prime-debug] interpreter sleep_task({}) requested", millis);
         }
-        let task = self.async_runtime.sleep_task(millis as i64);
+        let task = self.async_runtime.sleep_task(millis);
         Ok(vec![Value::Task(Box::new(task))])
     }
 
@@ -3785,7 +3786,6 @@ impl Interpreter {
             Pattern::Struct {
                 struct_name,
                 fields,
-                has_spread: _,
                 ..
             } => {
                 let concrete = match value {

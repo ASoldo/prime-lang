@@ -65,6 +65,7 @@ use std::{
     thread,
 };
 
+mod async_tasks;
 mod builtins;
 mod closures;
 mod emit;
@@ -137,6 +138,7 @@ pub struct Compiler {
     build_clock_ms: i128,
     pending_runtime: Option<LLVMValueRef>,
     force_runtime_handles: bool,
+    host_task_entry: Option<LLVMValueRef>,
     loop_controls: Vec<LoopControl>,
 }
 
@@ -358,11 +360,12 @@ struct JoinHandleValue {
     handle: Option<LLVMValueRef>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum TaskResultKind {
     Ready,
     RuntimeUnit,
     RuntimeOption,
+    Host(Box<Value>),
     Deferred,
 }
 
@@ -381,6 +384,7 @@ struct DeferredTask {
 }
 
 struct ChannelState {
+    runtime_pair: Option<(LLVMValueRef, LLVMValueRef)>,
     queue: VecDeque<Value>,
     closed: bool,
 }
@@ -410,6 +414,7 @@ impl ChannelSender {
     fn with_handle(handle: LLVMValueRef) -> Self {
         let state: ChannelHandle = Rc::new((
             Mutex::new(ChannelState {
+                runtime_pair: None,
                 queue: VecDeque::new(),
                 closed: false,
             }),
@@ -461,6 +466,7 @@ impl ChannelReceiver {
     fn with_handle(handle: LLVMValueRef) -> Self {
         let state: ChannelHandle = Rc::new((
             Mutex::new(ChannelState {
+                runtime_pair: None,
                 queue: VecDeque::new(),
                 closed: false,
             }),
@@ -620,16 +626,13 @@ impl TaskValue {
 
     fn take(&self, compiler: &mut Compiler) -> Result<EvaluatedValue, String> {
         match self.kind {
-            TaskResultKind::Ready => {
-                let (lock, cv) = &*self.state;
-                let mut guard = lock.lock().map_err(|_| "task state poisoned".to_string())?;
-                while guard.is_none() {
-                    guard = cv
-                        .wait(guard)
-                        .map_err(|_| "task wait poisoned".to_string())?;
-                }
-                Ok(guard.take().unwrap())
-            }
+            TaskResultKind::Ready => self
+                .state
+                .0
+                .lock()
+                .map_err(|_| "task state poisoned")?
+                .take()
+                .ok_or_else(|| "task missing result".to_string()),
             TaskResultKind::RuntimeUnit => {
                 let handle = self
                     .handle
@@ -641,6 +644,10 @@ impl TaskValue {
                     .handle
                     .ok_or_else(|| "runtime task missing handle".to_string())?;
                 compiler.await_runtime_task(handle, TaskResultKind::RuntimeOption)
+            }
+            TaskResultKind::Host(ref template) => {
+                let handle = self.handle.ok_or("host task missing runtime handle")?;
+                compiler.join_host_task(handle, template)
             }
             TaskResultKind::Deferred => {
                 let pending = self
@@ -1454,6 +1461,19 @@ impl Compiler {
         if task_handle.is_null() {
             return Err("runtime task missing handle".into());
         }
+        if self.target.is_host() {
+            let template = match kind {
+                TaskResultKind::RuntimeUnit => Value::Unit,
+                TaskResultKind::RuntimeOption => Value::Enum(EnumValue {
+                    enum_name: "Option".into(),
+                    variant: "<runtime>".into(),
+                    values: Vec::new(),
+                    variant_index: 0,
+                }),
+                _ => return Err("unexpected task kind for runtime await".into()),
+            };
+            return self.join_host_task(task_handle, &template);
+        }
         self.ensure_runtime_symbols();
         unsafe {
             if self.builder.is_null() || LLVMGetInsertBlock(self.builder).is_null() {
@@ -1520,8 +1540,8 @@ impl Compiler {
                 values: Vec::new(),
                 variant_index: 0,
             })),
-            TaskResultKind::Ready => {
-                return Err("ready task routed through runtime await".into());
+            TaskResultKind::Host(_) | TaskResultKind::Ready => {
+                return Err("non-embedded task routed through runtime await".into());
             }
             TaskResultKind::Deferred => {
                 return Err("deferred task routed through runtime await".into());
@@ -1600,6 +1620,7 @@ impl Compiler {
                 build_clock_ms: 0,
                 pending_runtime: None,
                 force_runtime_handles: false,
+                host_task_entry: None,
                 loop_controls: Vec::new(),
             };
             compiler.reset_module();
@@ -1652,6 +1673,7 @@ impl Compiler {
                         id,
                         Rc::new((
                             Mutex::new(ChannelState {
+                                runtime_pair: None,
                                 queue: VecDeque::new(),
                                 closed: false,
                             }),
@@ -1861,6 +1883,7 @@ impl Compiler {
                     let (queue, closed) = sender.snapshot();
                     let shared = Rc::new((
                         Mutex::new(ChannelState {
+                            runtime_pair: None,
                             queue: VecDeque::new(),
                             closed,
                         }),
@@ -1890,6 +1913,7 @@ impl Compiler {
                     };
                     let shared = Rc::new((
                         Mutex::new(ChannelState {
+                            runtime_pair: None,
                             queue: VecDeque::new(),
                             closed,
                         }),
@@ -2080,6 +2104,7 @@ impl Compiler {
         }
         self.reset_module();
         self.force_runtime_handles = self.target.is_embedded();
+        self.host_task_entry = None;
         self.pending_runtime = None;
         self.loop_controls.clear();
         self.scopes.clear();

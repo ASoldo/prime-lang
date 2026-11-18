@@ -1,5 +1,4 @@
-//! Async runtime scaffolding for async/await support.
-//! Cooperative async scheduler used by the interpreter and host runtime ABI.
+//! Worker-thread execution for interpreter tasks. Native host tasks use opaque ABI handles.
 
 use crate::runtime::{
     error::RuntimeResult,
@@ -21,8 +20,7 @@ impl AsyncRuntime {
         Self::default()
     }
 
-    /// Spawn a task and return a TaskValue handle. Runnables execute cooperatively on the
-    /// driving thread; async waits are advanced via timers and channel polls.
+    /// Run the body on a worker and return its task handle to the caller.
     pub fn spawn<F>(&self, f: F) -> TaskValue
     where
         F: FnOnce() -> RuntimeResult<Value> + Send + 'static,
@@ -50,22 +48,21 @@ impl AsyncRuntime {
         } else {
             Duration::from_millis(millis as u64)
         };
+        let start = Instant::now();
         let (task, state) = TaskValue::new_pair();
         thread::spawn(move || {
             let tick = Duration::from_millis(5);
-            let deadline = Instant::now() + duration;
             if debug_enabled() {
                 eprintln!(
                     "[prime-debug] async_runtime sleep_task sleeping for {:?}",
                     duration
                 );
             }
-            while Instant::now() < deadline {
+            loop {
                 if TaskValue::with_state(state.clone()).is_finished() {
                     return;
                 }
-                let now = Instant::now();
-                let remaining = deadline.saturating_duration_since(now);
+                let remaining = duration.saturating_sub(start.elapsed());
                 if remaining.is_zero() {
                     break;
                 }

@@ -340,8 +340,76 @@ module async_cancel_bin::main;
 
 import core::types::prelude::{*};
 
+fn inner_error() -> Result[int32, string] { Err("inner") }
+
 fn main() {
-  let Task[()] t1 = sleep_task(50);
+  // The token must have runtime identity even before the first task builtin.
+  let CancelToken first = cancel_token();
+  let Task[()] first_sleep = sleep_task(1000);
+  cancel(first);
+  match await_cancel(first_sleep, first) {
+    Ok(_) => out("first token ignored"),
+    Err(msg) => out(`first token {msg}`),
+  }
+
+  let Task[int32] slow = async { await sleep_task(150); 7 };
+  match await_timeout(slow, 2) {
+    Ok(value) => out(`slow ok {value}`),
+    Err(msg) => out(`slow {msg}`),
+  }
+
+  match await_timeout(slow, 5000) {
+    Ok(value) => out(`reused timeout ok {value}`),
+    Err(msg) => out(`reused timeout {msg}`),
+  }
+
+  let CancelToken tied = cancel_token();
+  cancel(tied);
+  let Task[int32] tied_task = async { await sleep_task(1000); 8 };
+  match await_cancel_timeout(tied_task, tied, -1) {
+    Ok(value) => out(`tie ok {value}`),
+    Err(msg) => out(`tie {msg}`),
+  }
+
+  let CancelToken live = cancel_token();
+  let Task[int32] late = async { await sleep_task(1000); 9 };
+  match await_cancel_timeout(late, live, 0) {
+    Ok(value) => out(`immediate ok {value}`),
+    Err(msg) => out(`immediate {msg}`),
+  }
+
+  let int32 base = if is_cancelled(live) { 0 } else { 20 };
+  let Task[int32] done = async { base + 1 };
+  sleep_ms(100);
+  match await_cancel_timeout(done, tied, 0) {
+    Ok(value) => out(`ready {value}`),
+    Err(msg) => out(`ready err {msg}`),
+  }
+
+  let Task[Result[int32, string]] nested = async { await sleep_task(1); inner_error() };
+  match await_timeout(nested, 5000) {
+    Ok(inner) => match inner {
+      Ok(value) => out(`inner ok {value}`),
+      Err(msg) => out(`ok containing err {msg}`),
+    },
+    Err(msg) => out(`outer error {msg}`),
+  }
+
+  let Task[int32] failed = async { assert(false); 99 };
+  match await_cancel(failed, live) {
+    Ok(value) => out(`failure ok {value}`),
+    Err(msg) => out(`failure {msg}`),
+  }
+
+  let Task[()] trigger = async { await sleep_task(5); cancel(live); };
+  let Task[int32] waiting = async { await sleep_task(1000); 1 };
+  match await_cancel(waiting, live) {
+    Ok(value) => out(`late cancel ok {value}`),
+    Err(msg) => out(`late cancel {msg}`),
+  }
+  await trigger;
+
+  let Task[()] t1 = sleep_task(1000);
   let Result[(), string] r1 = await_timeout(t1, 5);
   match r1 {
     Ok(_) => out("await_timeout ok"),
@@ -350,7 +418,7 @@ fn main() {
   }
 
   let CancelToken tok = cancel_token();
-  let Task[()] t2 = sleep_task(50);
+  let Task[()] t2 = sleep_task(1000);
   cancel(tok);
   let Result[(), string] r2 = await_cancel(t2, tok);
   match r2 {
@@ -360,7 +428,7 @@ fn main() {
   }
 
   let CancelToken tok2 = cancel_token();
-  let Task[()] t3 = sleep_task(50);
+  let Task[()] t3 = sleep_task(1000);
   cancel(tok2);
   let Result[(), string] r3 = await_cancel_timeout(t3, tok2, 50);
   match r3 {
@@ -370,7 +438,7 @@ fn main() {
   }
 
   let CancelToken tok3 = cancel_token();
-  let Task[()] t4 = sleep_task(50);
+  let Task[()] t4 = sleep_task(1000);
   let Result[(), string] r4 = await_cancel_timeout(t4, tok3, 5);
   match r4 {
     Ok(_) => out("await_cancel_timeout2 ok"),
@@ -419,6 +487,23 @@ fn main() {
     let run_stdout = String::from_utf8_lossy(&run_output.stdout)
         .trim()
         .to_string();
+    let expected = [
+        "first token cancelled",
+        "slow timeout",
+        "reused timeout Task cancelled: timeout",
+        "tie cancelled",
+        "immediate timeout",
+        "ready 21",
+        "ok containing err inner",
+        "failure Runtime panic: assertion failed",
+        "late cancel cancelled",
+        "await_timeout err timeout",
+        "await_cancel err cancelled",
+        "await_cancel_timeout err cancelled",
+        "await_cancel_timeout2 err timeout",
+    ]
+    .join("\n");
+    assert_eq!(run_stdout, expected, "interpreter await contract");
     assert_eq!(
         build_stdout, run_stdout,
         "build/run output mismatch for await_* cancellation/timeout"

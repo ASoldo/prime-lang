@@ -2390,9 +2390,10 @@ mod host {
         Enum { tag: u32, values: Vec<HostValue> },
         Slice(Arc<Mutex<Vec<PrimeHandle>>>),
         Map(Arc<Mutex<BTreeMap<String, PrimeHandle>>>),
-        Sender(mpsc::Sender<PrimeHandle>),
+        Sender(Arc<Mutex<Option<mpsc::Sender<PrimeHandle>>>>),
         Receiver(Arc<Mutex<mpsc::Receiver<PrimeHandle>>>),
         Task(Arc<HostTaskState>),
+        TaskError(String),
         CancelToken(Arc<AtomicBool>),
     }
 
@@ -2475,7 +2476,9 @@ mod host {
             return PrimeStatus::Invalid;
         }
         let (tx, rx) = mpsc::channel::<PrimeHandle>();
-        let sender = to_handle(HostHandle::new(HostValue::Sender(tx)));
+        let sender = to_handle(HostHandle::new(HostValue::Sender(Arc::new(Mutex::new(
+            Some(tx),
+        )))));
         let receiver = to_handle(HostHandle::new(HostValue::Receiver(Arc::new(Mutex::new(
             rx,
         )))));
@@ -2493,9 +2496,17 @@ mod host {
         let HostValue::Sender(tx) = &data.value else {
             return PrimeStatus::Invalid;
         };
-        tx.send(prime_value_retain(value))
-            .map(|_| PrimeStatus::Ok)
-            .unwrap_or(PrimeStatus::Closed)
+        let sender = tx.lock().unwrap();
+        let Some(sender) = sender.as_ref() else {
+            return PrimeStatus::Closed;
+        };
+        match sender.send(prime_value_retain(value)) {
+            Ok(()) => PrimeStatus::Ok,
+            Err(err) => {
+                prime_value_release(err.0);
+                PrimeStatus::Closed
+            }
+        }
     }
 
     #[unsafe(export_name = "prime_recv")]
@@ -2526,7 +2537,7 @@ mod host {
     #[unsafe(export_name = "prime_recv_timeout")]
     pub unsafe extern "C" fn prime_recv_timeout(
         receiver: PrimeHandle,
-        millis: i64,
+        millis: i128,
         value_out: *mut PrimeHandle,
     ) -> PrimeStatus {
         if receiver.0.is_null() || value_out.is_null() {
@@ -2536,11 +2547,7 @@ mod host {
         let HostValue::Receiver(rx) = &data.value else {
             return PrimeStatus::Invalid;
         };
-        let timeout = if millis < 0 {
-            std::time::Duration::from_millis(0)
-        } else {
-            std::time::Duration::from_millis(millis as u64)
-        };
+        let timeout = std::time::Duration::from_millis(millis.clamp(0, i128::from(u64::MAX)) as u64);
         let outcome = rx.lock().map_err(|_| PrimeStatus::Invalid);
         if let Ok(guard) = outcome {
             match guard.recv_timeout(timeout) {
@@ -2562,7 +2569,7 @@ mod host {
         }
         let data = &*(handle.0 as *const HostHandle);
         if let HostValue::Sender(tx) = &data.value {
-            drop(tx.clone());
+            tx.lock().unwrap().take();
             return PrimeStatus::Ok;
         }
         if let HostValue::Receiver(_) = &data.value {
@@ -2909,10 +2916,11 @@ mod host {
     }
 
     #[unsafe(export_name = "prime_delay_ms")]
-    pub unsafe extern "C" fn prime_delay_ms(millis: i32) {
+    pub unsafe extern "C" fn prime_delay_ms(millis: i32) -> PrimeStatus {
         if millis > 0 {
             thread::sleep(std::time::Duration::from_millis(millis as u64));
         }
+        PrimeStatus::Ok
     }
 
     #[unsafe(export_name = "prime_pin_mode")]
@@ -2947,7 +2955,7 @@ mod host {
             HostValue::Receiver(_) => PrimeTag::Receiver,
             HostValue::Sender(_) => PrimeTag::Sender,
             HostValue::Task(_) => PrimeTag::JoinHandle,
-            HostValue::CancelToken(_) => PrimeTag::Unit,
+            HostValue::CancelToken(_) | HostValue::TaskError(_) => PrimeTag::Unit,
         }
     }
 
@@ -3026,9 +3034,37 @@ mod host {
 
     #[derive(Default, Debug)]
     struct HostTaskState {
-        result: Mutex<Option<PrimeHandle>>,
+        result: Mutex<HostTaskResult>,
         done: Condvar,
         cancelled: AtomicBool,
+    }
+
+    #[derive(Default, Debug)]
+    enum HostTaskResult {
+        #[default]
+        Pending,
+        Ready(PrimeHandle),
+        Taken,
+    }
+
+    impl HostTaskState {
+        unsafe fn complete(&self, value: PrimeHandle) {
+            let mut guard = self.result.lock().unwrap();
+            if matches!(*guard, HostTaskResult::Pending) {
+                *guard = HostTaskResult::Ready(value);
+                self.done.notify_all();
+            } else {
+                prime_value_release(value);
+            }
+        }
+    }
+
+    impl Drop for HostTaskState {
+        fn drop(&mut self) {
+            if let HostTaskResult::Ready(value) = *self.result.get_mut().unwrap() {
+                unsafe { prime_value_release(value) };
+            }
+        }
     }
 
     #[unsafe(export_name = "prime_value_retain")]
@@ -3103,7 +3139,10 @@ mod host {
             return 0;
         }
         let data = &*(handle.0 as *const HostHandle);
-        data.tag.unwrap_or(0)
+        match &data.value {
+            HostValue::Enum { tag, .. } => *tag,
+            _ => data.tag.unwrap_or(0),
+        }
     }
 
     #[unsafe(export_name = "prime_enum_get")]
@@ -3142,6 +3181,7 @@ mod host {
             HostValue::Enum { tag, .. } => write!(stdout, "<enum {tag}>"),
             HostValue::Unit => write!(stdout, "()"),
             HostValue::Task(_) => write!(stdout, "<task>"),
+            HostValue::TaskError(message) => write!(stdout, "{message}"),
             HostValue::CancelToken(_) => write!(stdout, "<cancel token>"),
             HostValue::Receiver(_) => write!(stdout, "<receiver>"),
             HostValue::Sender(_) => write!(stdout, "<sender>"),
@@ -3214,15 +3254,7 @@ mod host {
         let state_clone = state.clone();
         thread::spawn(move || {
             let result = func(arg);
-            if state_clone.cancelled.load(Ordering::SeqCst) {
-                prime_value_release(result);
-                return;
-            }
-            let (lock, cv) = (&state_clone.result, &state_clone.done);
-            if let Ok(mut guard) = lock.lock() {
-                *guard = Some(result);
-                cv.notify_all();
-            }
+            state_clone.complete(result);
         });
         task_to_handle(state)
     }
@@ -3242,22 +3274,132 @@ mod host {
         let HostValue::Task(state) = &data.value else {
             return PrimeStatus::Invalid;
         };
-        if let Ok(mut guard) = state.result.lock() {
-            if guard.is_none() {
-                match state
-                    .done
-                    .wait_timeout(guard, std::time::Duration::from_millis(1))
-                {
-                    Ok((next, _)) => guard = next,
-                    Err(_) => return PrimeStatus::Invalid,
-                }
+        let outcome = prime_host_task_wait_inner(
+            state,
+            None,
+            Some(std::time::Duration::from_millis(1)),
+            false,
+        );
+        match outcome {
+            Ok(value) => {
+                result_out.write(value);
+                PrimeStatus::Ok
             }
-            if let Some(res) = guard.take() {
-                result_out.write(res);
-                return PrimeStatus::Ok;
+            Err(_) => PrimeStatus::Invalid,
+        }
+    }
+
+    // All terminal transitions are serialized by the result mutex. A late worker
+    // cannot overwrite a cancellation, and a second waiter cannot take a result twice.
+    unsafe fn prime_host_task_wait_inner(
+        state: &HostTaskState,
+        token: Option<&AtomicBool>,
+        timeout: Option<std::time::Duration>,
+        cancel_on_expiry: bool,
+    ) -> Result<PrimeHandle, String> {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut guard = state.result.lock().unwrap();
+        loop {
+            match *guard {
+                HostTaskResult::Ready(value) => {
+                    *guard = HostTaskResult::Taken;
+                    let Some(data) = (value.0 as *const HostHandle).as_ref() else {
+                        return Err("task missing result".into());
+                    };
+                    if let HostValue::TaskError(message) = &data.value {
+                        let message = message.clone();
+                        prime_value_release(value);
+                        return Err(message);
+                    }
+                    return Ok(value);
+                }
+                HostTaskResult::Taken => return Err("task missing result".into()),
+                HostTaskResult::Pending => {}
+            }
+            let remaining = timeout.map(|limit| limit.saturating_sub(start.elapsed()));
+            let reason = if token.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                Some("cancelled")
+            } else if remaining == Some(Duration::ZERO) {
+                Some("timeout")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                if cancel_on_expiry {
+                    state.cancelled.store(true, Ordering::SeqCst);
+                    *guard = HostTaskResult::Ready(to_handle(HostHandle::new(
+                        HostValue::TaskError(format!("Task cancelled: {reason}")),
+                    )));
+                    state.done.notify_all();
+                }
+                return Err(reason.to_owned());
+            }
+            // Token changes are independent of this task's condvar.
+            let wait = if token.is_some() {
+                let tick = Duration::from_millis(5);
+                Some(remaining.map_or(tick, |time| time.min(tick)))
+            } else {
+                remaining
+            };
+            guard = match wait {
+                Some(time) => state.done.wait_timeout(guard, time).unwrap().0,
+                None => state.done.wait(guard).unwrap(),
+            };
+        }
+    }
+
+    #[unsafe(export_name = "prime_host_task_wait")]
+    pub unsafe extern "C" fn prime_host_task_wait(
+        task: PrimeHandle,
+        token: PrimeHandle,
+        millis: i128,
+        out: *mut PrimeHandle,
+    ) -> PrimeStatus {
+        if out.is_null() {
+            return PrimeStatus::Invalid;
+        }
+        let state = (task.0 as *const HostHandle).as_ref();
+        let flag = (token.0 as *const HostHandle).as_ref();
+        let result = match (state.map(|h| &h.value), flag.map(|h| &h.value)) {
+            (Some(HostValue::Task(state)), None | Some(HostValue::CancelToken(_))) => {
+                let token = flag.and_then(|h| match &h.value {
+                    HostValue::CancelToken(flag) => Some(flag.as_ref()),
+                    _ => None,
+                });
+                let timeout = (millis >= 0).then(|| task_duration(millis));
+                prime_host_task_wait_inner(state, token, timeout, true)
+            }
+            _ => Err("invalid task or cancellation token".into()),
+        };
+        match result {
+            Ok(value) => {
+                out.write(value);
+                PrimeStatus::Ok
+            }
+            Err(message) => {
+                out.write(to_handle(HostHandle::new(HostValue::Str(message))));
+                PrimeStatus::Panic
             }
         }
-        PrimeStatus::Invalid
+    }
+
+    #[unsafe(export_name = "prime_host_task_error")]
+    pub unsafe extern "C" fn prime_host_task_error(message: PrimeHandle) -> PrimeHandle {
+        let HostValue::Str(message) = clone_value(message) else {
+            return to_handle(HostHandle::new(HostValue::TaskError(
+                "invalid task error".into(),
+            )));
+        };
+        to_handle(HostHandle::new(HostValue::TaskError(message)))
+    }
+
+    #[unsafe(export_name = "prime_host_task_abort")]
+    pub unsafe extern "C" fn prime_host_task_abort(message: PrimeHandle) {
+        if let HostValue::Str(message) = clone_value(message) {
+            eprintln!("{message}");
+        }
+        std::process::exit(1);
     }
 
     #[unsafe(export_name = "prime_task_wake")]
@@ -3269,13 +3411,8 @@ mod host {
         let HostValue::Task(state) = &data.value else {
             return PrimeStatus::Invalid;
         };
-        let (lock, cv) = (&state.result, &state.done);
-        if let Ok(mut guard) = lock.lock() {
-            *guard = Some(prime_value_retain(value));
-            cv.notify_all();
-            return PrimeStatus::Ok;
-        }
-        PrimeStatus::Invalid
+        state.complete(prime_value_retain(value));
+        PrimeStatus::Ok
     }
 
     #[unsafe(export_name = "prime_task_cancel")]
@@ -3288,7 +3425,9 @@ mod host {
             return PrimeStatus::Invalid;
         };
         state.cancelled.store(true, Ordering::SeqCst);
-        state.done.notify_all();
+        state.complete(to_handle(HostHandle::new(HostValue::TaskError(
+            "Task cancelled: cancelled".into(),
+        ))));
         PrimeStatus::Ok
     }
 
@@ -3324,37 +3463,29 @@ mod host {
         flag.load(Ordering::SeqCst)
     }
 
+    fn task_duration(millis: i128) -> std::time::Duration {
+        // Prime's time argument is int64. Generated code passes integers as i128.
+        std::time::Duration::from_millis(millis.clamp(0, i128::from(i64::MAX)) as u64)
+    }
+
     #[unsafe(export_name = "prime_sleep_task")]
-    pub unsafe extern "C" fn prime_sleep_task(millis: i64) -> PrimeHandle {
+    pub unsafe extern "C" fn prime_sleep_task(millis: i128) -> PrimeHandle {
+        let duration = task_duration(millis);
+        let start = std::time::Instant::now();
         let state = Arc::new(HostTaskState::default());
-        let state_clone = state.clone();
+        let timer = state.clone();
         thread::spawn(move || {
-            let duration = if millis <= 0 {
-                std::time::Duration::from_millis(0)
-            } else {
-                std::time::Duration::from_millis(millis as u64)
-            };
-            let tick = std::time::Duration::from_millis(5);
-            let deadline = std::time::Instant::now() + duration;
-            while std::time::Instant::now() < deadline {
-                if state_clone.cancelled.load(Ordering::SeqCst) {
-                    return;
-                }
-                let now = std::time::Instant::now();
-                let remaining = deadline.saturating_duration_since(now);
-                if remaining.is_zero() {
-                    break;
-                }
-                thread::sleep(std::cmp::min(tick, remaining));
-            }
-            if state_clone.cancelled.load(Ordering::SeqCst) {
-                return;
-            }
-            let unit = prime_unit_new();
-            let (lock, cv) = (&state_clone.result, &state_clone.done);
-            if let Ok(mut guard) = lock.lock() {
-                *guard = Some(unit);
-                cv.notify_all();
+            let result = timer.result.lock().unwrap();
+            let remaining = duration.saturating_sub(start.elapsed());
+            let (mut result, _) = timer
+                .done
+                .wait_timeout_while(result, remaining, |state| {
+                    matches!(state, HostTaskResult::Pending)
+                })
+                .unwrap();
+            if matches!(*result, HostTaskResult::Pending) {
+                *result = HostTaskResult::Ready(prime_unit_new());
+                timer.done.notify_all();
             }
         });
         task_to_handle(state)
@@ -3363,12 +3494,12 @@ mod host {
     #[unsafe(export_name = "prime_recv_task")]
     pub unsafe extern "C" fn prime_recv_task(receiver: PrimeHandle) -> PrimeHandle {
         let data = if receiver.0.is_null() {
-            return prime_sleep_task(0);
+            return PrimeHandle::null();
         } else {
             &*(receiver.0 as *const HostHandle)
         };
         let HostValue::Receiver(rx) = &data.value else {
-            return prime_sleep_task(0);
+            return PrimeHandle::null();
         };
         let state = Arc::new(HostTaskState::default());
         let state_clone = state.clone();
@@ -3391,11 +3522,12 @@ mod host {
                     Err(_) => break None,
                 }
             };
-            if state_clone.cancelled.load(Ordering::SeqCst) {
-                return;
-            }
             let (tag, payloads) = match payload {
-                Some(handle) => (0, vec![clone_value(handle)]),
+                Some(handle) => {
+                    let value = clone_value(handle);
+                    prime_value_release(handle);
+                    (0, vec![value])
+                }
                 None => (1, Vec::new()),
             };
             let enum_value = HostValue::Enum {
@@ -3403,11 +3535,7 @@ mod host {
                 values: payloads,
             };
             let option_handle = to_handle(HostHandle::with_tag(enum_value, tag));
-            let (lock, cv) = (&state_clone.result, &state_clone.done);
-            if let Ok(mut guard) = lock.lock() {
-                *guard = Some(option_handle);
-                cv.notify_all();
-            }
+            state_clone.complete(option_handle);
         });
         task_to_handle(state)
     }
@@ -3571,6 +3699,52 @@ mod host {
     #[unsafe(export_name = "prime_env_free")]
     pub unsafe extern "C" fn prime_env_free(handle: PrimeHandle) {
         prime_value_release(handle);
+    }
+
+    #[cfg(test)]
+    mod task_tests {
+        use super::*;
+
+        #[test]
+        fn host_timer_and_wait_abi() {
+            let receive: unsafe extern "C" fn(PrimeHandle, i128, *mut PrimeHandle) -> PrimeStatus = prime_recv_timeout;
+            unsafe {
+                let mut sender = PrimeHandle::null();
+                let mut receiver = PrimeHandle::null();
+                let mut item = PrimeHandle::null();
+                assert_eq!(prime_channel_new(&mut sender, &mut receiver), PrimeStatus::Ok);
+                assert_eq!(receive(receiver, 0, &mut item), PrimeStatus::Invalid);
+                assert_eq!(prime_send(sender, prime_unit_new()), PrimeStatus::Ok);
+                assert_eq!(receive(receiver, 1, &mut item), PrimeStatus::Ok);
+                for handle in [item, sender, receiver] { prime_value_release(handle); }
+            }
+            let sleep: unsafe extern "C" fn(i128) -> PrimeHandle = prime_sleep_task;
+            let delay: unsafe extern "C" fn(i32) -> PrimeStatus = prime_delay_ms;
+            let wait: unsafe extern "C" fn(
+                PrimeHandle,
+                PrimeHandle,
+                i128,
+                *mut PrimeHandle,
+            ) -> PrimeStatus = prime_host_task_wait;
+            let _: unsafe extern "C" fn(PrimeHandle) -> PrimeHandle = prime_host_task_error;
+            let _: unsafe extern "C" fn(PrimeHandle) = prime_host_task_abort;
+            assert!(task_duration(i128::MIN).is_zero());
+            assert_eq!(task_duration(i128::MAX).as_millis(), i64::MAX as u128);
+            unsafe {
+                assert_eq!(delay(-1), PrimeStatus::Ok);
+                let task = sleep(i64::MAX.into());
+                let answer = prime_int_new(21);
+                let token = prime_cancel_token_new();
+                assert_eq!(prime_task_wake(task, answer), PrimeStatus::Ok);
+                assert_eq!(prime_cancel_token_cancel(token), PrimeStatus::Ok);
+                let mut result = PrimeHandle::null();
+                assert_eq!(wait(task, token, 0, &mut result), PrimeStatus::Ok);
+                assert_eq!(prime_value_as_int(result), 21);
+                for handle in [result, token, answer, task] {
+                    prime_value_release(handle);
+                }
+            }
+        }
     }
 }
 

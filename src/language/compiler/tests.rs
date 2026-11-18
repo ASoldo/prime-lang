@@ -87,6 +87,18 @@ fn main() {
     let ir_path = dir.path().join("time.ll");
     compiler.write_ir_to(&ir_path).expect("write ir");
     let ir = std::fs::read_to_string(ir_path).expect("read ir");
+    for signature in [
+        "declare ptr @prime_sleep_task(i128)",
+        "declare i32 @prime_delay_ms(i32)",
+        "declare i32 @prime_host_task_wait(ptr, ptr, i128, ptr)",
+        "declare ptr @prime_host_task_error(ptr)",
+        "declare void @prime_host_task_abort(ptr)",
+    ] {
+        assert!(
+            ir.contains(signature),
+            "missing host ABI declaration {signature}"
+        );
+    }
     assert!(
         ir.matches("call i128 @prime_now_ms()").count() >= 2,
         "expected now_ms to call the runtime clock:\n{ir}"
