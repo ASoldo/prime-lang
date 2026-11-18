@@ -1512,6 +1512,35 @@ impl Compiler {
         ))
     }
 
+    fn load_guarded_await_result(
+        &mut self,
+        result_slot: LLVMValueRef,
+        err_tag: u32,
+        name: &CStr,
+    ) -> EvalOutcome<EvaluatedValue> {
+        let handle = unsafe {
+            LLVMBuildLoad2(
+                self.builder,
+                self.runtime_abi.handle_type,
+                result_slot,
+                name.as_ptr(),
+            )
+        };
+        // All failure paths construct Err(string). Match bindings need this
+        // field type because embedded runtime handles carry no type tag.
+        self.enum_string_fields
+            .insert(handle, HashSet::from([(err_tag, 0)]));
+        EvalOutcome::Value(
+            self.evaluated(Value::Enum(EnumValue {
+                enum_name: "Result".into(),
+                variant: "<runtime>".into(),
+                values: Vec::new(),
+                variant_index: 0,
+            }))
+            .with_runtime(handle),
+        )
+    }
+
     pub(super) fn emit_await_timeout_call(
         &mut self,
         args: &[Expr],
@@ -1799,24 +1828,7 @@ impl Compiler {
         unsafe { llvm_sys::core::LLVMBuildBr(self.builder, merge_block) };
 
         unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, merge_block) };
-        let result_handle = unsafe {
-            llvm_sys::core::LLVMBuildLoad2(
-                self.builder,
-                self.runtime_abi.handle_type,
-                result_slot,
-                CString::new("await_timeout_result").unwrap().as_ptr(),
-            )
-        };
-
-        Ok(EvalOutcome::Value(
-            self.evaluated(Value::Enum(EnumValue {
-                enum_name: "Result".into(),
-                variant: "<runtime>".into(),
-                values: Vec::new(),
-                variant_index: 0,
-            }))
-            .with_runtime(result_handle),
-        ))
+        Ok(self.load_guarded_await_result(result_slot, err_tag, c"await_timeout_result"))
     }
 
     pub(super) fn emit_await_cancel_call(
@@ -2063,24 +2075,7 @@ impl Compiler {
         unsafe { llvm_sys::core::LLVMBuildBr(self.builder, merge_block) };
 
         unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, merge_block) };
-        let result_handle = unsafe {
-            llvm_sys::core::LLVMBuildLoad2(
-                self.builder,
-                self.runtime_abi.handle_type,
-                result_slot,
-                CString::new("await_cancel_result").unwrap().as_ptr(),
-            )
-        };
-
-        Ok(EvalOutcome::Value(
-            self.evaluated(Value::Enum(EnumValue {
-                enum_name: "Result".into(),
-                variant: "<runtime>".into(),
-                values: Vec::new(),
-                variant_index: 0,
-            }))
-            .with_runtime(result_handle),
-        ))
+        Ok(self.load_guarded_await_result(result_slot, err_tag, c"await_cancel_result"))
     }
 
     pub(super) fn emit_await_cancel_timeout_call(
@@ -2480,26 +2475,7 @@ impl Compiler {
         unsafe { llvm_sys::core::LLVMBuildBr(self.builder, merge_block) };
 
         unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, merge_block) };
-        let result_handle = unsafe {
-            llvm_sys::core::LLVMBuildLoad2(
-                self.builder,
-                self.runtime_abi.handle_type,
-                result_slot,
-                CString::new("await_cancel_timeout_result")
-                    .unwrap()
-                    .as_ptr(),
-            )
-        };
-
-        Ok(EvalOutcome::Value(
-            self.evaluated(Value::Enum(EnumValue {
-                enum_name: "Result".into(),
-                variant: "<runtime>".into(),
-                values: Vec::new(),
-                variant_index: 0,
-            }))
-            .with_runtime(result_handle),
-        ))
+        Ok(self.load_guarded_await_result(result_slot, err_tag, c"await_cancel_timeout_result"))
     }
     pub(super) fn try_builtin_call(
         &mut self,

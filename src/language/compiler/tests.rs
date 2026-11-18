@@ -826,6 +826,61 @@ fn main() {
 }
 
 #[test]
+fn embedded_guarded_await_prints_the_err_string_handle() {
+    // Err comes first here to exercise the program's variant tags.
+    let source = r#"
+module tests::guarded_strings;
+enum Result[T, E] { Err(E), Ok(T) }
+fn main() {
+  let token = cancel_token();
+  cancel(token);
+  let a = await_timeout(sleep_task(100), 0);
+  let b = await_cancel(sleep_task(100), token);
+  let c = await_cancel_timeout(sleep_task(100), token, 0);
+  match a { Err(msg) => out(msg), _ => out("unexpected") }
+  match b { Err(msg) => out(`cancel: {msg}`), _ => out("unexpected") }
+  match c { Err(msg) => out(msg), _ => out("unexpected") }
+}
+"#;
+    let program = Program {
+        modules: vec![
+            parse_module(
+                "tests::guarded_strings",
+                PathBuf::from("main.prime"),
+                source,
+            )
+            .expect("parse guarded waits"),
+        ],
+    };
+    let target = BuildTarget::Triple(crate::target::ESP32_XTENSA_ESPIDF_TRIPLE.into());
+    let mut compiler = Compiler::with_target(target);
+    compiler
+        .compile_program(&program)
+        .expect("compile guarded waits");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("guarded_strings.ll");
+    compiler.write_ir_to(&path).expect("write IR");
+    let ir = std::fs::read_to_string(path).expect("read IR");
+    let fields: Vec<_> = ir
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .split_once(" = call ptr @prime_enum_get(")
+                .map(|(field, _)| field)
+        })
+        .collect();
+    assert_eq!(fields.len(), 3, "one error binding per helper");
+    for field in fields {
+        assert!(
+            ir.contains(&format!("call void @prime_print(ptr {field})")),
+            "the string payload {field} must reach the UART printer directly"
+        );
+        assert!(!ir.contains(&format!("call i128 @prime_value_as_int(ptr {field})")));
+    }
+}
+
+#[test]
 fn runtime_handles_cover_collections() {
     with_rt_handles(|| {
         let source = r#"
