@@ -12,6 +12,21 @@ Blocks return their final expression. `if` and `match` can produce values. A mat
 
 An integer literal must fit its inferred or declared integer type. For example, a variant field declared as `uint8` accepts `255` and rejects `256`. An `int8` field accepts `-128`. The width of `isize` and `usize` follows the selected target. These checks cover literals. The current interpreter can still carry an out-of-range value produced by arithmetic or an explicit cast in a narrow field.
 
+An exhaustive enum match covers every variant and its possible payloads. A guard may fail, so a guarded arm cannot establish coverage by itself. For example, this function covers both states of a packet.
+
+```prime
+enum Packet { Data(int32), Empty }
+
+fn value(packet: Packet) -> int32 {
+    match packet {
+        Packet::Data(n) => n,
+        Packet::Empty => 0,
+    }
+}
+```
+
+Replacing `Data(n) => n` with `Data(1) => 1` leaves other integers uncovered. For nested patterns, the checker considers combinations of fields together. A qualified pattern must belong to the enum being matched.
+
 The checker tracks moves and mutable borrows. Direct `await` rejects an active mutable borrow and a task with a reference or pointer as its direct result type. Raw pointers have separate rules. The current checker does not prove arbitrary nested values safe to transfer between threads.
 
 ## Scope exit
