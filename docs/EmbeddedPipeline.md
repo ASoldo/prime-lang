@@ -27,24 +27,15 @@ flowchart TD
   FLASH --> DEVICE["ESP32 UART @115200"]
 ```
 
-Notes:
-- Manifest supplies toolchain/env and linker scripts; defaults fall back to `~/.espressif`.
-- Build uses `-relocation-model=static` for llc plus `-mcpu=esp32 -mattr=+windowed`; linking pulls `libruntime_abi.a` (Xtensa) plus libc/libgcc.
-- Flashing prefers `esptool elf2image` to produce headers; falls back to objcopy when elf2image is unavailable.
-- Runtime disables watchdogs once, uses ring-buffered prints, and drives `recv_task`/`recv_timeout` with a tiny waiter queue + poll (configurable via `[build.runtime]` or `PRIME_RT_*`). The default poll is 1–2ms; expect ~2–3ms wake latency on Xtensa.
-- Default LED strap uses GPIO2 (active-low on many dev boards); override pin/level in the demo if your board differs.
-- `out(...)`, channels, async `sleep_task`/`recv_task`, `prime_reference_read`, and GPIO built-ins are supported in no_std for ESP32. The demo also logs channel/task pool reuse, a Result+`?` async probe, a timeout probe, and an external button on GPIO18->GND (active-low) to keep run/build/embedded parity visible.
-- The host-only parity probe `workspace/demos/no_std_parity/main.prime` exercises the same async/result/timeout paths without needing the Xtensa toolchain, so CI can lock behavior before flashing hardware.
+## Classic ESP32
 
-## Parity Checklist (run/build/embedded)
+The blink and bare-metal demos supply target settings in their manifests. Xtensa LLVM emits static objects with the ESP32 windowed ABI. The linker combines the object, the runtime, the IDF memory scripts, libc and libgcc. The runtime supplies the classic ESP32 entry point. See the [build instructions](../README.md#embedded--esp32-xtensa-quickstart).
 
-- Control flow, pattern matching, generics/interfaces, macros, Option/Result + `try {}`/`?`, Drop + `defer`, mutable scalars (stack slots for ints/bools), and SSA-backed comparisons match across interpreter, host build, and Xtensa no_std. Runtime-backed `Result` payloads unwrap correctly inside async blocks with `?`.
-- Concurrency: channels + spawn/join behave the same in run/build; embedded uses the async/task runtime (spawn maps to tasks, not OS threads). Async/await (`sleep_task`/`recv_task`) works on Xtensa with the waiter queue + poll noted above, and `spawn`/`join` parity is supported in embedded (see `workspace/demos/esp32_blink` for a pooled reuse probe).
-- I/O: `out` is available everywhere; filesystem built-ins (`fs_exists`/`fs_read`/`fs_write`) are host-only. `delay_ms`/`now_ms` are bridged to ROM stubs on Xtensa; host uses std timers.
-- Platform hooks: `pin_mode`/`digital_write` are embedded-only. If you call them on host, the platform shim reports an error.
-- Manifests: set `no_std = true` on embedded modules (see `workspace/demos/esp32_blink/prime.toml` and `workspace/demos/bare_metal_embedded/prime.toml`). Provide toolchain/env overrides or rely on CLI autodetect under `~/.espressif`.
-- No_std parity fixtures: `workspace/demos/no_std_parity/main.prime` runs on host with an embedded target selected from the manifest to verify async/Result/timeout behavior, and `workspace/demos/bare_metal_embedded/main.prime` mirrors host concurrency with channels + async `recv_task` + `Result`/`?` for comparison with hardware output.
+The embedded runtime uses fixed-capacity channels and tasks. Runtime limits in `build.runtime` configure capacity and polling. Filesystem operations use the host runtime. Xtensa GPIO, clock setup, watchdog handling and UART output use board-specific code.
 
+## Verifying a change
+
+The host interpreter can run the [no_std parity fixture](../workspace/demos/no_std_parity/main.prime) for reference output. A cross-build exercises LLVM, linking and packaging. The [RV32 timer suite](EmbeddedTimers.md) executes compiled ABI calls with controlled clock input. Final board checks cover boot, serial output, GPIO and timing under load. For wait result ordering and current lowering limits see the [async specification](AsyncAwait.md).
 
 ## ESP32-C3 builds
 

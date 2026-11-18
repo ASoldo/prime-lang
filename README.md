@@ -309,23 +309,9 @@ export IDF_BUILD_ROOT="$IDF_PATH/examples/get-started/blink/build/esp-idf"
 prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink --no-flash
 ```
 
-The manifest uses `IDF_PATH` for ROM linker scripts and `IDF_BUILD_ROOT` for the generated memory layout. Set `CARGO_TARGET_DIR` to choose a runtime build cache. UART logging uses ROM `ets_printf`.
-  - For the bundled demo, the runtime disables RTC/TIMG watchdogs once at startup so the tight blink loop can run indefinitely without resets. Remove that if you want watchdog coverage in your own projects.
+The manifest reads ROM linker scripts from `IDF_PATH` and generated memory layouts from `IDF_BUILD_ROOT`. `CARGO_TARGET_DIR` selects the runtime cache. The build produces an ELF and a binary image under `.build.prime/`. To flash a board, select its serial port and enable `build.flash.enabled` in a local manifest, then run the build without `--no-flash`.
 
-How to build/flash (after installing ESP-IDF tools):
-1. Optional but recommended: `source ~/esp/esp-idf/export.sh` to set IDF_PATH and python deps.
-2. Run the demo: `prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink`
-   - The runtime prints your `out(...)` lines on UART (115200) with newlines per call (`hello ... {my_var}`, loop state toggles, etc.), and the on-board blue LED (GPIO2, active-low) blinks.
-   - External button input: wire GPIO18 -> momentary switch -> GND (active-low) for in-loop logging; BOOT/EN buttons are reserved by auto-boot/reset on many boards.
-   - Concurrency parity: the demo runs async `recv_task`, `spawn`/`join`, a Result + `?` async probe, a timeout probe, and a small channel/task pool reuse probe for comparison against host output.
-   - The demo disables hardware watchdogs once on boot to keep the loop alive; re-enable or adjust if your project needs watchdog protection.
-   - To write the image to a board, set `[build.flash].enabled = true` and select the serial port in your local manifest.
-3. If your board’s user LED sits on another pin (some use GPIO4/5), edit the `led` constant in `esp32_blink.prime`.
-
-Environment handling:
-- Manifest-provided `build.toolchain.env` is applied automatically before build; `$PATH` interpolation keeps your existing PATH intact.
-- If no env overrides are present, the CLI falls back to sensible defaults under `~/.espressif` (esp-clang + xtensa-esp-elf) and uses `RUSTUP_TOOLCHAIN=esp` plus `CARGO_TARGET_DIR=~/.cache/prime-xtensa`.
-- The Xtensa entry point and runtime now include ROM-backed delay/printf stubs and minimal GPIO2 setup, so no extra IDF libs are required beyond the linker scripts and toolchain.
+On hardware, the demo logs to UART at 115200 baud, toggles GPIO2 and reads a momentary switch on GPIO18 connected to ground. Boards with a different LED pin need an adjustment to the demo's `led` constant. The startup code disables watchdogs. The [embedded pipeline](docs/EmbeddedPipeline.md) describes board-specific prerequisites and the [timer tests](docs/EmbeddedTimers.md) record the emulator coverage.
 
 ## Language Basics
 
