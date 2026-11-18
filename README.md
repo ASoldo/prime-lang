@@ -668,16 +668,9 @@ controls—in mind.
 
 ### ABI, FFI & Targets
 
-- Codegen targets the host triple by default (LLVM) and assumes pointer width
-  matches the host. Integer values lower than 128 bits are represented with
-  their exact width; the backend lowers `int32`/`uint32` et al. directly.
-- Runtime ABI uses a stable set of C-callable shims (`prime_int_new`,
-  `prime_float_new`, `prime_string_new`, etc.) defined in `runtime_abi.rs`. FFI
-  is not finalized yet; linking against external symbols should be treated as
-  experimental until the ABI is locked for 1.0.
-- Codegen limits: 128-bit integers are the widest supported scalar; larger
-  widths or non-native pointer sizes are currently unsupported.
-
+- Host builds use the host LLVM triple. The embedded backends select Xtensa for the classic ESP32 and RV32IMC with the ILP32 ABI for ESP32-C3.
+- The checker enforces integer literal bounds. Runtime handles can represent integers using an `i128` payload. Arithmetic and explicit casts can still produce out-of-range values in a narrow field. See the [language outline](docs/LanguageOutline.md).
+- LLVM declarations and Rust implementations must agree on the target's C calling convention, arguments and return types. External FFI is experimental. See [runtime and FFI](docs/RuntimeFFI.md).
 
 ### Build-Mode Closures
 
@@ -930,18 +923,11 @@ Aerial (or Snacks) shows symbols even before the LSP attaches.
 
 ## Development & Troubleshooting
 
-* **Linting loop** – `prime-lang lint --file main.prime --watch` streams miette
-  diagnostics to stdout; great for quickfix-based workflows.
-* **Formatter** – `prime-lang fmt --write main.prime` keeps files canonical.
-* **Crate versions** – `Cargo.toml` pins `tokio 1.48`, `tower-lsp-server 0.22`,
-  `notify 8.2`, etc. Run `cargo update` cautiously.
-* **Treesitter ABI warning** – run `tree-sitter init` inside
-  `prime_lang_treesitter` so `tree-sitter.json` records ABI 15 if needed.
-
-With the CLI, LSP, formatter, lint watch, and Tree-sitter grammar in place, you
-get a complete Prime editing experience: diagnostics and formatting via LSP,
-syntax highlighting via Treesitter, and a sample toolchain for learning how
-language infrastructure fits together.
+* `prime-lang lint --file main.prime --watch` writes diagnostics to stderr and keeps watching after errors and atomic saves. A single check exits with status 1 on an error.
+* `prime-lang check main.prime --format json` resolves imports and checks types. The [JSON contract](docs/Checking.md) specifies exit codes and source ranges.
+* `prime-lang fmt --write main.prime` formats a source file.
+* Cargo manifests specify dependency ranges. The committed lockfiles select the exact CLI, runtime and grammar dependencies. See the [development guide](docs/Development.md).
+* Regenerate the editor parser with the generator and ABI specified in the [grammar guide](tree-sitter/prime/README.md).
 
 ### Recent Updates (current)
 

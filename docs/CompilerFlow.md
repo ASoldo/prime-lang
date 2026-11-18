@@ -6,9 +6,9 @@ This diagram traces a build from parsed AST through LLVM IR to the linked binary
 flowchart TD
   SRC[".prime source"] --> PARSE["Parser + AST (src/language/ast.rs)"]
   PARSE --> MACRO["Macro expand (src/language/macro_expander.rs)"]
-  MACRO --> TYPE["Typecheck (src/language/typecheck.rs)"]
+  MACRO --> TYPE["Typecheck (src/language/typecheck/checker.rs)"]
   TYPE --> EFFECTS["Build effects recorded (out/channel/defer)"]
-  EFFECTS --> LOWER["Lowering to LLVM (src/language/compiler.rs)"]
+  EFFECTS --> LOWER["Lowering to LLVM (src/language/compiler/mod.rs)"]
   LOWER --> ABI["Runtime ABI decls (src/language/runtime_abi.rs)"]
   ABI --> IR["LLVM IR module"]
   IR --> LLC["llc (target-aware)"]
@@ -16,7 +16,7 @@ flowchart TD
 
   subgraph Runtime Lib
     ABI_SRC["src/runtime/abi.rs"] --> RT_LIB_HOST["libruntime_abi.a (host)"]
-    ABI_SRC --> RT_LIB_ESP["libruntime_abi.a (xtensa)"]
+    ABI_SRC --> RT_LIB_ESP["libruntime_abi.a (embedded target)"]
   end
 
   OBJ --> LINK_HOST["Linker (host gcc/clang)"]
@@ -24,15 +24,14 @@ flowchart TD
   LINK_HOST --> BIN_HOST["Host binary"]
   BIN_HOST --> RUN_HOST["Run on host"]
 
-  OBJ --> LINK_ESP["Linker (xtensa-esp32-elf-gcc)"]
+  OBJ --> LINK_ESP["Espressif target linker"]
   RT_LIB_ESP --> LINK_ESP
-  LINK_ESP --> BIN_ESP["ESP32 ELF/bin"]
+  LINK_ESP --> BIN_ESP["ESP32 or ESP32-C3 ELF and image"]
   BIN_ESP --> RUN_ESP["Flash / run on device"]
 ```
 
-Key notes:
-- The compiler reuses type info and build effects so `out(...)`, channels, and defers behave the same in build snapshots and the emitted binary.
-- ABI declarations are inserted per module; the linked staticlib provides the concrete implementations (host or Xtensa).
-- Target selection: host builds use the host triple; ESP32 uses `xtensa-esp32-elf` with `+windowed` attr and `-relocation-model=static` so llc stays compatible with the Xtensa toolchain.
-- Async/await + channels always attach runtime handles when async appears, so `recv_task`/`sleep_task` block through the runtime ABI in build mode and in emitted binaries (host/ESP32).
-- Scalar comparisons are lowered even when operands are non-constant: ints/floats emit `icmp`/`fcmp` and produce SSA-backed `BoolValue`s so control flow remains valid in build mode while still folding constants where possible.
+Host builds link the bundled Rust runtime for graphics, audio, channels and tasks. Embedded builds link a `no_std` runtime with fixed-capacity storage. Classic ESP32 uses Espressif LLVM and Xtensa tools. ESP32-C3 uses RV32IMC LLVM code and the ILP32 ABI. The link step uses the selected target's startup and memory layout. [Embedded pipeline](EmbeddedPipeline.md)
+
+Host async blocks run on worker threads. Embedded async blocks use deferred evaluation. On both targets, timer and receive tasks can be polled for completion. [Task semantics](AsyncAwait.md)
+
+Nonconstant integer and float comparisons emit LLVM `icmp` and `fcmp` instructions. Their boolean results can drive native control flow.
