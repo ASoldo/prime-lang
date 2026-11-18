@@ -58,3 +58,5 @@ python3 scripts/test_web_server.py target/debug/prime-lang
 ```
 
 The check uses ordinary loopback sockets and verifies the full responses and EOF in the interpreter and two runs of the same native executable. Each run covers a slow partial header alongside a successful health check, four occupied slots and a waiting fifth request, truncated and oversized headers, a partial request that expires despite receiving more bytes, 64 route requests, and process exit with the admission budget exhausted. It also checks argument and no-std diagnostics. The [telemetry probe](../scripts/tests/tcp_frames/telemetry.prime) reads its delimiter from stdin. It exercises two listener sessions, a multibyte delimiter split across reads, and attempts to change the delimiter while a frame is incomplete, in both the interpreter and the generated binary.
+
+For JSON request bodies, concurrent REST clients and browser EventSource replay, see the [Prime REST and SSE example](RestSse.md).
