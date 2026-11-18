@@ -15,7 +15,6 @@
 
 mod embedded {
     #![allow(unused_imports)]
-    use core::array;
     use core::cell::UnsafeCell;
     use core::ffi::c_void;
     use core::mem::MaybeUninit;
@@ -213,8 +212,9 @@ mod embedded {
     fn alloc_int(value: i128) -> PrimeHandle {
         let slot = next_handle_index(&INT_HANDLE_NEXT) % PRIME_INT_SLOTS;
         unsafe {
-            INT_HANDLES[slot].as_mut_ptr().write(PrimeInt { value });
-            PrimeHandle(INT_HANDLES.as_mut_ptr().add(slot) as *mut c_void)
+            let handle = (&raw mut INT_HANDLES[slot]).cast::<PrimeInt>();
+            handle.write(PrimeInt { value });
+            PrimeHandle(handle.cast())
         }
     }
 
@@ -293,19 +293,26 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    static mut TASK_SLOTS: [MaybeUninit<TaskSlot>; PRIME_TASK_SLOTS] =
-        [const { MaybeUninit::uninit() }; PRIME_TASK_SLOTS];
-    #[allow(dead_code)]
-    static TASK_SLOTS_READY: AtomicBool = AtomicBool::new(false);
+    static TASK_SLOTS: [TaskSlot; PRIME_TASK_SLOTS] = [const {
+        TaskSlot {
+            used: AtomicBool::new(false),
+            done: AtomicBool::new(false),
+            deadline_ticks: UnsafeCell::new(0),
+            result: UnsafeCell::new(PrimeHandle::null()),
+        }
+    }; PRIME_TASK_SLOTS];
 
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    static mut CANCEL_TOKEN_SLOTS: [MaybeUninit<CancelTokenSlot>; PRIME_CANCEL_TOKEN_SLOTS] =
-        [const { MaybeUninit::uninit() }; PRIME_CANCEL_TOKEN_SLOTS];
-    #[allow(dead_code)]
-    static CANCEL_TOKEN_SLOTS_READY: AtomicBool = AtomicBool::new(false);
+    static CANCEL_TOKEN_SLOTS: [CancelTokenSlot; PRIME_CANCEL_TOKEN_SLOTS] = [const {
+        CancelTokenSlot {
+            used: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+        }
+    };
+        PRIME_CANCEL_TOKEN_SLOTS];
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -337,10 +344,17 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    static mut CHANNEL_SLOTS: [MaybeUninit<ChannelSlot>; PRIME_CHANNEL_SLOTS] =
-        [const { MaybeUninit::uninit() }; PRIME_CHANNEL_SLOTS];
-    #[allow(dead_code)]
-    static CHANNEL_SLOTS_READY: AtomicBool = AtomicBool::new(false);
+    static CHANNEL_SLOTS: [ChannelSlot; PRIME_CHANNEL_SLOTS] = [const {
+        ChannelSlot {
+            handle_id: AtomicUsize::new(0),
+            used: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            queue: UnsafeCell::new([PrimeHandle::null(); PRIME_CHANNEL_CAP]),
+            head: UnsafeCell::new(0),
+            tail: UnsafeCell::new(0),
+            len: UnsafeCell::new(0),
+        }
+    }; PRIME_CHANNEL_SLOTS];
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -370,10 +384,16 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    static mut CHANNEL_WAITERS: [MaybeUninit<ChannelWaiterSlot>; PRIME_CHANNEL_WAITERS] =
-        [const { MaybeUninit::uninit() }; PRIME_CHANNEL_WAITERS];
-    #[allow(dead_code)]
-    static CHANNEL_WAITERS_READY: AtomicBool = AtomicBool::new(false);
+    static CHANNEL_WAITERS: [ChannelWaiterSlot; PRIME_CHANNEL_WAITERS] = [const {
+        ChannelWaiterSlot {
+            used: AtomicBool::new(false),
+            channel: UnsafeCell::new(PrimeHandle::null()),
+            task: UnsafeCell::new(core::ptr::null()),
+            deadline_ms: UnsafeCell::new(0),
+            has_deadline: AtomicBool::new(false),
+        }
+    };
+        PRIME_CHANNEL_WAITERS];
 
     #[cfg(any(
         target_arch = "xtensa",
@@ -391,13 +411,19 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    static mut PRIME_UNIT_HANDLE: PrimeHandle = PrimeHandle::null();
+    static PRIME_UNIT_HANDLE: PrimeHandle = PrimeHandle::null();
 
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    static mut ENUM_HANDLES: [Option<PrimeEnum>; 128] = [None; 128];
+    const PRIME_ENUM_SLOTS: usize = 128;
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    static mut ENUM_HANDLES: [MaybeUninit<PrimeEnum>; PRIME_ENUM_SLOTS] =
+        [const { MaybeUninit::uninit() }; PRIME_ENUM_SLOTS];
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
@@ -426,32 +452,11 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    fn init_unit_handle() {
-        #[cfg(target_arch = "xtensa")]
-        unsafe {
-            if PRIME_UNIT_HANDLE.0.is_null() {
-                PRIME_UNIT_HANDLE =
-                    PrimeHandle(&PRIME_UNIT_HANDLE as *const PrimeHandle as *mut core::ffi::c_void);
-            }
-        }
-        #[cfg(all(target_arch = "riscv32", target_os = "none"))]
-        unsafe {
-            if PRIME_UNIT_HANDLE.0.is_null() {
-                PRIME_UNIT_HANDLE =
-                    PrimeHandle(&PRIME_UNIT_HANDLE as *const PrimeHandle as *mut core::ffi::c_void);
-            }
-        }
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
     fn alloc_enum(tag: u32, value: PrimeHandle, len: usize) -> PrimeHandle {
         unsafe {
-            let idx = next_handle_index(&ENUM_HANDLE_NEXT) % ENUM_HANDLES.len();
-            ENUM_HANDLES[idx] = Some(PrimeEnum { tag, value, len });
-            let handle_ptr = ENUM_HANDLES[idx].as_ref().unwrap() as *const PrimeEnum;
+            let idx = next_handle_index(&ENUM_HANDLE_NEXT) % PRIME_ENUM_SLOTS;
+            let handle_ptr = (&raw mut ENUM_HANDLES[idx]).cast::<PrimeEnum>();
+            handle_ptr.write(PrimeEnum { tag, value, len });
             #[cfg(target_arch = "xtensa")]
             {
                 ENUM_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -465,9 +470,8 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     fn alloc_task_slot() -> Option<&'static TaskSlot> {
-        ensure_task_slots();
         unsafe {
-            for slot in task_slots().iter() {
+            for slot in TASK_SLOTS.iter() {
                 if claim_slot(&slot.used) {
                     #[cfg(target_arch = "xtensa")]
                     {
@@ -492,7 +496,7 @@ mod embedded {
             return None;
         }
         let ptr = handle.0 as *const TaskSlot;
-        task_slots().iter().find(|slot| {
+        TASK_SLOTS.iter().find(|slot| {
             // Reject stale handles for recycled slots.
             slot.used.load(Ordering::SeqCst) && *slot as *const TaskSlot == ptr
         })
@@ -503,7 +507,7 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     fn alloc_channel_handle() -> Option<PrimeHandle> {
-        for (index, slot) in channel_slots().iter().enumerate() {
+        for (index, slot) in CHANNEL_SLOTS.iter().enumerate() {
             if claim_slot(&slot.used) {
                 // All other embedded handle objects are at least two-byte aligned.
                 // Each slot has its own sequence of odd IDs. Retire an exhausted
@@ -548,7 +552,7 @@ mod embedded {
         if id & 1 == 0 {
             return Err(PrimeStatus::Invalid);
         }
-        let slot = &channel_slots()[(id >> 1) % PRIME_CHANNEL_SLOTS];
+        let slot = &CHANNEL_SLOTS[(id >> 1) % PRIME_CHANNEL_SLOTS];
         let current = slot.handle_id.load(Ordering::SeqCst);
         if id == current && slot.used.load(Ordering::SeqCst) {
             Ok(slot)
@@ -573,69 +577,8 @@ mod embedded {
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
-    fn ensure_task_slots() {
-        if TASK_SLOTS_READY.load(Ordering::SeqCst) {
-            return;
-        }
-        unsafe {
-            for slot in TASK_SLOTS.iter_mut() {
-                slot.write(TaskSlot {
-                    used: AtomicBool::new(false),
-                    done: AtomicBool::new(false),
-                    deadline_ticks: UnsafeCell::new(0),
-                    result: UnsafeCell::new(PrimeHandle::null()),
-                });
-            }
-        }
-        TASK_SLOTS_READY.store(true, Ordering::SeqCst);
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn task_slots() -> &'static [TaskSlot; PRIME_TASK_SLOTS] {
-        ensure_task_slots();
-        unsafe { &*(TASK_SLOTS.as_ptr() as *const [TaskSlot; PRIME_TASK_SLOTS]) }
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn ensure_cancel_token_slots() {
-        if CANCEL_TOKEN_SLOTS_READY.load(Ordering::SeqCst) {
-            return;
-        }
-        unsafe {
-            for slot in CANCEL_TOKEN_SLOTS.iter_mut() {
-                slot.write(CancelTokenSlot {
-                    used: AtomicBool::new(false),
-                    cancelled: AtomicBool::new(false),
-                });
-            }
-        }
-        CANCEL_TOKEN_SLOTS_READY.store(true, Ordering::SeqCst);
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn cancel_token_slots() -> &'static [CancelTokenSlot; PRIME_CANCEL_TOKEN_SLOTS] {
-        ensure_cancel_token_slots();
-        unsafe {
-            &*(CANCEL_TOKEN_SLOTS.as_ptr() as *const [CancelTokenSlot; PRIME_CANCEL_TOKEN_SLOTS])
-        }
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
     fn alloc_cancel_token_slot() -> Option<&'static CancelTokenSlot> {
-        ensure_cancel_token_slots();
-        for slot in cancel_token_slots().iter() {
+        for slot in CANCEL_TOKEN_SLOTS.iter() {
             if claim_slot(&slot.used) {
                 slot.cancelled.store(false, Ordering::SeqCst);
                 return Some(slot);
@@ -653,73 +596,9 @@ mod embedded {
             return None;
         }
         let ptr = handle.0 as *const CancelTokenSlot;
-        cancel_token_slots()
+        CANCEL_TOKEN_SLOTS
             .iter()
             .find(|slot| slot.used.load(Ordering::SeqCst) && *slot as *const CancelTokenSlot == ptr)
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn ensure_channel_slots() {
-        if CHANNEL_SLOTS_READY.load(Ordering::SeqCst) {
-            return;
-        }
-        unsafe {
-            for slot in CHANNEL_SLOTS.iter_mut() {
-                slot.write(ChannelSlot {
-                    handle_id: AtomicUsize::new(0),
-                    used: AtomicBool::new(false),
-                    closed: AtomicBool::new(false),
-                    queue: UnsafeCell::new(array::from_fn(|_| PrimeHandle::null())),
-                    head: UnsafeCell::new(0),
-                    tail: UnsafeCell::new(0),
-                    len: UnsafeCell::new(0),
-                });
-            }
-        }
-        CHANNEL_SLOTS_READY.store(true, Ordering::SeqCst);
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn channel_slots() -> &'static [ChannelSlot; PRIME_CHANNEL_SLOTS] {
-        ensure_channel_slots();
-        unsafe { &*(CHANNEL_SLOTS.as_ptr() as *const [ChannelSlot; PRIME_CHANNEL_SLOTS]) }
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn ensure_channel_waiters() {
-        if CHANNEL_WAITERS_READY.load(Ordering::SeqCst) {
-            return;
-        }
-        unsafe {
-            for slot in CHANNEL_WAITERS.iter_mut() {
-                slot.write(ChannelWaiterSlot {
-                    used: AtomicBool::new(false),
-                    channel: UnsafeCell::new(PrimeHandle::null()),
-                    task: UnsafeCell::new(core::ptr::null()),
-                    deadline_ms: UnsafeCell::new(0),
-                    has_deadline: AtomicBool::new(false),
-                });
-            }
-        }
-        CHANNEL_WAITERS_READY.store(true, Ordering::SeqCst);
-    }
-
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    fn channel_waiters() -> &'static [ChannelWaiterSlot; PRIME_CHANNEL_WAITERS] {
-        ensure_channel_waiters();
-        unsafe { &*(CHANNEL_WAITERS.as_ptr() as *const [ChannelWaiterSlot; PRIME_CHANNEL_WAITERS]) }
     }
 
     // Required FFI entry points used by the compiler (embedded).
@@ -745,8 +624,7 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_unit_new")]
     pub unsafe extern "C" fn prime_unit_new() -> PrimeHandle {
-        init_unit_handle();
-        PRIME_UNIT_HANDLE
+        PrimeHandle(ptr::from_ref(&PRIME_UNIT_HANDLE).cast_mut().cast())
     }
 
     #[cfg(any(
@@ -1055,7 +933,7 @@ mod embedded {
         task: &TaskSlot,
         deadline_ms: Option<i128>,
     ) -> bool {
-        for waiter in channel_waiters().iter() {
+        for waiter in CHANNEL_WAITERS.iter() {
             if claim_slot(&waiter.used) {
                 unsafe {
                     *waiter.channel.get() = channel;
@@ -1076,7 +954,7 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     fn detach_channel_waiters(task: &TaskSlot) {
-        for waiter in channel_waiters() {
+        for waiter in &CHANNEL_WAITERS {
             if waiter.used.load(Ordering::SeqCst) && ptr::eq(unsafe { *waiter.task.get() }, task) {
                 waiter.used.store(false, Ordering::SeqCst);
             }
@@ -1109,7 +987,7 @@ mod embedded {
     ))]
     fn poll_channel_waiters() -> bool {
         let mut progressed = false;
-        for waiter in channel_waiters().iter() {
+        for waiter in CHANNEL_WAITERS.iter() {
             if !waiter.used.load(Ordering::SeqCst) {
                 continue;
             }
