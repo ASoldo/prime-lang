@@ -304,7 +304,7 @@ struct BuildArgs {
     #[arg(long, default_value_t = false)]
     no_flash: bool,
     /// Base name for generated artifacts
-    #[arg(long, default_value = "output")]
+    #[arg(long, default_value = "output", value_parser = artifact_name)]
     name: String,
     /// Output format for LLVM code generation errors
     #[arg(
@@ -861,38 +861,13 @@ fn build_entry(args: BuildArgs) {
                 }
                 std::process::exit(1);
             }
-            let build_root = Path::new(".build.prime");
-            if let Err(err) = fs::create_dir_all(build_root) {
-                eprintln!("Failed to create build directory: {err}");
-                std::process::exit(1);
-            }
-            let artifact_dir = match build_options.target.triple() {
-                Some(triple) => build_root.join(format!("{name}-{triple}")),
-                None => build_root.join(name),
+            let artifact_dir = match write_build_artifacts(&compiler, name, &build_options) {
+                Ok(dir) => dir,
+                Err(err) => {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
             };
-            if let Err(err) = fs::create_dir_all(&artifact_dir) {
-                eprintln!("Failed to create artifact directory: {err}");
-                std::process::exit(1);
-            }
-            let ir_path = artifact_dir.join(format!("{name}.ll"));
-            if let Err(err) = compiler.write_ir_to(&ir_path) {
-                eprintln!("Failed to write IR: {err}");
-                std::process::exit(1);
-            }
-            let obj_path = artifact_dir.join(format!("{name}.o"));
-            if let Err(err) = run_llc(&ir_path, &obj_path, &build_options.target) {
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
-            let bin_path = artifact_dir.join(name);
-            if let Err(err) = run_gcc_with_runtime(&obj_path, &bin_path, &build_options) {
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
-            if let Err(err) = maybe_objcopy_and_flash(&bin_path, &build_options) {
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
             println!("Artifacts written to {}", artifact_dir.display());
         }
         Err(PackageError::Io { path, error }) => {
@@ -908,6 +883,72 @@ fn build_entry(args: BuildArgs) {
             std::process::exit(1);
         }
     }
+}
+
+fn artifact_name(name: &str) -> Result<String, String> {
+    if Path::new(name).file_name().and_then(|s| s.to_str()) != Some(name)
+        || name.contains('\\')
+        || name == ".prime-build.lock"
+    {
+        return Err("use a single filename for --name".into());
+    }
+    Ok(name.to_owned())
+}
+
+fn write_build_artifacts(
+    compiler: &Compiler,
+    name: &str,
+    options: &BuildOptions,
+) -> Result<PathBuf, String> {
+    let root = Path::new(".build.prime");
+    let dir = match &options.target {
+        BuildTarget::Host => root.join(name),
+        BuildTarget::Triple(triple) if options.target.is_embedded() => {
+            root.join(format!("{name}-{triple}"))
+        }
+        BuildTarget::Triple(triple) => {
+            return Err(format!(
+                "unsupported target triple `{triple}`; supported embedded targets: {}",
+                prime_lang::target::embedded_target_hint()
+            ));
+        }
+    };
+    fs::create_dir_all(&dir).map_err(|err| format!("Cannot create {}: {err}", dir.display()))?;
+    // A second process targeting the same name must not consume the first process's IR or object.
+    let lock = fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(".prime-build.lock"))
+        .map_err(|err| format!("Cannot open build lock in {}: {err}", dir.display()))?;
+    lock.lock()
+        .map_err(|err| format!("Cannot lock {}: {err}", dir.display()))?;
+
+    // Keep the previous host executable runnable until every tool has succeeded.
+    // Embedded conversion and flashing consume the final artifact paths.
+    let staging = if options.target.is_host() {
+        Some(tempfile::tempdir_in(&dir).map_err(|err| format!("Cannot stage host build: {err}"))?)
+    } else {
+        None
+    };
+    let output = staging.as_ref().map_or(dir.as_path(), |tmp| tmp.path());
+    let ir = output.join(format!("{name}.ll"));
+    let obj = output.join(format!("{name}.o"));
+    let bin = output.join(name);
+    compiler.write_ir_to(&ir)?;
+    run_llc(&ir, &obj, &options.target)?;
+    run_gcc_with_runtime(&obj, &bin, options)?;
+    if staging.is_some() {
+        for file in [&ir, &obj, &bin] {
+            let dest = dir.join(file.file_name().expect("artifact filename"));
+            fs::rename(file, &dest)
+                .map_err(|err| format!("Cannot publish {}: {err}", dest.display()))?;
+        }
+    } else {
+        maybe_objcopy_and_flash(&bin, options)?;
+    }
+    Ok(dir)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
