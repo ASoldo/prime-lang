@@ -1034,7 +1034,11 @@ impl Compiler {
                 } else {
                     let captures = capture_names
                         .into_iter()
-                        .filter_map(|name| self.get_var(&name).map(|value| (name, value)))
+                        .filter_map(|name| {
+                            let (_, mutable) = self.get_binding(&name)?;
+                            let value = self.get_var(&name)?;
+                            Some((name, value, mutable))
+                        })
                         .collect();
                     TaskValue::deferred((**block).clone(), captures)
                 };
@@ -1301,15 +1305,11 @@ impl Compiler {
     pub(super) fn eval_async_block(
         &mut self,
         block: &Block,
-        captures: &[(String, EvaluatedValue)],
+        captures: &[(String, EvaluatedValue, bool)],
     ) -> Result<EvaluatedValue, String> {
         self.push_scope();
-        for (name, value) in captures {
-            // Deferred embedded tasks capture the original binding. Making an
-            // immutable pin mutable here loses its known value before ensure_pin.
-            let mutable =
-                !self.in_host_task() && self.get_binding(name).is_some_and(|(_, mutable)| mutable);
-            self.insert_var(name, value.clone(), mutable)?;
+        for (name, value, mutable) in captures {
+            self.insert_var(name, value.clone(), *mutable)?;
         }
         let result = self.execute_block_contents(block)?;
         self.exit_scope()?;

@@ -247,6 +247,7 @@ impl Compiler {
             bindings.push((
                 name.clone(),
                 self.task_value_from_handle(original.value(), handle, true)?,
+                false,
             ));
         }
         self.runtime_release(env_param);

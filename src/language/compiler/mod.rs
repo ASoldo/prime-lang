@@ -424,7 +424,7 @@ struct TaskValue {
 #[derive(Clone)]
 struct DeferredTask {
     block: Block,
-    captures: Vec<(String, EvaluatedValue)>,
+    captures: Vec<(String, EvaluatedValue, bool)>,
 }
 
 struct ChannelState {
@@ -640,7 +640,7 @@ impl TaskValue {
         }
     }
 
-    fn deferred(block: Block, captures: Vec<(String, EvaluatedValue)>) -> Self {
+    fn deferred(block: Block, captures: Vec<(String, EvaluatedValue, bool)>) -> Self {
         Self {
             state: Rc::new((Mutex::new(None), Condvar::new())),
             handle: None,
