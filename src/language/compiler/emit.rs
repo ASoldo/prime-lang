@@ -659,7 +659,8 @@ impl Compiler {
                         EvalOutcome::Value(value) => self.expect_int(value.into_value())?,
                         EvalOutcome::Flow(flow) => return Ok(Some(flow)),
                     };
-                    if !self.runtime_handles_enabled() {
+                    // A range inside an emitted loop needs its own break and continue targets.
+                    if !self.runtime_handles_enabled() && self.loop_controls.is_empty() {
                         if let (Some(start_const), Some(end_const)) =
                             (start_value.constant(), end_value.constant())
                         {
@@ -4938,22 +4939,10 @@ impl Compiler {
             if entry.is_null() {
                 return Err("function entry block missing for range loop".into());
             }
-            // Allocate loop variable in the entry block.
-            let slot_builder = LLVMCreateBuilderInContext(self.context);
-            let first_inst = LLVMGetFirstInstruction(entry);
-            if first_inst.is_null() {
-                LLVMPositionBuilderAtEnd(slot_builder, entry);
-            } else {
-                LLVMPositionBuilderBefore(slot_builder, first_inst);
-            }
             let idx_ty = LLVMTypeOf(start.llvm());
-            let loop_var = LLVMBuildAlloca(
-                slot_builder,
-                idx_ty,
-                CString::new("for_range_idx").unwrap().as_ptr(),
-            );
-            LLVMBuildStore(slot_builder, start.llvm(), loop_var);
-            LLVMDisposeBuilder(slot_builder);
+            let loop_var = self.build_entry_alloca(idx_ty, "for_range_idx");
+            // Reinitialize the entry-allocated slot each time execution reaches this loop.
+            LLVMBuildStore(self.builder, start.llvm(), loop_var);
 
             let one = LLVMConstInt(idx_ty, 1, 0);
             let limit = if inclusive {

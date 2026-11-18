@@ -34,6 +34,54 @@ fn run_both(body: &str) -> [Output; 2] {
 }
 
 #[test]
+fn nested_ranges_restart_on_each_runtime_input() {
+    let tmp = tempdir().unwrap();
+    let work = tmp.path();
+    fs::write(
+        work.join("main.prime"),
+        r#"
+enum Result[T, E] { Ok(T), Err(E) }
+fn main() {
+  let mut []int32 rounds = [];
+  while let Result::Ok(start) = in[int32]("") {
+    rounds.push(start);
+    for index in 0..rounds.len() { out(index); }
+    for i in start..(start + 3) {
+      if i == start + 1 { continue; }
+      for j in 1..=3 {
+        if j == 3 && i == start { break; }
+        out(`{i} {j}`);
+      }
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+    let input = work.join("input");
+    fs::write(&input, "7\n-2\n").unwrap();
+    success(&cli(work, &["build", "main.prime", "--name", "ranges"]));
+    let mut interpreter = Command::new(env!("CARGO_BIN_EXE_prime-lang"));
+    interpreter.args(["run", "main.prime"]);
+    let native = Command::new(work.join(".build.prime/ranges/ranges"));
+    for mut command in [interpreter, native] {
+        let output = command
+            .current_dir(work)
+            .env_remove("PRIME_TARGET")
+            .env_remove("PRIME_TEST_INPUTS")
+            .env_remove("PRIME_TEST_INPUTS_FILE")
+            .stdin(fs::File::open(&input).unwrap())
+            .output()
+            .unwrap();
+        assert_eq!(
+            success(&output),
+            "0\n7 1\n7 2\n9 1\n9 2\n9 3\n0\n1\n-2 1\n-2 2\n0 1\n0 2\n0 3\n",
+            "{command:?}"
+        );
+    }
+}
+
+#[test]
 fn integer_comparisons_results_and_explicit_casts_agree() {
     let outputs = run_both(
         r#"
