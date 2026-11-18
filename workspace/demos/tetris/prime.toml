@@ -11,3 +11,4 @@ visibility = "pub"
 
 [libraries]
 core_types = { name = "core::types", path = "../../core/types.prime", visibility = "pub" }
+rules = { name = "tetris::rules", path = "rules.prime", visibility = "pub" }

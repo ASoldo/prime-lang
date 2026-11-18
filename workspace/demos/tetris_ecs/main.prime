@@ -1,0 +1,43 @@
+//! One process hosts one match. A complete input frame advances both entities.
+module demos::tetris_ecs;
+
+import core::types::prelude::{*};
+import tetris::ecs::prelude::{*};
+
+fn read_frame() -> int32 {
+  match in[int32]("") {
+    Result::Ok(frame) => frame,
+    Result::Err(_) => -1,
+  }
+}
+
+fn play(seed: int32) {
+  let world = new_world(seed);
+  emit_world(world);
+  let mut int32 frame = read_frame();
+  while frame != -1 {
+    let next_tick = frame / 100;
+    let action0 = (frame / 10) % 10;
+    let action1 = frame % 10;
+    if step_world(world, next_tick, action0, action1) {
+      emit_world(world);
+    } else {
+      let tick = current_tick(world);
+      out(`E1 frame {tick}`);
+    }
+    frame = read_frame();
+  }
+}
+
+fn main() {
+  match in[int32]("") {
+    Result::Ok(seed) => {
+      if seed >= 0 {
+        play(seed);
+      } else {
+        out("E1 seed");
+      }
+    },
+    Result::Err(_) => out("E1 seed"),
+  }
+}

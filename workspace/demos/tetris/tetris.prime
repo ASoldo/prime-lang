@@ -2,12 +2,7 @@
 module demos::tetris;
 
 import core::types::prelude::{*};
-
-const COLS: int32 = 10;
-
-const ROWS: int32 = 20;
-
-const BOARD_CELLS: int32 = 200;
+import tetris::rules::prelude::{*};
 
 const CELL: int32 = 28;
 
@@ -48,296 +43,6 @@ const SCREEN_MENU: int32 = 0;
 const SCREEN_PLAY: int32 = 1;
 
 const SCREEN_GAME_OVER: int32 = 2;
-
-fn make_board() -> []int32 {
-  let mut []int32 board = [];
-  for _ in 0..BOARD_CELLS {
-    board.push(0);
-  }
-  board
-}
-
-fn make_row_flags() -> []int32 {
-  let mut []int32 flags = [];
-  for _ in 0..ROWS {
-    flags.push(0);
-  }
-  flags
-}
-
-fn board_get(board: []int32, x: int32, y: int32) -> int32 {
-  let mut int32 result = 1;
-  if x >= 0 && x < COLS && y < ROWS {
-    if y < 0 {
-      result = 0;
-    } else {
-      result = slice_get_int(board, y * COLS + x, 1);
-    }
-  }
-  result
-}
-
-fn board_set(board: []int32, x: int32, y: int32, value: int32) {
-  if x >= 0 && x < COLS && y >= 0 && y < ROWS {
-    board[y * COLS + x] = value;
-  }
-}
-
-fn reset_board(board: []int32) {
-  for y in 0..ROWS {
-    for x in 0..COLS {
-      board_set(board, x, y, 0);
-    }
-  }
-}
-
-fn reset_row_flags(flags: []int32) {
-  for y in 0..ROWS {
-    flags[y] = 0;
-  }
-}
-
-fn normalize_rotation(rotation: int32) -> int32 {
-  let mut int32 value = rotation % 4;
-  if value < 0 {
-    value = value + 4;
-  }
-  value
-}
-
-fn select_cell(index: int32, first: int32, second: int32, third: int32, fourth: int32) -> int32 {
-  let mut int32 value = first;
-  if index == 1 {
-    value = second;
-  }
-  if index == 2 {
-    value = third;
-  }
-  if index == 3 {
-    value = fourth;
-  }
-  value
-}
-
-fn cell_x(kind: int32, rotation: int32, index: int32) -> int32 {
-  let int32 rot = normalize_rotation(rotation);
-  let mut int32 value = 0;
-  if kind == 1 {
-    if rot == 0 || rot == 2 {
-      value = select_cell(index, -1, 0, 1, 2);
-    } else {
-      value = 1;
-    }
-  }
-  if kind == 2 {
-    value = select_cell(index, 0, 1, 0, 1);
-  }
-  if kind == 3 {
-    if rot == 0 {
-      value = select_cell(index, 0, -1, 0, 1);
-    }
-    if rot == 1 {
-      value = select_cell(index, 0, 0, 1, 0);
-    }
-    if rot == 2 {
-      value = select_cell(index, -1, 0, 1, 0);
-    }
-    if rot == 3 {
-      value = select_cell(index, 0, -1, 0, 0);
-    }
-  }
-  if kind == 4 {
-    if rot == 0 || rot == 2 {
-      value = select_cell(index, 0, 1, -1, 0);
-    } else {
-      value = select_cell(index, 0, 0, 1, 1);
-    }
-  }
-  if kind == 5 {
-    if rot == 0 || rot == 2 {
-      value = select_cell(index, -1, 0, 0, 1);
-    } else {
-      value = select_cell(index, 1, 1, 0, 0);
-    }
-  }
-  if kind == 6 {
-    if rot == 0 {
-      value = select_cell(index, -1, -1, 0, 1);
-    }
-    if rot == 1 {
-      value = select_cell(index, 0, 1, 0, 0);
-    }
-    if rot == 2 {
-      value = select_cell(index, -1, 0, 1, 1);
-    }
-    if rot == 3 {
-      value = select_cell(index, 0, 0, -1, 0);
-    }
-  }
-  if kind == 7 {
-    if rot == 0 {
-      value = select_cell(index, 1, -1, 0, 1);
-    }
-    if rot == 1 {
-      value = select_cell(index, 0, 0, 0, 1);
-    }
-    if rot == 2 {
-      value = select_cell(index, -1, 0, 1, -1);
-    }
-    if rot == 3 {
-      value = select_cell(index, -1, 0, 0, 0);
-    }
-  }
-  value
-}
-
-fn cell_y(kind: int32, rotation: int32, index: int32) -> int32 {
-  let int32 rot = normalize_rotation(rotation);
-  let mut int32 value = 0;
-  if kind == 1 {
-    if rot == 1 || rot == 3 {
-      value = select_cell(index, -1, 0, 1, 2);
-    }
-  }
-  if kind == 2 {
-    value = select_cell(index, 0, 0, 1, 1);
-  }
-  if kind == 3 {
-    if rot == 0 {
-      value = select_cell(index, -1, 0, 0, 0);
-    }
-    if rot == 1 {
-      value = select_cell(index, -1, 0, 0, 1);
-    }
-    if rot == 2 {
-      value = select_cell(index, 0, 0, 0, 1);
-    }
-    if rot == 3 {
-      value = select_cell(index, -1, 0, 0, 1);
-    }
-  }
-  if kind == 4 || kind == 5 {
-    if rot == 0 || rot == 2 {
-      value = select_cell(index, 0, 0, 1, 1);
-    } else {
-      value = select_cell(index, -1, 0, 0, 1);
-    }
-  }
-  if kind == 6 {
-    if rot == 0 {
-      value = select_cell(index, -1, 0, 0, 0);
-    }
-    if rot == 1 {
-      value = select_cell(index, -1, -1, 0, 1);
-    }
-    if rot == 2 {
-      value = select_cell(index, 0, 0, 0, 1);
-    }
-    if rot == 3 {
-      value = select_cell(index, -1, 0, 1, 1);
-    }
-  }
-  if kind == 7 {
-    if rot == 0 {
-      value = select_cell(index, -1, 0, 0, 0);
-    }
-    if rot == 1 {
-      value = select_cell(index, -1, 0, 1, 1);
-    }
-    if rot == 2 {
-      value = select_cell(index, 0, 0, 0, 1);
-    }
-    if rot == 3 {
-      value = select_cell(index, -1, -1, 0, 1);
-    }
-  }
-  value
-}
-
-fn can_move(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) -> bool {
-  let mut bool valid = true;
-  for index in 0..4 {
-    let int32 px = x + cell_x(kind, rotation, index);
-    let int32 py = y + cell_y(kind, rotation, index);
-    if px < 0 || px >= COLS || py >= ROWS {
-      valid = false;
-    }
-    if py >= 0 && board_get(board, px, py) != 0 {
-      valid = false;
-    }
-  }
-  valid
-}
-
-fn lock_piece(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) {
-  for index in 0..4 {
-    let int32 px = x + cell_x(kind, rotation, index);
-    let int32 py = y + cell_y(kind, rotation, index);
-    if py >= 0 {
-      board_set(board, px, py, kind);
-    }
-  }
-}
-
-fn row_full(board: []int32, row: int32) -> bool {
-  let mut bool full = true;
-  for x in 0..COLS {
-    if board_get(board, x, row) == 0 {
-      full = false;
-    }
-  }
-  full
-}
-
-fn row_marked(clear_rows: []int32, row: int32) -> bool {
-  slice_get_int(clear_rows, row, 0) != 0
-}
-
-fn mark_full_rows(board: []int32, clear_rows: []int32) -> int32 {
-  reset_row_flags(clear_rows);
-
-  let mut int32 cleared = 0;
-  for y in 0..ROWS {
-    if row_full(board, y) {
-      cleared = cleared + 1;
-      clear_rows[y] = 1;
-    }
-  }
-  cleared
-}
-
-fn cleared_rows_below(clear_rows: []int32, row: int32) -> int32 {
-  let mut int32 count = 0;
-  let mut int32 y = row + 1;
-  while y < ROWS {
-    if row_marked(clear_rows, y) {
-      count = count + 1;
-    }
-    y = y + 1;
-  }
-  count
-}
-
-fn apply_marked_clears(board: []int32, clear_rows: []int32) {
-  let mut int32 write = ROWS - 1;
-  let mut int32 read = ROWS - 1;
-  while read >= 0 {
-    if !row_marked(clear_rows, read) {
-      for x in 0..COLS {
-        board_set(board, x, write, board_get(board, x, read));
-      }
-      write = write - 1;
-    }
-    read = read - 1;
-  }
-  while write >= 0 {
-    for x in 0..COLS {
-      board_set(board, x, write, 0);
-    }
-    write = write - 1;
-  }
-  reset_row_flags(clear_rows);
-}
 
 fn piece_color(kind: int32) -> (int32, int32, int32) {
   let mut int32 r = 70;
@@ -426,64 +131,6 @@ fn draw_piece(kind: int32, rotation: int32, x: int32, y: int32, ghost: bool) {
   }
 }
 
-fn ghost_y(board: []int32, kind: int32, rotation: int32, x: int32, y: int32) -> int32 {
-  let mut int32 drop_y = y;
-  while can_move(board, kind, rotation, x, drop_y + 1) {
-    drop_y = drop_y + 1;
-  }
-  drop_y
-}
-
-fn next_seed(seed: int32) -> int32 {
-  let int64 wide = cast[int64](seed) * 1103515245 + 12345;
-  let mut int32 next = wide % 2147483647;
-  if next < 0 {
-    next = 0 - next;
-  }
-  if next == 0 {
-    next = 17;
-  }
-  next
-}
-
-fn make_bag() -> []int32 {
-  let mut []int32 bag = [];
-  for kind in 1..8 {
-    bag.push(kind);
-  }
-  bag
-}
-
-fn refill_bag(bag: []int32, seed: int32) -> int32 {
-  for kind in 1..8 {
-    bag[kind - 1] = kind;
-  }
-
-  let mut int32 next = seed;
-  let mut int32 index = 6;
-  while index > 0 {
-    next = next_seed(next);
-    let int32 swap_index = next % (index + 1);
-    let int32 value = slice_get_int(bag, index, 1);
-    bag[index] = slice_get_int(bag, swap_index, 1);
-    bag[swap_index] = value;
-    index = index - 1;
-  }
-  next
-}
-
-fn draw_from_bag(bag: []int32, bag_index: int32, seed: int32) -> (int32, int32, int32) {
-  let mut int32 index = bag_index;
-  let mut int32 next = seed;
-  if index >= 7 {
-    next = refill_bag(bag, next);
-    index = 0;
-  }
-
-  let int32 kind = slice_get_int(bag, index, 1);
-  return kind, index + 1, next;
-}
-
 fn drop_interval(level: int32) -> int64 {
   let mut int64 interval = 90;
   if level <= 1 {
@@ -520,23 +167,6 @@ fn drop_interval(level: int32) -> int64 {
     interval = 130;
   }
   interval
-}
-
-fn add_score(score: int32, level: int32, cleared: int32) -> int32 {
-  let mut int32 result = score;
-  if cleared == 1 {
-    result = score + 100 * level;
-  }
-  if cleared == 2 {
-    result = score + 300 * level;
-  }
-  if cleared == 3 {
-    result = score + 500 * level;
-  }
-  if cleared >= 4 {
-    result = score + 800 * level;
-  }
-  result
 }
 
 fn advance_clear_animation(board: []int32, clear_rows: []int32, clear_phase: int32, elapsed: int64, delta: int64) -> (int32, int64, bool) {
@@ -896,32 +526,18 @@ fn main() {
         }
       }
       if gfx_key_pressed("uconsole_b") {
-        let int32 desired = normalize_rotation(rotation - 1);
-        if can_move(board, current, desired, piece_x, piece_y) {
-          rotation = desired;
-          play_rotate_sound();
-        } else if can_move(board, current, desired, piece_x - 1, piece_y) {
-          rotation = desired;
-          piece_x = piece_x - 1;
-          play_rotate_sound();
-        } else if can_move(board, current, desired, piece_x + 1, piece_y) {
-          rotation = desired;
-          piece_x = piece_x + 1;
+        let (turned, kicked_x) = rotate_piece(board, current, rotation, piece_x, piece_y, -1);
+        if turned != rotation {
+          rotation = turned;
+          piece_x = kicked_x;
           play_rotate_sound();
         }
       }
       if gfx_key_pressed("x") || gfx_key_pressed("uconsole_a") {
-        let int32 desired = normalize_rotation(rotation + 1);
-        if can_move(board, current, desired, piece_x, piece_y) {
-          rotation = desired;
-          play_rotate_sound();
-        } else if can_move(board, current, desired, piece_x - 1, piece_y) {
-          rotation = desired;
-          piece_x = piece_x - 1;
-          play_rotate_sound();
-        } else if can_move(board, current, desired, piece_x + 1, piece_y) {
-          rotation = desired;
-          piece_x = piece_x + 1;
+        let (turned, kicked_x) = rotate_piece(board, current, rotation, piece_x, piece_y, 1);
+        if turned != rotation {
+          rotation = turned;
+          piece_x = kicked_x;
           play_rotate_sound();
         }
       }

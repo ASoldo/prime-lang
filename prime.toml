@@ -25,6 +25,7 @@ members = [
   "workspace/demos/fs_demo",
   "workspace/demos/time_demo",
   "workspace/demos/tetris",
+  "workspace/demos/tetris_ecs",
   "workspace/demos/web_server",
   "workspace/demos/rest_sse",
   "workspace/demos/iter_demo",
