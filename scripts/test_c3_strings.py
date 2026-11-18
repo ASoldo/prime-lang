@@ -165,12 +165,12 @@ class C3RecordBytes(C3Program):
 
 class C3RecordBounds(C3Program):
     source = """module c3_strings;
-        import core::{Option, read_u16_le, read_u32_le, crc16_ccitt_false};
+        import core::{Option, read_u16_le_into, read_u32_le_into, crc16_ccitt_false};
         fn probe(data: &[]uint8, offset: int32) {
             let mut uint16 word = 25;
             let mut uint32 wide = 26;
-            if read_u16_le(data, offset, &mut word) { out(word); } else { out("short"); }
-            if read_u32_le(data, offset, &mut wide) { out(wide); } else { out("short"); }
+            if read_u16_le_into(data, offset, &mut word) { out(word); } else { out("short"); }
+            if read_u32_le_into(data, offset, &mut wide) { out(wide); } else { out("short"); }
         }
         fn main() {
             let mut int32 offset = 0;
@@ -183,10 +183,10 @@ class C3RecordBounds(C3Program):
             match bytes[offset - 1] { Some(_) => out("unexpected"), None => out("negative"), }
             match bytes[offset + 4] { Some(_) => out("unexpected"), None => out("past end"), }
             let mut uint32 saved = 0;
-            out(read_u32_le(&bytes, offset, &mut saved));
+            out(read_u32_le_into(&bytes, offset, &mut saved));
             let []uint8 payload = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20];
             out(crc16_ccitt_false(&payload));
-            out(read_u32_le(&bytes, offset + 1, &mut saved));
+            out(read_u32_le_into(&bytes, offset + 1, &mut saved));
             out(saved);
             let []uint8 empty = [];
             probe(&empty, offset);
@@ -198,6 +198,35 @@ class C3RecordBounds(C3Program):
     )
 
     def test_dynamic_bytes_and_offsets(self):
+        self.assert_output(self.observe_print())
+
+
+class C3SavedRecordFields(C3Program):
+    source = """module c3_strings;
+        import core::{Option, read_u16_le, read_u32_le};
+        fn main() {
+            let mut int32 offset = 0;
+            let []uint8 bytes = [1, 2, 3, 255];
+            let Option[uint16] word = read_u16_le(&bytes, offset);
+            let Option[uint32] wide = read_u32_le(&bytes, offset);
+            let Option[uint32] short = read_u32_le(&bytes, offset + 1);
+            let mut int32 i = 0;
+            let mut int32 sum = 0;
+            while i < 140 {
+                match bytes[i & 3] {
+                    Some(byte) => { sum = sum + cast[int32](byte); },
+                    None => {},
+                }
+                i = i + 1;
+            }
+            out(sum);
+            match word { Some(n) => out(n), None => out("missing"), }
+            match wide { Some(n) => out(n), None => out("missing"), }
+            match short { Some(_) => out("unexpected"), None => out("short"), }
+        }"""
+    expected_output = b"9135\n513\n4278387201\nshort\n"
+
+    def test_saved_fields_after_140_lookups(self):
         self.assert_output(self.observe_print())
 
 

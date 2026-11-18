@@ -1,18 +1,21 @@
 //! Field-record decoder self-test for host and UART.
 module record_bytes;
 
-import core::{read_u16_le, read_u32_le, crc16_ccitt_false};
+import core::{Option, read_u16_le, read_u32_le, crc16_ccitt_false};
 
 fn main() {
   let []uint8 record = [0, 52, 18, 0, 255];
-  let mut uint16 sensor = 0;
-  let mut uint32 sequence = 0;
-  if read_u16_le(&record, 1, &mut sensor) { out(`record u16 {sensor}`); }
-  if read_u32_le(&record, 1, &mut sequence) { out(`record u32 {sequence}`); }
-  if read_u32_le(&record, 2, &mut sequence) {
-    out("record short accepted");
-  } else {
-    out("record short rejected");
+  match read_u16_le(&record, 1) {
+    Some(sensor) => out(`record u16 {sensor}`),
+    None => out("record u16 missing"),
+  }
+  match read_u32_le(&record, 1) {
+    Some(sequence) => out(`record u32 {sequence}`),
+    None => out("record u32 missing"),
+  }
+  match read_u32_le(&record, 2) {
+    Some(_) => out("record short accepted"),
+    None => out("record short rejected"),
   }
   let []uint8 check = [49, 50, 51, 52, 53, 54, 55, 56, 57];
   let uint16 crc = crc16_ccitt_false(&check);

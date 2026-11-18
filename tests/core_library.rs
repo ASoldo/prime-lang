@@ -314,7 +314,7 @@ fn bundled_byte_readers_use_runtime_input_in_both_backends() {
     let tmp = tempdir().unwrap();
     let dir = tmp.path();
     let source = r#"module consumer;
-import core::{Result, read_u16_le, read_u32_le, crc16_ccitt_false};
+import core::{Option, Result, read_u16_le, read_u32_le, read_u16_le_into, crc16_ccitt_false};
 
 fn main() {
   let mut []uint8 record = [52, 18, 0];
@@ -323,13 +323,12 @@ fn main() {
     Err(_) => {},
   }
   let int32 offset = match in[int32]("") { Ok(n) => n, Err(_) => 0, };
-  let mut uint16 word = 0;
-  let mut uint32 wide = 0;
-  if read_u16_le(&record, offset, &mut word) { out(word); } else { out("short"); }
-  if read_u32_le(&record, offset, &mut wide) { out(wide); } else { out("short"); }
+  match read_u16_le(&record, offset) { Some(n) => out(n), None => out("short"), }
+  match read_u32_le(&record, offset) { Some(n) => out(n), None => out("short"), }
   out(crc16_ccitt_false(&record));
   let []uint8 empty = [];
-  if read_u16_le(&empty, 0, &mut word) { out("unexpected"); } else { out("empty"); }
+  let mut uint16 word = 7;
+  if read_u16_le_into(&empty, 0, &mut word) { out("unexpected"); } else { out("empty"); }
   out(crc16_ccitt_false(&empty));
 }"#;
     let report = check(dir, source, true);

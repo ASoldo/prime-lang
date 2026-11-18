@@ -40,15 +40,27 @@ fn read_le(data: &[]uint8, offset: int32, width: int32) -> (bool, uint32) {
   (complete, value)
 }
 
+/// Decode two little-endian bytes or return None for an incomplete field.
+pub fn read_u16_le(data: &[]uint8, offset: int32) -> Option[uint16] {
+  let (ok, value) = read_le(data, offset, 2);
+  if ok { Some(cast[uint16](value)) } else { None() }
+}
+
+/// Decode four little-endian bytes or return None for an incomplete field.
+pub fn read_u32_le(data: &[]uint8, offset: int32) -> Option[uint32] {
+  let (ok, value) = read_le(data, offset, 4);
+  if ok { Some(value) } else { None() }
+}
+
 /// Store a two-byte field and return true when both bytes are available.
-pub fn read_u16_le(data: &[]uint8, offset: int32, field: &mut uint16) -> bool {
+pub fn read_u16_le_into(data: &[]uint8, offset: int32, field: &mut uint16) -> bool {
   let (ok, value) = read_le(data, offset, 2);
   if ok { *field = cast[uint16](value); }
   ok
 }
 
 /// Store a four-byte field and return true when all four bytes are available.
-pub fn read_u32_le(data: &[]uint8, offset: int32, field: &mut uint32) -> bool {
+pub fn read_u32_le_into(data: &[]uint8, offset: int32, field: &mut uint32) -> bool {
   let (ok, value) = read_le(data, offset, 4);
   if ok { *field = value; }
   ok
