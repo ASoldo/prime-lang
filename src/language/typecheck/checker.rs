@@ -1022,7 +1022,11 @@ impl Checker {
         }
         match &def.body {
             FunctionBody::Block(block) => {
-                self.check_block(module, block, &return_types, &mut env);
+                let expected = match return_types.as_slice() {
+                    [single] => Some(single),
+                    _ => None,
+                };
+                self.check_block(module, block, expected, &return_types, &mut env);
             }
             FunctionBody::Expr(expr) => {
                 let expected = return_types.first();
@@ -1042,10 +1046,15 @@ impl Checker {
     }
 
     fn check_const(&mut self, module: &Module, def: &ConstDef, imports: &ImportScope) {
-        if let Some(annotation) = &def.ty {
-            let mut env = FnEnv::new(module.path.clone(), Vec::new(), imports.clone());
-            let ty = self.check_expression(module, &def.value, Some(&annotation.ty), &[], &mut env);
-            self.ensure_type(module, def.span, &annotation.ty, ty.as_ref());
+        let expected = def.ty.as_ref().map(|annotation| &annotation.ty);
+        // The registry has no inferred types for unannotated constant dependencies.
+        if expected.is_none() && !is_literal_initializer(&def.value) {
+            return;
+        }
+        let mut env = FnEnv::new(module.path.clone(), Vec::new(), imports.clone());
+        let ty = self.check_expression(module, &def.value, expected, &[], &mut env);
+        if let Some(expected) = expected {
+            self.ensure_type(module, def.span, expected, ty.as_ref());
         }
     }
 
@@ -1053,6 +1062,7 @@ impl Checker {
         &mut self,
         module: &Module,
         block: &Block,
+        expected: Option<&TypeExpr>,
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
@@ -1061,7 +1071,7 @@ impl Checker {
             self.check_statement(module, stmt, returns, env);
         }
         let tail_type = if let Some(tail) = &block.tail {
-            self.check_expression(module, tail, None, returns, env)
+            self.check_expression(module, tail, expected, returns, env)
         } else {
             None
         };
@@ -1280,7 +1290,7 @@ impl Checker {
                     self.check_expression(module, condition, Some(&bool_type()), returns, env);
                     let entry_state = env.snapshot_borrows();
                     let (_, body_state) = env.run_branch(|env| {
-                        self.check_block(module, &while_stmt.body, returns, env);
+                        self.check_block(module, &while_stmt.body, None, returns, env);
                     });
                     env.merge_branch_borrows(&[entry_state, body_state]);
                 }
@@ -1297,7 +1307,7 @@ impl Checker {
                             env,
                             Mutability::Immutable,
                         );
-                        self.check_block(module, &while_stmt.body, returns, env);
+                        self.check_block(module, &while_stmt.body, None, returns, env);
                         env.pop_scope();
                     });
                     env.merge_branch_borrows(&[entry_state, body_state]);
@@ -1306,7 +1316,7 @@ impl Checker {
             Statement::Loop(loop_stmt) => {
                 let entry_state = env.snapshot_borrows();
                 let (_, body_state) = env.run_branch(|env| {
-                    self.check_block(module, &loop_stmt.body, returns, env);
+                    self.check_block(module, &loop_stmt.body, None, returns, env);
                 });
                 env.merge_branch_borrows(&[entry_state, body_state]);
             }
@@ -1323,7 +1333,7 @@ impl Checker {
                             for_stmt.span,
                             &mut self.errors,
                         );
-                        self.check_block(module, &for_stmt.body, returns, env);
+                        self.check_block(module, &for_stmt.body, None, returns, env);
                         env.pop_scope();
                     });
                     env.merge_branch_borrows(&[entry_state, body_state]);
@@ -1343,7 +1353,7 @@ impl Checker {
                                     for_stmt.span,
                                     &mut self.errors,
                                 );
-                                self.check_block(module, &for_stmt.body, returns, env);
+                                self.check_block(module, &for_stmt.body, None, returns, env);
                                 env.pop_scope();
                             });
                             env.merge_branch_borrows(&[entry_state, body_state]);
@@ -1363,7 +1373,7 @@ impl Checker {
             Statement::Break | Statement::Continue => {}
             Statement::Comment { .. } => {}
             Statement::Block(block) => {
-                self.check_block(module, block, returns, env);
+                self.check_block(module, block, None, returns, env);
             }
         }
     }
@@ -1412,7 +1422,7 @@ impl Checker {
                 ));
                 None
             }
-            Expr::Literal(lit) => Some(literal_type(lit, expected, self.pointer_bits())),
+            Expr::Literal(lit) => self.check_literal(module, lit, expected),
             Expr::FormatString(literal) => {
                 self.validate_format_string(module, literal, env);
                 Some(string_type())
@@ -1473,16 +1483,15 @@ impl Checker {
             } => {
                 // Support `value::Variant` when the value has an enum type.
                 let mut resolved_name = enum_name.as_deref();
-                if let Some(name) = enum_name {
-                    if !self.registry.enums.contains_key(name) {
-                        if let Some(binding) = env.lookup(name) {
-                            if let Some(TypeExpr::Named(actual, _)) = &binding.ty {
-                                if self.registry.enums.contains_key(actual) {
-                                    resolved_name = Some(actual.as_str());
-                                }
-                            }
-                        }
-                    }
+                let mut owner_type = None;
+                if let Some(name) = enum_name
+                    && !self.registry.enums.contains_key(name)
+                    && let Some(binding) = env.lookup(name)
+                    && let Some(ty @ TypeExpr::Named(actual, _)) = &binding.ty
+                    && self.registry.enums.contains_key(actual)
+                {
+                    resolved_name = Some(actual.as_str());
+                    owner_type = Some(ty.clone());
                 }
                 let info =
                     match self.resolve_enum_literal(module, env, resolved_name, variant, *span) {
@@ -1492,23 +1501,40 @@ impl Checker {
                             return None;
                         }
                     };
-                for (field, expr) in info.def.fields.iter().zip(values.iter()) {
-                    self.check_expression(module, expr, Some(&field.ty), returns, env);
+                let owner = owner_type.as_ref().or(expected);
+                self.check_variant_fields(module, &info, values, owner, returns, env);
+                match owner {
+                    Some(TypeExpr::Named(name, _)) if name == &info.enum_name => owner.cloned(),
+                    _ => Some(TypeExpr::Named(info.enum_name, Vec::new())),
                 }
-                Some(TypeExpr::Named(info.enum_name.clone(), Vec::new()))
             }
             Expr::MapLiteral { entries, span } => {
                 self.check_map_literal(module, entries, *span, expected, returns, env)
             }
-            Expr::Block(block) => self.check_block(module, block, returns, env),
+            Expr::Block(block) => {
+                let first_error = self.errors.len();
+                let ty = self.check_block(module, block, expected, returns, env);
+                // Expanded expressions can carry offsets from a macro definition preceding
+                // the call. Anchor those diagnostics at the expansion for source and trace lookup.
+                for error in &mut self.errors[first_error..] {
+                    if error.span.end <= block.span.start {
+                        error.span = block.span;
+                    }
+                }
+                ty
+            }
             Expr::If(if_expr) => self.check_if_expression(module, if_expr, expected, returns, env),
             Expr::Match(match_expr) => {
                 self.check_match_expression(module, match_expr, expected, returns, env)
             }
             Expr::Tuple(values, _) => {
                 let mut types = Vec::new();
-                for value in values {
-                    types.push(self.check_expression(module, value, None, returns, env));
+                for (idx, value) in values.iter().enumerate() {
+                    let element = match expected {
+                        Some(TypeExpr::Tuple(elements)) => elements.get(idx),
+                        _ => None,
+                    };
+                    types.push(self.check_expression(module, value, element, returns, env));
                 }
                 if types.iter().all(|ty| ty.is_some()) {
                     Some(TypeExpr::Tuple(
@@ -1592,7 +1618,7 @@ impl Checker {
                 if let Some(expected) = expected {
                     if let TypeExpr::Named(name, args) = expected {
                         if name == "Result" && args.len() == 2 {
-                            self.check_block(module, block, returns, env);
+                            self.check_block(module, block, Some(&args[0]), returns, env);
                             return Some(expected.clone());
                         }
                     }
@@ -1673,8 +1699,12 @@ impl Checker {
                 Some(handle_ty)
             }
             Expr::Async { block, span: _ } => {
+                let expected_inner = match expected {
+                    Some(TypeExpr::Named(name, args)) if name == "Task" => args.first(),
+                    _ => None,
+                };
                 let inner = self
-                    .check_block(module, block, returns, env)
+                    .check_block(module, block, expected_inner, returns, env)
                     .unwrap_or(TypeExpr::Unit);
                 Some(make_task_type(inner))
             }
@@ -1775,11 +1805,15 @@ impl Checker {
                         param_types.push(TypeExpr::Unit);
                     }
                 }
-                let expected_ret = expected_fn
-                    .as_ref()
-                    .and_then(|(_, returns)| returns.first());
+                let expected_ret = ret.as_ref().map(|ann| &ann.ty).or_else(|| {
+                    expected_fn
+                        .as_ref()
+                        .and_then(|(_, returns)| returns.first())
+                });
                 let body_ty = match body {
-                    ClosureBody::Block(block) => self.check_block(module, block, returns, env),
+                    ClosureBody::Block(block) => {
+                        self.check_block(module, block, expected_ret, returns, env)
+                    }
                     ClosureBody::Expr(expr) => self.check_expression(
                         module,
                         expr.node.as_ref(),
@@ -1900,7 +1934,7 @@ impl Checker {
         let (then_ty, then_state) = env.run_branch(|env| match &expr.condition {
             IfCondition::Expr(condition) => {
                 self.check_expression(module, condition, Some(&bool_type()), returns, env);
-                self.check_block(module, &expr.then_branch, returns, env)
+                self.check_block(module, &expr.then_branch, expected, returns, env)
             }
             IfCondition::Let { pattern, value, .. } => {
                 let value_ty = self.check_expression(module, value, None, returns, env);
@@ -1912,14 +1946,14 @@ impl Checker {
                     env,
                     Mutability::Immutable,
                 );
-                let ty = self.check_block(module, &expr.then_branch, returns, env);
+                let ty = self.check_block(module, &expr.then_branch, expected, returns, env);
                 env.pop_scope();
                 ty
             }
         });
         if let Some(else_branch) = &expr.else_branch {
             let (else_ty, else_state) = env.run_branch(|env| match else_branch {
-                ElseBranch::Block(block) => self.check_block(module, block, returns, env),
+                ElseBranch::Block(block) => self.check_block(module, block, expected, returns, env),
                 ElseBranch::ElseIf(nested) => {
                     self.check_if_expression(module, nested, expected, returns, env)
                 }
@@ -3694,6 +3728,11 @@ impl Checker {
                     );
                     return None;
                 }
+                // An explicit conversion accepts an integer literal of any parsed magnitude.
+                // Its operand has no implicit integer destination, including the default int32.
+                if is_integer_literal(&args[0]) {
+                    return Some(target.clone());
+                }
                 let value_ty = self.check_expression(module, &args[0], None, returns, env);
                 let value_kind = value_ty
                     .as_ref()
@@ -4117,15 +4156,28 @@ impl Checker {
                 ));
             }
         }
-        for (expr, field) in args.iter().zip(variant.def.fields.iter()) {
-            self.check_expression(module, expr, Some(&field.ty), returns, env);
-        }
+        self.check_variant_fields(module, &variant, args, expected, returns, env);
         expected.cloned().or_else(|| {
             Some(TypeExpr::Named(
                 variant.enum_name.clone(),
                 variant.def.fields.iter().map(|f| f.ty.clone()).collect(),
             ))
         })
+    }
+
+    fn check_variant_fields(
+        &mut self,
+        module: &Module,
+        variant: &EnumVariantInfo,
+        args: &[Expr],
+        expected: Option<&TypeExpr>,
+        returns: &[TypeExpr],
+        env: &mut FnEnv,
+    ) {
+        let fields = instantiate_variant_fields(variant, expected, &self.registry);
+        for (expr, field) in args.iter().zip(fields) {
+            self.check_expression(module, expr, Some(&field.ty), returns, env);
+        }
     }
 
     fn select_call_result(
@@ -4271,7 +4323,9 @@ impl Checker {
             }
             Pattern::Literal(lit) => {
                 if let Some(actual) = ty {
-                    let literal_ty = literal_type(lit, ty, self.pointer_bits());
+                    let Some(literal_ty) = self.check_literal(module, lit, ty) else {
+                        return;
+                    };
                     if &literal_ty != actual {
                         self.errors.push(TypeError::new(
                             &module.path,
@@ -5514,6 +5568,46 @@ impl Checker {
         }
     }
 
+    fn check_literal(
+        &mut self,
+        module: &Module,
+        lit: &Literal,
+        expected: Option<&TypeExpr>,
+    ) -> Option<TypeExpr> {
+        let pointer_bits = self.pointer_bits();
+        let ty = literal_type(lit, expected, pointer_bits);
+        if let Some(expected) = expected
+            && ((matches!(lit, Literal::Int(..)) && expected == &bool_type())
+                || (matches!(lit, Literal::Bool(..))
+                    && numeric_kind(expected, pointer_bits).is_some()))
+        {
+            self.ensure_type(module, literal_span(lit), expected, Some(&ty));
+            return None;
+        }
+        if let Literal::Int(value, span) = lit {
+            let bounds = match numeric_kind(&ty, pointer_bits) {
+                Some(NumericKind::Signed(_, bits)) => {
+                    let limit = 1_i128 << (bits - 1);
+                    -limit..limit
+                }
+                Some(NumericKind::Unsigned(_, bits)) => 0..(1_i128 << bits),
+                _ => return Some(ty),
+            };
+            if !bounds.contains(value) {
+                self.errors.push(TypeError::new(
+                    &module.path,
+                    *span,
+                    format!(
+                        "integer literal `{value}` is out of range for `{}`",
+                        ty.canonical_name()
+                    ),
+                ));
+                return None;
+            }
+        }
+        Some(ty)
+    }
+
     fn check_unary(
         &mut self,
         module: &Module,
@@ -5529,6 +5623,15 @@ impl Checker {
             UnaryOp::Neg => {
                 let numeric_expected =
                     expected.and_then(|ty| numeric_kind(ty, pointer_bits).map(|_| ty));
+                // The minimum signed value fits even though its positive magnitude does not.
+                if let Expr::Literal(Literal::Int(magnitude, _)) = expr
+                    && !matches!(
+                        numeric_expected.and_then(|ty| numeric_kind(ty, pointer_bits)),
+                        Some(NumericKind::Unsigned(..))
+                    )
+                {
+                    return self.check_literal(module, &Literal::Int(-magnitude, span), expected);
+                }
                 let ty = self.check_expression(module, expr, numeric_expected, returns, env);
                 match ty.as_ref().and_then(|ty| numeric_kind(ty, pointer_bits)) {
                     Some(NumericKind::Unsigned(_, _)) | None => {
@@ -6188,6 +6291,35 @@ fn struct_pattern_field(
     Some(ty.substitute(&params))
 }
 
+// These initializers can be checked without looking up the types of other constants.
+fn is_literal_initializer(expr: &Expr) -> bool {
+    match expr {
+        Expr::Literal(_) => true,
+        Expr::Unary { expr, .. } => is_literal_initializer(expr),
+        Expr::Binary { left, right, .. } => {
+            is_literal_initializer(left) && is_literal_initializer(right)
+        }
+        Expr::EnumLiteral { values, .. }
+        | Expr::Tuple(values, _)
+        | Expr::ArrayLiteral(values, _) => values.iter().all(is_literal_initializer),
+        Expr::Call { callee, args, .. } if matches!(callee.as_ref(), Expr::Identifier(_)) => {
+            args.iter().all(is_literal_initializer)
+        }
+        _ => false,
+    }
+}
+
+fn is_integer_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        } => matches!(expr.as_ref(), Expr::Literal(Literal::Int(..))),
+        _ => matches!(expr, Expr::Literal(Literal::Int(..))),
+    }
+}
+
 fn literal_type(lit: &Literal, expected: Option<&TypeExpr>, pointer_bits: u32) -> TypeExpr {
     match lit {
         Literal::Int(_, _) => {
@@ -6586,6 +6718,13 @@ mod tests {
     use std::path::PathBuf;
 
     fn typecheck_source(source: &str) -> Result<(), Vec<super::TypeError>> {
+        typecheck_source_with_options(source, &super::TypecheckOptions::default())
+    }
+
+    fn typecheck_source_with_options(
+        source: &str,
+        options: &super::TypecheckOptions,
+    ) -> Result<(), Vec<super::TypeError>> {
         let module =
             parse_module("tests::module", PathBuf::from("test.prime"), source).expect("parse");
         let program = Program {
@@ -6596,7 +6735,7 @@ mod tests {
             traces: ExpansionTraces::default(),
             item_origins: std::collections::HashMap::new(),
         };
-        check_program(&expanded)
+        super::check_program_with_options(&expanded, options)
     }
 
     #[allow(dead_code)]
@@ -7155,6 +7294,171 @@ fn report() {
                 .any(|e| e.message.contains("does not match value of type `A`")),
             "{errors:?}"
         );
+    }
+
+    #[test]
+    fn integer_literal_enum_payloads() {
+        let source = "enum V { Byte(uint8), Signed(int8), Flag(bool) }
+            fn main() {
+                let value = V::Byte(255);
+                let V low = Signed(-128);
+                let V high = Signed(127);
+                let V bit = Flag(true);
+                match value { Byte(255) => out(true), _ => out(false) }
+            }";
+        let result = typecheck_source(source);
+        assert!(result.is_ok(), "{result:?}");
+        for (from, to, message) in [
+            (
+                "V::Byte(255)",
+                "V::Byte(256)",
+                "integer literal `256` is out of range for `uint8`",
+            ),
+            (
+                "Signed(-128)",
+                "Signed(-129)",
+                "integer literal `-129` is out of range for `int8`",
+            ),
+            (
+                "Signed(127)",
+                "Signed(128)",
+                "integer literal `128` is out of range for `int8`",
+            ),
+            (
+                "V::Byte(255)",
+                "V::Byte(-1)",
+                "unary `-` requires a signed or floating-point type",
+            ),
+            ("Flag(true)", "Flag(1)", "expected `bool`, found `int32`"),
+            (
+                "V::Byte(255)",
+                "V::Byte(true)",
+                "expected `uint8`, found `bool`",
+            ),
+            (
+                "Byte(255) =>",
+                "Byte(256) =>",
+                "integer literal `256` is out of range for `uint8`",
+            ),
+        ] {
+            let errors = typecheck_source(&source.replace(from, to)).expect_err(to);
+            assert!(
+                errors.iter().any(|e| e.message == message),
+                "{to}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn integer_literal_context_and_explicit_conversions() {
+        let source = "enum Wrap[T] { Item(T) }
+            enum ByteValue { Byte(uint8) }
+            const PACKET = ByteValue::Byte(255);
+            const COMPUTED = ByteValue::Byte(254 + 1);
+            const COUNT = 1;
+            const NEXT = COUNT + 1;
+            fn number(flag: bool) -> int8 { if flag { -128 } else { 127 } }
+            fn take(x: uint8) {}
+            fn main() {
+                let value = -2147483648;
+                let uint64 wide = 18446744073709551615;
+                let int64 minimum = -9223372036854775808;
+                let Wrap[uint8] wrapped = Wrap::Item(255);
+                let Wrap[int8] unqualified = Item(-128);
+                let from_bound_owner = wrapped::Item(254);
+                let uint8 addition = 255 + 1;
+                let uint8 converted = cast[uint8](256);
+                let uint64 large_cast = cast[uint64](18446744073709551615);
+                let int8 negative_cast = cast[int8](-2147483649);
+                let float64 floating = 2147483648;
+                take(255);
+            }";
+        let result = typecheck_source(source);
+        assert!(result.is_ok(), "{result:?}");
+        for (from, to, dest) in [
+            ("{ -128 }", "{ -129 }", "int8"),
+            ("{ 127 }", "{ 128 }", "int8"),
+            ("= -2147483648;", "= -2147483649;", "int32"),
+            ("= -2147483648;", "= 2147483648;", "int32"),
+            (
+                "wide = 18446744073709551615",
+                "wide = 18446744073709551616",
+                "uint64",
+            ),
+            (
+                "minimum = -9223372036854775808",
+                "minimum = -9223372036854775809",
+                "int64",
+            ),
+            ("Wrap::Item(255)", "Wrap::Item(256)", "uint8"),
+            ("wrapped::Item(254)", "wrapped::Item(256)", "uint8"),
+            ("Item(-128)", "Item(-129)", "int8"),
+            ("ByteValue::Byte(255)", "ByteValue::Byte(256)", "uint8"),
+            ("254 + 1", "256 + 1", "uint8"),
+            ("COUNT = 1", "COUNT = 2147483648", "int32"),
+            ("take(255)", "take(256)", "uint8"),
+        ] {
+            let errors = typecheck_source(&source.replace(from, to)).expect_err(to);
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.message.ends_with(&format!("out of range for `{dest}`"))),
+                "{to}: {errors:?}"
+            );
+        }
+        assert!(
+            typecheck_source(&source.replace("cast[uint8](256)", "cast[uint8](true)")).is_err()
+        );
+    }
+
+    #[test]
+    fn integer_literal_macro_error_points_at_the_call() {
+        let source = "macro bad_byte() -> uint8 { 256 } fn main() { let uint8 b = ~bad_byte(); }";
+        let module = parse_module("literal_macro", PathBuf::from("macro.prime"), source).unwrap();
+        let expanded = macro_expander::expand_program(&Program {
+            modules: vec![module],
+        })
+        .unwrap();
+        let errors = check_program(&expanded).unwrap_err();
+        let error = errors
+            .iter()
+            .find(|e| e.message.contains("out of range for `uint8`"))
+            .unwrap();
+        assert_eq!(&source[error.span.start..error.span.end], "~bad_byte()");
+        assert!(
+            error
+                .help
+                .as_deref()
+                .unwrap_or_default()
+                .contains("bad_byte")
+        );
+    }
+
+    #[test]
+    fn integer_literal_pointer_width_uses_the_build_target() {
+        use crate::target::{BuildTarget, ESP32C3_TRIPLE};
+
+        for (target, bits) in [
+            (BuildTarget::Host, usize::BITS),
+            (BuildTarget::Triple(ESP32C3_TRIPLE.into()), 32),
+        ] {
+            let options = super::TypecheckOptions { target };
+            for (ty, min, max) in [
+                ("usize", 0_i128, (1_i128 << bits) - 1),
+                ("isize", -(1_i128 << (bits - 1)), (1_i128 << (bits - 1)) - 1),
+            ] {
+                for (value, fits) in [(min - 1, false), (min, true), (max, true), (max + 1, false)]
+                {
+                    let source = format!("fn value() -> {ty} {{ {value} }}");
+                    let result = typecheck_source_with_options(&source, &options);
+                    assert_eq!(
+                        result.is_ok(),
+                        fits,
+                        "{bits}-bit target, {source}: {result:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
