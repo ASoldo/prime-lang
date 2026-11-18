@@ -164,18 +164,16 @@ fn build_mode_in_preserves_values() {
 #[test]
 fn channel_demo_build_matches_run_output() {
     let build_name = "channel_demo_parity";
-    let root_dir = PathBuf::from(root());
+    let workspace = tempdir().unwrap();
+    let root_dir = workspace.path();
+    let entry = PathBuf::from(root()).join("workspace/demos/channel_demo/channel_demo.prime");
     let artifact_dir = root_dir.join(".build.prime").join(build_name);
-    let _ = fs::remove_dir_all(&artifact_dir);
 
     let status = Command::new(bin_path())
-        .current_dir(&root_dir)
-        .args([
-            "build",
-            "workspace/demos/channel_demo/channel_demo.prime",
-            "--name",
-            build_name,
-        ])
+        .current_dir(root_dir)
+        .arg("build")
+        .arg(&entry)
+        .args(["--name", build_name])
         .status()
         .expect("build channel demo");
     assert!(status.success(), "channel demo build failed");
@@ -191,8 +189,9 @@ fn channel_demo_build_matches_run_output() {
     );
 
     let run_output = Command::new(bin_path())
-        .current_dir(&root_dir)
-        .args(["run", "workspace/demos/channel_demo/channel_demo.prime"])
+        .current_dir(root_dir)
+        .arg("run")
+        .arg(&entry)
         .output()
         .expect("run interpreted channel demo");
     assert!(

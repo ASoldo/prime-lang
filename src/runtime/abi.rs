@@ -2577,7 +2577,8 @@ mod host {
         let HostValue::Receiver(rx) = &data.value else {
             return PrimeStatus::Invalid;
         };
-        let timeout = std::time::Duration::from_millis(millis.clamp(0, i128::from(u64::MAX)) as u64);
+        let timeout =
+            std::time::Duration::from_millis(millis.clamp(0, i128::from(u64::MAX)) as u64);
         let outcome = rx.lock().map_err(|_| PrimeStatus::Invalid);
         if let Ok(guard) = outcome {
             match guard.recv_timeout(timeout) {
@@ -3737,16 +3738,24 @@ mod host {
 
         #[test]
         fn host_timer_and_wait_abi() {
-            let receive: unsafe extern "C" fn(PrimeHandle, i128, *mut PrimeHandle) -> PrimeStatus = prime_recv_timeout;
+            let receive: unsafe extern "C" fn(PrimeHandle, i128, *mut PrimeHandle) -> PrimeStatus =
+                prime_recv_timeout;
             unsafe {
                 let mut sender = PrimeHandle::null();
                 let mut receiver = PrimeHandle::null();
                 let mut item = PrimeHandle::null();
-                assert_eq!(prime_channel_new(&mut sender, &mut receiver), PrimeStatus::Ok);
+                assert_eq!(
+                    prime_channel_new(&mut sender, &mut receiver),
+                    PrimeStatus::Ok
+                );
                 assert_eq!(receive(receiver, 0, &mut item), PrimeStatus::Invalid);
-                assert_eq!(prime_send(sender, prime_unit_new()), PrimeStatus::Ok);
+                let unit = prime_unit_new();
+                assert_eq!(prime_send(sender, unit), PrimeStatus::Ok);
+                prime_value_release(unit);
                 assert_eq!(receive(receiver, 1, &mut item), PrimeStatus::Ok);
-                for handle in [item, sender, receiver] { prime_value_release(handle); }
+                for handle in [item, sender, receiver] {
+                    prime_value_release(handle);
+                }
             }
             let sleep: unsafe extern "C" fn(i128) -> PrimeHandle = prime_sleep_task;
             let delay: unsafe extern "C" fn(i32) -> PrimeStatus = prime_delay_ms;

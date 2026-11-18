@@ -556,7 +556,9 @@ fn compile_runtime_abi(
     let mut cmd = Command::new("cargo");
     // The xtensa target requires a nightly-like toolchain (esp) for build-std; default to it
     // when the user hasn't set a toolchain.
-    if target.is_embedded() && env::var("RUSTUP_TOOLCHAIN").is_err() {
+    if (target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf())
+        && env::var("RUSTUP_TOOLCHAIN").is_err()
+    {
         cmd.env("RUSTUP_TOOLCHAIN", "esp");
     }
     if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
@@ -582,7 +584,7 @@ fn compile_runtime_abi(
         .arg(&package.target_dir)
         .arg("--manifest-path")
         .arg(&package.manifest);
-    if target.is_embedded() {
+    if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
         cmd.arg("-Zbuild-std=core,alloc");
     }
     cmd.arg("--")
@@ -691,16 +693,19 @@ fn configure_embedded_env(options: &BuildOptions) {
         Ok(val) => PathBuf::from(val),
         Err(_) => return,
     };
-    // Default to esp toolchain for embedded if caller hasn't set one.
-    if env::var("RUSTUP_TOOLCHAIN").is_err() {
-        unsafe { env::set_var("RUSTUP_TOOLCHAIN", "esp") };
-    }
-    // Keep embedded builds in a cache dir by default.
+    // Stable Rust ships RV32IMC. Only Xtensa needs the Espressif toolchain.
     if env::var_os("CARGO_TARGET_DIR").is_none() {
-        unsafe { env::set_var("CARGO_TARGET_DIR", home.join(".cache/prime-xtensa")) };
+        let cache = if options.target.is_esp32c3() {
+            ".cache/prime-riscv32"
+        } else {
+            ".cache/prime-xtensa"
+        };
+        unsafe { env::set_var("CARGO_TARGET_DIR", home.join(cache)) };
     }
-    // Xtensa-specific defaults (ESP32 classic).
     if options.target.is_esp32_xtensa() || options.target.is_esp32_xtensa_espidf() {
+        if env::var_os("RUSTUP_TOOLCHAIN").is_none() {
+            unsafe { env::set_var("RUSTUP_TOOLCHAIN", "esp") };
+        }
         let clang_root = home.join(".espressif/tools/esp-clang/esp-clang");
         let xtensa_root = home.join(".espressif/tools/xtensa-esp-elf");
         if env::var("LLVM_SYS_201_PREFIX").is_err() && clang_root.exists() {
@@ -1011,7 +1016,7 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
         Command::new(llc_path.unwrap_or_else(|| "llc".to_string()))
     };
     // Xtensa toolchains typically build static images; PIC relocations are not supported.
-    let relocation_model = if target.is_esp32_xtensa() || target.is_esp32_xtensa_espidf() {
+    let relocation_model = if target.is_embedded() {
         "static"
     } else {
         "pic"
@@ -1027,6 +1032,12 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
         cmd.arg("-mtriple=xtensa-esp32-elf")
             .arg("-mcpu=esp32")
             .arg("-mattr=+windowed");
+    } else if target.is_esp32c3() {
+        cmd.args([
+            "-mtriple=riscv32-unknown-none-elf",
+            "-mattr=+m,+c",
+            "-target-abi=ilp32",
+        ]);
     } else if let Some(triple) = target.triple() {
         cmd.arg(format!("-mtriple={triple}"));
     } else {
@@ -1048,9 +1059,6 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
             .or_else(rustc_host_triple)
             .unwrap_or_else(|| "x86_64-pc-linux-gnu".to_string());
         cmd.arg(format!("-mtriple={triple}"));
-    }
-    if target.is_esp32c3() {
-        cmd.arg("-march=rv32imc");
     }
     let output = cmd
         .output()
@@ -1117,30 +1125,36 @@ fn maybe_objcopy_and_flash(bin_path: &Path, build_options: &BuildOptions) -> Res
         .arg(&bin_image)
         .arg(bin_path)
         .output();
-    match elf2image_output {
-        Ok(output) if output.status.success() => {}
-        _ => {
-            let objcopy = build_options
-                .toolchain
-                .objcopy
-                .clone()
-                .or_else(|| env::var("PRIME_RISCV_OBJCOPY").ok());
-            if let Some(objcopy) = objcopy {
-                let output = Command::new(&objcopy)
-                    .arg("-O")
-                    .arg("binary")
-                    .arg(bin_path)
-                    .arg(&bin_image)
-                    .output()
-                    .map_err(|err| format!("Failed to run objcopy: {err}"))?;
-                if !output.status.success() {
-                    return Err(format!(
-                        "objcopy failed:\n{}",
-                        String::from_utf8_lossy(&output.stderr)
-                    ));
-                }
-            }
+    let conversion_error = match elf2image_output {
+        Ok(output) if output.status.success() => None,
+        Ok(output) => Some(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+        Err(err) => Some(err.to_string()),
+    };
+    if let Some(reason) = conversion_error {
+        if build_options.flash.enabled {
+            return Err(format!(
+                "esptool could not generate a flashable image: {reason}"
+            ));
         }
+        let objcopy = build_options.toolchain.objcopy.clone()
+            .or_else(|| env::var("PRIME_RISCV_OBJCOPY").ok())
+            .ok_or_else(|| format!("could not generate a binary image: {reason}; configure build.toolchain.objcopy for a raw binary"))?;
+        let output = Command::new(&objcopy)
+            .args(["-O", "binary"])
+            .arg(bin_path)
+            .arg(&bin_image)
+            .output()
+            .map_err(|err| format!("Failed to run objcopy: {err}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "objcopy failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        eprintln!(
+            "Created raw binary {} with objcopy (elf2image: {reason})",
+            bin_image.display()
+        );
     }
     if build_options.flash.enabled {
         flash_esp32(&bin_image, build_options)?;
@@ -1346,11 +1360,14 @@ fn link_esp32(
     }
     if build_options.target.is_esp32_xtensa() || build_options.target.is_esp32_xtensa_espidf() {
         // Ensure endianness matches xtensa config.
-        cmd.arg("-mlongcalls").arg("-Wl,-EL");
+        cmd.args([
+            "-mlongcalls",
+            "-Wl,-EL",
+            "-Wl,-u,call_user_start_cpu0",
+            "-Wl,-e,call_user_start_cpu0",
+        ]);
     }
-    // Keep the Xtensa entry symbol so the image has a valid entry point.
-    cmd.arg("-Wl,-u,call_user_start_cpu0")
-        .arg("-Wl,-e,call_user_start_cpu0");
+    // The C3 startup object and linker script provide their own entry point.
     cmd.arg("-nostdlib");
     // Allow passing a sections.ld from ESP-IDF; include memory.ld before it.
     // If memory.ld is already in ld_flags, pull it out and order it before sections.ld.
@@ -2380,4 +2397,34 @@ fn ensure_module_header(path: &Path, module_name: &str) -> Result<(), Box<dyn st
     updated.push_str(&contents);
     fs::write(path, updated)?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod image_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn failed_conversion_never_flashes_an_existing_image() {
+        let tmp = tempfile::tempdir().unwrap();
+        let esptool = tmp.path().join("esptool");
+        fs::write(
+            &esptool,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.log\"\nexit 4\n",
+        )
+        .unwrap();
+        fs::set_permissions(&esptool, fs::Permissions::from_mode(0o755)).unwrap();
+        let elf = tmp.path().join("demo");
+        fs::write(&elf, b"elf fixture").unwrap();
+        fs::write(elf.with_extension("bin"), b"previous build").unwrap();
+        let mut options =
+            BuildOptions::from_sources(Some(prime_lang::target::ESP32C3_TRIPLE.into()), None, None);
+        options.toolchain.esptool = Some(esptool.to_str().unwrap().into());
+        options.flash.enabled = true;
+        let err = maybe_objcopy_and_flash(&elf, &options).unwrap_err();
+        assert!(err.contains("generate a flashable image"), "{err}");
+        let log = fs::read_to_string(esptool.with_extension("log")).unwrap();
+        assert_eq!(log.lines().count(), 1, "{log}");
+        assert!(log.contains("elf2image"), "{log}");
+    }
 }

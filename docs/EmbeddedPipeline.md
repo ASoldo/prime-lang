@@ -22,7 +22,7 @@ flowchart TD
 
   OBJ --> LINK["Link"]
   LINK --> ELF["esp32_blink (ELF)"]
-  ELF --> OBJCOPY["xtensa-esp32-elf-objcopy -> .bin"]
+  ELF --> OBJCOPY["esptool elf2image -> .bin"]
   OBJCOPY --> FLASH["esptool flash 0x10000"]
   FLASH --> DEVICE["ESP32 UART @115200"]
 ```
@@ -43,4 +43,11 @@ Notes:
 - I/O: `out` is available everywhere; filesystem built-ins (`fs_exists`/`fs_read`/`fs_write`) are host-only. `delay_ms`/`now_ms` are bridged to ROM stubs on Xtensa; host uses std timers.
 - Platform hooks: `pin_mode`/`digital_write` are embedded-only. If you call them on host, the platform shim reports an error.
 - Manifests: set `no_std = true` on embedded modules (see `workspace/demos/esp32_blink/prime.toml` and `workspace/demos/bare_metal_embedded/prime.toml`). Provide toolchain/env overrides or rely on CLI autodetect under `~/.espressif`.
-- No_std parity fixtures: `workspace/demos/no_std_parity/main.prime` runs on host with an embedded target selected from the manifest to verify async/Result/timeout behavior, and `workspace/demos/bare_metal_embedded/main.prime` mirrors host concurrency with channels + async `recv_task` + `Result`/`?` so build/run/embedded outputs align once flashed.
+- No_std parity fixtures: `workspace/demos/no_std_parity/main.prime` runs on host with an embedded target selected from the manifest to verify async/Result/timeout behavior, and `workspace/demos/bare_metal_embedded/main.prime` mirrors host concurrency with channels + async `recv_task` + `Result`/`?` for comparison with hardware output.
+
+
+## ESP32-C3 builds
+
+Install the stable Rust target with `rustup target add riscv32imc-unknown-none-elf`. Use an RV32IMC C linker and supply a C3 linker script (`build.toolchain.ld_script`) and any required startup object (`build.toolchain.startup_obj`). The script selects the entry point. Prime uses an LLVM RISC-V triple with the M and C extensions and links with the ILP32 ABI. Xtensa uses its own startup symbol and Espressif Rust toolchain.
+
+For flashing, Prime requires a successful `esptool elf2image` conversion. During a no-flash build a configured objcopy can produce a raw binary if conversion fails. The CLI reports that fallback. The [embedded timers document](EmbeddedTimers.md) describes emulator coverage and outstanding board-specific checks.
