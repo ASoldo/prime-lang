@@ -4,9 +4,10 @@ use super::manifest_helpers::entries_from_value;
 use crate::language::ast::ModuleKind;
 use serde::Deserialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use toml::Value;
 
@@ -17,7 +18,7 @@ pub struct PackageManifest {
     reverse: HashMap<PathBuf, String>,
     tests: HashMap<String, ModuleInfo>,
     dependencies: Vec<Dependency>,
-    dependency_manifests: Vec<PackageManifest>,
+    dependency_manifests: HashMap<String, Arc<PackageManifest>>,
     pub path: PathBuf,
     build: Option<BuildSettings>,
 }
@@ -93,6 +94,9 @@ pub enum DependencySource {
 
 #[derive(Debug)]
 pub enum ManifestError {
+    Cycle {
+        chain: Vec<PathBuf>,
+    },
     Io {
         path: PathBuf,
         error: std::io::Error,
@@ -115,6 +119,16 @@ pub enum ManifestError {
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ManifestError::Cycle { chain } => {
+                write!(f, "dependency cycle: ")?;
+                for (index, path) in chain.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, " -> ")?;
+                    }
+                    write!(f, "{}", path.display())?;
+                }
+                Ok(())
+            }
             ManifestError::Io { path, error } => write!(f, "{}: {}", path.display(), error),
             ManifestError::Parse { path, message } => write!(f, "{}: {}", path.display(), message),
             ManifestError::ModulePath {
@@ -209,6 +223,21 @@ struct RawRuntimeTable {
 
 impl PackageManifest {
     pub fn load(path: &Path) -> Result<Self, ManifestError> {
+        let canonical = canonical_manifest(path)?;
+        Self::load_node(&canonical, &mut Vec::new(), &mut HashMap::new())
+    }
+
+    fn load_node(
+        path: &Path,
+        active: &mut Vec<PathBuf>,
+        loaded: &mut HashMap<PathBuf, Arc<Self>>,
+    ) -> Result<Self, ManifestError> {
+        if let Some(start) = active.iter().position(|ancestor| ancestor == path) {
+            let mut chain = active[start..].to_vec();
+            chain.push(path.to_owned());
+            return Err(ManifestError::Cycle { chain });
+        }
+        active.push(path.to_owned());
         let content = fs::read_to_string(path).map_err(|error| ManifestError::Io {
             path: path.to_path_buf(),
             error,
@@ -222,36 +251,60 @@ impl PackageManifest {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let parsed = parse_modules(&value, &root)?;
+        let context = |err: ManifestError| match err {
+            ManifestError::InvalidModule { .. } => ManifestError::Parse {
+                path: path.to_owned(),
+                message: err.to_string(),
+            },
+            other => other,
+        };
+        let parsed = parse_modules(&value, &root).map_err(context)?;
         let ParsedModules {
             modules,
             reverse,
             tests,
         } = parsed;
-        let dependencies = parse_dependencies(&value, &root)?;
+        let dependencies = parse_dependencies(&value, &root).map_err(context)?;
         let build = parse_build_settings(&value);
-        let mut dependency_manifests = Vec::new();
-        let _cache_root = root.join(".prime/deps");
+        let mut dependency_manifests = HashMap::new();
         for dep in &dependencies {
-            match &dep.source {
-                DependencySource::Path { path } => {
-                    let manifest_path = path.join("prime.toml");
-                    if manifest_path.exists() {
-                        if let Ok(dep_manifest) = PackageManifest::load(&manifest_path) {
-                            dependency_manifests.push(dep_manifest);
-                        }
+            let dir = match &dep.source {
+                DependencySource::Path { path } => path,
+                DependencySource::Git { cache, .. } => cache,
+            };
+            let child_path = dir.join("prime.toml");
+            let child_path = match canonical_manifest(&child_path) {
+                Ok(path) => path,
+                Err(ManifestError::Io { error, .. })
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && matches!(dep.source, DependencySource::Git { .. }) =>
+                {
+                    // An empty/absent cache is valid before add's first successful fetch.
+                    // Once checked out, a Git package must provide a manifest.
+                    let git_dir = dir.join(".git");
+                    if !git_dir.try_exists().map_err(|error| ManifestError::Io {
+                        path: git_dir,
+                        error,
+                    })? {
+                        continue;
                     }
+                    return Err(ManifestError::Io {
+                        path: child_path,
+                        error,
+                    });
                 }
-                DependencySource::Git { cache, .. } => {
-                    let manifest_path = cache.join("prime.toml");
-                    if manifest_path.exists() {
-                        if let Ok(dep_manifest) = PackageManifest::load(&manifest_path) {
-                            dependency_manifests.push(dep_manifest);
-                        }
-                    }
-                }
-            }
+                Err(err) => return Err(err),
+            };
+            let child = if let Some(child) = loaded.get(&child_path) {
+                Arc::clone(child)
+            } else {
+                let child = Arc::new(Self::load_node(&child_path, active, loaded)?);
+                loaded.insert(child_path, Arc::clone(&child));
+                child
+            };
+            dependency_manifests.insert(dep.name.clone(), child);
         }
+        active.pop();
 
         Ok(Self {
             root,
@@ -269,93 +322,59 @@ impl PackageManifest {
         self.build.as_ref()
     }
 
-    pub fn module_path(&self, name: &str) -> Option<PathBuf> {
-        let name = canonical_module_name(name);
-        if let Some(path) = self
-            .modules
-            .get(&name)
-            .or_else(|| self.tests.get(&name))
-            .map(|info| info.path.clone())
-        {
-            return Some(path);
-        }
-        for dep in &self.dependency_manifests {
-            if let Some(path) = dep.module_path(&name) {
-                return Some(path);
-            }
-        }
-        let _cache_root = self.root.join(".prime/deps");
-        for dep in &self.dependencies {
-            let manifest_path = match &dep.source {
-                DependencySource::Path { path } => path.join("prime.toml"),
-                DependencySource::Git { cache, .. } => cache.join("prime.toml"),
-            };
-            if manifest_path.exists() {
-                if let Ok(dep_manifest) = PackageManifest::load(&manifest_path) {
-                    if let Some(path) = dep_manifest.module_path(&name) {
-                        return Some(path);
-                    }
+    pub fn dependency_manifest(&self, name: &str) -> Option<&Self> {
+        self.dependency_manifests.get(name).map(Arc::as_ref)
+    }
+
+    // Visit a shared dependency only once, retaining declaration-order lookup precedence.
+    pub(super) fn manifests(&self) -> impl Iterator<Item = &Self> {
+        let mut pending = vec![self];
+        let mut visited = HashSet::new();
+        std::iter::from_fn(move || {
+            while let Some(manifest) = pending.pop() {
+                if visited.insert(&manifest.path) {
+                    pending.extend(
+                        manifest
+                            .dependencies
+                            .iter()
+                            .rev()
+                            .filter_map(|dep| manifest.dependency_manifest(&dep.name)),
+                    );
+                    return Some(manifest);
                 }
             }
-        }
-        None
+            None
+        })
+    }
+
+    fn module(&self, name: &str) -> Option<&ModuleInfo> {
+        let name = canonical_module_name(name);
+        self.manifests()
+            .find_map(|m| m.modules.get(&name).or_else(|| m.tests.get(&name)))
+    }
+
+    pub fn module_path(&self, name: &str) -> Option<PathBuf> {
+        self.module(name).map(|module| module.path.clone())
     }
 
     pub fn module_kind(&self, name: &str) -> Option<ModuleKind> {
-        let name = canonical_module_name(name);
-        if let Some(kind) = self
-            .modules
-            .get(&name)
-            .or_else(|| self.tests.get(&name))
-            .map(|info| info.kind)
-        {
-            return Some(kind);
-        }
-        for dep in &self.dependency_manifests {
-            if let Some(kind) = dep.module_kind(&name) {
-                return Some(kind);
-            }
-        }
-        None
+        self.module(name).map(|module| module.kind)
     }
 
     pub fn module_no_std(&self, name: &str) -> bool {
-        let name = canonical_module_name(name);
-        if let Some(entry) = self.modules.get(&name).or_else(|| self.tests.get(&name)) {
-            return entry.no_std;
-        }
-        for dep in &self.dependency_manifests {
-            if dep.module_no_std(&name) {
-                return true;
-            }
-        }
-        false
+        self.module(name).is_some_and(|module| module.no_std)
     }
 
     pub fn module_name_for_path(&self, path: &Path) -> Option<String> {
         let canonical = path.canonicalize().ok()?;
-        if let Some(name) = self.reverse.get(&canonical).cloned() {
-            return Some(name);
-        }
-        for dep in &self.dependency_manifests {
-            if let Some(name) = dep.module_name_for_path(path) {
-                return Some(name);
-            }
-        }
-        None
+        self.manifests()
+            .find_map(|m| m.reverse.get(&canonical).cloned())
     }
 
     pub fn module_entries(&self) -> Vec<ModuleInfo> {
-        let mut entries: Vec<_> = self
-            .modules
-            .values()
-            .chain(self.tests.values())
-            .cloned()
-            .collect();
-        for dep in &self.dependency_manifests {
-            entries.extend(dep.module_entries());
-        }
-        entries
+        self.manifests()
+            .flat_map(|m| m.modules.values().chain(m.tests.values()).cloned())
+            .collect()
     }
 
     pub fn root(&self) -> &Path {
@@ -376,6 +395,7 @@ impl PackageManifest {
     }
 
     pub fn lock_dependencies(&self) -> Lockfile {
+        let previous = self.lock_entries().unwrap_or_default();
         let mut locked = Vec::new();
         for dep in &self.dependencies {
             let (git, path) = match &dep.source {
@@ -390,12 +410,28 @@ impl PackageManifest {
                     ),
                 ),
             };
+            let rev = match &dep.source {
+                DependencySource::Git { url, cache } => {
+                    super::lock::checkout_revision(cache).ok().or_else(|| {
+                        previous
+                            .iter()
+                            .find(|entry| {
+                                super::lock::dependency_key(&entry.name)
+                                    == super::lock::dependency_key(&dep.name)
+                                    && entry.git.as_ref() == Some(url)
+                                    && entry.path.is_none()
+                            })
+                            .and_then(|entry| entry.rev.clone())
+                    })
+                }
+                DependencySource::Path { .. } => None,
+            };
             locked.push(LockedDependency {
                 name: dep.name.clone(),
                 package: dep.package.clone(),
                 git,
                 path,
-                rev: None,
+                rev,
                 features: if dep.features.is_empty() {
                     None
                 } else {
@@ -407,6 +443,13 @@ impl PackageManifest {
             dependencies: locked,
         }
     }
+}
+
+fn canonical_manifest(path: &Path) -> Result<PathBuf, ManifestError> {
+    path.canonicalize().map_err(|error| ManifestError::Io {
+        path: path.to_owned(),
+        error,
+    })
 }
 
 struct ParsedModules {
@@ -458,6 +501,7 @@ fn parse_modules(value: &Value, root: &Path) -> Result<ParsedModules, ManifestEr
 
 fn parse_dependencies(value: &Value, root: &Path) -> Result<Vec<Dependency>, ManifestError> {
     let mut deps = Vec::new();
+    let mut names = HashSet::new();
     let cache_root = root.join(".prime/deps");
     for entry in entries_from_value(value.get("dependencies")) {
         let raw: RawDependencyEntry =
@@ -471,6 +515,12 @@ fn parse_dependencies(value: &Value, root: &Path) -> Result<Vec<Dependency>, Man
                         .map(|s| s.to_string()),
                     message: error.to_string(),
                 })?;
+        if !names.insert(super::lock::dependency_key(&raw.name)) {
+            return Err(ManifestError::InvalidModule {
+                module: Some(raw.name),
+                message: "duplicate dependency name".into(),
+            });
+        }
         if raw.git.is_some() && raw.path.is_some() {
             return Err(ManifestError::InvalidModule {
                 module: Some(raw.name),

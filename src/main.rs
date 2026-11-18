@@ -1,5 +1,8 @@
 #![allow(clippy::collapsible_if)]
 
+#[path = "runtime/distribution/mod.rs"]
+mod runtime_distribution;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use miette::NamedSource;
 use prime_lang::docs;
@@ -14,7 +17,7 @@ use prime_lang::language::{
 use prime_lang::project::diagnostics::analyze_manifest_issues;
 use prime_lang::project::{
     FileErrors, PackageError, apply_manifest_header_with_manifest, canonicalize, find_manifest,
-    load_package, load_package_with_manifest, manifest::PackageManifest,
+    load_package, load_resolved_package, manifest::PackageManifest,
     manifest::canonical_module_name, manifest::manifest_key_for, warn_manifest_drift,
 };
 use prime_lang::runtime::{Interpreter, platform};
@@ -28,11 +31,11 @@ use prime_lang::tools::{
     lint::run_lint,
 };
 use prime_lang::{language, lsp, project, tools};
+use runtime_distribution::RuntimePackage;
 use std::{
     env, fs, io,
     path::{Component, Path, PathBuf},
     process::Command,
-    sync::{Mutex, OnceLock},
 };
 use toml::Value;
 use toml_edit::{
@@ -66,6 +69,17 @@ enum Commands {
             help = "Require prime.lock to satisfy dependencies"
         )]
         frozen: bool,
+    },
+    /// Type-check a Prime module and its imports without executing it
+    Check {
+        #[arg(value_name = "TARGET")]
+        entry: String,
+        #[arg(short = 'p', long, value_name = "PACKAGE")]
+        project: Option<String>,
+        #[arg(long, help = "Require prime.lock to satisfy dependencies")]
+        frozen: bool,
+        #[arg(long, value_enum, default_value = "text")]
+        format: tools::check::CheckFormat,
     },
     /// Build a Prime module down to LLVM IR and a native binary
     Build {
@@ -284,7 +298,7 @@ enum Commands {
     },
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Commands::Run {
@@ -292,6 +306,14 @@ fn main() {
             project,
             frozen,
         } => run_entry(&entry, project.as_deref(), frozen),
+        Commands::Check {
+            entry,
+            project,
+            frozen,
+            format,
+        } => {
+            return tools::check::run_check(&entry, project.as_deref(), frozen, format);
+        }
         Commands::Build {
             entry,
             project,
@@ -460,24 +482,28 @@ fn main() {
             }
         }
     }
+    std::process::ExitCode::SUCCESS
 }
+
 fn run_entry(entry: &str, project: Option<&str>, frozen: bool) {
-    let (entry, entry_path, manifest) = match resolve_entry_for_cli(entry, project) {
+    let (entry_path, manifest) = match resolve_entry_for_cli(entry, project) {
         Ok(values) => values,
         Err(err) => exit_on_package_error(err),
     };
     ensure_prime_file(&entry_path);
     reject_non_module_entry(&entry_path, manifest.as_ref(), "run");
     if frozen {
-        if let Err(err) = require_frozen(manifest.as_ref(), &entry_path) {
+        if let Err(err) = project::lock::require_frozen(manifest.as_ref(), &entry_path) {
             eprintln!("{err}");
             std::process::exit(1);
         }
     }
-    warn_manifest_drift(&entry_path);
+    if let Some(m) = manifest.as_ref() {
+        project::program::warn_missing_modules(m);
+    }
     let run_options = BuildOptions::from_sources(None, None, manifest.as_ref());
     platform::configure_platform(&run_options);
-    match load_package_with_manifest(entry.as_entry_point(), manifest) {
+    match load_resolved_package(&entry_path, manifest) {
         Ok(package) => {
             let expanded_program = expand_or_report(&package.program);
             let expanded_modules = expanded_program
@@ -511,76 +537,22 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool) {
     }
 }
 
-fn compile_runtime_abi(options: &BuildOptions) -> Result<PathBuf, String> {
-    static RUNTIME_ABI_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _runtime_guard = RUNTIME_ABI_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .map_err(|_| "runtime ABI build lock poisoned".to_string())?;
-
-    let target = &options.target;
-    let runtime_dir = match target.triple() {
-        Some(triple) => PathBuf::from(".build.prime/runtime").join(triple),
-        None => PathBuf::from(".build.prime/runtime").join("host"),
-    };
-    if let Err(err) = fs::create_dir_all(&runtime_dir) {
-        return Err(format!("failed to create runtime build dir: {err}"));
-    }
-    compile_runtime_abi_with_cargo(target, &runtime_dir, options)
-}
-
-fn compile_runtime_abi_with_cargo(
-    target: &BuildTarget,
-    runtime_dir: &Path,
+fn compile_runtime_abi(
+    package: &RuntimePackage,
     options: &BuildOptions,
 ) -> Result<PathBuf, String> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target = &options.target;
     let triple = target
         .triple()
         .map(str::to_string)
         .or_else(rustc_host_triple)
-        .unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
-    let cargo_dir = runtime_dir.join("cargo");
-    fs::create_dir_all(&cargo_dir)
-        .map_err(|err| format!("failed to create runtime cargo dir: {err}"))?;
-    let abi_path = fs::canonicalize(manifest_dir.join("src/runtime/abi.rs"))
-        .map_err(|err| format!("failed to canonicalize src/runtime/abi.rs: {err}"))?;
+        .ok_or_else(|| "could not determine runtime host triple from rustc -Vv".to_string())?;
     if env::var_os("PRIME_DEBUG_RT_ABI").is_some() {
         eprintln!(
-            "[prime-debug] runtime ABI cargo build: manifest_dir={:?} abi_path={:?}",
-            manifest_dir, abi_path
+            "[prime-debug] runtime ABI cargo build: manifest={:?} target={triple}",
+            package.manifest
         );
     }
-    let dependencies = if target.is_embedded() {
-        String::new()
-    } else {
-        r#"
-[dependencies]
-minifb = "0.27"
-image = { version = "0.25", default-features = false, features = ["png"] }
-rodio = "0.17"
-"#
-        .to_string()
-    };
-    let manifest = format!(
-        r#"[package]
-name = "runtime-abi"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-name = "runtime_abi"
-path = "{}"
-crate-type = ["staticlib"]
-{}
-"#,
-        abi_path
-            .to_str()
-            .ok_or_else(|| "non-utf8 path to abi.rs".to_string())?,
-        dependencies
-    );
-    fs::write(cargo_dir.join("Cargo.toml"), manifest)
-        .map_err(|err| format!("failed to write runtime Cargo.toml: {err}"))?;
     let mut cmd = Command::new("cargo");
     // The xtensa target requires a nightly-like toolchain (esp) for build-std; default to it
     // when the user hasn't set a toolchain.
@@ -600,15 +572,22 @@ crate-type = ["staticlib"]
         );
         cmd.env("RUSTFLAGS", new_flags);
     }
-    cmd.arg("build")
+    cmd.arg("rustc")
+        .arg("--lib")
+        .arg("--locked")
         .arg("--release")
         .arg("--target")
         .arg(&triple)
+        .arg("--target-dir")
+        .arg(&package.target_dir)
         .arg("--manifest-path")
-        .arg(cargo_dir.join("Cargo.toml"));
+        .arg(&package.manifest);
     if target.is_embedded() {
         cmd.arg("-Zbuild-std=core,alloc");
     }
+    cmd.arg("--")
+        .arg("--cfg")
+        .arg(format!("prime_runtime_bundle=\"{}\"", package.source_id));
     let linker_var = format!(
         "CARGO_TARGET_{}_LINKER",
         triple
@@ -636,12 +615,12 @@ crate-type = ["staticlib"]
         .status()
         .map_err(|err| format!("failed to spawn cargo for runtime ABI: {err}"))?;
     if !status.success() {
-        return Err("cargo failed compiling runtime ABI (build-std)".into());
+        return Err(format!(
+            "cargo failed compiling runtime ABI for {triple}: {status}"
+        ));
     }
-    let target_root = env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cargo_dir.join("target"));
-    let output_lib = target_root
+    let output_lib = package
+        .target_dir
         .join(triple)
         .join("release")
         .join("libruntime_abi.a");
@@ -789,7 +768,7 @@ fn build_entry(
     platform_flag: Option<String>,
     no_flash: bool,
 ) {
-    let (entry, entry_path, manifest) = match resolve_entry_for_cli(entry, project) {
+    let (entry_path, manifest) = match resolve_entry_for_cli(entry, project) {
         Ok(values) => values,
         Err(err) => exit_on_package_error(err),
     };
@@ -801,22 +780,19 @@ fn build_entry(
     ensure_prime_file(&entry_path);
     reject_non_module_entry(&entry_path, manifest.as_ref(), "build");
     if frozen {
-        if let Err(err) = require_frozen(manifest.as_ref(), &entry_path) {
+        if let Err(err) = project::lock::require_frozen(manifest.as_ref(), &entry_path) {
             eprintln!("{err}");
             std::process::exit(1);
         }
     }
-    warn_manifest_drift(&entry_path);
+    if let Some(m) = manifest.as_ref() {
+        project::program::warn_missing_modules(m);
+    }
     platform::configure_platform(&build_options);
-    match load_package_with_manifest(entry.as_entry_point(), manifest) {
+    match load_resolved_package(&entry_path, manifest) {
         Ok(package) => {
             configure_embedded_env(&build_options);
             let expanded_program = expand_or_report(&package.program);
-            println!(
-                "[prime-debug] starting build for {} target={:?}",
-                entry_path.display(),
-                build_options.target
-            );
             let typecheck_options = TypecheckOptions {
                 target: build_options.target.clone(),
             };
@@ -826,14 +802,11 @@ fn build_entry(
                 emit_type_errors(&errors);
                 std::process::exit(1);
             }
-            println!("[prime-debug] typecheck ok, compiling program...");
             let mut compiler = Compiler::with_target(build_options.target.clone());
-            println!("[prime-debug] invoking compiler.compile_program()");
             if let Err(err) = compiler.compile_program(&expanded_program.program) {
                 eprintln!("Build failed: {err}");
                 std::process::exit(1);
             }
-            println!("[prime-debug] compiler finished");
             let build_root = Path::new(".build.prime");
             if let Err(err) = fs::create_dir_all(build_root) {
                 eprintln!("Failed to create build directory: {err}");
@@ -852,29 +825,16 @@ fn build_entry(
                 eprintln!("Failed to write IR: {err}");
                 std::process::exit(1);
             }
-            println!("[prime-debug] wrote IR {}", ir_path.display());
             let obj_path = artifact_dir.join(format!("{name}.o"));
             if let Err(err) = run_llc(&ir_path, &obj_path, &build_options.target) {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
-            println!("[prime-debug] llc done -> {}", obj_path.display());
-            let runtime_lib = match compile_runtime_abi(&build_options) {
-                Ok(path) => Some(path),
-                Err(err) => {
-                    eprintln!("Failed to compile runtime ABI: {err}");
-                    std::process::exit(1);
-                }
-            };
-            println!("[prime-debug] runtime lib {:?}", runtime_lib);
             let bin_path = artifact_dir.join(name);
-            if let Err(err) =
-                run_gcc_with_runtime(&obj_path, runtime_lib.as_deref(), &bin_path, &build_options)
-            {
+            if let Err(err) = run_gcc_with_runtime(&obj_path, &bin_path, &build_options) {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
-            println!("[prime-debug] link done -> {}", bin_path.display());
             if let Err(err) = maybe_objcopy_and_flash(&bin_path, &build_options) {
                 eprintln!("{err}");
                 std::process::exit(1);
@@ -903,27 +863,12 @@ enum NewKind {
     Workspace { library: bool, binary: bool },
 }
 
-#[derive(Clone)]
-enum EntryTarget {
-    Path(PathBuf),
-    Module(String),
-}
-
-impl EntryTarget {
-    fn as_entry_point(&self) -> project::EntryPoint<'_> {
-        match self {
-            EntryTarget::Path(path) => project::EntryPoint::Path(path),
-            EntryTarget::Module(name) => project::EntryPoint::Module(name),
-        }
-    }
-}
-
 fn resolve_entry_for_cli(
     target: &str,
     project: Option<&str>,
-) -> Result<(EntryTarget, PathBuf, Option<PackageManifest>), PackageError> {
-    let entry = parse_entry_target(target);
-    let manifest = project::load_manifest_for_entry(entry.as_entry_point(), project)?;
+) -> Result<(PathBuf, Option<PackageManifest>), PackageError> {
+    let entry = project::EntryPoint::from_target(target);
+    let manifest = project::load_manifest_for_entry(entry, project)?;
     if project.is_some() && manifest.is_none() {
         let manifest_stub = env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
@@ -933,28 +878,8 @@ fn resolve_entry_for_cli(
             message: "workspace manifest required when using --project".into(),
         });
     }
-    let entry_path =
-        project::resolve_entry_path(entry.as_entry_point(), manifest.as_ref(), project)?;
-    Ok((entry, entry_path, manifest))
-}
-
-fn parse_entry_target(target: &str) -> EntryTarget {
-    let trimmed = target.trim();
-    let path_candidate = PathBuf::from(trimmed);
-    let looks_like_path = trimmed.contains(std::path::MAIN_SEPARATOR)
-        || trimmed.contains('/')
-        || trimmed.contains('\\')
-        || path_candidate
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext == "prime")
-            .unwrap_or(false)
-        || path_candidate.exists();
-    if looks_like_path {
-        EntryTarget::Path(path_candidate)
-    } else {
-        EntryTarget::Module(trimmed.to_string())
-    }
+    let entry_path = project::resolve_entry_path(entry, manifest.as_ref(), project)?;
+    Ok((entry_path, manifest))
 }
 
 fn reject_non_module_entry(path: &Path, manifest: Option<&PackageManifest>, command: &str) {
@@ -1001,36 +926,6 @@ fn entry_error_messages(command: &str) -> (&'static str, &'static str) {
             "`prime-lang` cannot operate on library targets for this command",
         ),
     }
-}
-
-fn require_frozen(manifest: Option<&PackageManifest>, entry_path: &Path) -> Result<(), String> {
-    let Some(manifest) = manifest else {
-        return Err("`--frozen` requires a manifest to resolve dependencies".into());
-    };
-    let Some(lock) = manifest.lock_entries() else {
-        return Err(format!(
-            "`--frozen` requires prime.lock (missing near {})",
-            entry_path.display()
-        ));
-    };
-    for dep in manifest.dependencies() {
-        if let project::manifest::DependencySource::Git { .. } = dep.source {
-            let entry = lock.iter().find(|locked| locked.name == dep.name);
-            if entry.is_none() {
-                return Err(format!(
-                    "`--frozen` missing lock entry for dependency `{}`",
-                    dep.name
-                ));
-            }
-            if entry.and_then(|e| e.rev.as_ref()).is_none() {
-                return Err(format!(
-                    "`--frozen` requires locked revision for dependency `{}`",
-                    dep.name
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn exit_on_package_error(err: PackageError) -> ! {
@@ -1171,14 +1066,24 @@ fn run_llc(ir_path: &Path, obj_path: &Path, target: &BuildTarget) -> Result<(), 
 
 fn run_gcc_with_runtime(
     obj_path: &Path,
-    runtime_lib: Option<&Path>,
     bin_path: &Path,
     build_options: &BuildOptions,
 ) -> Result<(), String> {
+    let cache = env::var_os("CARGO_TARGET_DIR")
+        .map(|dir| PathBuf::from(dir).join("prime-runtime"))
+        .unwrap_or_else(|| PathBuf::from(".build.prime/runtime"));
+    let package =
+        RuntimePackage::prepare(&cache, build_options.target.is_embedded()).map_err(|err| {
+            format!(
+                "failed to prepare runtime package in {}: {err}",
+                cache.display()
+            )
+        })?;
+    let runtime_lib = compile_runtime_abi(&package, build_options)?;
     match &build_options.target {
-        BuildTarget::Host => link_host(obj_path, runtime_lib, bin_path),
+        BuildTarget::Host => link_host(obj_path, &runtime_lib, bin_path),
         BuildTarget::Triple(_) if build_options.target.is_embedded() => {
-            link_esp32(obj_path, runtime_lib, bin_path, build_options)
+            link_esp32(obj_path, &runtime_lib, bin_path, build_options)
         }
         BuildTarget::Triple(triple) => Err(format!(
             "unsupported target triple `{triple}`; supported embedded targets: {}",
@@ -1326,13 +1231,11 @@ fn flash_esp32(bin_image: &Path, build_options: &BuildOptions) -> Result<(), Str
     Ok(())
 }
 
-fn link_host(obj_path: &Path, runtime_lib: Option<&Path>, bin_path: &Path) -> Result<(), String> {
+fn link_host(obj_path: &Path, runtime_lib: &Path, bin_path: &Path) -> Result<(), String> {
     let mut cmd = Command::new("gcc");
-    cmd.arg(obj_path);
-    if let Some(lib) = runtime_lib {
-        cmd.arg(lib);
-    }
-    cmd.arg("-o")
+    cmd.arg(obj_path)
+        .arg(runtime_lib)
+        .arg("-o")
         .arg(bin_path)
         .arg("-lpthread")
         .arg("-ldl")
@@ -1402,7 +1305,7 @@ fn expand_env_vars(raw: &str) -> String {
 
 fn link_esp32(
     obj_path: &Path,
-    runtime_lib: Option<&Path>,
+    runtime_lib: &Path,
     bin_path: &Path,
     build_options: &BuildOptions,
 ) -> Result<(), String> {
@@ -1502,9 +1405,7 @@ fn link_esp32(
     {
         cmd.arg(expand_env_vars(&startup));
     }
-    if let Some(lib) = runtime_lib {
-        cmd.arg(lib);
-    }
+    cmd.arg(runtime_lib);
     // Minimal runtime: include libc for memset/memcpy and libgcc for compiler builtins.
     cmd.arg("-lc");
     cmd.arg("-lgcc");
@@ -2107,7 +2008,6 @@ fn add_dependency_entry(
     if debug {
         eprintln!("debug add-dep: writing manifest");
     }
-    reorder_manifest(&mut doc);
     reorder_manifest(&mut doc);
     fs::write(&manifest_path, doc.to_string())?;
 

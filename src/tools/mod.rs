@@ -1,3 +1,4 @@
+pub mod check;
 pub mod diagnostics;
 pub mod formatter;
 pub mod lint;

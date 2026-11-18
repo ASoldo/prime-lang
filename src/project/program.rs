@@ -47,6 +47,10 @@ pub fn warn_manifest_drift(start: &Path) {
             return;
         }
     };
+    warn_missing_modules(&manifest);
+}
+
+pub fn warn_missing_modules(manifest: &PackageManifest) {
     for entry in manifest.module_entries() {
         if !entry.path.exists() {
             eprintln!(

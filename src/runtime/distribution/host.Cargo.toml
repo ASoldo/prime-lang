@@ -1,0 +1,16 @@
+[package]
+name = "runtime-abi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "runtime_abi"
+path = "abi.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+minifb = "=0.27.0"
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+rodio = "=0.17.3"
+
+[workspace]

@@ -11,6 +11,21 @@ pub enum EntryPoint<'a> {
     Module(&'a str),
 }
 
+impl<'a> EntryPoint<'a> {
+    pub fn from_target(target: &'a str) -> Self {
+        let target = target.trim();
+        let path = Path::new(target);
+        if target.contains(['/', '\\'])
+            || path.extension().is_some_and(|ext| ext == "prime")
+            || path.exists()
+        {
+            Self::Path(path)
+        } else {
+            Self::Module(target)
+        }
+    }
+}
+
 pub fn load_manifest_for_entry(
     entry: EntryPoint<'_>,
     project: Option<&str>,
@@ -140,21 +155,11 @@ pub fn load_package_with_manifest(
     entry: EntryPoint<'_>,
     manifest: Option<PackageManifest>,
 ) -> Result<package::Package, PackageError> {
-    match entry {
-        EntryPoint::Path(path) => package::load_package(path),
-        EntryPoint::Module(name) => {
-            if let Some(manifest) = manifest {
-                if let Some(path) = manifest.module_path(name) {
-                    return package::load_package(&path);
-                }
-                return Err(PackageError::Manifest {
-                    path: manifest.path.clone(),
-                    message: format!("module `{name}` not found in manifest"),
-                });
-            }
-            let path = default_module_path(name, None);
-            package::load_package(&path)
-        }
+    let path = resolve_entry_path(entry, manifest.as_ref(), None)?;
+    // Callers without a selected manifest can still discover one beside the entry.
+    match manifest {
+        Some(manifest) => package::load_resolved_package(&path, Some(manifest)),
+        None => package::load_package(&path),
     }
 }
 

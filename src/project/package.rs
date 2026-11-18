@@ -77,8 +77,15 @@ pub fn load_package(entry_path: &Path) -> Result<Package, PackageError> {
         ),
         None => None,
     };
+    load_resolved_package(&canonical_entry, manifest)
+}
+
+pub fn load_resolved_package(
+    entry: &Path,
+    manifest: Option<PackageManifest>,
+) -> Result<Package, PackageError> {
     let mut loader = ModuleLoader::new(manifest);
-    loader.load(&canonical_entry)?;
+    loader.load(entry)?;
 
     if !loader.file_errors.is_empty() {
         return Err(PackageError::Syntax(loader.file_errors));
@@ -190,27 +197,6 @@ impl ModuleLoader {
             }
             for dep in manifest.dependencies() {
                 let dep_name = crate::project::manifest::canonical_module_name(&dep.name);
-                let import_name = lookup_path.to_string();
-                if dep_name != import_name && !import_name.starts_with(&(dep_name.clone() + "::")) {
-                    continue;
-                }
-                let manifest_path = match &dep.source {
-                    crate::project::manifest::DependencySource::Path { path } => {
-                        path.join("prime.toml")
-                    }
-                    crate::project::manifest::DependencySource::Git { cache, .. } => {
-                        cache.join("prime.toml")
-                    }
-                };
-                if manifest_path.exists() {
-                    if let Ok(dep_manifest) =
-                        crate::project::manifest::PackageManifest::load(&manifest_path)
-                    {
-                        if let Some(path) = dep_manifest.module_path(&import_name) {
-                            return Ok(path);
-                        }
-                    }
-                }
                 let dep_segments: Vec<_> = dep_name.split("::").collect();
                 let import_segments: Vec<_> =
                     import_path.segments.iter().map(|s| s.as_str()).collect();
@@ -296,28 +282,11 @@ fn resolve_namespaced_import(
             if import_name != dep_name && !import_name.starts_with(&(dep_name.clone() + "::")) {
                 continue;
             }
-            let dep_manifest = match &dep.source {
-                crate::project::manifest::DependencySource::Path { path } => {
-                    let m = path.join("prime.toml");
-                    if m.exists() {
-                        PackageManifest::load(&m).ok()
-                    } else {
-                        None
-                    }
-                }
-                crate::project::manifest::DependencySource::Git { cache, .. } => {
-                    let m = cache.join("prime.toml");
-                    if m.exists() {
-                        PackageManifest::load(&m).ok()
-                    } else {
-                        None
-                    }
-                }
-            };
-            if let Some(dep_manifest) = dep_manifest {
-                if let Some(path) = dep_manifest.module_path(&import_name) {
-                    return Some(path);
-                }
+            if let Some(path) = manifest
+                .dependency_manifest(&dep.name)
+                .and_then(|dependency| dependency.module_path(&import_name))
+            {
+                return Some(path);
             }
         }
     }
@@ -346,26 +315,47 @@ pub fn canonicalize(path: &Path) -> Result<PathBuf, std::io::Error> {
 }
 
 pub fn find_manifest(start: &Path) -> Option<PathBuf> {
-    let mut current = if start.is_dir() {
-        start.to_path_buf()
+    let absolute = std::path::absolute(start).ok()?;
+    let directory = if absolute.is_dir() {
+        absolute.as_path()
     } else {
-        start
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."))
+        absolute.parent()?
     };
-    loop {
-        let candidate = current.join("prime.toml");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-        if !current.pop() {
-            break;
-        }
-    }
-    None
+    // An editor may ask about a file whose parent directories do not exist yet.
+    let existing = directory
+        .ancestors()
+        .find_map(|parent| parent.canonicalize().ok())?;
+    existing
+        .ancestors()
+        .map(|parent| parent.join("prime.toml"))
+        .find(|file| file.is_file())
 }
 
 pub fn manifest_error_message(err: ManifestError) -> String {
     err.to_string()
+}
+
+#[cfg(test)]
+mod manifest_path_tests {
+    use super::find_manifest;
+    use std::fs;
+
+    #[test]
+    fn manifest_lookup_follows_the_actual_directory_of_unsaved_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let sibling = tmp.path().join("sibling");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir(&sibling).unwrap();
+        let manifest = project.join("prime.toml");
+        fs::write(&manifest, "").unwrap();
+        assert_ne!(
+            find_manifest(&project.join("../sibling/new.prime")),
+            Some(manifest.clone())
+        );
+        assert_eq!(
+            find_manifest(&project.join("new/src/main.prime")),
+            Some(manifest.canonicalize().unwrap())
+        );
+    }
 }
