@@ -6,11 +6,16 @@ struct Shared {
   token: CancelToken;
 }
 
+macro cancel_and_read(token: CancelToken) -> bool {
+  cancel(token);
+  is_cancelled(token)
+}
+
 fn capture(shared: Shared) -> Task[bool] {
   async {
     let fresh = !is_cancelled(shared.token);
-    cancel(shared.token);
-    fresh && is_cancelled(shared.token)
+    let observed = ~cancel_and_read(shared.token);
+    fresh && observed
   }
 }
 
