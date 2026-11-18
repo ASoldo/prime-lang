@@ -1035,7 +1035,7 @@ impl Compiler {
                     let captures = capture_names
                         .into_iter()
                         .filter_map(|name| {
-                            let (_, mutable) = self.get_binding(&name)?;
+                            let mutable = self.get_binding(&name)?.mutable;
                             let value = self.get_var(&name)?;
                             Some((name, value, mutable))
                         })
