@@ -7,6 +7,8 @@ Prime-lang is a single Rust binary (`prime-lang`) plus a workspace of `.prime` d
 - Build (iterative): `cargo build --locked`
 - Install the CLI: `cargo install --locked --path .`
 
+For a release candidate, run `./scripts/package_candidate.sh` on the target host with the project's Rust and LLVM prerequisites installed. It installs the CLI from the exact Cargo archive, checks a separate consumer project and executes its compiled binary. The verified source crate, host binary archive with the MIT notice, and `SHA256SUMS` are written to a new directory under `$CARGO_TARGET_DIR/prime-dist` (default `target/prime-dist`). The binary uses the compatible system LLVM and native libraries from the build environment. Tetris media are distributed separately from the source crate.
+
 A native `prime-lang build` compiles the bundled Rust runtime with its own lockfile. Set `CARGO_TARGET_DIR` to an absolute path to share compiled dependencies between Prime projects. Cargo recompiles the ABI when its bundled sources or build settings change. Graphics and audio libraries still need their system development headers.
 
 ## Checks
@@ -22,7 +24,7 @@ The Linux runners use Xvfb to open a real X11 window for interpreted and compile
 
 ## Dependency advisories
 
-Install the audit tool with `cargo install --locked --version 0.23.0 cargo-audit`, then run `./scripts/audit-dependencies.sh`. It refreshes the RustSec database once and checks four lockfiles against the same snapshot: the CLI, the bundled host and embedded runtimes, and the editor grammar. A reported vulnerability or failure to audit a file makes the command fail. The output also lists maintenance warnings. The **Dependency audit** workflow runs on changes to these lockfiles or the audit itself, and can be triggered manually for unchanged releases. [RustSec advisory database](https://rustsec.org/)
+Install the audit tool with `cargo install --locked --version 0.23.0 cargo-audit`, then run `./scripts/audit-dependencies.sh`. It refreshes the RustSec database once and checks the CLI, bundled host and embedded runtimes, and editor grammar against the same snapshot. A reported vulnerability or failure to audit a lockfile makes the command fail. The output also lists maintenance warnings. The **Dependency audit** workflow runs on relevant changes and every Monday. It can also be triggered manually. [RustSec advisory database](https://rustsec.org/)
 
 ## Prime docs (HTML app)
 

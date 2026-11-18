@@ -16,6 +16,8 @@ on:
       - 'scripts/audit-dependencies.sh'
       - '.github/workflows/dependency-audit.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '21 5 * * 1'
 
 permissions:
   contents: read

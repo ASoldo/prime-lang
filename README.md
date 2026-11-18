@@ -4,6 +4,8 @@
 
 Prime is an expression-oriented language with an interpreter, an LLVM compiler and a language server. The CLI checks, formats, tests and builds Prime packages. The [language outline](docs/LanguageOutline.md) describes the implemented language and target limitations.
 
+Prime's source code and documentation are available under the [MIT License](LICENSE). The Tetris artwork and audio in `workspace/demos/tetris/assets/` have separate licensing status and are excluded from the Cargo source package.
+
 ### Project Layout
 
 ```
