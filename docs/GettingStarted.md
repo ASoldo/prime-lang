@@ -31,7 +31,7 @@ The compiled executable prints `42`. The [stdin guide](Inline.md) shows how to u
 
 ## Build a text program offline
 
-With an installed CLI, text, core-library, filesystem and TCP programs need only the Rust toolchain, LLVM and the C linker to build their native runtime. For example, run this in an empty directory with an empty Cargo registry while offline.
+With an installed CLI, host text, core-library, filesystem and socket programs need only the Rust toolchain, LLVM and the C linker to build their native runtime. For example, run this in an empty directory with an empty Cargo registry while offline.
 
 ```sh
 printf 'out("hello");\n' | CARGO_HOME="$PWD/registry" CARGO_TARGET_DIR="$PWD/target" \
@@ -40,6 +40,8 @@ printf 'out("hello");\n' | CARGO_HOME="$PWD/registry" CARGO_TARGET_DIR="$PWD/tar
 ```
 
 Graphics and audio are selected automatically, including calls in compiled library functions. Graphics uses image and minifb with the window-system development packages. Audio uses rodio and ALSA on Linux. The first build of a media program needs its locked Cargo dependencies available locally or from the registry. [Runtime selection and caching](RuntimeFFI.md#host-runtime-selection)
+
+Classic ESP32 SDK projects use Espressif LLVM and the ESP-IDF linker. The socket example builds a Prime object and runs TCP and UDP loopback under FreeRTOS. [SDK dependencies and build](EspIdfSockets.md)
 
 ## Create a package
 

@@ -97,3 +97,5 @@ An optional [WebRTC host adapter](WebRTC.md) connects browser data channels to a
 ## Macros, source positions and tools
 
 Pattern macros expand before type checking. `//` introduces a comment, `///` documents an item, and `//!` documents its module. The formatter and language server use the Rust parser. LSP positions count UTF-16 code units. The [check JSON format](Checking.md) uses half-open UTF-8 byte spans suitable for slicing the original source. For executable examples see [workspace tests](../workspace/tests), [Tetris](../workspace/demos/tetris) and the [host checks](../scripts/ci.sh).
+
+Classic ESP32 SDK projects can select `platform = "esp-idf"` with `target = "xtensa-esp32-espidf"` and `no_std = false` for the component's bounded IPv4 loopback socket calls. The compiler accepts fixed-length byte slices containing runtime values. The SDK links the emitted Prime object and supplies the socket implementation. [ESP-IDF socket contract](EspIdfSockets.md)

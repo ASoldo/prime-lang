@@ -93,6 +93,17 @@ pub struct BuildOptions {
 }
 
 impl BuildOptions {
+    pub fn uses_idf_sdk(&self) -> bool {
+        self.target.is_esp32_xtensa_espidf() && self.platform.as_deref() == Some("esp-idf")
+    }
+
+    pub fn typecheck_options(&self) -> crate::language::typecheck::TypecheckOptions {
+        crate::language::typecheck::TypecheckOptions {
+            target: self.target.clone(),
+            esp_idf_sdk: self.uses_idf_sdk(),
+        }
+    }
+
     pub fn from_sources(
         target_flag: Option<String>,
         platform_flag: Option<String>,

@@ -1417,6 +1417,70 @@ impl Compiler {
         }
     }
 
+    pub(super) fn builtin_idf_socket(
+        &mut self,
+        name: &str,
+        parameters: &[crate::language::idf_socket::Argument],
+        values: Vec<Value>,
+    ) -> Result<Value, String> {
+        use crate::language::idf_socket::Argument;
+        if !self.target.is_esp32_xtensa_espidf() || parameters.len() != values.len() {
+            return Err(format!("invalid ESP-IDF socket call to {name}"));
+        }
+        let mut operands = Vec::new();
+        for (param, value) in parameters.iter().zip(values) {
+            if *param == Argument::Int {
+                operands.push(self.int32_for_runtime(value, name)?);
+                continue;
+            }
+            let slice = self.expect_slice_value(value, name)?;
+            if slice.handle.is_some() {
+                return Err(format!(
+                    "{name} requires a byte slice with a compile-time length"
+                ));
+            }
+            let items = slice.items.lock().unwrap();
+            let byte = unsafe { LLVMInt8TypeInContext(self.context) };
+            let array = unsafe { LLVMArrayType2(byte, items.len() as u64) };
+            let buffer = self.build_entry_alloca(array, "socket_bytes");
+            for (i, item) in items.iter().enumerate() {
+                let n = self.expect_int(item.clone())?;
+                unsafe {
+                    let mut indices = [
+                        LLVMConstNull(self.i32_type),
+                        LLVMConstInt(self.i32_type, i as u64, 0),
+                    ];
+                    let ptr = LLVMBuildInBoundsGEP2(
+                        self.builder,
+                        array,
+                        buffer,
+                        indices.as_mut_ptr(),
+                        2,
+                        c"byte_addr".as_ptr(),
+                    );
+                    let value = LLVMBuildIntCast(self.builder, n.llvm(), byte, c"byte".as_ptr());
+                    LLVMBuildStore(self.builder, value, ptr);
+                }
+            }
+            operands.push(buffer);
+            operands.push(unsafe { LLVMConstInt(self.i32_type, items.len() as u64, 0) });
+        }
+        let symbol = CString::new(format!("prime_{name}")).unwrap();
+        let mut types = operands
+            .iter()
+            .map(|v| unsafe { LLVMTypeOf(*v) })
+            .collect::<Vec<_>>();
+        unsafe {
+            let ty = LLVMFunctionType(self.i32_type, types.as_mut_ptr(), types.len() as u32, 0);
+            let mut function = llvm_sys::core::LLVMGetNamedFunction(self.module, symbol.as_ptr());
+            if function.is_null() {
+                function = LLVMAddFunction(self.module, symbol.as_ptr(), ty);
+            }
+            let value = self.call_runtime(function, ty, &mut operands, name);
+            Ok(Value::Int(IntValue::new(value, None)))
+        }
+    }
+
     pub(super) fn builtin_tcp(
         &mut self,
         name: &str,

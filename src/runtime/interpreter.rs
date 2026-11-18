@@ -1209,6 +1209,11 @@ impl Interpreter {
         args: Vec<Value>,
         type_args: &[TypeExpr],
     ) -> Option<RuntimeResult<Vec<Value>>> {
+        if crate::language::idf_socket::parameters(name).is_some() {
+            return Some(Err(RuntimeError::Unsupported {
+                message: format!("`{name}` executes in the linked ESP-IDF SDK application"),
+            }));
+        }
         if let Some(op) = TcpBuiltin::lookup(name) {
             return Some(self.builtin_tcp(name, op, args));
         }
@@ -1381,7 +1386,9 @@ impl Interpreter {
     }
 
     fn is_builtin_name(&self, name: &str) -> bool {
-        if TcpBuiltin::lookup(name).is_some() {
+        if crate::language::idf_socket::parameters(name).is_some()
+            || TcpBuiltin::lookup(name).is_some()
+        {
             return true;
         }
         matches!(

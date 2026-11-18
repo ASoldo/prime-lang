@@ -39,6 +39,7 @@ pub fn check_program_typed<'a>(
         current_module: None,
         current_no_std: false,
         target: options.target.clone(),
+        esp_idf_sdk: options.esp_idf_sdk,
     };
     checker.errors.append(&mut checker.registry.errors);
     checker.validate_drop_impls();
@@ -257,6 +258,7 @@ struct Checker {
     imports: HashMap<String, ImportScope>,
     current_module: Option<String>,
     current_no_std: bool,
+    esp_idf_sdk: bool,
     target: BuildTarget,
 }
 
@@ -3071,6 +3073,24 @@ impl Checker {
             );
             return None;
         }
+        if let Some(params) = crate::language::idf_socket::parameters(name) {
+            if !self.esp_idf_sdk || self.current_no_std {
+                self.errors.push(TypeError::new(&module.path, span, format!(
+                    "`{name}` requires the classic ESP-IDF SDK socket component (target xtensa-esp32-espidf, platform esp-idf, no_std = false)"
+                )).with_code("E0NS"));
+                return None;
+            }
+            return self.check_function_type_call(
+                module,
+                &params.iter().map(|p| p.ty()).collect::<Vec<_>>(),
+                &[TypeExpr::named("int32")],
+                args,
+                expected,
+                returns,
+                env,
+                span,
+            );
+        }
         if let Some(op) = TcpBuiltin::lookup(name) {
             if !op.available(&self.target, self.current_no_std) {
                 self.errors.push(
@@ -5782,7 +5802,9 @@ impl Checker {
     }
 
     fn is_builtin_name(&self, name: &str) -> bool {
-        if TcpBuiltin::lookup(name).is_some() {
+        if crate::language::idf_socket::parameters(name).is_some()
+            || TcpBuiltin::lookup(name).is_some()
+        {
             return true;
         }
         matches!(
@@ -8686,7 +8708,10 @@ fn b(x: B[bool]) -> int32 { ~inspect(x) }
             (BuildTarget::Host, usize::BITS),
             (BuildTarget::Triple(ESP32C3_TRIPLE.into()), 32),
         ] {
-            let options = super::TypecheckOptions { target };
+            let options = super::TypecheckOptions {
+                target,
+                ..Default::default()
+            };
             for (ty, min, max) in [
                 ("usize", 0_i128, (1_i128 << bits) - 1),
                 ("isize", -(1_i128 << (bits - 1)), (1_i128 << (bits - 1)) - 1),

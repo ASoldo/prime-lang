@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.22)
+set(COMPONENTS main)
+set(PROJECT_VER "1")
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(prime_idf_net)

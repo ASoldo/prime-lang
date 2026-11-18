@@ -1,0 +1,10 @@
+manifest_version = "3"
+
+[module]
+name = "idf_net"
+path = "main.prime"
+no_std = false
+
+[build]
+target = "xtensa-esp32-espidf"
+platform = "esp-idf"

@@ -7,7 +7,7 @@ use crate::{
         macro_expander,
         parser::parse_module,
         span::Span,
-        typecheck::{TypeError, TypecheckOptions, check_program_with_options},
+        typecheck::{TypeError, check_program_with_options},
     },
     project::{
         bundled,
@@ -342,9 +342,7 @@ fn type_diagnostics(
         Err(errors) => return macro_errors_to_lsp(errors, text, &module.path),
     };
     let build_options = BuildOptions::from_sources(None, None, manifest);
-    let typecheck_options = TypecheckOptions {
-        target: build_options.target,
-    };
+    let typecheck_options = build_options.typecheck_options();
     match check_program_with_options(&expanded, &typecheck_options) {
         Ok(_) => Vec::new(),
         Err(errors) => errors

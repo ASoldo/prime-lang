@@ -2823,6 +2823,11 @@ impl Compiler {
         name: &str,
         args: &[Expr],
     ) -> Option<Result<EvalOutcome<EvaluatedValue>, String>> {
+        if let Some(parameters) = crate::language::idf_socket::parameters(name) {
+            return Some(self.invoke_builtin(args, |this, values| {
+                this.builtin_idf_socket(name, parameters, values)
+            }));
+        }
         if let Some(op) = TcpBuiltin::lookup(name) {
             return Some(match op {
                 TcpBuiltin::Socket(_) => self.emit_host_handle_call(name, args),

@@ -63,12 +63,14 @@ impl TypeError {
 #[derive(Clone, Debug)]
 pub struct TypecheckOptions {
     pub target: BuildTarget,
+    pub esp_idf_sdk: bool,
 }
 
 impl Default for TypecheckOptions {
     fn default() -> Self {
         Self {
             target: BuildTarget::host(),
+            esp_idf_sdk: false,
         }
     }
 }

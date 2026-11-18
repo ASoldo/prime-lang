@@ -64,3 +64,7 @@ To provision components along with the application, supply the binary paths expl
 Prime checks that each supplied path names a readable, nonempty regular file before starting `write-flash`. The bootloader must fit below the table at `0x8000` and the table must fit its 4 KiB sector. A board with a custom table offset requires its own provisioning layout.
 
 For build verification, pass `--no-flash`. It overrides an enabled manifest, skips serial port selection and component checks, and still runs the offline image conversion. If conversion fails, a configured objcopy can produce a raw binary for inspection. Only successful esptool conversion produces a candidate for flashing. Board boot and runtime checks are separate from packaging. [Embedded timer verification](EmbeddedTimers.md)
+
+## ESP-IDF component linking
+
+An SDK project can use `prime-lang build TARGET --emit-object FILE --no-flash` to generate a relocatable object and link it through its own build system. The classic ESP32 socket example runs the generated Prime entry under FreeRTOS and exchanges binary TCP and UDP payloads through lwIP loopback. [SDK build, firmware images and UART verification](EspIdfSockets.md)

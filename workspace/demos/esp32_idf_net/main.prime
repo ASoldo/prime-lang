@@ -1,0 +1,77 @@
+module idf_net;
+
+// TCP is a byte stream. Advance by the actual read count, even on loopback.
+fn tcp_payload(tx: int32, rx: int32) -> bool {
+  let []uint8 bytes = [0, 80, 114, 105, 109, 101, 255];
+  let int32 sent = idf_tcp_write(tx, bytes, 1500);
+  let mut bool ok = sent == cast[int32](bytes.len());
+  let mut int32 done = 0;
+  let mut int32 sum = 0;
+  for expected in bytes {
+    let int32 count = idf_tcp_read(rx, 1, 1500);
+    ok = ok && count == 1;
+    let int32 b = idf_rx_byte(rx, 0);
+    ok = ok && b == cast[int32](expected);
+    sum = sum + b;
+    done = done + count;
+  }
+  let []uint8 reply = [cast[uint8](sum)];
+  let int32 written = idf_tcp_write(rx, reply, 1500);
+  let int32 read = idf_tcp_read(tx, 1, 1500);
+  let int32 ack = idf_rx_byte(tx, 0);
+  out(`PRIME_IDF_TCP bytes={done} sum={sum} ack={ack}`);
+  ok && written == 1 && read == 1 && ack == (sum & 255)
+}
+
+fn tcp() -> bool {
+  let int32 listener = idf_tcp_listen(0);
+  let int32 client = idf_tcp_connect(idf_local_port(listener), 1500);
+  let int32 server = idf_tcp_accept(listener, 1500);
+  let bool ok = client >= 0 && server >= 0 && tcp_payload(client, server);
+  idf_close(server);
+  idf_close(client);
+  idf_close(listener);
+  ok
+}
+
+fn udp_payload(tx: int32, rx: int32) -> bool {
+  let []uint8 bytes = [85, 68, 80, 0, 128, 255];
+  let int32 sent = idf_udp_send_to(tx, idf_local_port(rx), bytes, 1500);
+  let int32 received = idf_udp_recv_from(rx, 32, 1500);
+  let mut bool ok = sent == cast[int32](bytes.len()) && received == sent && idf_sender_port(rx) == idf_local_port(tx);
+  let mut int32 sum = 0;
+  let mut int32 i = 0;
+  for expected in bytes {
+    let int32 b = idf_rx_byte(rx, i);
+    ok = ok && b == cast[int32](expected);
+    sum = sum + b;
+    i = i + 1;
+  }
+  let []uint8 reply = [cast[uint8](sum)];
+  let int32 written = idf_udp_send_to(rx, idf_sender_port(rx), reply, 1500);
+  let int32 read = idf_udp_recv_from(tx, 1, 1500);
+  let int32 ack = idf_rx_byte(tx, 0);
+  out(`PRIME_IDF_UDP bytes={received} sum={sum} ack={ack}`);
+  ok && written == 1 && read == 1 && ack == (sum & 255) && idf_sender_port(tx) == idf_local_port(rx)
+}
+
+fn udp() -> bool {
+  let int32 receiver = idf_udp_bind(0);
+  let int32 sender = idf_udp_bind(0);
+  let int32 empty = idf_udp_recv_from(receiver, 1, 30);
+  let bool ok = receiver >= 0 && sender >= 0 && empty < 0 && udp_payload(sender, receiver);
+  idf_close(sender);
+  idf_close(receiver);
+  ok
+}
+
+fn main() {
+  out("PRIME_IDF_BEGIN");
+  let bool stream = tcp();
+  let bool datagram = udp();
+  if stream && datagram {
+    out("PRIME_IDF_PASS");
+  } else {
+    out("PRIME_IDF_FAIL");
+  }
+}

@@ -1,9 +1,7 @@
 use crate::{
     language::{
-        errors::SyntaxError,
-        macro_expander::expand_program,
-        span::Span,
-        typecheck::{TypecheckOptions, check_program_with_options},
+        errors::SyntaxError, macro_expander::expand_program, span::Span,
+        typecheck::check_program_with_options,
     },
     project::{
         EntryPoint, EntrySource, PackageError, load_manifest_for_entry, lock::require_frozen,
@@ -125,9 +123,7 @@ impl Report<'_> {
             require_frozen(manifest.as_ref(), path).map_err(package_errors)?;
         }
 
-        let options = TypecheckOptions {
-            target: BuildOptions::from_sources(None, None, manifest.as_ref()).target,
-        };
+        let options = BuildOptions::from_sources(None, None, manifest.as_ref()).typecheck_options();
         let package = source.load(manifest).map_err(package_errors)?;
         self.paths = package
             .program

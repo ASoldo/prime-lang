@@ -12,10 +12,7 @@ use prime_lang::language::{
     ast::{Item, ModuleKind},
     span::Span,
 };
-use prime_lang::language::{
-    compiler::Compiler, macro_expander, parser::parse_module, typecheck,
-    typecheck::TypecheckOptions,
-};
+use prime_lang::language::{compiler::Compiler, macro_expander, parser::parse_module, typecheck};
 use prime_lang::project::diagnostics::analyze_manifest_issues;
 use prime_lang::project::{
     EntrySource, FileErrors, PackageError, apply_manifest_header_with_manifest, canonicalize,
@@ -324,6 +321,9 @@ struct BuildArgs {
     /// Skip flashing even if enabled in manifest build.flash
     #[arg(long, default_value_t = false)]
     no_flash: bool,
+    /// Write a relocatable object for an external linker and stop before runtime linking
+    #[arg(long, value_name = "FILE", conflicts_with = "name")]
+    emit_object: Option<PathBuf>,
     /// Base name for generated artifacts
     #[arg(long, default_value = "output", value_parser = artifact_name)]
     name: String,
@@ -557,9 +557,7 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool, trace: bool) {
         Ok(package) => {
             let expanded_program =
                 expand_or_report(&package.program, |path| source.read_source(path));
-            let typecheck_options = TypecheckOptions {
-                target: run_options.target.clone(),
-            };
+            let typecheck_options = run_options.typecheck_options();
             let checked = typecheck::check_program_typed(&expanded_program, &typecheck_options)
                 .unwrap_or_else(|errors| {
                     emit_type_errors_with_source(&errors, |path| source.read_source(path));
@@ -820,6 +818,7 @@ fn build_entry(args: BuildArgs) {
         platform,
         no_flash,
         codegen_format,
+        emit_object,
     } = args;
     let name = name.as_str();
     let (source, manifest) = match resolve_entry_for_cli(&entry, project.as_deref()) {
@@ -827,6 +826,12 @@ fn build_entry(args: BuildArgs) {
         Err(err) => exit_on_package_error(err),
     };
     let mut build_options = BuildOptions::from_sources(target_triple, platform, manifest.as_ref());
+    if build_options.uses_idf_sdk() && emit_object.is_none() {
+        eprintln!(
+            "The esp-idf platform uses the SDK linker. Run idf.py build in the SDK project or pass --emit-object FILE."
+        );
+        std::process::exit(1);
+    }
     if no_flash {
         build_options.flash.enabled = false;
     }
@@ -836,9 +841,7 @@ fn build_entry(args: BuildArgs) {
             configure_embedded_env(&build_options);
             let expanded_program =
                 expand_or_report(&package.program, |path| source.read_source(path));
-            let typecheck_options = TypecheckOptions {
-                target: build_options.target.clone(),
-            };
+            let typecheck_options = build_options.typecheck_options();
             let checked = typecheck::check_program_typed(&expanded_program, &typecheck_options)
                 .unwrap_or_else(|errors| {
                     emit_type_errors_with_source(&errors, |path| source.read_source(path));
@@ -880,6 +883,15 @@ fn build_entry(args: BuildArgs) {
                 }
                 std::process::exit(1);
             }
+            if let Some(path) = emit_object {
+                if let Err(err) = write_relocatable_object(&compiler, &path, &build_options.target)
+                {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+                println!("Object written to {}", path.display());
+                return;
+            }
             let artifact_dir = match write_build_artifacts(&compiler, name, &build_options) {
                 Ok(dir) => dir,
                 Err(err) => {
@@ -912,6 +924,30 @@ fn artifact_name(name: &str) -> Result<String, String> {
         return Err("use a single filename for --name".into());
     }
     Ok(name.to_owned())
+}
+
+fn write_relocatable_object(
+    compiler: &Compiler,
+    path: &Path,
+    target: &BuildTarget,
+) -> Result<(), String> {
+    if !target.is_host() && !target.is_embedded() {
+        return Err(format!(
+            "unsupported target triple: {}",
+            target.triple().unwrap_or_default()
+        ));
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let stage = tempfile::tempdir_in(parent)
+        .map_err(|err| format!("Cannot stage {}: {err}", path.display()))?;
+    let ir = stage.path().join("module.ll");
+    let obj = stage.path().join("module.o");
+    compiler.write_ir_to(&ir)?;
+    run_llc(&ir, &obj, target)?;
+    fs::rename(obj, path).map_err(|err| format!("Cannot publish {}: {err}", path.display()))
 }
 
 fn write_build_artifacts(

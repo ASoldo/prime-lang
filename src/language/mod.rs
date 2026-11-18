@@ -4,6 +4,7 @@ pub mod build;
 pub mod compiler;
 pub mod enum_utils;
 pub mod errors;
+pub(crate) mod idf_socket;
 pub mod integer;
 pub mod lexer;
 pub mod macro_expander;
