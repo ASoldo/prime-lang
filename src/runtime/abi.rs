@@ -654,16 +654,6 @@ mod embedded {
         PrimeHandle::null()
     }
 
-    #[cfg(not(target_arch = "xtensa"))]
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
-    #[unsafe(export_name = "prime_string_new")]
-    pub unsafe extern "C" fn prime_string_new(_data: *const u8, _len: usize) -> PrimeHandle {
-        PrimeHandle::null()
-    }
-
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none"),
@@ -1246,6 +1236,10 @@ mod embedded {
     ))]
     #[unsafe(export_name = "prime_value_tag")]
     pub unsafe extern "C" fn prime_value_tag(_handle: PrimeHandle) -> PrimeTag {
+        #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+        if c3_strings::lookup(_handle).is_some() {
+            return PrimeTag::String;
+        }
         PrimeTag::Unit
     }
 
@@ -1291,6 +1285,14 @@ mod embedded {
         ptr_out: *mut *const u8,
         len_out: *mut usize,
     ) -> PrimeStatus {
+        #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+        if !ptr_out.is_null() && !len_out.is_null() {
+            if let Some(string) = c3_strings::lookup(_handle) {
+                ptr_out.write(string.ptr);
+                len_out.write(string.len);
+                return PrimeStatus::Ok;
+            }
+        }
         if !ptr_out.is_null() {
             ptr_out.write(core::ptr::null());
         }
@@ -1577,6 +1579,64 @@ mod embedded {
         len: usize,
     }
 
+    // C3 has no last-owner notification for a string retained in a Result or
+    // channel. Intern immutable copies so a full pool cannot alias a live handle.
+    #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+    mod c3_strings {
+        use super::*;
+
+        const BYTE_CAPACITY: usize = 8192;
+        const HANDLE_CAPACITY: usize = 64;
+        static mut BYTES: [u8; BYTE_CAPACITY] = [0; BYTE_CAPACITY];
+        static mut STRINGS: [PrimeString; HANDLE_CAPACITY] = [PrimeString {
+            ptr: ptr::null(),
+            len: 0,
+        }; HANDLE_CAPACITY];
+        static mut COUNT: usize = 0;
+        static mut USED: usize = 0;
+
+        pub(super) unsafe fn lookup(handle: PrimeHandle) -> Option<PrimeString> {
+            with_interrupts_masked(|| {
+                let first = (&raw const STRINGS).cast::<PrimeString>();
+                let offset = handle.0.addr().checked_sub(first.addr())?;
+                let stride = core::mem::size_of::<PrimeString>();
+                let index = offset / stride;
+                (index < COUNT && offset % stride == 0).then(|| first.add(index).read())
+            })
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn prime_string_new(data: *const u8, len: usize) -> PrimeHandle {
+            if data.is_null() || len > BYTE_CAPACITY {
+                return PrimeHandle::null();
+            }
+            let input = core::slice::from_raw_parts(data, len);
+            with_interrupts_masked(|| {
+                let slots = (&raw mut STRINGS).cast::<PrimeString>();
+                for i in 0..COUNT {
+                    let slot = slots.add(i);
+                    let string = slot.read();
+                    if len == string.len && core::slice::from_raw_parts(string.ptr, len) == input {
+                        return PrimeHandle(slot.cast());
+                    }
+                }
+                if COUNT == HANDLE_CAPACITY || len > BYTE_CAPACITY - USED {
+                    return PrimeHandle::null();
+                }
+                let dest = (&raw mut BYTES).cast::<u8>().add(USED);
+                ptr::copy(data, dest, len);
+                let slot = slots.add(COUNT);
+                slot.write(PrimeString { ptr: dest, len });
+                USED += len;
+                COUNT += 1;
+                PrimeHandle(slot.cast())
+            })
+        }
+    }
+
+    #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+    use c3_strings::prime_string_new;
+
     // String ring buffer for UART prints; big enough for steady logging and
     // wraps safely. Each entry stores a copy so callers can pass stack/data
     // pointers without lifetime issues.
@@ -1634,10 +1694,13 @@ mod embedded {
         PrimeHandle(STR_HANDLES.as_mut_ptr().add(slot) as *mut c_void)
     }
 
-    #[cfg(target_arch = "xtensa")]
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_int_to_string(value: i128) -> PrimeHandle {
-        // Render i128 into decimal string using the same ring buffer as prime_string_new.
+        // Format the full signed range, including i128::MIN.
         let mut buf = [0u8; 48];
         let mut idx = buf.len();
         let neg = value < 0;
@@ -1664,10 +1727,10 @@ mod embedded {
         prime_string_new(buf.as_ptr().add(idx), buf.len() - idx)
     }
 
-    #[cfg(any(
-        not(target_arch = "xtensa"),
-        all(target_arch = "riscv32", target_os = "none"),
-    ))]
+    #[cfg(not(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    )))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_int_to_string(_value: i128) -> PrimeHandle {
         // Host stub: ints are printed directly by host runtime, so this is unused.
@@ -1688,9 +1751,9 @@ mod embedded {
             ets_printf(b"<channel>\0".as_ptr());
             return;
         }
-        let s = &*(value.0 as *const PrimeString);
         #[cfg(target_arch = "xtensa")]
         {
+            let s = &*(value.0 as *const PrimeString);
             let count = PRINT_COUNT.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
             ets_printf(b"%s\0".as_ptr(), s.ptr);
             let should_log = count % 64 == 0
@@ -1700,8 +1763,6 @@ mod embedded {
                 log_stats_snapshot();
             }
         }
-        #[cfg(not(target_arch = "xtensa"))]
-        let _ = s;
     }
 
     // Classic ESP32: reserve timer group 0, general-purpose timer 0. A hardware

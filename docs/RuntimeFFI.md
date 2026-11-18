@@ -31,3 +31,18 @@ The interpreter uses an in-process runtime. Native code calls C-compatible symbo
 The host runtime uses OS threads. The embedded runtime uses statically initialized pools and a target-specific clock. Closing a channel preserves its queued values. After those values have been read, the channel releases its slot. [Embedded timers and channels](EmbeddedTimers.md)
 
 Host interpreter and async errors can propagate through task results. The embedded runtime aborts or loops on panic. [Async semantics and restrictions](AsyncAwait.md)
+
+## ESP32-C3 strings
+
+On RV32IMC, `prime_string_new(data, len)` copies exactly `len` bytes into immutable storage. Identical byte sequences share a handle, even after the pool fills. The pool holds 64 distinct strings and 8192 payload bytes in total per boot. An empty string uses one handle and zero bytes. A null input pointer, an oversized string, or a new value that exceeds either limit returns a null handle. Existing values stay readable, including through a channel, task or enum payload. Embedded handle release currently provides no last-owner signal for reclaiming strings.
+
+`prime_value_as_string(handle, &ptr, &len)` returns `Ok` with a borrowed pointer and byte length for a C3 string. Callers must use that length. Embedded zero bytes are preserved. `prime_int_to_string` formats signed 128-bit integers in decimal and uses the same pool.
+
+With the Rust RV32IMC target, the Espressif RISC-V GCC toolchain, LLVM tools, esptool and Python Unicorn 2.1 installed, run the standalone regression from the project root.
+
+```sh
+cargo build --locked --bin prime-lang
+PRIME_BIN="$PWD/target/debug/prime-lang" python3 scripts/test_c3_strings.py -v
+```
+
+The probe runs the Prime interpreter and builds the fixture through `prime-lang build main.prime --name c3 --no-flash`. Unicorn executes the linked RV32IMC application twice. The test reads the handles passed to `prime_print` through the linked ABI and compares their bytes with interpreter output, including a closed channel yielding `Err("empty")` and a task returning UTF-8 text. Separate probes exercise pool exhaustion, repeated lookups and decimal formatting. This checks the print boundary in emulation. Physical UART output and board boot require separate verification.

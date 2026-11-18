@@ -1,0 +1,17 @@
+[package]
+name = "c3_strings"
+
+[module]
+name = "c3_strings"
+path = "main.prime"
+no_std = true
+
+[build]
+target = "riscv32imc-unknown-none-elf"
+platform = "esp32"
+
+[build.toolchain]
+cc = "riscv32-esp-elf-gcc"
+objcopy = "riscv32-esp-elf-objcopy"
+ld_script = "probe.ld"
+startup_obj = "startup.o"

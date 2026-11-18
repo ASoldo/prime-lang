@@ -1,0 +1,26 @@
+module c3_strings;
+
+pub enum Option[T] { Some(T), None, }
+pub enum Result[T, E] { Ok(T), Err(E), }
+
+fn main() {
+  let (tx, rx) = channel[int32]();
+  let worker = spawn async {
+    let Option[int32] received = await recv_task(rx);
+    match received {
+      Option::Some(v) => Result::Ok(v),
+      Option::None => Result::Err("empty"),
+    }
+  };
+  close(tx);
+  let task = join(worker);
+  let joined = await task;
+  match joined {
+    Result::Ok(v) => out(v),
+    Result::Err(msg) => out(`result={msg}`),
+  }
+  let text_task = async { "čaj" };
+  let string text = await text_task;
+  out(text);
+  out(-13);
+}
