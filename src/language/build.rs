@@ -1650,10 +1650,7 @@ impl BuildInterpreter {
                         continue;
                     }
                 }
-                match self.eval_expr_mut(&arm.value) {
-                    Ok(v) => return Ok(v),
-                    Err(err) => return Err(err),
-                }
+                return self.eval_expr_mut(&arm.value);
             }
         }
         Err("match expression had no matching arm in build spawn".into())

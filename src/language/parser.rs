@@ -483,25 +483,6 @@ impl Parser {
                 continue;
             }
 
-            if matches!(
-                self.peek_kind(),
-                Some(TokenKind::ModuleKw | TokenKind::LibraryKw | TokenKind::TestKw)
-            ) {
-                let start = self.current_span_start();
-                self.advance();
-                while !self.check(TokenKind::Semi) && !self.is_eof() {
-                    self.advance();
-                }
-                self.consume_optional(TokenKind::Semi);
-                let end = self.last_span_end(start);
-                let span = Span::new(start, end);
-                self.report(SyntaxError::new(
-                    "`module` declaration must appear before any other code",
-                    span,
-                ));
-                continue;
-            }
-
             if self.check(TokenKind::Pub) && matches!(self.peek_kind_n(1), Some(TokenKind::Import))
             {
                 self.advance(); // consume pub
@@ -3644,11 +3625,7 @@ fn expr_to_pattern(expr: &Expr) -> Option<Pattern> {
         } => {
             let mut patterns = Vec::new();
             for value in values {
-                if let Some(pat) = expr_to_pattern(value) {
-                    patterns.push(pat);
-                } else {
-                    return None;
-                }
+                patterns.push(expr_to_pattern(value)?);
             }
             Some(Pattern::EnumVariant {
                 enum_name: enum_name.clone(),
@@ -3661,11 +3638,7 @@ fn expr_to_pattern(expr: &Expr) -> Option<Pattern> {
         Expr::Tuple(values, span) => {
             let mut parts = Vec::new();
             for value in values {
-                if let Some(pat) = expr_to_pattern(value) {
-                    parts.push(pat);
-                } else {
-                    return None;
-                }
+                parts.push(expr_to_pattern(value)?);
             }
             Some(Pattern::Tuple(parts, *span))
         }

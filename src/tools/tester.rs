@@ -227,7 +227,7 @@ fn run_test_file(root: &Path, path: &Path) -> Result<(), String> {
                 } else {
                     println!(
                         "test name:{} path:{} status:skipped (needs {} args, have {})",
-                        &qualified,
+                        qualified,
                         display,
                         func.params.len(),
                         values.len()
@@ -237,7 +237,7 @@ fn run_test_file(root: &Path, path: &Path) -> Result<(), String> {
             } else {
                 println!(
                     "test name:{} path:{} status:skipped (no chained value for {} args)",
-                    &qualified,
+                    qualified,
                     display,
                     func.params.len()
                 );
