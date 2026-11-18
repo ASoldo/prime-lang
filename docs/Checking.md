@@ -26,6 +26,19 @@ Path dependencies must resolve to the locked directory. Their files can be edite
 
 `prime-lang add NAME --git URL` attempts the initial fetch. `prime-lang sync` records the current HEAD of an available checkout in the package lock. For a temporarily unavailable checkout, sync keeps an existing pin for the same dependency and URL. A new Git dependency can be recorded before its first successful fetch. Frozen commands require the checkout and a pinned revision.
 
+On a clean checkout, restore the entry package before running a frozen command.
+
+```sh
+prime-lang fetch --locked workspace/app
+prime-lang check workspace/app/main.prime --frozen
+```
+
+The package path defaults to the current directory. Fetch reads each package’s existing lock before descending into its dependencies. It clones missing Git dependencies and checks out the full commit ID in the lock, even when the remote branch has advanced. A matching checkout works offline. Fetch fails on missing pins, unavailable commits, source mismatches, or existing checkouts with the wrong HEAD or modified tracked files. Move a conflicting cache directory aside and retry to restore it. Fetch preserves the lockfiles.
+
+## Native code generation errors
+
+`prime-lang build TARGET --codegen-format json` prints an LLVM code generation error as one JSON object on stdout and exits with status 1. The object includes `phase` (`codegen`), `target` (`host` or the selected triple), `message`, and nullable `code`, `path` and `span`. For `E0NATIVETRY`, the span identifies the postfix `?` in UTF-8 byte offsets. Use an explicit `match` to handle a runtime-selected result. Other build stages retain their usual output.
+
 ## JSON for tools
 
 `--format json` writes one UTF-8 JSON object followed by a newline to stdout for both success and program or input errors. A client can parse stdout even when the command exits with `1`. Clap reports usage errors on stderr before checking begins.

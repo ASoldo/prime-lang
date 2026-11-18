@@ -5,6 +5,7 @@ use super::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
     fs,
     path::Path,
     process::Command,
@@ -48,29 +49,48 @@ pub fn require_frozen(
         });
     };
     for package in root.manifests() {
-        let path = package.path.with_file_name("prime.lock");
-        let fail = |reason: String| PackageError::Manifest {
-            path: path.clone(),
-            message: format!("--frozen: {reason}"),
-        };
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err)
-                if err.kind() == std::io::ErrorKind::NotFound
-                    && package.path != root.path
-                    && package.dependencies().is_empty() =>
-            {
-                continue;
-            }
-            Err(err) => return Err(fail(format!("cannot read lockfile: {err}"))),
-        };
-        let lock = toml::from_str(&text).map_err(|err| fail(format!("invalid lockfile: {err}")))?;
-        validate_lock(package, lock).map_err(fail)?;
+        check_package_lock(
+            &package.path,
+            package.dependencies(),
+            package.path == root.path,
+            false,
+        )
+        .map_err(|message| PackageError::Manifest {
+            path: package.path.with_file_name("prime.lock"),
+            message: format!("--frozen: {message}"),
+        })?;
     }
     Ok(())
 }
 
-fn validate_lock(manifest: &PackageManifest, lock: Lockfile) -> Result<(), String> {
+pub(super) fn check_package_lock(
+    manifest: &Path,
+    dependencies: &[Dependency],
+    is_root: bool,
+    fetch: bool,
+) -> Result<(), String> {
+    let path = manifest.with_file_name("prime.lock");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err)
+            if err.kind() == std::io::ErrorKind::NotFound
+                && !is_root
+                && dependencies.is_empty() =>
+        {
+            return Ok(());
+        }
+        Err(err) => return Err(format!("cannot read lockfile: {err}")),
+    };
+    let lock = toml::from_str(&text).map_err(|err| format!("invalid lockfile: {err}"))?;
+    validate_lock(path.parent().unwrap(), dependencies, lock, fetch)
+}
+
+fn validate_lock(
+    root: &Path,
+    dependencies: &[Dependency],
+    lock: Lockfile,
+    fetch: bool,
+) -> Result<(), String> {
     let mut entries = BTreeMap::new();
     for entry in lock.dependencies {
         let key = dependency_key(&entry.name);
@@ -78,11 +98,11 @@ fn validate_lock(manifest: &PackageManifest, lock: Lockfile) -> Result<(), Strin
             return Err(format!("duplicate lock entry for dependency `{key}`"));
         }
     }
-    for dep in manifest.dependencies() {
+    for dep in dependencies {
         let entry = entries
             .remove(&dependency_key(&dep.name))
             .ok_or_else(|| format!("missing lock entry for dependency `{}`", dep.name))?;
-        check_dependency(manifest.root(), dep, &entry)
+        check_dependency(root, dep, &entry, fetch)
             .map_err(|reason| format!("dependency `{}`: {reason}", dep.name))?;
     }
     if let Some((_, extra)) = entries.first_key_value() {
@@ -95,6 +115,7 @@ fn check_dependency(
     root: &Path,
     dep: &Dependency,
     locked: &LockedDependency,
+    fetch: bool,
 ) -> Result<(), String> {
     if dep.package != locked.package {
         return Err("package selection differs from the lockfile".into());
@@ -128,6 +149,14 @@ fn check_dependency(
                 .as_deref()
                 .filter(|rev| !rev.is_empty())
                 .ok_or_else(|| "missing locked Git revision".to_owned())?;
+            if fetch {
+                if !matches!(rev.len(), 40 | 64) || !rev.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(format!("expected a full Git commit ID, got `{rev}`"));
+                }
+                if !cache.exists() || cache.read_dir().is_ok_and(|mut dir| dir.next().is_none()) {
+                    restore_checkout(root, cache, url, rev)?;
+                }
+            }
             let head = checkout_revision(cache)?;
             if !head.eq_ignore_ascii_case(rev) {
                 return Err(format!(
@@ -156,6 +185,38 @@ fn check_dependency(
         }
     }
     Ok(())
+}
+
+// Publish only a fully pinned checkout. A failed fetch leaves the cache retryable.
+fn restore_checkout(root: &Path, cache: &Path, url: &str, rev: &str) -> Result<(), String> {
+    let parent = cache.parent().unwrap();
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+    let staging = tempfile::tempdir_in(parent).map_err(|err| err.to_string())?;
+    let repo = staging.path().join("checkout");
+    git_output(
+        root,
+        &[
+            "clone".as_ref(),
+            "--no-checkout".as_ref(),
+            "--".as_ref(),
+            url.as_ref(),
+            repo.as_os_str(),
+        ],
+    )?;
+    if git_output(&repo, &["cat-file", "-e", rev]).is_err() {
+        git_output(&repo, &["fetch", "origin", rev])?;
+    }
+    git_output(&repo, &["checkout", "--detach", rev])?;
+    if !checkout_revision(&repo)?.eq_ignore_ascii_case(rev) {
+        return Err(format!("revision {rev} is not a commit ID"));
+    }
+    match fs::rename(&repo, cache) {
+        Ok(()) => Ok(()),
+        // A concurrent restore may already have populated the destination.
+        Err(_) if cache.join(".git").exists() => Ok(()),
+        Err(err) => Err(format!("cannot install {}: {err}", cache.display())),
+    }
 }
 
 fn same_git_source(left_root: &Path, left: &str, right_root: &Path, right: &str) -> bool {
@@ -193,7 +254,7 @@ pub(super) fn checkout_revision(cache: &Path) -> Result<String, String> {
     git_output(cache, &["rev-parse", "--verify", "HEAD"])
 }
 
-fn git_output(dir: &Path, args: &[&str]) -> Result<String, String> {
+fn git_output(dir: &Path, args: &[impl AsRef<OsStr>]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("--no-optional-locks")
         .arg("-C")
@@ -208,7 +269,10 @@ fn git_output(dir: &Path, args: &[&str]) -> Result<String, String> {
     if !output.status.success() {
         return Err(format!(
             "git {} failed in {}: {}",
-            args.join(" "),
+            args.iter()
+                .map(|arg| arg.as_ref().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" "),
             dir.display(),
             String::from_utf8_lossy(&output.stderr).trim()
         ));

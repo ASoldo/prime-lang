@@ -41,7 +41,7 @@ match result {
 }
 ```
 
-This prints `timeout` while the 150 ms timer is pending. With enough time, the task returns `7`. In native output, use a `match` for a guarded result whose variant is determined at runtime. The compiler diagnoses runtime-selected `?` propagation until it can emit both paths. A task supplies one consumable result. A second guarded wait after a successful join returns `Err("task missing result")`.
+This prints `timeout` while the 150 ms timer is pending. With enough time, the task returns `7`. In native output, use a `match` for a guarded result whose variant is determined at runtime. For this case, host builds report `E0NATIVETRY`. Use `build --codegen-format json` to obtain the source path, byte range and compilation target. A task supplies one consumable result. A second guarded wait after a successful join returns `Err("task missing result")`.
 
 ## Execution and ownership
 

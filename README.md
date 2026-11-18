@@ -83,7 +83,7 @@ Validated outputs (fresh run, current syntax; files live under `workspace/demos/
 - Call macros with `~name(args)`; add `;` to use them as statements alongside regular expression use.
 - Expansion traces are carried into type errors, so diagnostics from generated code include the macro call stack (e.g., `in expansion of \`foo\` at …`).
 - Inspect expansions from the CLI: `prime-lang expand file.prime --line 10 --column 5` prints the macro trace and only the expanded items that originate from that call. Add `--print-expanded` or omit the position flags to dump the whole expanded module after expansion.
-- Read input safely with `in[T](prompt, ...) -> Result[T, string]`. Prompts can be plain or format strings; parsing failures return `Err(message)` so callers can `match` or use `?`. Works in both the interpreter and compiled binaries.
+- Read input safely with `in[T](prompt, ...) -> Result[T, string]`. Prompts can be plain or format strings; parsing failures return `Err(message)`. Use `match` to handle runtime input in both the interpreter and compiled binaries.
 - Use `@ident` inside a macro body to intentionally capture an outer binding without hygiene renaming.
 - Item macros are allowed: write a macro body as a block of items and invoke it at module scope with `~macro_name(...);` to splice structs/functions/consts into the module.
 - Macro parameters can opt into richer shapes with `: block`, `: pattern`, or `: tokens` annotations (defaults to expression); block/tokens arguments are inlined without extra bindings, and pattern args can be dropped directly into match/let patterns.
@@ -149,6 +149,7 @@ fresh. Highlights:
 | `prime-lang install --git URL [--name tool]` | Clone a tool into `.prime/tools` and record it in the registry |
 | `prime-lang update [--name tool]` | Update installed tools by refetching their git sources |
 | `prime-lang uninstall <tool>` | Remove a tool checkout and prune it from the registry |
+| `prime-lang fetch --locked [package-path]` | Restore missing Git dependencies at their locked commits, including transitive dependencies. [Lockfile workflow](docs/Checking.md#frozen-dependencies) |
 | `prime-lang sync [path]` | Resolve dependencies and write `prime.lock`; pair with `--frozen` on run/build to require the lock |
 | `prime-lang expand <file> [--offset N | --line L --column C] [--print-expanded]` | Show macro expansion trace at a cursor (line/column or byte offset). With a position, prints only the expanded items from that macro; without a position or with `--print-expanded`, prints the fully expanded module. |
 | `in[T](prompt, ...) -> Result[T, string]` | Built-in input helper. Reads a line from stdin, parses to `T`, and returns `Ok(value)`/`Err(message)`. Formatting rules mirror `out`; type arguments are required. |
@@ -559,8 +560,8 @@ fn calibrate_profile(value: int32) -> Result[int32, string] {
   `FlowSignal:Propagate` out of the block automatically—perfect for composing
   fallible helpers.
 - The postfix `?` operator unwraps `Result:Ok` (returning the payload) or
-  triggers an early `Err` by propagating the current value outward. Both the
-  interpreter and build-mode backend now honor this control flow.
+  triggers an early `Err` by propagating the current value outward. The interpreter supports runtime-selected results. In native host
+  builds, use `match` when the compiler cannot determine the variant.
 
 See `demos/error_handling_demo.prime` for a full example that mixes `try {}`,
 `?`, and the multiple-return `span_measurements` helper.

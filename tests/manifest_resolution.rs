@@ -263,3 +263,73 @@ fn add_and_sync_can_record_a_git_source_before_checkout() {
     assert!(lock.dependencies[0].rev.is_none());
     assert!(diagnostic(&app, true).contains("missing locked Git revision"));
 }
+
+#[test]
+fn fetch_locked_restores_pinned_graph_and_reuses_it_offline() {
+    let tmp = tempdir().unwrap();
+    let app = tmp.path().join("app");
+    let leaf = tmp.path().join("leaf");
+    let middle = tmp.path().join("middle");
+    for dir in [&leaf, &middle, &app] {
+        package(dir, "");
+    }
+    git(&leaf, &["init", "-q"]);
+    git(&leaf, &["add", "."]);
+    git(&leaf, &["commit", "-qm", "leaf A"]);
+    let leaf_a = git(&leaf, &["rev-parse", "HEAD"]);
+    let leaf_url = format!("file://{}", leaf.display());
+    cli(&middle, &["add", "leaf", "--git", &leaf_url], 0);
+    let middle_lock = fs::read(middle.join("prime.lock")).unwrap();
+    git(&middle, &["init", "-q"]);
+    git(&middle, &["add", "prime.toml", "prime.lock", "main.prime"]);
+    git(&middle, &["commit", "-qm", "middle A"]);
+    let middle_a = git(&middle, &["rev-parse", "HEAD"]);
+    cli(&app, &["add", "middle", "--git", "../middle"], 0);
+    let lock_path = app.join("prime.lock");
+    let app_lock = fs::read_to_string(&lock_path).unwrap();
+    for dir in [&leaf, &middle] {
+        git(
+            dir,
+            &["commit", "--allow-empty", "-qm", "advance remote to B"],
+        );
+    }
+    fs::remove_dir_all(app.join(".prime")).unwrap();
+    let middle_cache = app.join(".prime/deps").join(slug("middle", "../middle"));
+    for (bad, message) in [
+        (app_lock.replace("../middle", "../other"), "Git source"),
+        (app_lock.replace(&middle_a, "HEAD"), "commit ID"),
+        (app_lock.replace(&middle_a, &"1".repeat(40)), "fetch"),
+    ] {
+        fs::write(&lock_path, &bad).unwrap();
+        let output = cli(&app, &["fetch", "--locked"], 1);
+        assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+        assert_eq!(fs::read_to_string(&lock_path).unwrap(), bad);
+        assert!(!middle_cache.exists());
+    }
+    fs::write(&lock_path, &app_lock).unwrap();
+    cli(tmp.path(), &["fetch", "--locked", "app"], 0);
+    let leaf_cache = middle_cache
+        .join(".prime/deps")
+        .join(slug("leaf", &leaf_url));
+    assert_eq!(git(&middle_cache, &["rev-parse", "HEAD"]), middle_a);
+    assert_eq!(git(&leaf_cache, &["rev-parse", "HEAD"]), leaf_a);
+    fs::rename(&leaf, tmp.path().join("offline-leaf")).unwrap();
+    fs::rename(&middle, tmp.path().join("offline-middle")).unwrap();
+    cli(&app, &["fetch", "--locked"], 0);
+    cli(&app, &["check", "main.prime", "--frozen"], 0);
+    assert_eq!(fs::read_to_string(&lock_path).unwrap(), app_lock);
+    assert_eq!(
+        fs::read(middle_cache.join("prime.lock")).unwrap(),
+        middle_lock
+    );
+    git(
+        &leaf_cache,
+        &["commit", "--allow-empty", "-qm", "unexpected HEAD"],
+    );
+    let err = cli(&app, &["fetch", "--locked"], 1);
+    assert!(String::from_utf8_lossy(&err.stderr).contains(&leaf_a));
+    git(&leaf_cache, &["checkout", "--detach", &leaf_a]);
+    git(&leaf_cache, &["remote", "set-url", "origin", "../wrong"]);
+    let err = cli(&app, &["fetch", "--locked"], 1);
+    assert!(String::from_utf8_lossy(&err.stderr).contains("checkout origin"));
+}

@@ -224,13 +224,20 @@ struct RawRuntimeTable {
 impl PackageManifest {
     pub fn load(path: &Path) -> Result<Self, ManifestError> {
         let canonical = canonical_manifest(path)?;
-        Self::load_node(&canonical, &mut Vec::new(), &mut HashMap::new())
+        Self::load_node(&canonical, &mut Vec::new(), &mut HashMap::new(), false)
+    }
+
+    /// Restore each package's direct Git pins before opening its children.
+    pub fn fetch_locked(path: &Path) -> Result<Self, ManifestError> {
+        let path = canonical_manifest(path)?;
+        Self::load_node(&path, &mut Vec::new(), &mut HashMap::new(), true)
     }
 
     fn load_node(
         path: &Path,
         active: &mut Vec<PathBuf>,
         loaded: &mut HashMap<PathBuf, Arc<Self>>,
+        fetch_locked: bool,
     ) -> Result<Self, ManifestError> {
         if let Some(start) = active.iter().position(|ancestor| ancestor == path) {
             let mut chain = active[start..].to_vec();
@@ -265,6 +272,14 @@ impl PackageManifest {
             tests,
         } = parsed;
         let dependencies = parse_dependencies(&value, &root).map_err(context)?;
+        if fetch_locked {
+            super::lock::check_package_lock(path, &dependencies, active.len() == 1, true).map_err(
+                |message| ManifestError::Parse {
+                    path: path.with_file_name("prime.lock"),
+                    message,
+                },
+            )?;
+        }
         let build = parse_build_settings(&value);
         let mut dependency_manifests = HashMap::new();
         for dep in &dependencies {
@@ -298,7 +313,7 @@ impl PackageManifest {
             let child = if let Some(child) = loaded.get(&child_path) {
                 Arc::clone(child)
             } else {
-                let child = Arc::new(Self::load_node(&child_path, active, loaded)?);
+                let child = Arc::new(Self::load_node(&child_path, active, loaded, fetch_locked)?);
                 loaded.insert(child_path, Arc::clone(&child));
                 child
             };

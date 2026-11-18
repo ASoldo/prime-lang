@@ -82,30 +82,7 @@ enum Commands {
         format: tools::check::CheckFormat,
     },
     /// Build a Prime module down to LLVM IR and a native binary
-    Build {
-        #[arg(value_name = "TARGET")]
-        entry: String,
-        #[arg(short = 'p', long = "project", value_name = "PACKAGE")]
-        project: Option<String>,
-        #[arg(
-            long,
-            default_value_t = false,
-            help = "Require prime.lock to satisfy dependencies"
-        )]
-        frozen: bool,
-        /// Target triple (e.g. riscv32imc-unknown-none-elf); defaults to host
-        #[arg(long = "target", value_name = "TRIPLE")]
-        target_triple: Option<String>,
-        /// Optional platform hint (esp32, host); falls back to PRIME_PLATFORM
-        #[arg(long = "platform", value_name = "PLATFORM")]
-        platform: Option<String>,
-        /// Skip flashing even if enabled in manifest build.flash
-        #[arg(long, default_value_t = false)]
-        no_flash: bool,
-        /// Base name for generated artifacts
-        #[arg(long, default_value = "output")]
-        name: String,
-    },
+    Build(BuildArgs),
     /// Lint a file once or continuously
     Lint {
         file: PathBuf,
@@ -291,11 +268,52 @@ enum Commands {
         #[arg(value_name = "NAME")]
         name: String,
     },
+    /// Restore missing Git checkouts at the commits recorded in prime.lock
+    Fetch {
+        #[arg(long, required = true)]
+        locked: bool,
+        #[arg(value_name = "PACKAGE_PATH", default_value = ".")]
+        path: PathBuf,
+    },
     /// Sync dependencies and write prime.lock
     Sync {
         #[arg(value_name = "PATH", default_value = ".")]
         path: PathBuf,
     },
+}
+
+#[derive(Debug, clap::Args)]
+struct BuildArgs {
+    #[arg(value_name = "TARGET")]
+    entry: String,
+    #[arg(short = 'p', long = "project", value_name = "PACKAGE")]
+    project: Option<String>,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Require prime.lock to satisfy dependencies"
+    )]
+    frozen: bool,
+    /// Target triple (e.g. riscv32imc-unknown-none-elf); defaults to host
+    #[arg(long = "target", value_name = "TRIPLE")]
+    target_triple: Option<String>,
+    /// Optional platform hint (esp32, host); falls back to PRIME_PLATFORM
+    #[arg(long = "platform", value_name = "PLATFORM")]
+    platform: Option<String>,
+    /// Skip flashing even if enabled in manifest build.flash
+    #[arg(long, default_value_t = false)]
+    no_flash: bool,
+    /// Base name for generated artifacts
+    #[arg(long, default_value = "output")]
+    name: String,
+    /// Output format for LLVM code generation errors
+    #[arg(
+        long = "codegen-format",
+        visible_alias = "format",
+        value_enum,
+        default_value = "text"
+    )]
+    codegen_format: tools::check::CheckFormat,
 }
 
 fn main() -> std::process::ExitCode {
@@ -314,23 +332,7 @@ fn main() -> std::process::ExitCode {
         } => {
             return tools::check::run_check(&entry, project.as_deref(), frozen, format);
         }
-        Commands::Build {
-            entry,
-            project,
-            frozen,
-            target_triple,
-            platform,
-            no_flash,
-            name,
-        } => build_entry(
-            &entry,
-            project.as_deref(),
-            frozen,
-            &name,
-            target_triple,
-            platform,
-            no_flash,
-        ),
+        Commands::Build(args) => build_entry(args),
         Commands::Lint { file, watch } => {
             ensure_prime_file(&file);
             warn_manifest_drift(&file);
@@ -473,6 +475,20 @@ fn main() -> std::process::ExitCode {
             if let Err(err) = uninstall_tool(&name) {
                 eprintln!("uninstall failed: {err}");
                 std::process::exit(1);
+            }
+        }
+        Commands::Fetch { path, .. } => {
+            let result = path
+                .canonicalize()
+                .ok()
+                .and_then(|p| find_manifest(&p))
+                .ok_or_else(|| format!("could not locate prime.toml at {}", path.display()))
+                .and_then(|path| {
+                    PackageManifest::fetch_locked(&path).map_err(|err| err.to_string())
+                });
+            if let Err(err) = result {
+                eprintln!("fetch failed: {err}");
+                return std::process::ExitCode::FAILURE;
             }
         }
         Commands::Sync { path } => {
@@ -764,21 +780,23 @@ fn configure_embedded_env(options: &BuildOptions) {
     }
 }
 
-fn build_entry(
-    entry: &str,
-    project: Option<&str>,
-    frozen: bool,
-    name: &str,
-    target_flag: Option<String>,
-    platform_flag: Option<String>,
-    no_flash: bool,
-) {
-    let (entry_path, manifest) = match resolve_entry_for_cli(entry, project) {
+fn build_entry(args: BuildArgs) {
+    let BuildArgs {
+        entry,
+        project,
+        frozen,
+        name,
+        target_triple,
+        platform,
+        no_flash,
+        codegen_format,
+    } = args;
+    let name = name.as_str();
+    let (entry_path, manifest) = match resolve_entry_for_cli(&entry, project.as_deref()) {
         Ok(values) => values,
         Err(err) => exit_on_package_error(err),
     };
-    let mut build_options =
-        BuildOptions::from_sources(target_flag, platform_flag, manifest.as_ref());
+    let mut build_options = BuildOptions::from_sources(target_triple, platform, manifest.as_ref());
     if no_flash {
         build_options.flash.enabled = false;
     }
@@ -809,7 +827,38 @@ fn build_entry(
             }
             let mut compiler = Compiler::with_target(build_options.target.clone());
             if let Err(err) = compiler.compile_program(&expanded_program.program) {
-                eprintln!("Build failed: {err}");
+                let location = compiler.error_location();
+                let path = location.and_then(|loc| {
+                    expanded_program
+                        .program
+                        .modules
+                        .iter()
+                        .find(|module| module.name == loc.module)
+                        .map(|module| &module.path)
+                });
+                let target = build_options.target.triple().unwrap_or("host");
+                match codegen_format {
+                    tools::check::CheckFormat::Json => println!(
+                        "{}",
+                        serde_json::json!({
+                            "phase": "codegen", "target": target, "message": err,
+                            "path": path, "code": location.map(|loc| loc.code),
+                            "span": location.map(|loc| serde_json::json!({"start": loc.span.start, "end": loc.span.end})),
+                        })
+                    ),
+                    tools::check::CheckFormat::Text => {
+                        if let (Some(loc), Some(path)) = (location, path) {
+                            eprintln!(
+                                "{}:{}: build error [{}] ({target}): {err}",
+                                path.display(),
+                                loc.span,
+                                loc.code
+                            );
+                        } else {
+                            eprintln!("Build failed ({target}): {err}");
+                        }
+                    }
+                }
                 std::process::exit(1);
             }
             let build_root = Path::new(".build.prime");

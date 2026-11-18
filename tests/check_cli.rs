@@ -255,3 +255,53 @@ fn named_entry_uses_the_selecting_manifest_even_when_its_file_lives_elsewhere() 
     );
     assert_eq!(String::from_utf8_lossy(&ran.stdout).trim(), "42");
 }
+
+#[test]
+fn native_runtime_try_reports_operator_location_and_target() {
+    let dir = tempfile::tempdir().unwrap();
+    // A multibyte character precedes the operator to distinguish byte offsets.
+    let source = r#"module demo;
+// é
+enum Result[T, E] { Ok(T), Err(E) }
+fn guarded() -> Result[int32, string] {
+  await_timeout(sleep_task(10000), 0)?;
+  Ok(7)
+}
+fn main() {
+  match guarded() { Ok(n) => out(n), Err(msg) => out(msg) }
+}
+"#;
+    let path = dir.path().join("demo.prime");
+    std::fs::write(&path, source).unwrap();
+    let invoke = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_prime-lang"))
+            .args(args)
+            .current_dir(dir.path())
+            .env_remove("PRIME_TARGET")
+            .output()
+            .unwrap()
+    };
+    let check = invoke(&["check", "demo.prime", "--format=json"]);
+    assert!(check.status.success(), "{check:?}");
+    let checked: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_eq!(checked["schema_version"], 1);
+    let run = invoke(&["run", "demo.prime"]);
+    assert!(run.status.success(), "{run:?}");
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "timeout");
+    let build = invoke(&["build", "demo.prime", "--codegen-format=json"]);
+    assert_eq!(build.status.code(), Some(1), "{build:?}");
+    let diagnostic: serde_json::Value = serde_json::from_slice(&build.stdout).unwrap();
+    assert_eq!(diagnostic["code"], "E0NATIVETRY");
+    assert_eq!(diagnostic["phase"], "codegen");
+    assert_eq!(diagnostic["target"], "host");
+    assert_eq!(
+        diagnostic["path"],
+        serde_json::json!(path.canonicalize().unwrap())
+    );
+    let start = source.find('?').unwrap();
+    assert_eq!(
+        diagnostic["span"],
+        serde_json::json!({"start":start,"end":start+1})
+    );
+    assert!(diagnostic["message"].as_str().unwrap().contains("match"));
+}

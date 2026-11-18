@@ -869,8 +869,8 @@ impl Compiler {
                     BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                 }
             }
-            Expr::TryPropagate { expr, .. } => match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => self.eval_try_operator(value),
+            Expr::TryPropagate { expr, span } => match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => self.eval_try_operator(value, *span),
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::Identifier(ident) => {
@@ -3573,6 +3573,7 @@ impl Compiler {
     pub(super) fn eval_try_operator(
         &mut self,
         value: EvaluatedValue,
+        span: Span,
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         let EvaluatedValue { value, runtime } = value;
         let trace_try = env::var_os("PRIME_DEBUG_TRACE").is_some();
@@ -3633,8 +3634,16 @@ impl Compiler {
                         "Err" => Some(err_tag.variant_index),
                         _ => None,
                     })
-                    .or_else(|| (!self.target.is_host()).then_some(ok_tag.variant_index))
-                    .ok_or("native code cannot yet propagate a runtime-selected Result with `?`; use `match` to handle Ok and Err")?;
+                    .or_else(|| self.target.is_embedded().then_some(ok_tag.variant_index))
+                    .ok_or_else(|| {
+                        self.error_location = self.module_stack.last().map(|module| CodegenLocation {
+                            module: module.clone(),
+                            // The parser's span ends immediately after the postfix operator.
+                            span: Span::new(span.end.saturating_sub(1), span.end),
+                            code: "E0NATIVETRY",
+                        });
+                        "native code cannot yet propagate a runtime-selected Result with `?`; use `match` to handle Ok and Err"
+                    })?;
                     if trace_try {
                         let is_const = unsafe { !LLVMIsAConstantInt(tag).is_null() };
                         eprintln!(

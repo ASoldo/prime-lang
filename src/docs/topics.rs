@@ -228,7 +228,7 @@ cargo build"#,
                 snippet: r#"prime-lang run main.prime         # interpret
 prime-lang build main.prime       # emit LLVM/native to ./.build.prime/output
 ./.build.prime/output/output      # run the native binary"#,
-                explanation: "`main.prime` ships with the repo so you can verify interpretation and LLVM build-mode immediately. Build-mode mirrors interpreter semantics for control flow and `try { }` / `?`, and the native binary now exits with code 0 for CI scripts.",
+                explanation: "`main.prime` ships with the repo so you can verify interpretation and LLVM build-mode immediately. Successful native binaries exit with code 0. On native hosts, use `match` for a Result whose variant is selected at runtime.",
             },
             TopicSection {
                 title: "Print / generate / serve docs",
@@ -702,7 +702,7 @@ fn read_hp(target: &Player) -> int32 {
 let Box[int32] counter = box_new(0);
 bump_counter(&counter, 5);
 out(`box counter -> {}`, counter.box_get());"#,
-                explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and either `.get(key)` or bracket indexing for safe ownership transfers; the same APIs work in build/run modes.",
+                explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. Native host builds support `?` when the variant is known during compilation. Use `match` for runtime-selected variants such as guarded task results. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and either `.get(key)` or bracket indexing for safe ownership transfers; the same APIs work in build/run modes.",
             },
             TopicSection {
                 title: "Collections and indexing",
@@ -965,8 +965,8 @@ out(roster); // error points at the move site"#,
                 title: "Interpreter and build parity (April 2026)",
                 snippet: r#"- Native binary now exits with status code 0 after successful build
 - Build-mode mirrors interpreter control flow, including return/break/continue
-- `try { }` blocks and postfix `?` use identical semantics in run/build"#,
-                explanation: "The README highlights April 2026 updates that fixed native exit codes and aligned LLVM output with interpreter control flow. Scripts and CI harnesses can now rely on identical semantics between `prime-lang run` and `prime-lang build`.",
+- Native host builds support postfix `?` when the Result variant is known during compilation"#,
+                explanation: "The README highlights April 2026 updates that fixed native exit codes and aligned LLVM output with interpreter control flow. Use `match` in native code when the Result variant is selected at runtime.",
             },
             TopicSection {
                 title: "Iterable ranges & threaded spawn (current)",
@@ -974,7 +974,7 @@ out(roster); // error points at the move site"#,
 - `for` accepts anything implementing `iter()` (`Iterable[T]`)
 - Interpreter spawn/channel now run on OS threads; `recv` blocks until close
 - Build mode mirrors blocking semantics; set `PRIME_BUILD_PARALLEL=1` for threaded build spawn
-- Embedded spawn/join use the task runtime; async/await + `?` on runtime `Result` unwrap payloads correctly"#,
+- Embedded spawn/join use the task runtime"#,
                 explanation: "Ranges now carry their element type, `for` loops consult an `iter()` method when present, and run-mode concurrency uses real threads with blocking channel semantics. Build mode defaults to deterministic evaluation but uses the same blocking rules; exporting `PRIME_BUILD_PARALLEL=1` runs build-mode `spawn` on threads while preserving `send/recv/join` parity with runtime.",
             },
             TopicSection {

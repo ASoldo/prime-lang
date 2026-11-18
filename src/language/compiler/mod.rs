@@ -133,6 +133,7 @@ pub struct Compiler {
     cleanup_stack: Vec<Vec<CleanupAction>>,
     deprecated_warnings: HashSet<String>,
     module_stack: Vec<String>,
+    error_location: Option<CodegenLocation>,
     return_type_stack: Vec<Vec<TypeExpr>>,
     closure_counter: usize,
     closures: HashMap<usize, ClosureInfo>,
@@ -144,6 +145,12 @@ pub struct Compiler {
     force_runtime_handles: bool,
     host_task_entry: Option<LLVMValueRef>,
     loop_controls: Vec<LoopControl>,
+}
+
+pub struct CodegenLocation {
+    pub module: String,
+    pub span: Span,
+    pub code: &'static str,
 }
 
 impl Default for Compiler {
@@ -1654,6 +1661,7 @@ impl Compiler {
                 cleanup_stack: Vec::new(),
                 deprecated_warnings: HashSet::new(),
                 module_stack: Vec::new(),
+                error_location: None,
                 return_type_stack: Vec::new(),
                 closure_counter: 0,
                 closures: HashMap::new(),
@@ -2134,7 +2142,12 @@ impl Compiler {
         }))
     }
 
+    pub fn error_location(&self) -> Option<&CodegenLocation> {
+        self.error_location.as_ref()
+    }
+
     pub fn compile_program(&mut self, program: &Program) -> Result<(), String> {
+        self.error_location = None;
         let debug_mem = env::var_os("PRIME_DEBUG_MEM").is_some();
         if debug_mem {
             let module_count = program.modules.len();
