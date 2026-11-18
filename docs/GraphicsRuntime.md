@@ -1,12 +1,6 @@
 # Prime Graphics Runtime
 
-Prime has a first host-native graphics runtime for interpreter-run programs. It
-is intentionally small: it provides a native window, a CPU pixel buffer, PNG
-sprite drawing, bitmap text, frame presentation, and keyboard polling.
-
-Use it with `prime-lang run`; build-mode/native binary lowering rejects these
-built-ins with a clear runtime-only diagnostic until the compiler has a graphics
-backend.
+The host interpreter and compiled binaries share a window and CPU pixel-buffer implementation for sprites, text, keyboard input and frame presentation. Run the Tetris commands below from the checkout root so its media paths resolve.
 
 ## Built-ins
 
@@ -36,8 +30,8 @@ Supported key names include `left`, `right`, `up`, `down`, `space`, `enter`,
 The runtime can run without opening a real window:
 
 ```sh
-PRIME_GFX_HEADLESS=1 PRIME_GFX_MAX_FRAMES=3 \
-  cargo run -- run workspace/demos/tetris/tetris.prime
+PRIME_AUDIO_SILENT=1 PRIME_GFX_HEADLESS=1 PRIME_GFX_MAX_FRAMES=3 \
+  cargo run --locked -- run workspace/demos/tetris/tetris.prime
 ```
 
 `PRIME_GFX_MAX_FRAMES` makes `gfx_present()` return `false` after a fixed number
@@ -49,5 +43,5 @@ The native Tetris demo lives in `workspace/demos/tetris` and uses
 `workspace/demos/tetris/assets/block.png` for all pieces.
 
 ```sh
-cargo run -- run workspace/demos/tetris/tetris.prime
+cargo run --locked -- run workspace/demos/tetris/tetris.prime
 ```

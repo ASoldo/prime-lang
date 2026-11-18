@@ -49,9 +49,9 @@ pub const TOPICS: &[Topic] = &[
                 snippet: r#"module app::main;
 
 import core::types;
-import core::types::prelude::*;
+import core::types::prelude::{*};
 import demos::error_handling;"#,
-                explanation: "Every file begins with `module path::to::module;`. Imports use the same canonical segments, allowing the manifest loader (`project::package`) and the LSP to resolve dependencies unambiguously. Modules can export a `prelude` block; importing the module applies it automatically, or you can pull it explicitly via `::prelude::*`.",
+                explanation: "Entry modules declare `module path::to::module;`. Libraries and test modules use `library` and `test` headers. Imports use the same canonical segments, allowing the manifest loader and the LSP to resolve dependencies unambiguously. Modules can export a `prelude` block; importing the module applies it automatically, or you can pull it explicitly via `::prelude::{*}`.",
             },
             TopicSection {
                 title: "Bindings, constants, and functions",
@@ -92,51 +92,19 @@ struct Player {
         aliases: &["esp32", "xtensa", "embedded", "bare-metal", "no_std"],
         sections: &[
             TopicSection {
-                title: "Manifest setup",
-                snippet: r#"manifest_version = "3"
-
-[build]
+                title: "Blink manifest settings",
+                snippet: r#"[build]
 target = "xtensa-esp32-espidf"
 platform = "esp32"
 
-[build.runtime]
-channel_slots = 12
-channel_capacity = 12
-task_slots = 12
-recv_poll_ms = 2
-
-[build.toolchain]
-cc = "xtensa-esp32-elf-gcc"
-ar = "xtensa-esp32-elf-ar"
-objcopy = "xtensa-esp32-elf-objcopy"
-esptool = "esptool"
-ld_script = "${IDF_PATH}/components/esp_system/ld/esp32/sections.ld"
-ld_flags = """
-  -Wl,--gc-sections
-  -T${IDF_PATH}/components/esp_system/ld/esp32/memory.ld
-  -T${IDF_PATH}/components/esp_rom/esp32/ld/esp32.rom.ld
-  -T${IDF_PATH}/components/esp_rom/esp32/ld/esp32.rom.api.ld
-  -T${IDF_PATH}/components/esp_rom/esp32/ld/esp32.rom.libgcc.ld"""
-
-[build.toolchain.env]
-RUSTUP_TOOLCHAIN = "esp"
-CARGO_TARGET_DIR = "${HOME}/.cache/prime-xtensa"
-LLVM_SYS_201_PREFIX = "${HOME}/.espressif/tools/esp-clang/esp-clang"
-LD_LIBRARY_PATH = "/usr/lib64:/usr/lib:/lib:${HOME}/.espressif/tools/esp-clang/esp-clang/lib"
-PATH = "${HOME}/.espressif/tools/esp-clang/esp-clang/bin:${HOME}/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-elf/bin:${PATH}"
-CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER = "xtensa-esp32-elf-gcc"
-
 [build.flash]
-enabled = true
-port = "/dev/ttyUSB0"
-baud = 460800
-address = "0x10000""#,
-                explanation: "The workspace demo `workspace/demos/esp32_blink/prime.toml` ships with these settings and mirrors `docs/esp32_toolchain_template.toml`. The toolchain uses IDF `sections.ld`/`memory.ld` plus ROM scripts so Xtensa ROM symbols resolve; `[build.runtime]` tunes channel/task pool sizes and the recv poll interval for async waits. `[build.toolchain.env]` injects the esp-clang/Xtensa toolchains and cache dir; `$PATH` expands inline, preserving your existing PATH. Flashing defaults to /dev/ttyUSB0 at 0x10000.",
+enabled = false"#,
+                explanation: "The complete example is workspace/demos/esp32_blink/prime.toml. Set IDF_PATH and IDF_BUILD_ROOT to the ESP-IDF checkout and generated linker scripts as described in the README.",
             },
             TopicSection {
-                title: "Build & flash",
-                snippet: r#"prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink"#,
-                explanation: "With the manifest env present (or standard tools under `~/.espressif`), no extra shell setup is required. The build passes `-relocation-model=static -mtriple=xtensa-esp32-elf -mcpu=esp32 -mattr=+windowed` to llc, then links `libruntime_abi.a` (Xtensa) plus libc/libgcc. Flashing uses `esptool elf2image` when available and falls back to objcopy. The runtime links a minimal Xtensa entry, drives `recv_task`/`recv_timeout` via a waiter queue + tiny poll (default 1–2ms latency), and toggles GPIO2 (active-low on many boards) for the on-board LED. Watchdogs are disabled once on boot in the demo; pass `--no-flash` to skip.",
+                title: "Build the classic ESP32 image",
+                snippet: r#"prime-lang build workspace/demos/esp32_blink/esp32_blink.prime --name esp32_blink --no-flash"#,
+                explanation: "This checks Xtensa compilation, linking and offline image conversion. Observe GPIO2 and UART on a compatible board to verify execution.",
             },
             TopicSection {
                 title: "Toolchain detection",
@@ -185,7 +153,7 @@ impl Drop for Tracker {
     self.log.push(self.label);
   }
 }"#,
-                explanation: "Add an inherent `impl Drop for Type` block with a single `fn drop(self: &mut Type)` method (no returns). The language forbids panics in drop bodies at runtime. Only structs/enums can implement Drop; references/pointers are skipped.",
+                explanation: "Add an `impl Drop for Type` block with a single `fn drop(self: &mut Type)` method (no returns). The language forbids panics in drop bodies at runtime. Only structs/enums can implement Drop; references/pointers are skipped.",
             },
             TopicSection {
                 title: "When drops run",
@@ -194,7 +162,7 @@ impl Drop for Tracker {
   defer log.push("defer");
   let Tracker second = Tracker { label: "second", log };
 } // log => ["second", "defer", "first"]"#,
-                explanation: "Drops are scheduled when a binding is created, run once on scope exit, and are skipped after a move from that binding. Cleanup is LIFO per scope: later bindings drop first, interleaving with `defer` in insertion order. Build mode records drops in snapshots and replays their side effects in parallel builds.",
+                explanation: "Drops are scheduled when a binding is created, run once on scope exit, and are skipped after a move from that binding. Cleanup is LIFO per scope: later bindings drop first, interleaving with `defer` in insertion order.",
             },
         ],
     },
@@ -215,20 +183,18 @@ impl Drop for Tracker {
         ],
         sections: &[
             TopicSection {
-                title: "Install & build locally",
-                snippet: r#"git clone https://github.com/asoldo/prime-lang.git
+                title: "Install the CLI",
+                snippet: r#"git clone https://github.com/ASoldo/prime-lang.git
 cd prime-lang
-cargo install --path .
-# or, for iterative dev:
-cargo build"#,
-                explanation: "The README's Quick Start path builds the CLI from a fresh checkout. `cargo install --path .` puts `prime-lang` on your $PATH; `cargo build` keeps artifacts in `target/` for iterative work.",
+cargo install --locked --path ."#,
+                explanation: "Use the Rust and LLVM prerequisites in docs/GettingStarted.md.",
             },
             TopicSection {
                 title: "Run and build the sample",
-                snippet: r#"prime-lang run main.prime         # interpret
-prime-lang build main.prime       # emit LLVM/native to ./.build.prime/output
-./.build.prime/output/output      # run the native binary"#,
-                explanation: "`main.prime` ships with the repo so you can verify interpretation and LLVM build-mode immediately. Successful native binaries exit with code 0. On native hosts, use `match` for a Result whose variant is selected at runtime.",
+                snippet: r#"prime-lang run workspace/demos/channel_demo/channel_demo.prime
+prime-lang build workspace/demos/channel_demo/channel_demo.prime --name channel_demo
+./.build.prime/channel_demo/channel_demo"#,
+                explanation: "Run these commands from the checkout root. Both executions print 6, the sum of the three channel messages.",
             },
             TopicSection {
                 title: "Print / generate / serve docs",
@@ -270,17 +236,12 @@ prime-lang docs --serve --port 7878"#,
         sections: &[
             TopicSection {
                 title: "Essential CLI commands",
-                snippet: r#"$ prime-lang run main.prime
-$ prime-lang build main.prime --name demo
-$ prime-lang lint main.prime --watch
-$ prime-lang fmt main.prime --write
-$ prime-lang lsp
-$ prime-lang new adventure --wrk
-$ prime-lang add demos.new --path demos/new_demo.prime
-$ prime-lang docs --query core-syntax
-$ prime-lang docs --serve --port 7878
-$ prime-lang expand tests/macros.prime --line 24 --column 7"#,
-                explanation: "Each subcommand is wired up in `src/main.rs` via clap. `run` interprets a file after loading the manifest, `build` emits LLVM + native binaries, `lint`/`fmt` offer single-shot or watch modes, `lsp` serves editors, `new` scaffolds a package/workspace, `add` appends a manifest entry and stub file, `docs` prints these references or serves the HTML docs app, and `expand` shows macro expansions at a cursor (or dumps the whole expanded module).",
+                snippet: r#"prime-lang check workspace/demos/channel_demo/channel_demo.prime
+prime-lang lint workspace/demos/channel_demo/channel_demo.prime --watch
+prime-lang fmt workspace/demos/channel_demo/channel_demo.prime
+prime-lang lsp
+prime-lang docs --list"#,
+                explanation: "Run these commands independently. Lint watches until interrupted. The formatter previews changes and the language server communicates over stdio.",
             },
             TopicSection {
                 title: "Read user input with `in[T]`",
@@ -293,11 +254,11 @@ match in[float64](`Temp {label}: `, label) {
             },
             TopicSection {
                 title: "Example programs",
-                snippet: r#"prime-lang run demos/patterns/pattern_demo.prime        # module demos::patterns
-prime-lang run demos/error_handling/error_handling_demo.prime # demos::error_handling
-prime-lang run demos/lab_demo/lab_demo.prime                  # demos::lab_demo
-prime-lang run demos/ns/ns_demo.prime                         # demos::ns"#,
-                explanation: "Demos ship as workspace members so you can exercise patterns, error handling, namespaces, interfaces, and borrowing. Library-only modules like `core/types.prime` and `pkg/lib/pkg_lib.prime` omit `main` intentionally and are meant to be imported.",
+                snippet: r#"prime-lang run workspace/demos/patterns/pattern_demo.prime        # module demos::patterns
+prime-lang run workspace/demos/error_handling/error_handling_demo.prime # demos::error_handling
+prime-lang run workspace/demos/lab_demo/lab_demo.prime                  # demos::lab_demo
+prime-lang run workspace/demos/ns/ns_demo.prime                         # demos::ns"#,
+                explanation: "Demos ship as workspace members so you can exercise patterns, error handling, namespaces, interfaces, and borrowing. Library-only modules like `workspace/core/types.prime` and `workspace/pkg/lib/pkg_lib.prime` omit `main` intentionally and are meant to be imported.",
             },
             TopicSection {
                 title: "prime.toml manifest",
@@ -318,12 +279,11 @@ core_types = { name = "core::types", path = "../core/types.prime", visibility = 
                 explanation: "`project::manifest::PackageManifest` reads the workspace `prime.toml`, then each member's `prime.toml` for `[module]`, `[modules]`, `[libraries]`, and `[tests]` entries. Inline tables or `items` arrays are accepted. Entries must match each file's `module ...;`, `library ...;`, or `test ...;` header so `load_package` can resolve imports across the workspace before typechecking or interpretation.",
             },
             TopicSection {
-                title: "Module & library discovery",
-                snippet: r#"$ prime-lang add demos::patterns --path demos/patterns/pattern_demo.prime --visibility pub
-$ prime-lang add core::types --path core/types.prime --library
-# stubs `module demos::patterns;` or `library core::types;` and records it in the member manifest
-"#,
-                explanation: "`prime-lang add` edits the manifest and writes a stub file, keeping the graph in sync. Modules are runnable (with `main`), libraries are import-only (no `main`), and tests use `test ...;` headers. The manifest `kind` reflects the header so the loader/LSP apply the right rules.",
+                title: "Add a library to a new package",
+                snippet: r#"prime-lang new adventure --bin
+cd adventure
+prime-lang add adventure::items --path items.prime --library"#,
+                explanation: "Add records the library and creates a source stub. Import the library from an entry module.",
             },
             TopicSection {
                 title: "Interpreter concurrency (beta)",
@@ -331,13 +291,12 @@ $ prime-lang add core::types --path core/types.prime --library
 let handle = spawn (send(tx, 1));
 let Option[int32] first = recv(rx);
 join(handle);"#,
-                explanation: "`spawn` returns `JoinHandle[T]`; `channel[T]()` yields `(Sender[T], Receiver[T])`. `send` returns `Result[(), string]` and `recv` yields `Option[T]`. In run mode, tasks execute on real threads and `recv` blocks until a value arrives or the channel closes; build mode mirrors the same blocking semantics while evaluating deterministically during compilation.",
+                explanation: "A sender can enqueue a value and a receiver can consume it. In the host interpreter recv waits for a value or channel closure.",
             },
             TopicSection {
-                title: "Checking examples & regression safety",
-                snippet: r#"./scripts/check_examples.sh
-PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh"#,
-                explanation: "The helper script lints every module in `prime.toml` and optionally runs them, mirroring the README's regression advice. Use it after syntax or parser changes to keep `prime-lang docs` snippets and demos compiling.",
+                title: "Checking the examples",
+                snippet: r#"./scripts/check_examples.sh"#,
+                explanation: "The script lints and type-checks declared workspace sources. The inventory includes libraries and tests, as well as programs that need media or a board.",
             },
         ],
     },
@@ -345,7 +304,7 @@ PRIME_RUN_EXAMPLES=1 ./scripts/check_examples.sh"#,
         key: "builtins-fs-time-iter",
         title: "Built-ins: fs, time, iterators",
         category: "Built-ins",
-        summary: "Minimal stdlib-style helpers for file I/O, timing, and iterator ergonomics. All work in run/build and are recorded for deterministic build-mode snapshots.",
+        summary: "Minimal stdlib-style helpers for file I/O, timing, and iterator ergonomics. The host runtime supplies file and time operations.",
         aliases: &[
             "fs", "time", "iter", "iterator", "sleep_ms", "now_ms", "fs_read", "fs_write",
         ],
@@ -362,7 +321,7 @@ match fs_read(path) {
   Result::Ok(text) => out(`read: {text}`),
   Result::Err(msg) => out(`read failed: {msg}`),
 }"#,
-                explanation: "`fs_exists` returns a bool, `fs_read`/`fs_write` return `Result[...]`. The interpreter and native executable access files when they run. Relative paths use the current working directory.",
+                explanation: "The interpreter and native executable access files when they run. Relative paths use the current working directory. fs_write_bytes accepts a []uint8 for binary data.",
             },
             TopicSection {
                 title: "Time helpers",
@@ -370,7 +329,7 @@ match fs_read(path) {
 sleep_ms(5);
 let int64 end = now_ms();
 out(`delta: {end - start}`);"#,
-                explanation: "`now_ms` returns the current unix time in milliseconds; `sleep_ms` is an alias for `sleep` with millisecond inputs. Build mode advances a logical clock instead of wall clock sleeping unless running with parallel build snapshots.",
+                explanation: "On the host, now_ms reads Unix time in milliseconds. sleep_ms takes a delay in milliseconds. Embedded timers use a target-specific clock.",
             },
             TopicSection {
                 title: "Iterator helpers",
@@ -409,27 +368,25 @@ for value in scores.map_values() { out(value); }"#,
         sections: &[
             TopicSection {
                 title: "Feature tour modules",
-                snippet: r#"- app/main.prime – modules, structs/enums, interfaces, ownership, UI-ish printing
-- demos/patterns/pattern_demo.prime – matches/destructuring over tuples, maps, structs, slices
-- demos/error_handling/error_handling_demo.prime – Result, try { }, and ? propagation
-- demos/lab_demo/lab_demo.prime – range loops, map destructuring, mutable refs, generic interface
-- demos/pointer_demo/pointer_demo.prime – raw pointers derived from references plus stored ranges
-- demos/no_std_parity/main.prime – host-run parity fixture that targets embedded/no_std for async/Result/timeouts"#,
-                explanation: "Each entry is runnable via `prime-lang run <file>` and mapped in the manifest under `demos::...`. They demonstrate the syntax shown throughout the README so `prime-lang docs` can quote real code.",
+                snippet: r#"- workspace/app/main.prime – modules, structs/enums, interfaces, ownership, UI-ish printing
+- workspace/demos/patterns/pattern_demo.prime – matches/destructuring over tuples, maps, structs, slices
+- workspace/demos/error_handling/error_handling_demo.prime – Result, try { }, and ? propagation
+- workspace/demos/lab_demo/lab_demo.prime – range loops, map destructuring, mutable refs, generic interface
+- workspace/demos/pointer_demo/pointer_demo.prime – raw pointers derived from references plus stored ranges
+- workspace/demos/no_std_parity/main.prime – host-run parity fixture that targets embedded/no_std for async/Result/timeouts"#,
+                explanation: "Paths are relative to the repository root. Inspect a program with prime-lang check or execute its entry module with prime-lang run.",
             },
             TopicSection {
                 title: "Libraries and namespace demos",
-                snippet: r#"- core/types.prime / pkg/lib/pkg_lib.prime – library-only modules (no main)
-- demos/ns/ns_demo.prime – namespace overloading with foo/bar labels
-- pkg/app/pkg_app.prime – banner/promotion output paired with pkg_lib"#,
-                explanation: "Library modules intentionally lack `main`, so running them directly reports `Unknown symbol main`; import them from other modules. Namespace demos show how module paths and declarations line up.",
+                snippet: r#"- workspace/core/types.prime / workspace/pkg/lib/pkg_lib.prime – library-only modules (no main)
+- workspace/demos/ns/ns_demo.prime – namespace overloading with foo/bar labels
+- workspace/pkg/app/pkg_app.prime – banner/promotion output paired with pkg_lib"#,
+                explanation: "Import libraries from an entry module. Use prime-lang check to inspect a library directly.",
             },
             TopicSection {
-                title: "Validated outputs snapshot",
-                snippet: r#"- demos/borrow/borrow_demo.prime – aliasing/borrowing prints loop merges and HP/MP stats
-- demos/heap/heap_demo.prime / demos/heap_features/heap_features.prime – box counters, roster prints, redeploys
-- demos/interface_demo/interface_demo.prime / demos/interface_generics/interface_generics_demo.prime – method calls and announcements"#,
-                explanation: "The README lists expected outputs so you can smoke-test changes. Use them as fixtures when expanding the language—`prime-lang docs` draws from the same files for examples.",
+                title: "A demo with expected output",
+                snippet: r#"prime-lang run workspace/demos/channel_demo/channel_demo.prime"#,
+                explanation: "Expected output is 6. For a bounded, live TCP example on the host see docs/LoopbackWebServer.md. Interactive Tetris needs a display and media files from the checkout.",
             },
             TopicSection {
                 title: "Numeric primitives",
@@ -445,15 +402,14 @@ for value in scores.map_values() { out(value); }"#,
                 snippet: r#"- spawn/task: `spawn expr` returns JoinHandle[T]
 - channels: channel[T]() -> (Sender[T], Receiver[T]); send/recv/recv_timeout
 - timing:   sleep(ms) pauses the current task"#,
-                explanation: "Channels and joins now support timeouts via `recv_timeout(rx, millis)`; `sleep(ms)` pauses the current task. Build and run modes mirror semantics so determinism holds during compilation, while runtime uses host threads and timers.",
+                explanation: "recv_timeout bounds a receive. For deadlines on Task values, see await_timeout in docs/AsyncAwait.md.",
             },
             TopicSection {
-                title: "ABI & FFI status",
-                snippet: r#"- Targets: host triple by default; pointer width matches host
-- Scalars: int/uint widths lower than 128 bits emit native integer types
-- ABI shims: runtime_abi.rs exposes stable C-callable entry points for runtime primitives
-- Limits: no non-native pointer sizes; 128-bit is the widest scalar; FFI considered experimental pre-1.0"#,
-                explanation: "Codegen relies on LLVM’s host triple today and assumes the host pointer width. Runtime ABI functions (`prime_*` shims in runtime_abi.rs) back channels, slices, maps, and boxed values. External FFI and cross-target builds remain experimental until locked for 1.0; avoid relying on undocumented calling conventions.",
+                title: "Runtime ABI",
+                snippet: r#"src/language/runtime_abi.rs  # LLVM function declarations
+src/runtime/abi.rs           # target-specific Rust exports
+src/runtime/distribution/    # bundled manifests and lockfiles"#,
+                explanation: "Generated code calls internal C-compatible entry points for values, tasks, channels and platform services. Host, Xtensa ESP32 and RV32IMC ESP32-C3 builds need matching runtime archives. See docs/RuntimeFFI.md for widths and target limitations.",
             },
         ],
     },
@@ -577,7 +533,7 @@ fn main() {
   let (quot, rem) = divmod(22, 4);
   out((quot, rem));
 }"#,
-                explanation: "`out(expr)` prints strings, numbers, tuples, and structs using their debug representations. Tuple returns destructure cleanly at call sites, matching the README's basics walkthrough.",
+                explanation: "`out(expr)` prints strings, numbers, tuples, and structs using their debug representations. Tuple returns destructure cleanly at call sites, matching the example above.",
             },
         ],
     },
@@ -639,7 +595,7 @@ fn duplicate[T](value: T) -> (T, T) {
 }
 
 let pair = duplicate[string]("Prime Hero");"#,
-                explanation: "Type parameters appear inside square brackets and can be inferred or specified explicitly. The compiler monomorphizes these functions so they work uniformly for structs, scalars, or user-defined types.",
+                explanation: "Type parameters appear inside square brackets and can be inferred or supplied explicitly.",
             },
             TopicSection {
                 title: "Interfaces and implementations",
@@ -673,7 +629,7 @@ fn calibrate_station(name: string) {
   out(`Calibrating {name}`);
   defer out("Station teardown complete");
 }"#,
-                explanation: "`&T` shares read-only access, `&mut T` grants unique mutation, and explicit `*` deref copies values out of heap-backed cells. `ptr` / `ptr_mut` produce raw pointers from existing references when you need to sidestep borrow checks, and `defer` schedules cleanup at scope exit—mirroring the README's maintenance example.",
+                explanation: "`&T` shares read-only access, `&mut T` grants unique mutation, and explicit `*` deref copies values out of heap-backed cells. `ptr` / `ptr_mut` produce raw pointers from existing references when you need to sidestep borrow checks, and `defer` schedules cleanup at scope exit.",
             },
             TopicSection {
                 title: "Raw pointers from references",
@@ -734,7 +690,7 @@ fn probe(stats: Map[string, int32]) {
     _ => out("incomplete"),
   }
 }"#,
-                explanation: "Prime validates return types, argument arity, and match exhaustiveness before running. Mutable borrows must be unique, and diagnostics point to spans so you can fix mistakes without guessing—matching the README's static type-checking overview.",
+                explanation: "Prime validates return types, argument arity, and match exhaustiveness before running. Mutable borrows must be unique, and diagnostics point to spans so you can fix mistakes without guessing.",
             },
             TopicSection {
                 title: "Memory model overview",
@@ -746,30 +702,12 @@ fn copy_and_borrow() {
   let &Counter view = &base;   // shared ref via Arc<Mutex<_>>
   out(view.count);
 }"#,
-                explanation: "Structs and enums are value types: assignment copies fields. References wrap data in a shared heap cell (`Arc<Mutex<_>>`) so borrows live on the heap until all refs drop. There is no manual alloc/free; heap helpers (Box, slices, maps) cover common cases, echoing the README's memory model notes.",
+                explanation: "Structs and enums are value types: assignment copies fields. References wrap data in a shared heap cell (`Arc<Mutex<_>>`) so borrows live on the heap until all refs drop. There is no manual alloc/free; heap helpers (Box, slices, maps) cover common cases.",
             },
             TopicSection {
-                title: "Concurrency (build/run parity)",
-                snippet: r#"fn worker(id: int32, tx: Sender[int32], values: []int32) -> Result[(), string] {
-  let mut int32 total = 0;
-  for value in values {
-    total = total + value;
-  }
-  send(tx, total + id)
-}
-
-fn main() {
-  let (tx, rx) = channel[int32]();
-  let handle = spawn worker(100, tx, [1, 2, 3, 4]);
-  match join(handle) {
-    Ok(result) => match result {
-      Ok(()) => out(rx.recv()),
-      Err(msg) => out(msg),
-    },
-    Err(msg) => out(msg),
-  }
-}"#,
-                explanation: "Channels (`channel[T]`), `spawn expr`, and `join(handle)` work in both the interpreter and build mode. Build-mode execution stays deterministic unless you opt into `PRIME_BUILD_PARALLEL=1`; emitted binaries always use OS threads. Build snapshots now serialize channel endpoints, queued messages, pointers/boxes/references, closures, and join results so captured work mirrors runtime on replay. Dynamic indices and ranges also work when a runtime handle exists. See `parallel_demo.prime` for a two-worker aggregation example.",
+                title: "Collect channel messages",
+                snippet: r#"prime-lang run workspace/demos/channel_demo/channel_demo.prime"#,
+                explanation: "The example spawns a producer, sums messages until the channel closes and joins the producer. For the supported target-specific scheduling and cancellation behavior see docs/AsyncAwait.md.",
             },
         ],
     },
@@ -808,20 +746,14 @@ if not configs.primelang then
   }
 end
 lspconfig.primelang.setup {}"#,
-                explanation: "`prime-lang lsp` speaks LSP over stdio and mirrors rust-analyzer-style capabilities (hover, diagnostics, formatting, symbols). The README's Neovim snippet registers the server, hooks keymaps (gd/gD/rename), and enables on-save formatting when supported.",
+                explanation: "The server uses stdio. See lazy/astronvim/plugins/prime-lang.lua for the repository configuration.",
             },
             TopicSection {
-                title: "Tree-sitter grammar & highlights",
-                snippet: r#"local parser_config = require("nvim-treesitter.parsers").get_parser_configs()
-parser_config.prime = {
-  install_info = {
-    url = "https://github.com/asoldo/prime_lang_treesitter.git",
-    files = { "src/parser.c" },
-  },
-  filetype = "prime",
-}
-vim.treesitter.language.register("prime", "prime")"#,
-                explanation: "Add the `prime_lang_treesitter` parser so syntax highlighting, locals view, and outline panes work even before the LSP attaches. The README shows a Lazy spec that enables highlighting globally and registers the filetype mapping for *.prime files.",
+                title: "Tree-sitter grammar",
+                snippet: r#"tree-sitter/prime/grammar.js
+tree-sitter/prime/src/parser.c
+lazy/astronvim/plugins/prime-lang.lua"#,
+                explanation: "The repository contains the editor grammar, generated parser and an example AstroNvim configuration.",
             },
             TopicSection {
                 title: "Completion coverage for demos",
@@ -838,14 +770,12 @@ fs_write("demo.txt", "hello")"#,
   hl = "MiniIconsCyan",
 }
 opts.filetype.prime = opts.extension.prime"#,
-                explanation: "An optional Mini Icons extension tags `.prime` files with a dedicated glyph. The README's sample extends `mini.icons` (or AstroNvim defaults) so explorer panes and tabs show a Prime-specific icon.",
+                explanation: "The optional Mini Icons configuration associates .prime files with a glyph.",
             },
             TopicSection {
-                title: "Troubleshooting & watch mode",
-                snippet: r#"prime-lang lint --file main.prime --watch
-prime-lang fmt --write main.prime
-tree-sitter init   # if ABI warnings appear"#,
-                explanation: "Use lint watch for rapid feedback, format files via the built-in formatter, and re-init the Tree-sitter grammar when ABI warnings surface. These match the README's development tips.",
+                title: "Watch a source file",
+                snippet: r#"prime-lang lint workspace/demos/channel_demo/channel_demo.prime --watch"#,
+                explanation: "The watcher checks on startup and after edits. Press Ctrl+C to exit.",
             },
         ],
     },
@@ -882,8 +812,8 @@ let int32 total = ~collect(@sep = ;, { 1; }, { 2; }, 3);"#,
             },
             TopicSection {
                 title: "CLI macro expansion",
-                snippet: r#"prime-lang expand tests/macros/macros.prime --line 24 --column 7
-prime-lang expand tests/macros/macros.prime --print-expanded"#,
+                snippet: r#"prime-lang expand workspace/tests/macros/macros.prime --line 24 --column 7
+prime-lang expand workspace/tests/macros/macros.prime --print-expanded"#,
                 explanation: "Use `prime-lang expand` to inspect generated code. With `--line/--column` (or `--offset`), it prints the macro trace and only the expanded items originating from that call—ideal for editor shortcuts. Without a position or with `--print-expanded`, it emits the fully expanded, formatted module.",
             },
         ],
@@ -936,15 +866,15 @@ let &mut int32 b = &mut hp; // error highlights first borrow span and binding or
 let []int32 roster = [1, 2];
 let []int32 moved = move roster;
 out(roster); // error points at the move site"#,
-                explanation: "Borrow and move errors include the borrower name, the borrow span, and the binding origin. Build-mode mirrors the interpreter wording and spans, so diagnostics stay consistent between `prime run` and `prime build`.",
+                explanation: "Borrow and move errors include the borrower name, the borrow span, and the binding origin. Build-mode mirrors the interpreter wording and spans, so diagnostics stay consistent between `prime-lang run` and `prime-lang build`.",
             },
         ],
     },
     Topic {
         key: "recent-updates",
-        title: "Recent Updates & Release Notes",
+        title: "Implementation status",
         category: "Meta",
-        summary: "Release callouts from the README so `prime-lang docs` can surface the latest behavior changes (tests, headers, module separators).",
+        summary: "Current execution paths and limits.",
         aliases: &[
             "updates",
             "release",
@@ -953,43 +883,11 @@ out(roster); // error points at the move site"#,
             "april-2026",
             "recent",
         ],
-        sections: &[
-            TopicSection {
-                title: "SSA booleans and dynamic comparisons (current)",
-                snippet: r#"- Int/float comparisons lower to LLVM icmp/fcmp when operands are non-constant
-- Booleans are SSA-backed (`BoolValue`), so `if`/`while` can depend on runtime values
-- Mutable scalars keep stack slots on all targets for accurate prints/format strings"#,
-                explanation: "Build-mode no longer bails on Lt/Gt/Eq with non-constant integers or floats; comparisons emit LLVM `icmp`/`fcmp` and return SSA booleans. Conditions (and pattern guards) accept dynamic booleans, while constant folding still applies where possible. Mutable ints/bools stay in stack slots so embedded/host prints reflect the latest value.",
-            },
-            TopicSection {
-                title: "Interpreter and build parity (April 2026)",
-                snippet: r#"- Native binary now exits with status code 0 after successful build
-- Build-mode mirrors interpreter control flow, including return/break/continue
-- Native host builds support postfix `?` when the Result variant is known during compilation"#,
-                explanation: "The README highlights April 2026 updates that fixed native exit codes and aligned LLVM output with interpreter control flow. Use `match` in native code when the Result variant is selected at runtime.",
-            },
-            TopicSection {
-                title: "Iterable ranges & threaded spawn (current)",
-                snippet: r#"- `Range[T]` bounds stay typed; stored ranges can be iterated later
-- `for` accepts anything implementing `iter()` (`Iterable[T]`)
-- Interpreter spawn/channel now run on OS threads; `recv` blocks until close
-- Build mode mirrors blocking semantics; set `PRIME_BUILD_PARALLEL=1` for threaded build spawn
-- Embedded spawn/join use the task runtime"#,
-                explanation: "Ranges now carry their element type, `for` loops consult an `iter()` method when present, and run-mode concurrency uses real threads with blocking channel semantics. Build mode defaults to deterministic evaluation but uses the same blocking rules; exporting `PRIME_BUILD_PARALLEL=1` runs build-mode `spawn` on threads while preserving `send/recv/join` parity with runtime.",
-            },
-            TopicSection {
-                title: "Deterministic build effects & std gating (current)",
-                snippet: r#"- Build-mode records fs/time/channel/spawn effects for deterministic snapshots
-- `prime build` emits the same borrow/move diagnostics (with spans) as `prime run`
-- Disabling `std-builtins` blocks fs/time/spawn/channel with a clear message"#,
-                explanation: "Build-mode mirrors runtime diagnostics and captures side effects instead of touching the host. If you compile with `--no-default-features`, platform-backed built-ins are disabled and report that the `std-builtins` feature is off, keeping no-std profiles predictable.",
-            },
-            TopicSection {
-                title: "November 2025 release notes placeholder",
-                snippet: r#"- README tracks a \"Recent Updates (November 2025)\" section
-- Use `git log` or commits near that date for detailed changes"#,
-                explanation: "The README reserves space for November 2025 highlights. When you add release notes, keep them concise so `prime-lang docs --query recent` can surface them alongside newer callouts.",
-            },
-        ],
+        sections: &[TopicSection {
+            title: "Checking and building",
+            snippet: r#"prime-lang check workspace/demos/channel_demo/channel_demo.prime
+prime-lang build workspace/demos/channel_demo/channel_demo.prime --name channel_demo"#,
+            explanation: "The checker validates the expanded AST. Native lowering can still report a code generation error, for example E0NATIVETRY for a runtime-selected host Result. See docs/CompilerFlow.md and docs/Checking.md.",
+        }],
     },
 ];

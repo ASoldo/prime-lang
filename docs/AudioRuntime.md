@@ -1,12 +1,6 @@
 # Prime Audio Runtime
 
-Prime has a first host-native audio runtime for interpreter-run programs. It
-uses the host default output device and keeps playback handles in the runtime so
-games can start, stop, and adjust sounds from Prime code.
-
-Use it with `prime-lang run`; build-mode/native binary lowering rejects these
-built-ins with a clear runtime-only diagnostic until the compiler has an audio
-backend.
+The host interpreter and compiled binaries use the host audio runtime to play, stop and adjust sounds. Interactive playback needs an audio output device and readable media files. Run the Tetris commands below from the checkout root so its media paths resolve.
 
 ## Built-ins
 
@@ -27,7 +21,7 @@ The runtime can run without an audio device:
 
 ```sh
 PRIME_AUDIO_SILENT=1 PRIME_GFX_HEADLESS=1 PRIME_GFX_MAX_FRAMES=3 \
-  cargo run -- run workspace/demos/tetris/tetris.prime
+  cargo run --locked -- run workspace/demos/tetris/tetris.prime
 ```
 
 The Tetris demo loops `workspace/demos/tetris/assets/arcade-music-loop.wav` while
