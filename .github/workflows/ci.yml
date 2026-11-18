@@ -48,3 +48,9 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/prime-emulator"
           "$RUNNER_TEMP/prime-emulator/bin/pip" install unicorn==2.1.4
           PATH="/usr/lib/llvm-21/bin:$PATH" "$RUNNER_TEMP/prime-emulator/bin/python" scripts/test_embedded_timers.py
+      - name: Exercise Prime string results on emulated RV32IMC
+        if: matrix.runner == 'ubuntu-24.04'
+        run: |
+          sudo apt-get install -y --no-install-recommends clang-21
+          export PATH="/usr/lib/llvm-21/bin:$PATH" PRIME_BIN="$PWD/target/debug/prime-lang"
+          "$RUNNER_TEMP/prime-emulator/bin/python" scripts/test_c3_strings.py -v

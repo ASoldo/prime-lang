@@ -1569,9 +1569,11 @@ fn link_esp32(
         cmd.arg(expand_env_vars(&startup));
     }
     cmd.arg(runtime_lib);
-    // Minimal runtime: include libc for memset/memcpy and libgcc for compiler builtins.
-    cmd.arg("-lc");
-    cmd.arg("-lgcc");
+    // Vendor startup code may use libc and libgcc. A freestanding build can
+    // use the memory and arithmetic builtins in the Rust runtime archive alone.
+    if !extra_args.iter().any(|arg| arg == "-nodefaultlibs") {
+        cmd.args(["-lc", "-lgcc"]);
+    }
     if !extra_args.is_empty() {
         cmd.args(&extra_args);
     }

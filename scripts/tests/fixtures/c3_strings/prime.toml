@@ -11,7 +11,6 @@ target = "riscv32imc-unknown-none-elf"
 platform = "esp32"
 
 [build.toolchain]
-cc = "riscv32-esp-elf-gcc"
-objcopy = "riscv32-esp-elf-objcopy"
+objcopy = "llvm-objcopy"
 ld_script = "probe.ld"
 startup_obj = "startup.o"

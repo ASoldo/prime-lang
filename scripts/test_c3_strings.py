@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Run a Prime CLI-built ESP32-C3 string fixture and probe its native ABI."""
 
 import os
@@ -27,14 +28,26 @@ class C3Strings(unittest.TestCase):
         shutil.copytree(FIXTURE, work, dirs_exist_ok=True)
         cli = os.environ.get("PRIME_BIN", "prime-lang")
 
+        # Cargo runs from the temporary fixture, outside the pinned toolchain's directory.
+        toolchain = subprocess.check_output(
+            ["rustup", "show", "active-toolchain"], cwd=FIXTURE, text=True
+        ).split()[0]
+        env = dict(os.environ, RUSTUP_TOOLCHAIN=toolchain)
+
         def run(*cmd):
-            return subprocess.check_output(cmd, cwd=work)
+            return subprocess.check_output(cmd, cwd=work, env=env)
 
         ref = run(cli, "run", "main.prime")
         if ref != "result=empty\nčaj\n-13\n".encode():
             raise AssertionError(ref)
         cls.reference = ref
-        run("riscv32-esp-elf-gcc", "-march=rv32imc", "-mabi=ilp32", "-c", "startup.S", "-o", "startup.o")
+        cc = shutil.which("riscv32-esp-elf-gcc")
+        asm = [cc] if cc else ["clang", "--target=riscv32-unknown-elf"]
+        if not cc:
+            with (work / "prime.toml").open("a") as manifest:
+                manifest.write('cc = "clang"\n')
+                manifest.write('ld_flags = "--target=riscv32-unknown-elf -fuse-ld=lld -nodefaultlibs"\n')
+        run(*asm, "-march=rv32imc", "-mabi=ilp32", "-c", "startup.S", "-o", "startup.o")
         run(cli, "build", "main.prime", "--name", "c3", "--no-flash")
         elf = work / ".build.prime/c3-riscv32imc-unknown-none-elf/c3"
         run("llvm-objcopy", "--dump-section", ".text=text.bin", "--dump-section", ".data=data.bin", elf)

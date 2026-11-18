@@ -38,7 +38,9 @@ On RV32IMC, `prime_string_new(data, len)` copies exactly `len` bytes into immuta
 
 `prime_value_as_string(handle, &ptr, &len)` returns `Ok` with a borrowed pointer and byte length for a C3 string. Callers must use that length. Embedded zero bytes are preserved. `prime_int_to_string` formats signed 128-bit integers in decimal and uses the same pool.
 
-With the Rust RV32IMC target, the Espressif RISC-V GCC toolchain, LLVM tools, esptool and Python Unicorn 2.1 installed, run the standalone regression from the project root.
+The standalone regression requires Rust's `riscv32imc-unknown-none-elf` target, LLVM tools (`llc`, `llvm-nm`, `llvm-objcopy`), and Python Unicorn 2.1.4. With `riscv32-esp-elf-gcc` on PATH it uses the Espressif driver. Ubuntu x86 CI uses Clang 21 and LLD 21 instead. Clang assembles the startup object and drives the RV32IMC link with `-nodefaultlibs`. The Rust runtime archive supplies the memory and arithmetic builtins. The probe executes the ELF and also works without esptool via the CLI's raw objcopy output.
+
+From the project root, with the selected LLVM bin directory on PATH, run
 
 ```sh
 cargo build --locked --bin prime-lang
