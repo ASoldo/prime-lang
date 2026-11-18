@@ -14,6 +14,16 @@ def main(cli):
         Draft202012Validator.check_schema(schema)
         return Draft202012Validator(schema)
 
+    board = validator("board")
+    inspection = {
+        "schema_version": 1, "port": "/dev/ttyUSB0", "chip": "ESP32",
+        "description": "ESP32-D0WD-V3 (revision v3.0)", "mac": "02:00:00:00:00:01",
+        "flash_bytes": 4194304, "esptool_version": "5.5.0", "prime_target": "xtensa-esp32-espidf",
+    }
+    board.validate(inspection)
+    board.validate(dict(inspection, image="original.bin", sha256="f" * 64))
+    assert not board.is_valid(dict(inspection, image="original.bin"))
+    assert not board.is_valid(dict(inspection, sha256="f" * 64))
     check = validator("check")
     trace = validator("trace")
     with tempfile.TemporaryDirectory() as directory:
@@ -34,7 +44,7 @@ def main(cli):
             trace.validate(event)
         assert len(events[-1]["frames"]) == 2
         assert not trace.is_valid({"schema_version": 1, "event": "runtime_error", "message": "missing frames"})
-    print("Validated check reports and trace records against their published schemas.")
+    print("Validated board reports, check reports and trace records against their published schemas.")
 
 
 if __name__ == "__main__":
