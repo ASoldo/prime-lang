@@ -450,6 +450,13 @@ impl MemberValue {
         }
     }
 
+    fn write(&mut self, value: Value) {
+        match self {
+            Self::Inline(slot) => *slot = value,
+            Self::Cell(cell) => *cell.lock().unwrap() = value,
+        }
+    }
+
     fn cell(&mut self) -> SharedValue {
         let value = match self {
             Self::Cell(cell) => return cell.clone(),
@@ -632,6 +639,21 @@ impl SliceValue {
         self.items.lock().unwrap().get(index).map(MemberValue::read)
     }
 
+    pub(super) fn snapshot_bounded(&self, limit: usize) -> Option<Vec<Value>> {
+        let items = self.items.lock().unwrap();
+        (items.len() <= limit).then(|| items.iter().map(MemberValue::read).collect())
+    }
+
+    pub(super) fn replace_contents(&self, values: impl ExactSizeIterator<Item = Value>) {
+        let mut items = self.items.lock().unwrap();
+        items.truncate(values.len());
+        let mut values = values;
+        for item in items.iter_mut() {
+            item.write(values.next().expect("existing prefix fits the replacement"));
+        }
+        items.extend(values.map(MemberValue::Inline));
+    }
+
     pub fn element_cell(&self, index: usize) -> Option<SharedValue> {
         self.items
             .lock()
@@ -643,10 +665,7 @@ impl SliceValue {
     pub fn set(&self, index: usize, value: Value) -> bool {
         let mut guard = self.items.lock().unwrap();
         if let Some(slot) = guard.get_mut(index) {
-            match slot {
-                MemberValue::Inline(element) => *element = value,
-                MemberValue::Cell(cell) => *cell.lock().unwrap() = value,
-            }
+            slot.write(value);
             true
         } else {
             false

@@ -17,11 +17,8 @@ impl Values for Interpreted {
         let Value::Slice(s) = v else {
             return Err("expected []uint8".into());
         };
-        let items = s.items.lock().unwrap();
-        if items.len() > net::MAX_BYTES {
-            return Err("payload exceeds 65535 bytes".into());
-        }
-        items
+        s.snapshot_bounded(net::MAX_BYTES)
+            .ok_or("payload exceeds 65535 bytes")?
             .iter()
             .map(|v| u8::try_from(Self::integer(v)?).map_err(|_| "expected byte".into()))
             .collect()
@@ -30,7 +27,7 @@ impl Values for Interpreted {
         let Value::Slice(s) = v else {
             return Err("expected output slice".into());
         };
-        *s.items.lock().unwrap() = data.into_iter().map(|b| Value::Int(b.into())).collect();
+        s.replace_contents(data.into_iter().map(|b| Value::Int(b.into())));
         Ok(())
     }
 }
