@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "match_coverage.rs"]
+mod match_coverage;
+
 pub fn check_program(expanded: &ExpandedProgram) -> Result<(), Vec<TypeError>> {
     check_program_with_options(expanded, &TypecheckOptions::default())
 }
@@ -1448,13 +1451,12 @@ impl Checker {
             Expr::FieldAccess { base, field, span } => {
                 if let Expr::Identifier(module_ident) = base.as_ref() {
                     if let Some(module_name) = self.resolve_module_name(env, &module_ident.name) {
-                        if let Some(ty) =
-                            self.lookup_module_const_type(&module.path, module_name, field, *span)
-                        {
-                            return Some(ty);
-                        } else {
-                            return None;
-                        }
+                        return self.lookup_module_const_type(
+                            &module.path,
+                            module_name,
+                            field,
+                            *span,
+                        );
                     }
                 }
                 self.check_field_access(module, base, field, *span, returns, env)
@@ -1945,12 +1947,12 @@ impl Checker {
     ) -> Option<TypeExpr> {
         let scrutinee_ty = self.check_expression(module, &expr.expr, None, returns, env);
         let mut arm_type: Option<TypeExpr> = None;
-        let mut covered_variants: HashSet<String> = HashSet::new();
-        let mut has_wildcard = false;
+        let mut patterns = Vec::new();
         let mut borrow_states: Vec<BorrowState> = Vec::new();
         for arm in &expr.arms {
             let (value_ty, state) = env.run_branch(|env| {
                 env.push_scope();
+                let errors_before_pattern = self.errors.len();
                 self.bind_pattern(
                     module,
                     &arm.pattern,
@@ -1958,6 +1960,9 @@ impl Checker {
                     env,
                     Mutability::Immutable,
                 );
+                if arm.guard.is_none() && self.errors.len() == errors_before_pattern {
+                    patterns.push(&arm.pattern);
+                }
                 if let Some(guard) = &arm.guard {
                     self.check_expression(module, guard, Some(&bool_type()), returns, env);
                 }
@@ -1970,38 +1975,23 @@ impl Checker {
             } else if let (Some(a), Some(b)) = (arm_type.as_ref(), value_ty.as_ref()) {
                 self.ensure_type(module, pattern_span(&arm.pattern), a, Some(b));
             }
-            if let Some(enum_variant) = self.pattern_variant(&arm.pattern) {
-                covered_variants.insert(enum_variant);
-            } else if matches!(arm.pattern, Pattern::Wildcard) {
-                has_wildcard = true;
-            }
             borrow_states.push(state);
         }
         env.merge_branch_borrows(&borrow_states);
-        if let Some(TypeExpr::Named(enum_name, _)) = &scrutinee_ty {
+        if let Some(TypeExpr::Named(enum_name, args)) = &scrutinee_ty {
             let mut private = false;
             if let Some(enum_info) = self.lookup_enum(env, enum_name, &mut private) {
-                if !has_wildcard {
-                    let all_variants: HashSet<String> = enum_info
-                        .def
-                        .variants
-                        .iter()
-                        .map(|variant| variant.name.clone())
-                        .collect();
-                    if !covered_variants.is_superset(&all_variants) {
-                        self.errors.push(TypeError::new(
-                            &module.path,
-                            expr.span,
-                            format!(
-                                "`match` is not exhaustive; missing variants: {}",
-                                all_variants
-                                    .difference(&covered_variants)
-                                    .cloned()
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                        ));
-                    }
+                let missing =
+                    match_coverage::missing_variants(self, env, &enum_info.def, args, &patterns);
+                if !missing.is_empty() {
+                    self.errors.push(TypeError::new(
+                        &module.path,
+                        expr.span,
+                        format!(
+                            "`match` is not exhaustive; missing variants: {}",
+                            missing.join(", ")
+                        ),
+                    ));
                 }
             } else if private {
                 self.errors.push(TypeError::new(
@@ -4266,13 +4256,6 @@ impl Checker {
         None
     }
 
-    fn pattern_variant(&self, pattern: &Pattern) -> Option<String> {
-        match pattern {
-            Pattern::EnumVariant { variant, .. } => Some(variant.clone()),
-            _ => None,
-        }
-    }
-
     fn bind_pattern(
         &mut self,
         module: &Module,
@@ -4307,18 +4290,37 @@ impl Checker {
                 variant,
                 bindings,
             } => {
-                if let Some(name) = enum_name {
+                let expected_ty = ty.map(strip_refs_and_pointers);
+                let expected_enum = expected_ty.and_then(named_type_name).and_then(|name| {
+                    self.lookup_enum(env, name, &mut false)
+                        .or_else(|| self.registry.enums.get(name).cloned())
+                });
+                let owner = if let Some(name) = enum_name {
                     let mut private = false;
-                    let Some(enum_info) = self.lookup_enum(env, name, &mut private) else {
+                    let Some(owner) = self.lookup_enum(env, name, &mut private) else {
                         let msg = if private {
-                            format!("enum `{}` is not public", name)
+                            format!("enum `{name}` is not public")
                         } else {
-                            format!("Unknown enum `{}`", name)
+                            format!("Unknown enum `{name}`")
                         };
                         self.errors
                             .push(TypeError::new(&module.path, pattern_span(pattern), msg));
                         return;
                     };
+                    if let Some(expected) = &expected_enum
+                        && (expected.def.name != owner.def.name || expected.module != owner.module)
+                    {
+                        self.errors.push(TypeError::new(
+                            &module.path, pattern_span(pattern),
+                            format!("enum pattern `{name}::{variant}` does not match value of type `{}`", expected.def.name),
+                        ));
+                        return;
+                    }
+                    Some(owner)
+                } else {
+                    expected_enum
+                };
+                if let Some(enum_info) = owner {
                     let Ok(variant_def) = find_variant(
                         &enum_info.def,
                         &enum_info.module,
@@ -4329,7 +4331,10 @@ impl Checker {
                         self.errors.push(TypeError::new(
                             &module.path,
                             pattern_span(pattern),
-                            format!("`{}` does not belong to enum `{}`", variant, name),
+                            format!(
+                                "`{}` does not belong to enum `{}`",
+                                variant, enum_info.def.name
+                            ),
                         ));
                         return;
                     };
@@ -4346,12 +4351,11 @@ impl Checker {
                         ));
                         return;
                     }
-                    let info = EnumVariantInfo::from_def(
-                        enum_info.def.name.clone(),
-                        enum_info.module.clone(),
-                        variant_def.clone(),
-                    );
-                    let fields = instantiate_variant_fields(&info, ty, &self.registry);
+                    let args: &[TypeExpr] = match expected_ty {
+                        Some(TypeExpr::Named(_, args)) => args,
+                        _ => &[],
+                    };
+                    let fields = variant_fields(&enum_info.def, args, variant_def);
                     for (binding, field) in bindings.iter().zip(fields.iter()) {
                         self.bind_pattern(module, binding, Some(&field.ty), env, mutability);
                     }
@@ -4481,9 +4485,13 @@ impl Checker {
                         "unknown struct in pattern",
                     ));
                 }
+                let args: &[TypeExpr] = match ty {
+                    Some(TypeExpr::Named(_, args)) => args,
+                    _ => &[],
+                };
                 for field in fields {
                     let field_ty = struct_def.as_ref().and_then(|info| {
-                        lookup_struct_field(&self.registry, &info.def, &field.name)
+                        struct_pattern_field(&self.registry, &info.def, args, &field.name)
                     });
                     if struct_def.is_some() && field_ty.is_none() {
                         self.errors.push(TypeError::new(
@@ -6006,7 +6014,7 @@ impl FnEnv {
     fn clear_binding_borrows(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(info) = scope.get_mut(name) {
-                let targets: Vec<String> = info.mut_borrows.drain(..).collect();
+                let targets: Vec<String> = std::mem::take(&mut info.mut_borrows);
                 for target in targets {
                     self.end_mut_borrow(&target);
                 }
@@ -6164,6 +6172,22 @@ fn lookup_struct_field(registry: &TypeRegistry, def: &StructDef, field: &str) ->
     None
 }
 
+fn struct_pattern_field(
+    registry: &TypeRegistry,
+    def: &StructDef,
+    args: &[TypeExpr],
+    name: &str,
+) -> Option<TypeExpr> {
+    let ty = lookup_struct_field(registry, def, name)?;
+    let params = def
+        .type_params
+        .iter()
+        .cloned()
+        .zip(args.iter().cloned())
+        .collect();
+    Some(ty.substitute(&params))
+}
+
 fn literal_type(lit: &Literal, expected: Option<&TypeExpr>, pointer_bits: u32) -> TypeExpr {
     match lit {
         Literal::Int(_, _) => {
@@ -6225,21 +6249,24 @@ fn instantiate_variant_fields(
     scrutinee: Option<&TypeExpr>,
     registry: &TypeRegistry,
 ) -> Vec<TypeAnnotation> {
-    let mut fields = info.def.fields.clone();
     let Some(TypeExpr::Named(enum_name, args)) = scrutinee else {
-        return fields;
+        return info.def.fields.clone();
     };
     if enum_name != &info.enum_name {
-        return fields;
+        return info.def.fields.clone();
     }
     let Some(enum_info) = registry.enums.get(enum_name) else {
-        return fields;
+        return info.def.fields.clone();
     };
-    if enum_info.def.type_params.len() != args.len() {
+    variant_fields(&enum_info.def, args, &info.def)
+}
+
+fn variant_fields(def: &EnumDef, args: &[TypeExpr], variant: &EnumVariant) -> Vec<TypeAnnotation> {
+    let mut fields = variant.fields.clone();
+    if def.type_params.len() != args.len() || args.is_empty() {
         return fields;
     }
-    let map: HashMap<String, TypeExpr> = enum_info
-        .def
+    let map: HashMap<String, TypeExpr> = def
         .type_params
         .iter()
         .cloned()
@@ -7006,6 +7033,146 @@ fn report() {
             "expected placeholder count error, got {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn enum_match_requires_unguarded_coverage() {
+        let source = "enum Shade { Red, Blue, Green } fn value(s: Shade) -> int32 {
+            match s { Shade::Red => 1, _ if false => 2 }
+        }";
+        let errors = typecheck_source(source).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.ends_with("missing variants: Blue, Green")),
+            "{errors:?}"
+        );
+        assert!(typecheck_source(&source.replace("_ if false", "remaining")).is_ok());
+    }
+
+    #[test]
+    fn enum_match_checks_payload_values_and_owner() {
+        let source = "enum Packet { Data(int32), Empty }
+            fn value(p: Packet) -> int32 {
+                match p { Packet::Data(1) => 1, Packet::Empty => 0 }
+            }";
+        let errors = typecheck_source(source).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.ends_with("missing variants: Data")),
+            "{errors:?}"
+        );
+        assert!(typecheck_source(&source.replace("Data(1)", "Data(value)")).is_ok());
+
+        let source = "enum A { Item } enum B { Item }
+            fn value(a: A) -> int32 { match a { B::Item => 0 } }";
+        let errors = typecheck_source(source).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("does not match value of type `A`")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.ends_with("missing variants: Item")),
+            "{errors:?}"
+        );
+        assert!(typecheck_source(&source.replace("B::Item", "Item")).is_ok());
+        assert!(typecheck_source(&source.replace("B::Item => 0", "B::Item => 0, _ => 1")).is_err());
+    }
+
+    #[test]
+    fn enum_match_combines_payload_patterns_without_losing_correlations() {
+        let source = "enum Option[T] { Some(T), None } enum Pair { Bits(bool, Option[bool]) }
+            fn value(p: Pair) -> int32 {
+                match p {
+                    Bits(true, _) => 1,
+                    Bits(false, None) => 2,
+                    Bits(false, Some(true)) => 3,
+                    Bits(false, Some(false)) => 4,
+                }
+            }";
+        assert!(typecheck_source(source).is_ok());
+        for partial in [
+            source.replace("Bits(false, Some(false))", "Bits(true, Some(false))"),
+            source.replace(
+                "Bits(false, Some(false))",
+                "Bits(false, Some(false)) if false",
+            ),
+        ] {
+            let errors = typecheck_source(&partial).unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.message.ends_with("missing variants: Bits")),
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn enum_match_accepts_struct_tuple_and_slice_partitions() {
+        let source = "struct Flags { ready: bool; } enum Payload { Value((Flags, []int32)) }
+            fn value(p: Payload) -> int32 {
+                match p {
+                    Value((Flags { ready: true }, _)) => 1,
+                    Value((Flags { ready: false }, [])) => 2,
+                    Value((Flags { ready: false }, [_, ..tail])) => 3,
+                }
+            }";
+        let result = typecheck_source(source);
+        assert!(result.is_ok(), "{result:?}");
+        let repeated = source.replace("ready: true", "ready: true, ready: true");
+        assert!(typecheck_source(&repeated).is_ok());
+        assert!(
+            typecheck_source(&repeated.replace("true, ready: true", "true, ready: false")).is_err()
+        );
+        let errors = typecheck_source(&source.replace("[_, ..tail]", "[1, ..tail]")).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.ends_with("missing variants: Value")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn enum_match_resolves_variant_owners_in_generic_struct_fields() {
+        let source = "enum A { Item } enum B { Item }
+            struct Holder[T] { tag: T; } enum Outer { Wrap(Holder[A]) }
+            fn value(p: Outer) -> int32 {
+                match p { Wrap(Holder { tag: A::Item }) => 1 }
+            }";
+        let result = typecheck_source(source);
+        assert!(result.is_ok(), "{result:?}");
+        let errors = typecheck_source(&source.replace("tag: A::Item", "tag: B::Item")).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("does not match value of type `A`")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn enum_match_does_not_assume_integer_payloads_are_narrowed() {
+        let arms = (0..=255)
+            .map(|v| format!("Byte({v}) => 0"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source =
+            format!("enum V {{ Byte(uint8) }} fn value(v: V) -> int32 {{ match v {{ {arms} }} }}");
+        let errors = typecheck_source(&source).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.ends_with("missing variants: Byte")),
+            "{errors:?}"
+        );
+        assert!(typecheck_source(&source.replace("Byte(255) => 0", "Byte(_) => 0")).is_ok());
     }
 
     #[test]
