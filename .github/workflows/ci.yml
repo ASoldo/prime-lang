@@ -33,6 +33,12 @@ jobs:
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: ./scripts/ci.sh
+      - name: Test REST, SSE, WebSocket and WebRTC in Chromium
+        if: matrix.runner == 'ubuntu-24.04'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/prime-browser"
+          "$RUNNER_TEMP/prime-browser/bin/pip" install -r sdk/websocket/requirements-test.txt
+          PATH="$RUNNER_TEMP/prime-browser/bin:$PATH" ./scripts/test_browser_network.sh target/debug/prime-lang
       - name: Install the packaged CLI and run a native consumer
         id: candidate
         run: ./scripts/package_candidate.sh

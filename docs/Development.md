@@ -24,6 +24,8 @@ The Linux runners use Xvfb to open a real X11 window for interpreted and compile
 
 Run `python3 scripts/stress_demos.py --rounds 32` for repeated interpreter/native comparisons. The script builds each executable once and gives each execution a fresh working directory. It checks closure captures, channel delivery, match results, heap values, destruction order, runtime file contents and varying stdin against expected results. Use repeated `--demo NAME` options to select cases. CI runs three rounds per demo.
 
+The host suite also exchanges binary TCP and UDP messages with an independent client and verifies the two-seat Tetris replay. On Linux x86-64, the browser suite starts HTTP, WebSocket and WebRTC services on ephemeral loopback ports. It runs real browser clients against both the interpreter and native binaries. See [network test requirements](Networking.md#running-the-browser-suite).
+
 ## Dependency advisories
 
 Install the audit tool with `cargo install --locked --version 0.23.0 cargo-audit`, then run `./scripts/audit-dependencies.sh`. It refreshes the RustSec database once and checks the CLI, bundled host and embedded runtimes, and editor grammar against the same snapshot. A reported vulnerability or failure to audit a lockfile makes the command fail. The output also lists maintenance warnings. The **Dependency audit** workflow runs on relevant changes and every Monday. It can also be triggered manually. [RustSec advisory database](https://rustsec.org/)

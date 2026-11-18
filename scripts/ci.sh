@@ -26,6 +26,13 @@ python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 python3 scripts/stress_demos.py --rounds 3
 python3 scripts/test_web_server.py "$PRIME_BIN"
 
+python3 scripts/test_host_sockets.py "$PRIME_BIN"
+(
+  cd "$scratch"
+  "$PRIME_BIN" build "$root/workspace/demos/tetris_ecs/main.prime" --name tetris_ecs
+  python3 "$root/workspace/demos/tetris_ecs/verify.py" "$PRIME_BIN" "$scratch/.build.prime/tetris_ecs/tetris_ecs"
+)
+
 # Some Prime tests write files relative to their working directory.
 cp -R workspace prime.toml "$scratch/"
 cp "$PRIME_BIN" "$scratch/prime-lang"

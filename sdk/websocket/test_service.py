@@ -238,9 +238,13 @@ def wait_for_active(client, count):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prime", type=Path)
-    prime = parser.parse_args().prime.resolve()
+    parser.add_argument("--chromium", default=shutil.which("chromium") or shutil.which("google-chrome"))
+    args = parser.parse_args()
+    if not args.chromium:
+        parser.error("install Chromium or pass --chromium")
+    prime = args.prime.resolve()
     options = webdriver.ChromeOptions()
-    options.binary_location = shutil.which("chromium")
+    options.binary_location = args.chromium
     options.add_argument("--headless")
     options.add_argument("--disable-dev-shm-usage")
     with (tempfile.TemporaryDirectory() as scratch,
