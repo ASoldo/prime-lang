@@ -6,6 +6,7 @@ pub mod error;
 pub mod graphics;
 pub mod interpreter;
 pub mod platform;
+pub mod trace;
 pub mod value;
 
 pub use interpreter::Interpreter;

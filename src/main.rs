@@ -20,7 +20,7 @@ use prime_lang::project::{
     load_package, load_resolved_package, manifest::PackageManifest,
     manifest::canonical_module_name, manifest::manifest_key_for, warn_manifest_drift,
 };
-use prime_lang::runtime::{Interpreter, platform};
+use prime_lang::runtime::{Interpreter, platform, trace::TraceEvent};
 use prime_lang::target::{BuildOptions, BuildTarget};
 use prime_lang::tools::{
     diagnostics::{
@@ -59,6 +59,9 @@ struct Cli {
 enum Commands {
     /// Interpret a Prime module by manifest name or file path
     Run {
+        /// Emit interpreted Prime function calls as NDJSON on stderr
+        #[arg(long)]
+        trace: bool,
         #[arg(value_name = "TARGET")]
         entry: String,
         #[arg(short = 'p', long = "project", value_name = "PACKAGE")]
@@ -320,10 +323,11 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Commands::Run {
+            trace,
             entry,
             project,
             frozen,
-        } => run_entry(&entry, project.as_deref(), frozen),
+        } => run_entry(&entry, project.as_deref(), frozen, trace),
         Commands::Check {
             entry,
             project,
@@ -501,7 +505,7 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-fn run_entry(entry: &str, project: Option<&str>, frozen: bool) {
+fn run_entry(entry: &str, project: Option<&str>, frozen: bool, trace: bool) {
     let (entry_path, manifest) = match resolve_entry_for_cli(entry, project) {
         Ok(values) => values,
         Err(err) => exit_on_package_error(err),
@@ -544,8 +548,15 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool) {
             }
             let mut interpreter =
                 Interpreter::with_target(expanded_package, run_options.target.clone());
-            if let Err(err) = interpreter.run() {
-                report_runtime_error(&err);
+            if let Err(err) = interpreter.run_with_trace(trace) {
+                if trace {
+                    TraceEvent::RuntimeError {
+                        message: &err.to_string(),
+                    }
+                    .emit();
+                } else {
+                    report_runtime_error(&err);
+                }
                 std::process::exit(1);
             }
         }

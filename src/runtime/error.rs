@@ -4,6 +4,13 @@ pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
+    #[error("{source}\n  at {function} ({path}, bytes {span})")]
+    Frame {
+        source: Box<RuntimeError>,
+        function: String,
+        path: String,
+        span: crate::language::span::Span,
+    },
     #[error("Unknown symbol `{name}`")]
     UnknownSymbol { name: String },
     #[error("Immutable binding `{name}` cannot be reassigned")]

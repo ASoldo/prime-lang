@@ -1,6 +1,7 @@
 use crate::language::tcp_builtin::TcpBuiltin;
 use crate::language::{
     ast::*,
+    span::Span,
     types::{Mutability, TypeAnnotation, TypeExpr},
 };
 use crate::project::Package;
@@ -11,6 +12,7 @@ use crate::runtime::{
     error::{RuntimeError, RuntimeResult},
     graphics,
     platform::{platform, std_builtins_enabled, std_disabled_message},
+    trace::TraceEvent,
     value::{
         BoxValue, CancelTokenValue, CapturedValue, ChannelReceiver, ChannelSender, ClosureValue,
         EnumValue, FormatRuntimeSegment, FormatTemplateValue, IteratorValue, JoinHandleValue,
@@ -49,6 +51,10 @@ pub struct Interpreter {
     suppress_drop_schedule: bool,
     deprecated_warnings: HashSet<String>,
     module_stack: Vec<String>,
+    trace: bool,
+    diagnose: bool,
+    // Innermost expression in the current frame, populated only during error unwind.
+    error_span: Option<Span>,
     bootstrapped: bool,
     target: BuildTarget,
     tcp: crate::runtime::abi::tcp::TcpServer,
@@ -134,6 +140,9 @@ impl Interpreter {
             suppress_drop_schedule: false,
             deprecated_warnings: HashSet::new(),
             module_stack: Vec::new(),
+            error_span: None,
+            trace: false,
+            diagnose: false,
             bootstrapped: false,
             target,
             tcp: Default::default(),
@@ -150,6 +159,17 @@ impl Interpreter {
             .unwrap();
         guard.clear();
         Self::populate_test_inputs(&mut guard, debug, true);
+    }
+
+    /// Run with Prime source diagnostics and optionally emit NDJSON call records.
+    pub fn run_with_trace(&mut self, trace: bool) -> RuntimeResult<()> {
+        self.trace = trace;
+        self.diagnose = true;
+        let result = self.run();
+        self.trace = false;
+        self.diagnose = false;
+        self.error_span = None;
+        result
     }
 
     pub fn run(&mut self) -> RuntimeResult<()> {
@@ -256,7 +276,9 @@ impl Interpreter {
         for (module_name, const_def) in self.consts.clone() {
             self.module_stack.push(module_name.clone());
             let value = {
-                let result = self.eval_expression(&const_def.value);
+                let result = self.eval_expression(&const_def.value).map_err(|err| {
+                    self.frame_error(err, &module_name, &const_def.name, const_def.span)
+                });
                 self.module_stack.pop();
                 match result? {
                     EvalOutcome::Value(value) => value,
@@ -438,6 +460,35 @@ impl Interpreter {
         Ok(())
     }
 
+    fn source_path(&self, module: &str) -> &std::path::Path {
+        &self
+            .package
+            .program
+            .modules
+            .iter()
+            .find(|m| m.name == module)
+            .expect("registered module")
+            .path
+    }
+
+    fn frame_error(
+        &mut self,
+        error: RuntimeError,
+        module: &str,
+        name: &str,
+        fallback: Span,
+    ) -> RuntimeError {
+        if !self.diagnose {
+            return error;
+        }
+        RuntimeError::Frame {
+            source: Box::new(error),
+            function: format!("{module}::{name}"),
+            path: self.source_path(module).display().to_string(),
+            span: self.error_span.take().unwrap_or(fallback),
+        }
+    }
+
     fn call_function(
         &mut self,
         name: &str,
@@ -490,6 +541,18 @@ impl Interpreter {
             "function",
         )?;
         self.ensure_interface_arguments(&info.def.params, &args)?;
+        if self.trace {
+            let span = info.def.name_span;
+            TraceEvent::Call {
+                module: &info.module,
+                function: &info.def.name,
+                path: &self.source_path(&info.module).to_string_lossy(),
+                depth: self.module_stack.len(),
+                start: span.start,
+                end: span.end,
+            }
+            .emit();
+        }
         self.module_stack.push(info.module.clone());
         let result = (|| {
             self.env.push_scope();
@@ -554,9 +617,22 @@ impl Interpreter {
         })();
         self.module_stack.pop();
         result
+            .map_err(|err| self.frame_error(err, &info.module, &info.def.name, info.def.name_span))
     }
 
     fn call_closure_value(
+        &mut self,
+        closure: &ClosureValue,
+        args: Vec<Value>,
+    ) -> RuntimeResult<Value> {
+        self.eval_closure_body(closure, args)
+            .map_err(|error| match &closure.origin {
+                Some((module, span)) => self.frame_error(error, module, "<closure>", *span),
+                None => error,
+            })
+    }
+
+    fn eval_closure_body(
         &mut self,
         closure: &ClosureValue,
         args: Vec<Value>,
@@ -778,6 +854,9 @@ impl Interpreter {
             suppress_drop_schedule: false,
             deprecated_warnings: HashSet::new(),
             module_stack: Vec::new(),
+            error_span: None,
+            trace: self.trace,
+            diagnose: self.diagnose,
             bootstrapped: true,
             target: self.target.clone(),
             tcp: Default::default(),
@@ -1035,10 +1114,14 @@ impl Interpreter {
 
     fn warn_deprecated(&mut self, name: &str) {
         if self.deprecated_warnings.insert(name.to_string()) {
-            eprintln!(
-                "warning: `{}` is deprecated; prefer slice/map literals or direct methods",
-                name
+            let message = format!(
+                "warning: `{name}` is deprecated; prefer slice/map literals or direct methods"
             );
+            if self.trace {
+                TraceEvent::Warning { message: &message }.emit();
+            } else {
+                eprintln!("{message}");
+            }
         }
     }
 
@@ -3136,6 +3219,14 @@ impl Interpreter {
     }
 
     fn eval_expression(&mut self, expr: &Expr) -> RuntimeResult<EvalOutcome<Value>> {
+        self.eval_expression_inner(expr).inspect_err(|_| {
+            if self.diagnose {
+                self.error_span.get_or_insert_with(|| expr_span(expr));
+            }
+        })
+    }
+
+    fn eval_expression_inner(&mut self, expr: &Expr) -> RuntimeResult<EvalOutcome<Value>> {
         match expr {
             Expr::Identifier(ident) => {
                 let value =
@@ -3509,7 +3600,7 @@ impl Interpreter {
                 body,
                 ret,
                 captures,
-                ..
+                span,
             } => {
                 let mut captured_values = Vec::new();
                 for captured in captures.read().unwrap().iter() {
@@ -3525,6 +3616,10 @@ impl Interpreter {
                     });
                 }
                 Ok(EvalOutcome::Value(Value::Closure(ClosureValue {
+                    origin: self
+                        .module_stack
+                        .last()
+                        .map(|module| (module.clone(), *span)),
                     params: params.clone(),
                     body: body.clone(),
                     ret: ret.clone(),
@@ -4015,8 +4110,23 @@ impl Interpreter {
                 BinaryOp::Add => Ok(Value::Int(a + b)),
                 BinaryOp::Sub => Ok(Value::Int(a - b)),
                 BinaryOp::Mul => Ok(Value::Int(a * b)),
-                BinaryOp::Div => Ok(Value::Int(a / b)),
-                BinaryOp::Rem => Ok(Value::Int(a % b)),
+                BinaryOp::Div | BinaryOp::Rem if b == 0 => Err(RuntimeError::Panic {
+                    message: "integer division by zero".into(),
+                }),
+                BinaryOp::Div => {
+                    a.checked_div(b)
+                        .map(Value::Int)
+                        .ok_or_else(|| RuntimeError::Panic {
+                            message: "integer division overflow".into(),
+                        })
+                }
+                BinaryOp::Rem => {
+                    a.checked_rem(b)
+                        .map(Value::Int)
+                        .ok_or_else(|| RuntimeError::Panic {
+                            message: "integer remainder overflow".into(),
+                        })
+                }
                 _ => unreachable!(),
             },
             (Value::Float(a), Value::Float(b)) => match op {

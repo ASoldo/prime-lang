@@ -314,6 +314,7 @@ pub struct CapturedValue {
 
 #[derive(Clone, Debug)]
 pub struct ClosureValue {
+    pub(crate) origin: Option<(String, crate::language::span::Span)>,
     pub params: Vec<FunctionParam>,
     pub body: ClosureBody,
     #[allow(dead_code)]

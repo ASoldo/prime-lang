@@ -646,3 +646,40 @@ pub struct MapLiteralEntry {
     pub key: Expr,
     pub value: Expr,
 }
+
+/// UTF-8 byte range assigned by the parser.
+pub(crate) fn expr_span(expr: &Expr) -> Span {
+    match expr {
+        Expr::Identifier(ident) => ident.span,
+        Expr::Literal(Literal::Int(_, span))
+        | Expr::Literal(Literal::Float(_, span))
+        | Expr::Literal(Literal::Bool(_, span))
+        | Expr::Literal(Literal::String(_, span))
+        | Expr::Literal(Literal::Rune(_, span)) => *span,
+        Expr::Try { span, .. } => *span,
+        Expr::TryPropagate { span, .. } => *span,
+        Expr::Binary { span, .. } => *span,
+        Expr::Unary { span, .. } => *span,
+        Expr::Call { span, .. } => *span,
+        Expr::MacroCall { span, .. } => *span,
+        Expr::FieldAccess { span, .. } => *span,
+        Expr::StructLiteral { span, .. } => *span,
+        Expr::MapLiteral { span, .. } => *span,
+        Expr::EnumLiteral { span, .. } => *span,
+        Expr::Block(block) => block.span,
+        Expr::If(expr) => expr.span,
+        Expr::Match(expr) => expr.span,
+        Expr::Tuple(_, span) => *span,
+        Expr::ArrayLiteral(_, span) => *span,
+        Expr::Range(range) => range.span,
+        Expr::Index { span, .. } => *span,
+        Expr::Reference { span, .. } => *span,
+        Expr::Deref { span, .. } => *span,
+        Expr::Move { span, .. } => *span,
+        Expr::FormatString(literal) => literal.span,
+        Expr::Async { span, .. } => *span,
+        Expr::Await { span, .. } => *span,
+        Expr::Spawn { span, .. } => *span,
+        Expr::Closure { span, .. } => *span,
+    }
+}
