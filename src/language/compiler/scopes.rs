@@ -293,7 +293,17 @@ impl Compiler {
         value: EvaluatedValue,
     ) -> Result<EvaluatedValue, String> {
         let ty = slot.ty;
-        let (scalar, updated) = if ty == self.runtime_abi.handle_type {
+        let (scalar, updated) = if matches!(slot.contents, SlotContents::String) {
+            let handle = self.host_string_operand(value.clone())?;
+            let known = match value.into_value() {
+                Value::Str(mut literal) => {
+                    literal.stored_in = Some(unsafe { LLVMGetInsertBlock(self.builder) });
+                    Value::Str(literal)
+                }
+                _ => Value::from_runtime_payload(handle),
+            };
+            (handle, known)
+        } else if matches!(slot.contents, SlotContents::Slice) {
             let Value::Slice(mut slice) = value.into_value() else {
                 return Err("slice assignment requires a slice".into());
             };
@@ -686,6 +696,7 @@ impl Compiler {
                     continue;
                 };
                 let slot = Some(StorageSlot {
+                    contents: SlotContents::Scalar,
                     projected: true,
                     ptr: self.build_entry_alloca(ty, field),
                     ty,
@@ -747,11 +758,24 @@ impl Compiler {
                             self.build_entry_alloca(self.runtime_abi.handle_type, "slice_binding");
                         unsafe { LLVMBuildStore(self.builder, handle, alloca) };
                         slot = Some(StorageSlot {
+                            contents: SlotContents::Slice,
                             projected: false,
                             ptr: alloca,
                             ty: self.runtime_abi.handle_type,
                         });
                     }
+                }
+                v if self.target.is_host() && self.is_host_string(&v) => {
+                    let ty = self.runtime_abi.handle_type;
+                    let ptr = self.build_entry_alloca(ty, name);
+                    let storage = StorageSlot {
+                        contents: SlotContents::String,
+                        projected: false,
+                        ptr,
+                        ty,
+                    };
+                    value = self.store_slot(storage, value)?;
+                    slot = Some(storage);
                 }
                 Value::Int(int_val) => {
                     let wide = self.int_to_runtime_int(&int_val, "integer_initial_value")?;
@@ -762,6 +786,7 @@ impl Compiler {
                     }
                     *value.value_mut() = Value::Int(IntValue::new(wide, None));
                     slot = Some(StorageSlot {
+                        contents: SlotContents::Scalar,
                         projected: false,
                         ptr: alloca,
                         ty: self.runtime_abi.int_type,
@@ -775,6 +800,7 @@ impl Compiler {
                         LLVMBuildStore(self.builder, stored, alloca);
                     }
                     slot = Some(StorageSlot {
+                        contents: SlotContents::Scalar,
                         projected: false,
                         ptr: alloca,
                         ty: self.runtime_abi.bool_type,
@@ -875,6 +901,13 @@ impl Compiler {
             }
             return cell.lock().unwrap().clone().with_runtime(handle);
         }
+        if matches!(slot.contents, SlotContents::String)
+            && let Value::Str(literal) = cell.lock().unwrap().value()
+            && literal.stored_in == Some(unsafe { LLVMGetInsertBlock(self.builder) })
+        {
+            // Keep straight-line literal folding, including compile-time string intrinsics.
+            return Value::Str(literal.clone()).into();
+        }
         self.load_slot(slot)
     }
 
@@ -882,7 +915,10 @@ impl Compiler {
         let ty = slot.ty;
         let loaded =
             unsafe { LLVMBuildLoad2(self.builder, ty, slot.ptr, c"binding_load".as_ptr()) };
-        if ty == self.runtime_abi.handle_type {
+        if matches!(slot.contents, SlotContents::String) {
+            self.handle_types.insert(loaded, TypeExpr::named("string"));
+            EvaluatedValue::from_value(Value::from_runtime_payload(loaded)).with_runtime(loaded)
+        } else if matches!(slot.contents, SlotContents::Slice) {
             self.evaluated(Value::Slice(SliceValue::with_handle(loaded)))
                 .with_runtime(loaded)
         } else if ty == self.runtime_abi.int_type {

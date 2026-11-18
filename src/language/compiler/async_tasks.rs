@@ -147,14 +147,12 @@ impl Compiler {
             {
                 Value::Str(s.clone())
             }
-            Value::Str(_) | Value::Reference(_) => Value::Reference(ReferenceValue {
-                indexed: None,
-                slot: None,
-                cell: Rc::new(Mutex::new(Value::Unit.into())),
-                mutable: false,
-                origin: None,
-                handle: Some(handle),
-            }),
+            Value::Str(_) | Value::Reference(_) => {
+                if self.target.is_host() && self.is_host_string(template) {
+                    self.handle_types.insert(handle, TypeExpr::named("string"));
+                }
+                Value::from_runtime_payload(handle)
+            }
             Value::Enum(e) => Value::runtime_enum(e.enum_name.clone()),
             Value::Task(task) => {
                 Value::Task(Box::new(TaskValue::with_handle(handle, task.kind.clone())))

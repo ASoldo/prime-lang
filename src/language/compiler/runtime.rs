@@ -121,6 +121,26 @@ impl Compiler {
         matches!(self.handle_types.get(&handle), Some(TypeExpr::Named(name, args)) if name == "string" && args.is_empty())
     }
 
+    pub(super) fn is_host_string(&self, value: &Value) -> bool {
+        matches!(value, Value::Str(_) | Value::FormatTemplate(_))
+            || matches!(value, Value::Reference(r) if r.handle.is_some_and(|h| self.is_string_handle(h)))
+    }
+
+    pub(super) fn host_string_operand(
+        &mut self,
+        value: EvaluatedValue,
+    ) -> Result<LLVMValueRef, String> {
+        let mut temporaries = Vec::new();
+        let handle = self.string_or_slice_operand(value, &mut temporaries)?;
+        for temp in temporaries {
+            if temp != handle {
+                self.runtime_release(temp);
+            }
+        }
+        self.handle_types.insert(handle, TypeExpr::named("string"));
+        Ok(handle)
+    }
+
     pub(super) fn print_value(&mut self, value: EvaluatedValue) -> Result<(), String> {
         let mut value = value;
         let runtime_handle = if self.target.is_embedded()
@@ -811,6 +831,9 @@ impl Compiler {
             }
             Value::Reference(reference) => {
                 if let Some(handle) = reference.handle {
+                    if self.target.is_host() && self.is_string_handle(handle) {
+                        return Ok(self.retain_handle(handle));
+                    }
                     let mut args = [handle];
                     let inner = self.call_runtime(
                         self.runtime_abi.prime_reference_read,

@@ -318,6 +318,7 @@ impl Compiler {
                         let ptr = self.build_entry_alloca(array_ty, name);
                         let array = FixedArray {
                             base: StorageSlot {
+                                contents: SlotContents::Scalar,
                                 ptr,
                                 ty: element,
                                 projected: true,
@@ -2698,7 +2699,7 @@ impl Compiler {
         unsafe { llvm_sys::core::LLVMPositionBuilderAtEnd(self.builder, merge_block) };
         Ok(self.load_guarded_await_result(result_slot, err_tag, c"await_cancel_timeout_result"))
     }
-    fn string_or_slice_operand(
+    pub(super) fn string_or_slice_operand(
         &mut self,
         value: EvaluatedValue,
         temporaries: &mut Vec<LLVMValueRef>,

@@ -347,6 +347,8 @@ impl CancelTokenValue {
 
 #[derive(Clone)]
 struct StringValue {
+    // For a mutable binding, the last block known to store this literal.
+    stored_in: Option<LLVMBasicBlockRef>,
     llvm: LLVMValueRef,
     text: Arc<String>,
 }
@@ -742,7 +744,15 @@ struct StructValue {
 }
 
 #[derive(Clone, Copy)]
+enum SlotContents {
+    Scalar,
+    Slice,
+    String,
+}
+
+#[derive(Clone, Copy)]
 struct StorageSlot {
+    contents: SlotContents,
     projected: bool,
     ptr: LLVMValueRef,
     ty: LLVMTypeRef,
@@ -767,6 +777,7 @@ impl FixedArray {
             )
         };
         StorageSlot {
+            contents: SlotContents::Scalar,
             projected: true,
             ptr,
             ty: self.base.ty,
@@ -876,7 +887,11 @@ enum EvalOutcome<T> {
 
 impl StringValue {
     fn new(llvm: LLVMValueRef, text: Arc<String>) -> Self {
-        Self { llvm, text }
+        Self {
+            llvm,
+            text,
+            stored_in: None,
+        }
     }
 }
 
