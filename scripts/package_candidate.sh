@@ -57,4 +57,7 @@ sha256sum -c SHA256SUMS
 # Each verified candidate gets its own directory, including repeated builds of a version.
 out=$(mktemp -d "$release_dir/$binary_bundle.XXXXXXXX")
 mv -- "$name.crate" "$binary_bundle.tar.gz" SHA256SUMS "$out/"
+if [[ -n ${GITHUB_OUTPUT:-} ]]; then
+  printf 'directory=%s\n' "$out" >> "$GITHUB_OUTPUT"
+fi
 printf 'Verified release candidate in %s\n' "$out"
