@@ -9,10 +9,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pion/webrtc/v4"
 )
 
 func TestSignalingFailures(t *testing.T) {
-	h := newHub()
+	h := newHub(webrtc.Configuration{})
 	defer h.shutdown()
 	const host = "127.0.0.1:8080"
 	handler := routes(host, h)
@@ -45,7 +47,7 @@ func TestSignalingFailures(t *testing.T) {
 }
 
 func TestPendingPeerDeadlineReleasesCapacity(t *testing.T) {
-	h := newHub()
+	h := newHub(webrtc.Configuration{})
 	defer h.shutdown()
 	var first *peer
 	for i := range maxPeers {
@@ -100,10 +102,22 @@ func TestShortLivedProgram(t *testing.T) {
 	t.Setenv("PRIME_RTC_TEST_CHILD", "1")
 	ctx, stop := context.WithCancelCause(t.Context())
 	defer stop(nil)
-	h := newHub()
+	h := newHub(webrtc.Configuration{})
 	defer h.shutdown()
 	_ = runProgram(ctx, stop, []string{os.Args[0], "-test.run=^TestShortLivedProgram$"}, h)
 	if cause := context.Cause(ctx); cause == nil || errors.Is(cause, context.Canceled) {
 		t.Fatalf("missing final command error: %v", cause)
+	}
+}
+
+func TestReturnKinds(t *testing.T) {
+	for _, input := range []string{"video,video", "unknown", "audio,"} {
+		if _, err := returnKinds(input); err == nil {
+			t.Fatalf("accepted returnMedia=%s", input)
+		}
+	}
+	kinds, err := returnKinds("audio,video")
+	if err != nil || len(kinds) != 2 {
+		t.Fatal("combined return rejected")
 	}
 }

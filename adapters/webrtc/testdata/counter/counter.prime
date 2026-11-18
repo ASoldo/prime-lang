@@ -1,0 +1,24 @@
+//! Transport measurement. Each text move carries a sequence and returns the shared count.
+module rtc_probe;
+
+import core::types::prelude::{*};
+import prime::webrtc::prelude::{*};
+
+fn measure() -> Result[(), string] {
+  let mut int32 moves = 0;
+  while let Ok(kind) = rtc_kind() {
+    let int64 peer = rtc_peer()?;
+    let string sequence = rtc_data()?;
+    if kind == "open" {
+      out(`text {peer} joined {peer}`);
+    } else if kind == "text" {
+      moves = moves + 1;
+      out(`text {peer} snapshot {sequence} {moves}`);
+    }
+  }
+  Ok(())
+}
+
+fn main() {
+  let Result[(), string] ended = measure();
+}

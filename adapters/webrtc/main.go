@@ -45,7 +45,12 @@ func (h *hub) offer(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	p, answer, status, err := h.answer(ctx, desc)
+	returns, err := returnKinds(r.URL.Query().Get("returnMedia"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	p, answer, status, err := h.answer(ctx, desc, returns)
 	if err != nil {
 		http.Error(w, err.Error(), status)
 		return
@@ -77,9 +82,13 @@ func routes(host string, h *hub) http.Handler {
 	})
 }
 
-func run(port int, args []string) error {
+func run(port int, icePath string, args []string) error {
 	if len(args) == 0 || port < 0 || port > 65535 {
-		return errors.New("usage: prime-webrtc [-port 0..65535] -- PROGRAM [ARG ...]")
+		return errors.New("usage: prime-webrtc [-port 0..65535] [-ice-config FILE] -- PROGRAM [ARG ...]")
+	}
+	config, err := loadICE(icePath)
+	if err != nil {
+		return err
 	}
 	listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
@@ -90,7 +99,7 @@ func run(port int, args []string) error {
 	defer release()
 	ctx, stop := context.WithCancelCause(parent)
 	defer stop(nil)
-	h := newHub()
+	h := newHub(config)
 	host := listener.Addr().String()
 	server := &http.Server{
 		Handler: routes(host, h), ReadHeaderTimeout: 3 * time.Second,
@@ -120,8 +129,9 @@ func run(port int, args []string) error {
 
 func main() {
 	port := flag.Int("port", 0, "IPv4 loopback HTTP port (0 chooses a free port)")
+	ice := flag.String("ice-config", "", "private host ICE configuration JSON file")
 	flag.Parse()
-	if err := run(*port, flag.Args()); err != nil {
+	if err := run(*port, *ice, flag.Args()); err != nil {
 		log.Fatal(err)
 	}
 }

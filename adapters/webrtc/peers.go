@@ -4,22 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/pion/logging"
 	"github.com/pion/webrtc/v4"
 )
 
 const (
-	maxPeers       = 8
+	maxPeers       = 99
 	eventHighWater = 128
 )
 
 type hub struct {
 	api     *webrtc.API
+	config  webrtc.Configuration
 	mu      sync.Mutex // serializes registry changes and event order for Prime
 	next    uint64
 	peers   map[uint64]*peer
@@ -35,18 +39,24 @@ type peer struct {
 	deadline *time.Timer
 	opened   bool
 	media    map[string]string
+	returns  map[string]*webrtc.TrackLocalStaticRTP
 }
 
-func newHub() *hub {
+func newHub(config webrtc.Configuration) *hub {
 	var settings webrtc.SettingEngine
+	if len(config.ICEServers) > 0 {
+		// Protect TURN credentials even if verbose SDK logging is configured externally.
+		settings.LoggerFactory = &logging.DefaultLoggerFactory{Writer: io.Discard}
+	}
 	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
 	settings.SetIncludeLoopbackCandidate(true)
 	settings.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
 	settings.SetICETimeouts(4*time.Second, 8*time.Second, time.Second)
 	settings.SetSCTPMaxMessageSize(16384)
 	return &hub{
-		api:   webrtc.NewAPI(webrtc.WithSettingEngine(settings)),
-		peers: make(map[uint64]*peer), events: make(chan event, eventHighWater+4*maxPeers),
+		config: config,
+		api:    webrtc.NewAPI(webrtc.WithSettingEngine(settings)),
+		peers:  make(map[uint64]*peer), events: make(chan event, eventHighWater+4*maxPeers),
 	}
 }
 
@@ -60,12 +70,12 @@ func (h *hub) queue(e event) {
 func (h *hub) admit() (*peer, int, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.stopped || len(h.peers) >= maxPeers || len(h.events) >= eventHighWater {
+	if h.stopped || h.next == math.MaxInt64 || len(h.peers) >= maxPeers || len(h.events) >= eventHighWater {
 		return nil, http.StatusServiceUnavailable, errors.New("no free peer slots")
 	}
-	pc, err := h.api.NewPeerConnection(webrtc.Configuration{})
+	pc, err := h.api.NewPeerConnection(h.config)
 	if err != nil {
-		return nil, http.StatusInternalServerError, err
+		return nil, http.StatusInternalServerError, errors.New("cannot create peer connection with host ICE configuration")
 	}
 	h.next++
 	p := &peer{id: h.next, pc: pc, media: make(map[string]string)}
@@ -84,29 +94,7 @@ func (h *hub) admit() (*peer, int, error) {
 	})
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) { h.attach(p, dc) })
 	pc.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		kind, codec := track.Kind().String(), track.Codec().MimeType
-		for {
-			packet, _, err := track.ReadRTP()
-			if err != nil {
-				return
-			}
-			if len(packet.Payload) > 0 {
-				h.mu.Lock()
-				if _, seen := p.media[kind]; !seen && h.peers[p.id] == p {
-					p.media[kind] = codec
-					if p.opened {
-						h.queue(event{kind, p.id, codec})
-					}
-				}
-				h.mu.Unlock()
-				break
-			}
-		}
-		for {
-			if _, _, err := track.ReadRTP(); err != nil {
-				return
-			}
-		}
+		h.consumeTrack(p, track)
 	})
 	return p, http.StatusOK, nil
 }
@@ -226,10 +214,14 @@ func (h *hub) shutdown() {
 	h.closing.Wait()
 }
 
-func (h *hub) answer(ctx context.Context, offer webrtc.SessionDescription) (*peer, *webrtc.SessionDescription, int, error) {
+func (h *hub) answer(ctx context.Context, offer webrtc.SessionDescription, returns []string) (*peer, *webrtc.SessionDescription, int, error) {
 	p, status, err := h.admit()
 	if err != nil {
 		return nil, nil, status, err
+	}
+	if err = p.addReturnTracks(returns); err != nil {
+		h.close(p, "media-setup")
+		return nil, nil, http.StatusBadRequest, err
 	}
 	if err = p.pc.SetRemoteDescription(offer); err != nil {
 		h.close(p, "invalid-offer")

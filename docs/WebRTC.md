@@ -25,7 +25,7 @@ target/prime-webrtc -- ./.build.prime/rtc_game/rtc_game
 
 The browser creates one ordered, reliable, in-band-negotiated data channel labelled `prime`. It creates an SDP offer, sets the local description and waits for ICE gathering to complete. It posts its resulting `RTCSessionDescriptionInit` JSON object (`type`, `sdp`) to `POST /offer` with `Content-Type: application/json`. A successful HTTP 200 response contains the corresponding complete SDP answer. The browser applies the answer with `setRemoteDescription`. Both descriptions carry their candidates. A new connection uses a new offer. [Browser client](../adapters/webrtc/browser.js)
 
-The host binds HTTP to IPv4 loopback and gathers only IPv4 UDP loopback candidates. Both ends use an empty ICE server list. Pion handles ICE connectivity checks, DTLS, SCTP and the WebRTC data-channel protocol. The HTTP handler checks the Host header and any browser Origin against the printed address. The demonstrated deployment is one machine. LAN operation would need different binding and candidate selection. Internet deployment would also need authenticated HTTPS signaling, a connectivity policy and tested STUN/TURN configuration. [Pion WebRTC v4.2.27](https://pkg.go.dev/github.com/pion/webrtc/v4@v4.2.27)
+By default the host binds HTTP to IPv4 loopback, gathers IPv4 UDP loopback candidates, and both ends use an empty ICE server list. Pion handles ICE connectivity checks, DTLS, SCTP and the WebRTC data-channel protocol. The HTTP handler checks the Host header and any browser Origin against the printed address. The demonstrated deployments are direct loopback and TURN-relayed loopback on one machine. A LAN or Internet deployment needs its own signaling origin, access control, network configuration and connectivity tests. A same-origin reverse proxy must validate browser Origin against its own origin, preserve the offer query string, and forward the adapter’s loopback Host and Origin. [Pion WebRTC v4.2.27](https://pkg.go.dev/github.com/pion/webrtc/v4@v4.2.27)
 
 The included page uses the same browser API available to a same-origin application. Register the receiver when connecting to see messages Prime sends immediately upon opening.
 
@@ -37,6 +37,23 @@ game.dc.send("move");
 game.dc.send(new Uint8Array([0, 128, 255]));
 // Later, when leaving the session
 game.close();
+```
+
+## Optional TURN and media return
+
+Supply the host with `-ice-config FILE` before `--`. The file contains a JSON object with `iceServers` (an array), and optionally `iceTransportPolicy` (`all` or `relay`). Each TURN entry supplies `urls` (an array of TURN URLs), `username`, and `credential`. Keep this file private. The adapter reads it at startup. The browser obtains its own ICE configuration through the application's credential provisioning and passes it as the third argument to the helper. Signaling carries the SDP, and each endpoint uses its credentials locally.
+
+```js
+const game = await connectPrime(onMessage, [], { rtcConfig: browserIceConfig });
+```
+
+A browser can request the encoded audio or video it sends back on the same connection. Supply one input track per kind and set `returnMedia: true`. The helper offers `sendrecv` using Opus for audio and VP8 for video and appends `?returnMedia=audio`, `video`, or `audio,video` to `/offer`. The adapter forwards compatible incoming RTP to a local Pion sender on that peer. The browser receives the track through `onTrack`. Prime continues to receive its normal codec notification. Media samples travel through Pion, separately from the Prime event pipe.
+
+```js
+const game = await connectPrime(onMessage, [inputTrack], {
+  returnMedia: true,
+  onTrack: ({ track }) => { player.srcObject = new MediaStream([track]); },
+});
 ```
 
 ## Prime event contract
@@ -65,9 +82,9 @@ Only the command word and ID are split at spaces. For an empty payload the separ
 
 ## Bounds and lifecycle
 
-- The host admits eight peers at a time, including unfinished negotiations. It rejects further offers with HTTP 503. Each offer body may contain up to 64 KiB. Reading the HTTP request and gathering the answer each have a five-second budget.
+- The host admits up to 99 independent peers at a time, including unfinished negotiations. It rejects further offers with HTTP 503. Each offer body may contain up to 64 KiB. Reading the HTTP request and gathering the answer each have a five-second budget.
 - The browser helper has a 12-second connection deadline. The host reclaims a peer that fails to open a supported channel within 15 seconds of admission. Pion uses a one-second ICE keepalive, a four-second disconnected timeout and an eight-second failed timeout.
-- Application messages carry at most 8,192 decoded bytes in either direction. An oversized inbound message closes that peer. A second channel, wrong label or unreliable/unordered channel also closes its peer.
+- Application messages carry at most 8,192 decoded bytes in either direction. The peer can keep sending for the lifetime of the match. An oversized inbound message closes that peer. A second channel, wrong label or unreliable/unordered channel also closes its peer.
 - When 128 events await the Prime process, admission pauses and a sender delivering another message is closed. Reserved queue space preserves peer lifecycle notifications. A three-second blocked write to the child's stdin fails the service. A browser with at least 256 KiB buffered for transmission is disconnected on the next send.
 - SIGINT or SIGTERM closes signaling, peer connections and the child's stdin. The child has two seconds to finish on EOF before the adapter kills it. Child exit also closes the service. The API uses process EOF for service shutdown.
 
@@ -81,6 +98,7 @@ To prepare portable offline adapter sources, run these commands from the reposit
 offline_src=$(mktemp -d)
 cp adapters/webrtc/*.go adapters/webrtc/go.mod adapters/webrtc/go.sum \
   adapters/webrtc/browser.js adapters/webrtc/index.html "$offline_src/"
+cp -R adapters/webrtc/testrelay "$offline_src/"
 (cd "$offline_src" && go mod download && go mod verify && go mod vendor)
 ```
 
@@ -105,4 +123,33 @@ RUSTUP_TOOLCHAIN=$(rustup show active-toolchain | cut -d' ' -f1) \
 
 The Chromium test uses real loopback peer connections against both `prime-lang run` and the emitted native executable. It checks peer identity, moves shared across two tabs, Unicode and multiline text, empty messages, arbitrary binary bytes, the 8 KiB limit, tab refresh, Prime-initiated close and shutdown with a live peer. It also checks connection state and the selected ICE candidate through browser statistics. The bundled page must visibly display the fifth move after a form submission.
 
-Two separate media sessions offer a synthetic Web Audio oscillator and a changing canvas capture. On Chromium 155.0.8059.84 for Linux x86-64, Prime reported `audio/opus` and `video/VP8` after receipt of RTP on each corresponding connection. Media support in this API is inbound RTP receipt and codec notification. Pixel/PCM access, playback and outbound media tracks are outside its scope. The test requires neither cameras nor audio devices.
+Two separate media sessions offer a synthetic Web Audio oscillator and a changing canvas capture. On Chromium 155.0.8059.84 for Linux x86-64, Prime reported `audio/opus` and `video/VP8` after receipt of RTP on each corresponding connection. The default media test uses inbound RTP receipt and codec notification. The additional test below enables encoded media return and checks decoding in Chromium. The test requires neither cameras nor audio devices.
+
+
+## Measure relay selection, media return and concurrent clients
+
+From the repository root, build the disposable relay fixture and run the extended check. Go uses the same locked modules as the adapter. The fixture binds the control socket and UDP allocations to loopback, limits TURN permissions to loopback, issues five-minute credentials via Pion and writes them to a mode-0600 temporary file. Its stdout contains a readiness indicator. The fixture deletes the temporary file on shutdown.
+
+```sh
+(cd adapters/webrtc && go build -mod=readonly -o ../../target/rtc-testrelay ./testrelay)
+RUSTUP_TOOLCHAIN=$(rustup show active-toolchain | cut -d' ' -f1) \
+  python3 adapters/webrtc/test_transport.py target/debug/prime-lang target/prime-webrtc target/rtc-testrelay
+```
+
+The harness runs the same tests with the interpreter and the emitted native program. The TURN run forces relay-only policy at both ends and checks the browser's selected candidate pair. Across it, the browser exchanges Prime text and binary messages, then measures increasing sent and received RTP packets and decoded audio samples or video frames on separate synthetic Opus and VP8 sessions. It records elapsed time for service shutdown and browser-observed channel closure.
+
+The capacity run uses direct ICE on loopback and one authoritative Prime counter. Two tabs in a single headless Chromium instance create 50 and 49 independent peer connections to this program. Each receives a distinct Prime ID and sends a numbered text move. Prime advances its shared count and replies with a snapshot carrying the input sequence and the new count. The harness checks all 99 channels are still open, then checks 300 additional moves and snapshots on one channel. Pass `--peers N` to repeat with 2 through 99 peers. This measures 99 simultaneous transport connections on one Linux host. Game simulation and Internet latency are separate measurements. [Capacity probe](../adapters/webrtc/testdata/counter/counter.prime)
+
+The following single-run measurements used Chromium 155.0.8059.84 on Linux x86-64 and the vendored offline builds of the adapter and TURN fixture. Setup time includes joining the two tabs and collecting their first 99 snapshots. Shutdown time ends when both tabs observe all channels closed.
+
+| Observation | Prime run | Native |
+| --- | ---: | ---: |
+| Direct channels open at once | 99 | 99 |
+| Setup and first snapshot from each peer | 2.25 s | 2.27 s |
+| Verified numbered moves on one channel | 301 | 301 |
+| SIGINT to all 99 direct channels closed | 36 ms | 25 ms |
+| Selected TURN pair on each media session | relay/relay | relay/relay |
+| Browser Opus packets sent / received at sample | 16 / 16 | 16 / 16 |
+| Browser VP8 packets sent / received at sample | 7 / 7 | 7 / 7 |
+| Returned audio samples / video frames decoded | 14,400 / 7 | 14,400 / 7 |
+| SIGTERM to observed relay channel closure | 6 ms | 6 ms |

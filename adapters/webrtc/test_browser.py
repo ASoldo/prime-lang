@@ -43,8 +43,9 @@ def stop(process):
 
 
 @contextlib.contextmanager
-def service(adapter, cwd, command, interrupt):
-    child = subprocess.Popen([adapter, "--", *command], cwd=cwd, stdout=subprocess.PIPE,
+def service(adapter, cwd, command, interrupt, ice_path=None):
+    options = ["-ice-config", ice_path] if ice_path else []
+    child = subprocess.Popen([adapter, *options, "--", *command], cwd=cwd, stdout=subprocess.PIPE,
                              text=True, start_new_session=True)
     try:
         if not select.select([child.stdout], [], [], 8)[0]:
@@ -161,14 +162,22 @@ if (a[0] === "video") {
   tracks.push(...canvas.captureStream(20).getVideoTracks());
 }
 window.rtc = await connectPrime(({data}) => inbox.push(
-  typeof data === "string" ? data : Array.from(new Uint8Array(data))), tracks);
+  typeof data === "string" ? data : Array.from(new Uint8Array(data))), tracks, {
+    rtcConfig: a[1], returnMedia: a[2],
+    onTrack: ({track}) => {
+      const player = document.createElement(track.kind === "video" ? "video" : "audio");
+      player.muted = true; player.autoplay = true;
+      player.srcObject = new MediaStream([track]);
+      document.body.append(player);
+    },
+  });
 return await take();
 """
 
 
-def connect(browser, origin, media=""):
+def connect(browser, origin, media="", config=None, return_media=False):
     browser.post("/url", {"url": origin + "/browser.js"})
-    welcome = browser.js(CONNECT, media)
+    welcome = browser.js(CONNECT, media, config, return_media)
     assert re.fullmatch(r"joined [1-9][0-9]*", welcome), welcome
     return int(welcome.split()[1])
 

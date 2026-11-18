@@ -1,0 +1,14 @@
+manifest_version = "3"
+
+[package]
+name = "rtc_probe"
+version = "0.1.0"
+
+[module]
+name = "rtc_probe"
+path = "counter.prime"
+visibility = "pub"
+
+[libraries]
+core_types = { name = "core::types", path = "../../../../workspace/core/types.prime", visibility = "pub" }
+prime_webrtc = { name = "prime::webrtc", path = "../../../../workspace/plugins/webrtc/webrtc.prime", visibility = "pub" }
