@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Execute CLI-built ESP32-C3 string and integer probes on Unicorn."""
+"""Execute CLI-built ESP32-C3 string, integer and token ownership probes on Unicorn."""
 
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -22,6 +23,8 @@ SCRATCH = 0x10000
 class C3Program(unittest.TestCase):
     source = None
     expected_error = None
+    build_env = {}
+    module = "c3_strings"
 
     @classmethod
     def setUpClass(cls):
@@ -35,7 +38,9 @@ class C3Program(unittest.TestCase):
         toolchain = subprocess.check_output(
             ["rustup", "show", "active-toolchain"], cwd=FIXTURE, text=True
         ).split()[0]
-        env = dict(os.environ, RUSTUP_TOOLCHAIN=toolchain)
+        env = dict(os.environ, RUSTUP_TOOLCHAIN=toolchain, **cls.build_env)
+        manifest = work / "prime.toml"
+        manifest.write_text(manifest.read_text().replace('name = "c3_strings"', f'name = "{cls.module}"'))
 
         def run(*cmd):
             return subprocess.check_output(cmd, cwd=work, env=env)
@@ -58,6 +63,7 @@ class C3Program(unittest.TestCase):
         run(*asm, "-march=rv32imc", "-mabi=ilp32", "-c", "startup.S", "-o", "startup.o")
         run(cli, "build", "main.prime", "--name", "c3", "--no-flash")
         elf = work / ".build.prime/c3-riscv32imc-unknown-none-elf/c3"
+        cls.elf = elf
         run("llvm-objcopy", "--dump-section", ".text=text.bin", "--dump-section", ".data=data.bin", elf)
         cls.code = (work / "text.bin").read_bytes()
         cls.data = (work / "data.bin").read_bytes()
@@ -146,6 +152,24 @@ class C3Strings(C3Program):
             self.cpu.mem_write(SCRATCH + 16, value.to_bytes(16, "little", signed=True))
             handle = self.call("int_to_string", SCRATCH + 16)
             self.assertEqual(self.read_string(handle), str(value).encode())
+
+
+class C3TokenOwners(C3Program):
+    module = "task_ownership"
+    source = (FIXTURE.parent / "task_ownership/main.prime").read_text()
+    build_env = {"PRIME_RT_CANCEL_TOKEN_SLOTS": "2"}
+    expected_output = (
+        b"serial ok\nold alias ok\nloop exits ok\nescaping capture ok\ncapture ok\n"
+        b"pool available\nguard ran\nindependent ok\nreuse ok\n"
+    )
+
+    def test_linked_two_slot_runtime(self):
+        verifier = Path(__file__).with_name("test_embedded_timers.py")
+        subprocess.run(
+            [sys.executable, verifier, "EmbeddedTimers.test_compiled_token_owners"],
+            env=dict(os.environ, PRIME_TOKEN_PROBE_ELF=str(self.elf)),
+            check=True,
+        )
 
 
 class C3Integers(C3Program):

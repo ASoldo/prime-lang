@@ -1,6 +1,6 @@
 # Prime architecture
 
-The CLI resolves an entry path or manifest module through `src/project`, loads imports, expands macros and checks the resulting program for the selected target. The checker reports diagnostics. Both execution paths consume the expanded AST. The native path also receives match and postfix-propagation facts indexed by expression identity, including variant tags, payload types and guard types. [Checked program](../src/language/typecheck/checked.rs) · [CLI entry points](../src/main.rs) · [Package loader](../src/project/program.rs) · [Language outline](LanguageOutline.md)
+The CLI resolves an entry path or manifest module through `src/project`, loads imports, expands macros and checks the resulting program for the selected target. File and stdin entries share this path, including the bundled core fallback. The checker reports diagnostics. Both execution paths consume the expanded AST. The interpreter and native compiler consume the same checked integer operations and widths. The native compiler also receives match and postfix-propagation facts indexed by expression identity, including variant tags, payload types and guard types. [Checked program](../src/language/typecheck/checked.rs) · [CLI entry points](../src/main.rs) · [Package loader](../src/project/program.rs) · [Language outline](LanguageOutline.md)
 
 | Command | Consumer of the expanded AST | Where program effects occur |
 | --- | --- | --- |
@@ -18,7 +18,7 @@ The language server uses the Rust frontend for source analysis. Tree-sitter supp
 | --- | --- |
 | Host code branches on the runtime Result tag and joins the exiting paths at the enclosing function or `try`. The filesystem regression exercises both paths in one binary and checks cleanup order. Embedded code diagnoses an unresolved tag. [Filesystem regression](../tests/filesystem_cli.rs) · [Codegen diagnostics](../tests/check_cli.rs) | Compile once, exercise both variants with different runtime inputs, and compare return values and subsequent side effects with the interpreter. Unsupported cases should report the source of the operation. |
 | The emitter declares LLVM parameter widths separately from the Rust exports. For example, a timer task accepts an i128 delay and returns a handle. [ABI declarations](../src/language/runtime_abi.rs) · [ABI definitions](../src/runtime/abi.rs) | Exercise changed signatures through linked code on each affected target. Check the payload, status and handle lifetime, including on a 32-bit target. |
-| The checker rejects direct references returned through await, while nested captures and aggregate values have incomplete transfer checks. [Async ownership](AsyncAwait.md) | For a newly supported capture shape, test ownership through nesting and verify either a precise diagnostic or the same observable behavior in interpreted and native execution. |
+| Task boundaries check references and raw pointers transitively in captures and results. Native host workers still reject mutable captures, and embedded channels cannot own a token. [Task ownership](AsyncAwait.md) · [Token lifetime](EmbeddedTimers.md#token-pool-lifetime) | Check the same aggregate through function returns, task captures and channels. Validate each supported storage path through the last release, with one slot available and with the pool full. |
 
 ### A mutable parameter across a call
 
