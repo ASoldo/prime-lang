@@ -1,0 +1,200 @@
+"""Execute the no_std RV32IMC ABI with a controlled ESP32-C3 SYSTIMER.
+
+Requires the riscv32imc-unknown-none-elf rustup target, LLD, LLVM tools and
+Python's unicorn package (2.1+). Run with python3 scripts/test_embedded_timers.py.
+"""
+
+from pathlib import Path
+import os
+import subprocess
+import tempfile
+import unittest
+
+from unicorn import Uc, UC_ARCH_RISCV, UC_MODE_RISCV32
+from unicorn.riscv_const import (
+    UC_RISCV_REG_A0, UC_RISCV_REG_MSTATUS, UC_RISCV_REG_PC,
+    UC_RISCV_REG_RA, UC_RISCV_REG_SP,
+)
+
+
+RAM = 0x10000
+STOP = RAM + 0x1F000
+OUT = RAM + 0x1E000
+ARG = OUT + 16
+TICKS_PER_MS = 16_000
+PERIOD = 1 << 52
+SYMBOLS = """
+now_ms delay_ms sleep_task task_poll task_cancel join unit_new
+channel_new send recv_task recv_timeout close enum_tag enum_get
+cancel_token_new cancel_token_cancel cancel_token_is_cancelled value_retain value_release
+""".split()
+
+
+class EmbeddedTimers(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[1]
+        temp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(temp.cleanup)
+        work = Path(temp.name)
+
+        def run(*args, **kw):
+            return subprocess.run(args, cwd=work, check=True, **kw)
+
+        run("rustc", "--edition=2021", "--crate-type=staticlib", "-Copt-level=s",
+            "-Cpanic=abort", "-Astatic_mut_refs", "--target=riscv32imc-unknown-none-elf",
+            root / "src/runtime/abi.rs", "-o", "runtime.a",
+            env=dict(os.environ, PRIME_RT_CANCEL_TOKEN_SLOTS="2", PRIME_RT_TASK_SLOTS="3",
+                     PRIME_RT_RECV_POLL_MS="1"))
+        (work / "map.ld").write_text(
+            "SECTIONS { . = 0x10000; .text : { *(.text*) } .rodata : { *(.rodata*) } "
+            ".data : { *(.data* .sdata*) } .bss : { *(.bss* .sbss*) } }"
+        )
+        run("ld.lld", "--gc-sections", "--no-relax", "-T", "map.ld", "-e", "prime_now_ms",
+            *["--undefined=prime_" + name for name in SYMBOLS], "runtime.a", "-o", "probe")
+        run("llvm-objcopy", "-O", "binary", "probe", "probe.bin")
+        cls.code = (work / "probe.bin").read_bytes()
+        symbols = run("llvm-nm", "--defined-only", "probe", capture_output=True, text=True)
+        cls.symbols = {
+            name: int(address, 16) for address, _, name in
+            (line.split() for line in symbols.stdout.splitlines())
+        }
+
+    def setUp(self):
+        self.cpu = Uc(UC_ARCH_RISCV, UC_MODE_RISCV32)
+        self.cpu.mem_map(RAM, 0x20000)
+        self.cpu.mem_write(RAM, self.code)
+        self.cpu.mem_map(0x600C0000, 0x1000)
+        self.cpu.mem_write(0x600C0018, (1 << 29).to_bytes(4, "little"))
+        self.ticks = self.step = self.conf = self.snapshot = 0
+        self.valid_reads = 0
+        self.cpu.mmio_map(0x60023000, 0x1000, self.read_timer, None, self.write_timer, None)
+
+    def read_timer(self, cpu, offset, size, data):
+        if offset == 0:
+            return self.conf
+        if offset == 4:
+            self.valid_reads += 1
+            return int(self.valid_reads >= 2) << 29
+        self.assertGreaterEqual(self.valid_reads, 2)
+        return {0x40: self.snapshot >> 32, 0x44: self.snapshot & 0xFFFFFFFF}[offset]
+
+    def write_timer(self, cpu, offset, size, value, data):
+        if offset == 0:
+            self.conf = value
+            return
+        self.assertEqual((offset, size, value), (4, 4, 1 << 30))
+        self.assertTrue(self.conf & (1 << 30))
+        self.assertFalse(self.read_word(0x600C0018) & (1 << 29))
+        self.assertTrue(self.read_word(0x600C0010) & (1 << 29))
+        self.snapshot = self.ticks % PERIOD
+        self.ticks += self.step
+        self.valid_reads = 0
+
+    def read_word(self, addr, size=4):
+        return int.from_bytes(self.cpu.mem_read(addr, size), "little")
+
+    def call(self, name, *args):
+        cpu = self.cpu
+        for n, value in enumerate(args):
+            cpu.reg_write(UC_RISCV_REG_A0 + n, value)
+        cpu.reg_write(UC_RISCV_REG_RA, STOP)
+        cpu.reg_write(UC_RISCV_REG_SP, OUT - 16)
+        before = cpu.reg_read(UC_RISCV_REG_MSTATUS)
+        cpu.emu_start(self.symbols["prime_" + name], STOP, count=100_000)
+        self.assertEqual(cpu.reg_read(UC_RISCV_REG_PC), STOP, name + " failed to return")
+        self.assertEqual(cpu.reg_read(UC_RISCV_REG_MSTATUS) & 8, before & 8)
+        return cpu.reg_read(UC_RISCV_REG_A0)
+
+    def arg128(self, value):
+        # RV32 passes an LLVM i128 indirectly, including for returned timestamps.
+        self.cpu.mem_write(ARG, value.to_bytes(16, "little", signed=True))
+        return ARG
+
+    def sleep_task(self, millis):
+        return self.call("sleep_task", self.arg128(millis))
+
+    def now(self):
+        self.call("now_ms", OUT)
+        return self.read_word(OUT, 16)
+
+    def test_sleep_creation_poll_join_and_pool_reuse(self):
+        self.cpu.reg_write(UC_RISCV_REG_MSTATUS, 8)
+        self.ticks = 7 * TICKS_PER_MS
+        slow, fast = self.sleep_task(100), self.sleep_task(3)
+        self.assertTrue(slow and fast and slow != fast)
+        self.assertEqual(self.call("task_poll", slow, OUT), 1)
+        self.ticks += 2 * TICKS_PER_MS
+        self.assertEqual(self.call("task_poll", fast, OUT), 1)
+        self.ticks += TICKS_PER_MS
+        self.assertEqual(self.call("task_poll", fast, OUT), 0)
+        self.assertEqual(self.read_word(OUT), self.call("unit_new"))
+        self.assertEqual(self.call("task_cancel", slow), 0)
+        # Reusing a cancelled slot must not inherit its old deadline.
+        pending = self.sleep_task(101)
+        self.ticks += 98 * TICKS_PER_MS
+        self.assertEqual(self.call("task_poll", pending, OUT), 1)
+        self.step = TICKS_PER_MS
+        self.assertEqual(self.call("join", pending, OUT), 0)
+
+    def test_sleep_retains_fractional_start(self):
+        self.ticks = TICKS_PER_MS - 1
+        task = self.sleep_task(1)
+        self.ticks = 2 * TICKS_PER_MS - 2
+        self.assertEqual(self.call("task_poll", task, OUT), 1)
+        self.ticks += 1
+        self.assertEqual(self.call("task_poll", task, OUT), 0)
+
+    def test_immediate_and_overflowing_durations(self):
+        self.ticks = TICKS_PER_MS
+        for millis in [0, -1, -(1 << 127)]:
+            self.assertEqual(self.call("task_poll", self.sleep_task(millis), OUT), 0)
+        for millis in [(1 << 31) + 1, (1 << 63) - 1, (1 << 127) - 1]:
+            task = self.sleep_task(millis)
+            self.assertEqual(self.call("task_poll", task, OUT), 1)
+            self.assertEqual(self.call("task_cancel", task), 0)
+
+    def test_counter_rollovers_deadlines_and_overshoot(self):
+        for boundary in [1 << 32, TICKS_PER_MS << 32, PERIOD]:
+            self.ticks = boundary - 2 * TICKS_PER_MS
+            self.assertEqual(self.now(), self.ticks // TICKS_PER_MS)
+            task = self.sleep_task(5)
+            self.ticks += 4 * TICKS_PER_MS
+            self.assertEqual(self.now(), self.ticks // TICKS_PER_MS)
+            self.assertEqual(self.call("task_poll", task, OUT), 1)
+            self.ticks += 9 * TICKS_PER_MS
+            self.assertEqual(self.call("task_poll", task, OUT), 0)
+
+    def test_channel_deadlines_waiters_and_cancellation(self):
+        self.assertEqual(self.call("channel_new", OUT, OUT + 4), 0)
+        tx, rx = self.read_word(OUT), self.read_word(OUT + 4)
+        for ms in [0, -1]:
+            self.assertEqual(self.call("recv_timeout", rx, self.arg128(ms), OUT), 1)
+        self.step = TICKS_PER_MS
+        self.assertEqual(self.call("recv_timeout", rx, self.arg128(5), OUT), 1)
+        self.assertGreaterEqual(self.now(), 5)
+        self.step = 0
+        waiter = self.call("recv_task", rx)
+        self.assertEqual(self.call("task_poll", waiter, OUT), 1)
+        self.assertEqual(self.call("task_cancel", waiter), 0)
+        sleeper = self.sleep_task(10)
+        self.assertEqual(self.call("send", tx, self.call("unit_new")), 0)
+        self.assertEqual(self.call("task_poll", sleeper, OUT), 1)
+        self.assertEqual(self.call("join", self.call("recv_task", rx), OUT), 0)
+        self.assertEqual(self.call("enum_get", self.read_word(OUT), 0), self.call("unit_new"))
+        self.assertEqual(self.call("task_cancel", sleeper), 0)
+        self.assertEqual(self.call("close", rx), 0)
+
+    def test_token_exhaustion_and_aliases(self):
+        first, second = self.call("cancel_token_new"), self.call("cancel_token_new")
+        self.assertTrue(first and second and first != second)
+        alias = self.call("value_retain", first)
+        self.assertEqual(self.call("cancel_token_cancel", first), 0)
+        self.call("value_release", first)
+        self.assertTrue(self.call("cancel_token_is_cancelled", alias))
+        self.assertFalse(self.call("cancel_token_is_cancelled", second))
+        self.assertEqual(self.call("cancel_token_new"), 0)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

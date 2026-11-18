@@ -20,9 +20,51 @@ mod embedded {
     use core::ffi::c_void;
     use core::mem::MaybeUninit;
     use core::ptr;
-    use core::sync::atomic::{AtomicBool, Ordering};
     #[cfg(target_arch = "xtensa")]
-    use core::sync::atomic::{AtomicU32, AtomicUsize};
+    use core::sync::atomic::AtomicU32;
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    // The bare-metal ESP32-C3 is a single RV32IMC core without atomic RMW
+    // instructions. Preserve MIE if called from an already masked context.
+    #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+    fn with_interrupts_masked<T>(f: impl FnOnce() -> T) -> T {
+        let previous: usize;
+        unsafe { core::arch::asm!("csrrci {}, mstatus, 8", out(reg) previous, options(nostack)) };
+        let value = f();
+        if previous & 8 != 0 {
+            unsafe { core::arch::asm!("csrsi mstatus, 8", options(nostack)) };
+        }
+        value
+    }
+
+    #[cfg(target_arch = "xtensa")]
+    fn claim_slot(used: &AtomicBool) -> bool {
+        used.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+    fn claim_slot(used: &AtomicBool) -> bool {
+        with_interrupts_masked(|| {
+            let available = !used.load(Ordering::SeqCst);
+            used.store(true, Ordering::SeqCst);
+            available
+        })
+    }
+
+    #[cfg(target_arch = "xtensa")]
+    fn next_handle_index(next: &AtomicUsize) -> usize {
+        next.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+    fn next_handle_index(next: &AtomicUsize) -> usize {
+        with_interrupts_masked(|| {
+            let index = next.load(Ordering::Relaxed);
+            next.store(index.wrapping_add(1), Ordering::Relaxed);
+            index
+        })
+    }
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,7 +211,7 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none")
     ))]
     fn alloc_int(value: i128) -> PrimeHandle {
-        let slot = INT_HANDLE_NEXT.fetch_add(1, Ordering::Relaxed) % PRIME_INT_SLOTS;
+        let slot = next_handle_index(&INT_HANDLE_NEXT) % PRIME_INT_SLOTS;
         unsafe {
             INT_HANDLES[slot].as_mut_ptr().write(PrimeInt { value });
             PrimeHandle(INT_HANDLES.as_mut_ptr().add(slot) as *mut c_void)
@@ -221,7 +263,7 @@ mod embedded {
     struct TaskSlot {
         used: AtomicBool,
         done: AtomicBool,
-        deadline_ms: UnsafeCell<i128>,
+        deadline_ticks: UnsafeCell<i128>,
         result: UnsafeCell<PrimeHandle>,
     }
 
@@ -405,7 +447,7 @@ mod embedded {
     ))]
     fn alloc_enum(tag: u32, value: PrimeHandle, len: usize) -> PrimeHandle {
         unsafe {
-            let idx = ENUM_HANDLE_NEXT.fetch_add(1, Ordering::Relaxed) % ENUM_HANDLES.len();
+            let idx = next_handle_index(&ENUM_HANDLE_NEXT) % ENUM_HANDLES.len();
             ENUM_HANDLES[idx] = Some(PrimeEnum { tag, value, len });
             let handle_ptr = ENUM_HANDLES[idx].as_ref().unwrap() as *const PrimeEnum;
             #[cfg(target_arch = "xtensa")]
@@ -424,17 +466,13 @@ mod embedded {
         ensure_task_slots();
         unsafe {
             for slot in task_slots().iter() {
-                if slot
-                    .used
-                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-                {
+                if claim_slot(&slot.used) {
                     #[cfg(target_arch = "xtensa")]
                     {
                         TASK_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
                     }
                     slot.done.store(false, Ordering::SeqCst);
-                    *slot.deadline_ms.get() = 0;
+                    *slot.deadline_ticks.get() = 0;
                     *slot.result.get() = PrimeHandle::null();
                     return Some(slot);
                 }
@@ -465,11 +503,7 @@ mod embedded {
     fn alloc_channel_slot() -> Option<&'static ChannelSlot> {
         ensure_channel_slots();
         for slot in channel_slots().iter() {
-            if slot
-                .used
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
+            if claim_slot(&slot.used) {
                 #[cfg(target_arch = "xtensa")]
                 {
                     CHANNEL_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -518,7 +552,7 @@ mod embedded {
                 slot.write(TaskSlot {
                     used: AtomicBool::new(false),
                     done: AtomicBool::new(false),
-                    deadline_ms: UnsafeCell::new(0),
+                    deadline_ticks: UnsafeCell::new(0),
                     result: UnsafeCell::new(PrimeHandle::null()),
                 });
             }
@@ -572,11 +606,7 @@ mod embedded {
     fn alloc_cancel_token_slot() -> Option<&'static CancelTokenSlot> {
         ensure_cancel_token_slots();
         for slot in cancel_token_slots().iter() {
-            if slot
-                .used
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
+            if claim_slot(&slot.used) {
                 slot.cancelled.store(false, Ordering::SeqCst);
                 return Some(slot);
             }
@@ -889,7 +919,7 @@ mod embedded {
     #[unsafe(export_name = "prime_recv_timeout")]
     pub unsafe extern "C" fn prime_recv_timeout(
         _receiver: PrimeHandle,
-        _millis: i64,
+        millis: i128,
         value_out: *mut PrimeHandle,
     ) -> PrimeStatus {
         if value_out.is_null() {
@@ -898,8 +928,7 @@ mod embedded {
         let Some(slot) = channel_from_handle(_receiver) else {
             return PrimeStatus::Invalid;
         };
-        let start = prime_now_ms();
-        let deadline = start.saturating_add(i128::from(_millis.max(0)));
+        let deadline = deadline_after_ms(millis);
         loop {
             match dequeue_channel(slot) {
                 ChannelPoll::Item(v) => {
@@ -908,7 +937,7 @@ mod embedded {
                 }
                 ChannelPoll::Closed => return PrimeStatus::Closed,
                 ChannelPoll::Empty => {
-                    if prime_now_ms() >= deadline {
+                    if clock_ticks() >= deadline {
                         value_out.write(PrimeHandle::null());
                         return PrimeStatus::Invalid;
                     }
@@ -1008,11 +1037,7 @@ mod embedded {
         deadline_ms: Option<i128>,
     ) -> bool {
         for waiter in channel_waiters().iter() {
-            if waiter
-                .used
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-            {
+            if claim_slot(&waiter.used) {
                 unsafe {
                     *waiter.channel.get() = channel as *const ChannelSlot;
                     *waiter.task.get() = task as *const TaskSlot;
@@ -1437,37 +1462,41 @@ mod embedded {
         let Some(slot) = task_from_handle(_task) else {
             return PrimeStatus::Invalid;
         };
-        if !slot.done.load(Ordering::SeqCst) {
-            let _ = poll_channel_waiters();
+        if !try_take_task_result(slot, result_out) {
+            return PrimeStatus::Invalid;
         }
+        PrimeStatus::Ok
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    unsafe fn try_take_task_result(slot: &TaskSlot, result_out: *mut PrimeHandle) -> bool {
         if !slot.done.load(Ordering::SeqCst) {
-            let deadline = unsafe { *slot.deadline_ms.get() };
+            let deadline = *slot.deadline_ticks.get();
             if deadline > 0 {
-                let now = unsafe { prime_now_ms() };
-                if now >= deadline {
-                    slot.done.store(true, Ordering::SeqCst);
+                if clock_ticks() < deadline {
+                    return false;
+                }
+            } else {
+                poll_channel_waiters();
+                if !slot.done.load(Ordering::SeqCst) {
+                    return false;
                 }
             }
-        }
-        if !slot.done.load(Ordering::SeqCst) {
-            prime_delay_ms(recv_poll_ms());
-            return PrimeStatus::Invalid;
         }
         let value = unsafe { *slot.result.get() };
         unsafe {
             result_out.write(value);
         }
+        // Allocation initializes the rest of the slot before reusing it.
         slot.used.store(false, Ordering::SeqCst);
-        slot.done.store(false, Ordering::SeqCst);
-        unsafe {
-            *slot.result.get() = PrimeHandle::null();
-            *slot.deadline_ms.get() = 0;
-        }
         #[cfg(target_arch = "xtensa")]
         {
             TASK_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
         }
-        PrimeStatus::Ok
+        true
     }
 
     #[cfg(any(
@@ -1485,32 +1514,10 @@ mod embedded {
         let Some(slot) = task_from_handle(_task) else {
             return PrimeStatus::Invalid;
         };
-        loop {
-            if slot.done.load(Ordering::SeqCst) {
-                let value = unsafe { *slot.result.get() };
-                unsafe { result_out.write(value) };
-                slot.used.store(false, Ordering::SeqCst);
-                slot.done.store(false, Ordering::SeqCst);
-                unsafe {
-                    *slot.result.get() = PrimeHandle::null();
-                    *slot.deadline_ms.get() = 0;
-                }
-                #[cfg(target_arch = "xtensa")]
-                {
-                    TASK_FREE_COUNT.fetch_add(1, Ordering::Relaxed);
-                }
-                return PrimeStatus::Ok;
-            }
-            let _ = poll_channel_waiters();
-            let deadline = unsafe { *slot.deadline_ms.get() };
-            if deadline > 0 {
-                let now = unsafe { prime_now_ms() };
-                if now >= deadline {
-                    slot.done.store(true, Ordering::SeqCst);
-                }
-            }
+        while !try_take_task_result(slot, result_out) {
             prime_delay_ms(recv_poll_ms());
         }
+        PrimeStatus::Ok
     }
 
     #[cfg(any(
@@ -1552,7 +1559,7 @@ mod embedded {
         slot.done.store(false, Ordering::SeqCst);
         unsafe {
             *slot.result.get() = PrimeHandle::null();
-            *slot.deadline_ms.get() = 0;
+            *slot.deadline_ticks.get() = 0;
         }
         slot.used.store(false, Ordering::SeqCst);
         #[cfg(target_arch = "xtensa")]
@@ -1603,16 +1610,16 @@ mod embedded {
         all(target_arch = "riscv32", target_os = "none"),
     ))]
     #[unsafe(export_name = "prime_sleep_task")]
-    pub unsafe extern "C" fn prime_sleep_task(_millis: i64) -> PrimeHandle {
-        // For now, block the current thread/task; Xtensa ROM delay is cheap and avoids
-        // tight polling when timers are unavailable.
-        prime_delay_ms(_millis as i32);
+    pub unsafe extern "C" fn prime_sleep_task(millis: i128) -> PrimeHandle {
         let Some(slot) = alloc_task_slot() else {
             return PrimeHandle::null();
         };
-        *slot.deadline_ms.get() = prime_now_ms();
         *slot.result.get() = prime_unit_new();
-        slot.done.store(true, Ordering::SeqCst);
+        if millis <= 0 {
+            slot.done.store(true, Ordering::SeqCst);
+        } else {
+            *slot.deadline_ticks.get() = deadline_after_ms(millis);
+        }
         PrimeHandle(slot as *const TaskSlot as *mut c_void)
     }
 
@@ -1722,10 +1729,7 @@ mod embedded {
         PrimeHandle(STR_HANDLES.as_mut_ptr().add(slot) as *mut c_void)
     }
 
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
+    #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_int_to_string(value: i128) -> PrimeHandle {
         // Render i128 into decimal string using the same ring buffer as prime_string_new.
@@ -1790,36 +1794,113 @@ mod embedded {
         let _ = s;
     }
 
+    // Classic ESP32: reserve timer group 0, general-purpose timer 0. A hardware
+    // 64-bit counter keeps ticking even when no Prime code samples the clock.
+    #[cfg(target_arch = "xtensa")]
+    unsafe fn init_esp32_timer() {
+        const CLK_EN: *mut u32 = 0x3ff0_00c0 as _;
+        const RESET: *mut u32 = 0x3ff0_00c4 as _;
+        const TIMER_GROUP0: u32 = 1 << 13;
+        ptr::write_volatile(CLK_EN, ptr::read_volatile(CLK_EN) | TIMER_GROUP0);
+        ptr::write_volatile(RESET, ptr::read_volatile(RESET) & !TIMER_GROUP0);
+
+        // When clocked from the PLL, APB runs at 80 MHz. At lower CPU
+        // frequencies APB follows the CPU. The bootloader sets the ROM scale.
+        // 500 kHz is representable even at a 1 MHz APB (minimum divider 2).
+        let divider = 2 * ets_get_cpu_frequency().clamp(1, 80);
+        let base = DR_REG_TIMERGROUP0_BASE as *mut u32;
+        ptr::write_volatile(base, 0);
+        ptr::write_volatile(base.wrapping_add(0x18 / 4), 0); // T0LOADLO
+        ptr::write_volatile(base.wrapping_add(0x1c / 4), 0); // T0LOADHI
+        ptr::write_volatile(base.wrapping_add(0x20 / 4), 1); // T0LOAD
+        ptr::write_volatile(base, (1 << 31) | (1 << 30) | (divider << 13));
+    }
+
+    #[cfg(target_arch = "xtensa")]
+    const TICKS_PER_MS: i128 = 500;
+
+    #[cfg(target_arch = "xtensa")]
+    unsafe fn clock_ticks() -> i128 {
+        let base = DR_REG_TIMERGROUP0_BASE as *mut u32;
+        let update = base.wrapping_add(0x0c / 4);
+        ptr::write_volatile(update, 1 << 31);
+        while ptr::read_volatile(update) & (1 << 31) != 0 {
+            core::hint::spin_loop();
+        }
+        let low = ptr::read_volatile(base.wrapping_add(1));
+        let high = ptr::read_volatile(base.wrapping_add(2));
+        i128::from((u64::from(high) << 32) | u64::from(low))
+    }
+
+    // ESP32-C3 SYSTIMER unit 0 is a 52-bit upcounter clocked at 16 MHz.
+    // Take a hardware snapshot before reading the two halves. Extend wraps
+    // before converting to milliseconds (the period is not a whole millisecond).
+    #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+    const TICKS_PER_MS: i128 = 16_000;
+
+    #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+    unsafe fn clock_ticks() -> i128 {
+        const SYSTIMER: *mut u32 = 0x6002_3000 as _;
+        const BUS_CLOCK: *mut u32 = 0x600c_0010 as _;
+        const BUS_RESET: *mut u32 = 0x600c_0018 as _;
+        const SYSTIMER_BUS: u32 = 1 << 29;
+        const UPDATE: u32 = 1 << 30;
+        const VALID: u32 = 1 << 29;
+        static mut STARTED: bool = false;
+        static mut LAST: u64 = 0;
+        static mut WRAPS: u64 = 0;
+
+        with_interrupts_masked(|| {
+            if !STARTED {
+                ptr::write_volatile(BUS_CLOCK, ptr::read_volatile(BUS_CLOCK) | SYSTIMER_BUS);
+                ptr::write_volatile(BUS_RESET, ptr::read_volatile(BUS_RESET) & !SYSTIMER_BUS);
+                // Enable the register clock and unit 0, preserving other units.
+                ptr::write_volatile(SYSTIMER, ptr::read_volatile(SYSTIMER) | (3 << 30));
+                STARTED = true;
+            }
+            let op = SYSTIMER.wrapping_add(1);
+            ptr::write_volatile(op, UPDATE);
+            while ptr::read_volatile(op) & VALID == 0 {
+                core::hint::spin_loop();
+            }
+            let high = ptr::read_volatile(SYSTIMER.wrapping_add(0x40 / 4)) & 0x000f_ffff;
+            let low = ptr::read_volatile(SYSTIMER.wrapping_add(0x44 / 4));
+            let ticks = (u64::from(high) << 32) | u64::from(low);
+            if ticks < LAST {
+                WRAPS += 1;
+            }
+            LAST = ticks;
+            (i128::from(WRAPS) << 52) | i128::from(ticks)
+        })
+    }
+
     #[cfg(any(
         target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none"),
+        all(target_arch = "riscv32", target_os = "none")
+    ))]
+    unsafe fn deadline_after_ms(millis: i128) -> i128 {
+        clock_ticks().saturating_add(millis.max(0).saturating_mul(TICKS_PER_MS))
+    }
+
+    #[cfg(any(
+        target_arch = "xtensa",
+        all(target_arch = "riscv32", target_os = "none")
     ))]
     #[unsafe(export_name = "prime_now_ms")]
     pub unsafe extern "C" fn prime_now_ms() -> i128 {
-        #[cfg(target_arch = "xtensa")]
-        {
-            static LAST_CYCLES: AtomicU32 = AtomicU32::new(0);
-            static ACCUM_MS: AtomicU32 = AtomicU32::new(0);
-            static REM_CYCLES: AtomicU32 = AtomicU32::new(0);
-            let cycles_per_ms = cycles_per_ms();
-            let cycles: u32 = xthal_get_ccount();
-            let last = LAST_CYCLES.swap(cycles, Ordering::Relaxed);
-            let delta = cycles.wrapping_sub(last);
-            let total = delta.wrapping_add(REM_CYCLES.swap(0, Ordering::Relaxed));
-            let inc = total / cycles_per_ms;
-            let rem = total % cycles_per_ms;
-            if rem > 0 {
-                REM_CYCLES.store(rem, Ordering::Relaxed);
+        clock_ticks() / TICKS_PER_MS
+    }
+
+    #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_delay_ms(ms: i32) -> PrimeStatus {
+        if ms > 0 {
+            let deadline = deadline_after_ms(i128::from(ms));
+            while clock_ticks() < deadline {
+                core::hint::spin_loop();
             }
-            if inc > 0 {
-                ACCUM_MS.fetch_add(inc, Ordering::Relaxed);
-            }
-            return ACCUM_MS.load(Ordering::Relaxed) as i128;
         }
-        #[cfg(not(target_arch = "xtensa"))]
-        {
-            0
-        }
+        PrimeStatus::Ok
     }
 
     #[cfg(target_arch = "xtensa")]
@@ -1837,34 +1918,13 @@ mod embedded {
     unsafe extern "C" {
         fn ets_delay_us(us: u32);
         fn ets_printf(fmt: *const u8, ...) -> i32;
-        fn xthal_get_ccount() -> u32;
-    }
-
-    #[cfg(target_arch = "xtensa")]
-    fn cycles_per_ms() -> u32 {
-        use core::sync::atomic::{AtomicU32, Ordering};
-
-        static CYCLES_PER_MS: AtomicU32 = AtomicU32::new(0);
-        let cached = CYCLES_PER_MS.load(Ordering::Relaxed);
-        if cached != 0 {
-            return cached;
-        }
-
-        // Calibrate against ROM delay to match boards running at lower CPU clocks (e.g., 80MHz).
-        let start = unsafe { xthal_get_ccount() };
-        unsafe { ets_delay_us(1000) }; // 1 ms reference
-        let delta = unsafe { xthal_get_ccount() }.wrapping_sub(start);
-        let fallback = unsafe { prime_clock_hz_get().max(1) / 1000 };
-        // Trust the measurement so slower clock configs (e.g., 80MHz) don't get overestimated.
-        let final_cycles = if delta == 0 { fallback } else { delta };
-        CYCLES_PER_MS.store(final_cycles, Ordering::Relaxed);
-        final_cycles
+        fn ets_get_cpu_frequency() -> u32;
     }
 
     #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_clock_hz_get() -> u32 {
-        240_000_000
+        ets_get_cpu_frequency() * 1_000_000
     }
     #[cfg(target_arch = "xtensa")]
     #[unsafe(no_mangle)]
@@ -1934,47 +1994,12 @@ mod embedded {
     }
 
     #[inline]
-    #[allow(dead_code)]
-    fn delay_us(us: u32) {
-        #[cfg(target_arch = "xtensa")]
-        unsafe {
-            ets_delay_us(us);
-        }
-        #[cfg(not(target_arch = "xtensa"))]
-        {
-            // Crude fallback for host builds; not used on-device.
-            let spins = us.saturating_mul(200);
-            for _ in 0..spins {
-                core::hint::spin_loop();
-            }
-        }
-    }
-
-    #[inline]
-    #[cfg(target_arch = "xtensa")]
-    fn calibrated_delay_ms(ms: u32) {
-        // Simple busy loop calibrated off CPU frequency; avoids ROM deps.
-        let cycles_per_ms = cycles_per_ms();
-        let total_cycles = cycles_per_ms.saturating_mul(ms);
-        // Read current cycle count and spin until target is reached (handles wrap).
-        let start = unsafe { xthal_get_ccount() };
-        loop {
-            let now = unsafe { xthal_get_ccount() };
-            let elapsed = now.wrapping_sub(start);
-            if elapsed as u64 >= total_cycles as u64 {
-                break;
-            }
-            core::hint::spin_loop();
-        }
-    }
-
-    #[inline]
     #[cfg(any(
         target_arch = "xtensa",
         all(target_arch = "riscv32", target_os = "none")
     ))]
     fn recv_poll_ms() -> i32 {
-        PRIME_RECV_POLL_MS as i32
+        PRIME_RECV_POLL_MS.min(i32::MAX as u32) as i32
     }
 
     #[allow(dead_code)]
@@ -1990,6 +2015,7 @@ mod embedded {
 
     #[inline]
     #[allow(dead_code)]
+    #[cfg(target_arch = "xtensa")]
     fn disable_watchdogs_once() {
         if !WATCHDOGS_DISABLED.swap(true, Ordering::Relaxed) {
             #[cfg(target_arch = "xtensa")]
@@ -2013,6 +2039,7 @@ mod embedded {
 
     #[inline]
     #[allow(dead_code)]
+    #[cfg(target_arch = "xtensa")]
     fn log_hello_once() {
         if LOG_ONCE.swap(true, Ordering::Relaxed) {
             return;
@@ -2034,18 +2061,12 @@ mod embedded {
         }
     }
 
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
+    #[cfg(target_arch = "xtensa")]
     #[unsafe(export_name = "prime_reset_reason_raw")]
     pub unsafe extern "C" fn prime_reset_reason() -> i32 {
         RESET_REASON.load(Ordering::Relaxed) as i32
     }
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none")
-    ))]
+    #[cfg(target_arch = "xtensa")]
     #[unsafe(export_name = "prime_reset_reason")]
     pub unsafe extern "C" fn prime_reset_reason_alias() -> i32 {
         prime_reset_reason()
@@ -2154,8 +2175,13 @@ mod embedded {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn prime_delay_ms(ms: i32) -> PrimeStatus {
         log_hello_once();
-        let millis = if ms < 0 { 0 } else { ms as u32 };
-        calibrated_delay_ms(millis);
+        // Bound each ROM delay's microsecond-to-cycle conversion on a 32-bit CPU.
+        let mut remaining = ms;
+        while remaining > 0 {
+            let chunk = remaining.min(1_000);
+            ets_delay_us(chunk as u32 * 1_000);
+            remaining -= chunk;
+        }
         PrimeStatus::Ok
     }
 
@@ -2207,10 +2233,7 @@ mod embedded {
         PrimeStatus::Ok
     }
 
-    #[cfg(any(
-        target_arch = "xtensa",
-        all(target_arch = "riscv32", target_os = "none"),
-    ))]
+    #[cfg(target_arch = "xtensa")]
     #[unsafe(export_name = "prime_digital_read")]
     pub unsafe extern "C" fn prime_digital_read(pin: i32) -> i32 {
         if pin < 0 || pin > 39 {
@@ -2220,6 +2243,12 @@ mod embedded {
         let mask = 1u32 << (pin as u32);
         let value = core::ptr::read_volatile(GPIO_IN_REG);
         if (value & mask) != 0 { 1 } else { 0 }
+    }
+
+    #[cfg(all(target_arch = "riscv32", target_os = "none"))]
+    #[unsafe(export_name = "prime_digital_read")]
+    pub unsafe extern "C" fn prime_digital_read_c3(_pin: i32) -> i32 {
+        -1
     }
 
     #[cfg(all(
@@ -2286,6 +2315,7 @@ mod embedded {
         // Disable RTC and timer-group watchdogs as early as possible so application code
         // doesn't reboot unexpectedly during init or long polls.
         disable_watchdogs_once();
+        init_esp32_timer();
         main();
         loop {
             core::hint::spin_loop();
