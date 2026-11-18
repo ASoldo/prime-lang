@@ -1,0 +1,39 @@
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0040,len:6376
+load:0x40078000,len:15900
+ho 0 tail 12 room 4
+load:0x40080400,len:3920
+entry 0x40080644
+I (29) boot: ESP-IDF v6.1-dev-918-gb111c84f9e 2nd stage bootloader
+I (29) boot: compile time Nov 28 2025 18:14:25
+I (29) boot: Multicore bootloader
+I (32) boot: chip revision: v3.0
+I (35) boot.esp32: SPI Speed      : 40MHz
+I (39) boot.esp32: SPI Mode       : DIO
+I (42) boot.esp32: SPI Flash Size : 2MB
+I (46) boot: Enabling RNG early entropy source...
+I (50) boot: Partition Table:
+I (53) boot: ## Label            Usage          Type ST Offset   Length
+I (59) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (66) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (72) boot:  2 factory          factory app      00 00 00010000 00100000
+I (79) boot: End of partition table
+I (82) esp_image: segment 0: paddr=00010020 vaddr=3f400020 size=00340h (   832) map
+I (90) esp_image: segment 1: paddr=00010368 vaddr=00000000 size=0fcb0h ( 64688)
+I (120) esp_image: segment 2: paddr=00020020 vaddr=400d0020 size=03e54h ( 15956) map
+I (126) boot: Loaded app from partition at offset 0x10000
+I (126) boot: Disabling RNG early entropy source...
+[rt] reset_reason=1
+board IO start
+GPIO2 low 0
+GPIO2 high 1
+GPIO2 low 0
+short wait timeout
+ready timer ok
+empty channel timeout
+board IO done

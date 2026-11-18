@@ -50,9 +50,7 @@ class BoardAcceptance(unittest.TestCase):
         self.assertNotIn(b"PASS", result.stdout)
 
     def test_physical_gpio_readback_and_timers(self):
-        good = (BOOT + b"[rt] reset_reason=1\r\nboard IO start\r\n"
-                b"GPIO2 low 0\r\nGPIO2 high 1\r\nGPIO2 low 0\r\n"
-                b"short wait timeout\r\nready timer ok\r\nempty channel timeout\r\nboard IO done\r\n")
+        good = (HERE / "fixtures/esp32_d0wd_v3_board_io.uart").read_bytes()
         result = self.replay(good, "--probe", "board-io")
         self.assertEqual(result.returncode, 0, result.stderr)
         wrong = self.replay(good.replace(b"GPIO2 high 1", b"GPIO2 high 0"), "--probe", "board-io")
