@@ -11,6 +11,7 @@ impl LanguageServer for Backend {
         let completion_trigger_characters = completion_trigger_characters();
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
+                position_encoding: Some(tower_lsp_server::ls_types::PositionEncodingKind::UTF16),
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),

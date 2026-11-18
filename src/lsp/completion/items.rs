@@ -429,15 +429,14 @@ pub fn enum_variant_completion_items(
             .any(|item| matches!(item, Item::Enum(def) if def.name == enum_token))
     }) {
         enum_token.to_string()
-    } else if let Some(module) = _current_module {
+    } else {
+        let module = _current_module?;
         find_local_decl(module, enum_token, offset)
             .and_then(|decl| decl.ty)
             .and_then(|ty| match ty {
                 TypeExpr::Named(name, _) => Some(name),
                 _ => None,
             })?
-    } else {
-        return None;
     };
     let variant_prefix = slice.get(sep + 2..offset).unwrap_or("");
     let edit_start = sep + 2;

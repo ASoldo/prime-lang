@@ -85,38 +85,46 @@ pub fn full_range(text: &str) -> Range {
     }
 }
 
-pub fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
+// LSP lines exclude their terminators. CRLF is one line ending.
+fn document_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut next = Some(0);
+    std::iter::from_fn(move || {
+        let start = next?;
+        let tail = &text[start..];
+        let length = tail.find(['\r', '\n']).unwrap_or(tail.len());
+        let ending = &tail[length..];
+        next = if ending.is_empty() {
+            None
         } else {
-            col += 1;
-        }
-    }
-    Position::new(line, col)
+            Some(start + length + if ending.starts_with("\r\n") { 2 } else { 1 })
+        };
+        Some((start, &tail[..length]))
+    })
+}
+
+pub fn offset_to_position(text: &str, offset: usize) -> Position {
+    let offset = text.floor_char_boundary(offset.min(text.len()));
+    let (number, (start, line)) = document_lines(text)
+        .enumerate()
+        .take_while(|(_, (start, _))| *start <= offset)
+        .last()
+        .expect("every document has a first line");
+    let end = (offset - start).min(line.len());
+    Position::new(number as u32, line[..end].encode_utf16().count() as u32)
 }
 
 pub fn position_to_offset(text: &str, position: Position) -> usize {
-    let mut offset = 0usize;
-    for (current_line, line) in text.split_inclusive('\n').enumerate() {
-        let current_line: u32 = current_line.try_into().unwrap_or(u32::MAX);
-        if current_line == position.line {
-            let mut col_bytes = 0usize;
-            for ch in line.chars().take(position.character as usize) {
-                col_bytes += ch.len_utf8();
-            }
-            offset += col_bytes;
-            return offset;
+    let Some((start, line)) = document_lines(text).nth(position.line as usize) else {
+        return text.len();
+    };
+    let mut remaining = position.character as usize;
+    for (byte, ch) in line.char_indices() {
+        if remaining < ch.len_utf16() {
+            return start + byte;
         }
-        offset += line.len();
+        remaining -= ch.len_utf16();
     }
-    text.len()
+    start + line.len()
 }
 
 pub fn range_to_offsets(text: &str, range: &Range) -> Option<(usize, usize)> {
@@ -223,7 +231,7 @@ pub fn adjust_zero_length_offset(text: &str, offset: usize) -> usize {
     }
     let prefix = &text[..idx];
     for (byte_idx, ch) in prefix.char_indices().rev() {
-        if ch == '\n' {
+        if matches!(ch, '\r' | '\n') {
             return byte_idx.saturating_sub(1);
         }
         if !ch.is_whitespace() {
@@ -244,24 +252,12 @@ fn prev_char_boundary(text: &str, mut idx: usize) -> usize {
     idx
 }
 
-fn line_bounds_at(text: &str, mut offset: usize) -> (usize, usize) {
-    if text.is_empty() {
-        return (0, 0);
-    }
-    let len = text.len();
-    if offset >= len {
-        offset = len - 1;
-    }
-    let bytes = text.as_bytes();
-    let mut start = offset;
-    while start > 0 && bytes[start - 1] != b'\n' {
-        start -= 1;
-    }
-    let mut end = offset;
-    while end < len && bytes[end] != b'\n' {
-        end += 1;
-    }
-    (start, end)
+fn line_bounds_at(text: &str, offset: usize) -> (usize, usize) {
+    let (start, line) = document_lines(text)
+        .take_while(|(start, _)| *start <= offset)
+        .last()
+        .expect("every document has a first line");
+    (start, start + line.len())
 }
 
 pub fn error_with_context(base: &str, help: Option<&str>, _text: &str, _span: Span) -> String {
@@ -285,4 +281,32 @@ pub fn prettify_error_message(message: &str) -> String {
 
 pub fn is_ident_char(ch: u8) -> bool {
     ch.is_ascii_alphanumeric() || ch == b'_'
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+
+    #[test]
+    fn utf16_columns_and_byte_spans_round_trip_across_line_endings() {
+        let text = "ž😀a\r\n中\rx\n";
+        for (byte, line, column) in [
+            (0, 0, 0),
+            (2, 0, 1),
+            (6, 0, 3),
+            (7, 0, 4),
+            (9, 1, 0),
+            (12, 1, 1),
+            (13, 2, 0),
+            (15, 3, 0),
+        ] {
+            let position = Position::new(line, column);
+            assert_eq!(position_to_offset(text, position), byte);
+            assert_eq!(offset_to_position(text, byte), position);
+        }
+        assert_eq!(offset_to_position(text, 8), Position::new(0, 4));
+        assert_eq!(position_to_offset(text, Position::new(0, 99)), 7);
+        assert_eq!(position_to_offset(text, Position::new(0, 2)), 2);
+        assert_eq!(position_to_offset(text, Position::new(9, 0)), text.len());
+    }
 }

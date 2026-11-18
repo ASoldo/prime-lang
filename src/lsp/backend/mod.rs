@@ -388,14 +388,8 @@ impl Backend {
         let offset = position_to_offset(&text, position);
         let name = if let Some((name, _)) = identifier_at(&tokens, offset) {
             name
-        } else if let Some(module) = module.as_ref() {
-            if let Some((name, _)) = identifier_at_offset(module, offset) {
-                name
-            } else {
-                return None;
-            }
         } else {
-            return None;
+            identifier_at_offset(module.as_ref()?, offset)?.0
         };
         if let Some(module) = module.as_ref() {
             if let Some(loc) = self.import_definition_location(module, uri, offset).await {
@@ -413,10 +407,9 @@ impl Backend {
         let symbol = select_symbol_location(uri, module.as_ref(), &candidates)?;
         let range = if symbol.uri == *uri {
             span_to_range(&text, symbol.span)
-        } else if let Some(def_text) = self.text_for_uri(&symbol.uri).await {
-            span_to_range(&def_text, symbol.span)
         } else {
-            return None;
+            let def_text = self.text_for_uri(&symbol.uri).await?;
+            span_to_range(&def_text, symbol.span)
         };
         Some(Location::new(symbol.uri.clone(), range))
     }
