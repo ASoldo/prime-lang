@@ -37,16 +37,9 @@ recv_poll_ms = 2
 
 [build.toolchain.env]
 RUSTUP_TOOLCHAIN = "esp"
-CARGO_TARGET_DIR = "/home/rootster/documents/prime-lang/.build.prime/no-std-parity-target"
-LLVM_SYS_201_PREFIX = "${HOME}/.espressif/tools/esp-clang/esp-clang"
-LD_LIBRARY_PATH = "/usr/lib64:/usr/lib:/lib:${HOME}/.espressif/tools/esp-clang/esp-clang/lib"
-PATH = "${HOME}/.espressif/tools/esp-clang/esp-clang/bin:${HOME}/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20250929/xtensa-esp-elf/bin:${PATH}"
-CARGO_TARGET_XTENSA_ESP32_ESPIDF_LINKER = "xtensa-esp32-elf-gcc"
-IDF_PATH = "/home/rootster/esp/esp-idf"
-IDF_BUILD_ROOT = "/home/rootster/esp/esp-idf/examples/get-started/blink/build/esp-idf"
 
 [build.flash]
-enabled = true
+enabled = false
 port = "/dev/ttyUSB0"
 baud = 460800
 address = "0x10000"
