@@ -1,4 +1,5 @@
 use super::*;
+use crate::language::tcp_builtin::TcpBuiltin;
 
 #[derive(Debug)]
 pub(super) struct CallContext {
@@ -66,6 +67,22 @@ pub(super) fn signature_help_from_modules(
     modules: &[Module],
     ctx: &CallContext,
 ) -> Option<SignatureHelp> {
+    if let Some(op) = TcpBuiltin::lookup(&ctx.name) {
+        let parameter = op.parameter_label().map(|label| ParameterInformation {
+            label: ParameterLabel::Simple(label),
+            documentation: None,
+        });
+        return Some(SignatureHelp {
+            active_signature: Some(0),
+            active_parameter: parameter.as_ref().map(|_| 0),
+            signatures: vec![SignatureInformation {
+                label: op.signature(),
+                documentation: None,
+                parameters: Some(parameter.into_iter().collect()),
+                active_parameter: None,
+            }],
+        });
+    }
     let mut signatures = Vec::new();
     for module in modules {
         for item in &module.items {

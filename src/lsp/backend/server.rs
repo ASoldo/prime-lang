@@ -343,13 +343,21 @@ impl LanguageServer for Backend {
         let Some(text) = self.docs.get(&uri).await else {
             return Ok(None);
         };
-        let build_options = if let Some((manifest, _)) = manifest_context_for_uri(&uri) {
-            BuildOptions::from_sources(None, None, Some(&manifest))
-        } else {
-            BuildOptions::default()
-        };
-        if let Some((manifest, _)) = manifest_context_for_uri(&uri) {
-            self.ensure_manifest_modules(&manifest).await;
+        let manifest_context = manifest_context_for_uri(&uri);
+        let (build_options, no_std) = manifest_context
+            .as_ref()
+            .map(|(manifest, path)| {
+                let no_std = manifest
+                    .module_name_for_path(path)
+                    .is_some_and(|name| manifest.module_no_std(&name));
+                (
+                    BuildOptions::from_sources(None, None, Some(manifest)),
+                    no_std,
+                )
+            })
+            .unwrap_or_default();
+        if let Some((manifest, _)) = &manifest_context {
+            self.ensure_manifest_modules(manifest).await;
         } else if let Some(path) = url_to_path(&uri) {
             self.ensure_package_modules(&path).await;
         }
@@ -420,11 +428,12 @@ impl LanguageServer for Backend {
                 Some(offset),
                 prefix_ref,
                 &build_options.target,
+                no_std,
             );
             Ok(Some(CompletionResponse::Array(general_items)))
         } else {
             let keywords =
-                keyword_completion_items(prefix_ref, false, false, Some(&build_options.target));
+                keyword_completion_items(prefix_ref, false, false, &build_options.target, no_std);
             if keywords.is_empty() {
                 Ok(None)
             } else {

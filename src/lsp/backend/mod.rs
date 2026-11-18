@@ -544,6 +544,60 @@ mod tests {
     use crate::language::parser::parse_module;
     use std::path::PathBuf;
 
+    #[cfg(feature = "std-builtins")]
+    #[test]
+    fn tcp_builtins_show_typed_completions_hover_and_signature_help() {
+        use crate::target::BuildTarget;
+        use tower_lsp_server::ls_types::HoverContents;
+
+        let text = "module main; fn main() { tcp_listen(0); tcp_write(\"hello\"); tcp_close(); }";
+        let tokens = lex(text).expect("tokenize");
+        let completions =
+            keyword_completion_items(Some("tcp_"), false, true, &BuildTarget::host(), false);
+        for (name, signature, parameter) in [
+            (
+                "tcp_listen",
+                "fn tcp_listen(port: int32) -> int32",
+                Some("port: int32"),
+            ),
+            (
+                "tcp_write",
+                "fn tcp_write(text: string) -> bool",
+                Some("text: string"),
+            ),
+            ("tcp_close", "fn tcp_close() -> ()", None),
+        ] {
+            let item = completions
+                .iter()
+                .find(|item| item.label == name)
+                .expect("completion");
+            assert_eq!(item.detail.as_deref(), Some(signature));
+
+            let offset = text.find(name).expect("call");
+            let token = token_at(&tokens, offset + 1).expect("identifier");
+            let hover = hover_for_token(text, token, &[], None, None, None).expect("hover");
+            let HoverContents::Markup(doc) = hover.contents else {
+                panic!("expected Markdown")
+            };
+            assert!(doc.value.lines().any(|line| line == signature));
+
+            let ctx = call_context(text, offset + name.len() + 1).expect("call context");
+            let help = signature_help_from_modules(&[], &ctx).expect("signature help");
+            let info = &help.signatures[0];
+            assert_eq!(info.label, signature);
+            let params = info.parameters.as_ref().unwrap();
+            assert_eq!(params.len(), usize::from(parameter.is_some()));
+            if let Some(label) = parameter {
+                assert_eq!(params[0].label, ParameterLabel::Simple(label.into()));
+            }
+            assert_eq!(help.active_parameter, parameter.map(|_| 0));
+        }
+        assert!(
+            keyword_completion_items(Some("tcp_"), false, true, &BuildTarget::host(), true)
+                .is_empty()
+        );
+    }
+
     #[test]
     fn signature_help_tracks_active_parameter_for_nested_calls() {
         let src = r#"

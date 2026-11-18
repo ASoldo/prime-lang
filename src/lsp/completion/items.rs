@@ -1,4 +1,5 @@
 use super::*;
+use crate::language::tcp_builtin::TcpBuiltin;
 
 const BUILTIN_TYPES: &[&str] = &[
     // Integers
@@ -479,6 +480,7 @@ pub fn general_completion_items(
     offset: Option<usize>,
     prefix: Option<&str>,
     target: &BuildTarget,
+    no_std: bool,
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -668,7 +670,8 @@ pub fn general_completion_items(
         prefix,
         macro_ctx,
         inside_function,
-        Some(target),
+        target,
+        no_std,
     ));
 
     items
@@ -746,7 +749,8 @@ pub fn keyword_completion_items(
     prefix: Option<&str>,
     macro_ctx: bool,
     inside_function: bool,
-    target: Option<&BuildTarget>,
+    target: &BuildTarget,
+    no_std: bool,
 ) -> Vec<CompletionItem> {
     const KEYWORDS: &[&str] = &[
         "fn",
@@ -885,7 +889,20 @@ pub fn keyword_completion_items(
         ("max", "Built-in math helper"),
         ("abs", "Built-in math helper"),
     ];
-    let embedded_target = target.map(|t| t.is_embedded()).unwrap_or(false);
+    if TcpBuiltin::available(target, no_std) {
+        for op in TcpBuiltin::ALL
+            .into_iter()
+            .filter(|op| prefix_matches(op.name(), prefix))
+        {
+            items.push(CompletionItem {
+                label: op.name().into(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some(op.signature()),
+                ..Default::default()
+            });
+        }
+    }
+    let embedded_target = target.is_embedded();
     const EMBEDDED_HOST_ONLY: &[&str] = &[
         "fs_exists",
         "fs_read",

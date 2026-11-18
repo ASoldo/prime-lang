@@ -182,7 +182,7 @@ fn main() -> int32 { 0 }
     let modules = vec![provider.clone(), same_pkg.clone(), other_pkg.clone()];
 
     let same_pkg_items =
-        general_completion_items(&same_pkg, &modules, None, None, &BuildTarget::host());
+        general_completion_items(&same_pkg, &modules, None, None, &BuildTarget::host(), false);
     assert!(
         same_pkg_items.iter().any(|item| item.label == "~pkg_only"),
         "expected package macro visible inside the package"
@@ -195,8 +195,14 @@ fn main() -> int32 { 0 }
         "private macro should stay local to the defining module"
     );
 
-    let other_pkg_items =
-        general_completion_items(&other_pkg, &modules, None, None, &BuildTarget::host());
+    let other_pkg_items = general_completion_items(
+        &other_pkg,
+        &modules,
+        None,
+        None,
+        &BuildTarget::host(),
+        false,
+    );
     assert!(other_pkg_items.iter().any(|item| item.label == "~exported"));
     assert!(
         !other_pkg_items.iter().any(|item| item.label == "~pkg_only"),

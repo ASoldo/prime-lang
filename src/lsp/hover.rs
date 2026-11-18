@@ -5,6 +5,7 @@ use crate::language::{
         Visibility,
     },
     span::Span,
+    tcp_builtin::TcpBuiltin,
     token::{Token, TokenKind},
     types::{Mutability, TypeExpr},
 };
@@ -348,6 +349,12 @@ fn resolve_import_module<'a>(
 }
 
 fn builtin_function_docs(name: &str) -> Option<String> {
+    if let Some(op) = TcpBuiltin::lookup(name) {
+        return Some(format!(
+            "Host std loopback TCP\n{}",
+            code_block("prime", &op.signature())
+        ));
+    }
     match name {
         "box_new" => Some(format!(
             "Built-in heap helper\n{}",

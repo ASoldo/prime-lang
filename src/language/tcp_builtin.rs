@@ -1,4 +1,5 @@
 use super::types::TypeExpr;
+use crate::target::BuildTarget;
 
 #[derive(Clone, Copy)]
 pub(crate) enum TcpBuiltin {
@@ -12,25 +13,61 @@ pub(crate) enum TcpBuiltin {
 }
 
 impl TcpBuiltin {
-    pub fn lookup(name: &str) -> Option<Self> {
-        Some(match name {
-            "tcp_listen" => Self::Listen,
-            "tcp_accept" => Self::Accept,
-            "tcp_receive_until" => Self::ReceiveUntil,
-            "tcp_starts_with" => Self::StartsWith,
-            "tcp_write" => Self::Write,
-            "tcp_disconnect" => Self::Disconnect,
-            "tcp_close" => Self::Close,
-            _ => return None,
-        })
+    pub const ALL: [Self; 7] = [
+        Self::Listen,
+        Self::Accept,
+        Self::ReceiveUntil,
+        Self::StartsWith,
+        Self::Write,
+        Self::Disconnect,
+        Self::Close,
+    ];
+
+    pub fn available(target: &BuildTarget, no_std: bool) -> bool {
+        cfg!(feature = "std-builtins") && !no_std && !target.is_embedded()
     }
 
-    pub fn parameter(self) -> Option<TypeExpr> {
+    pub fn lookup(name: &str) -> Option<Self> {
+        if !name.starts_with("tcp_") {
+            return None;
+        }
+        Self::ALL.into_iter().find(|op| op.name() == name)
+    }
+
+    pub fn name(self) -> &'static str {
         match self {
-            Self::Listen => Some(TypeExpr::named("int32")),
-            Self::ReceiveUntil | Self::StartsWith | Self::Write => Some(TypeExpr::named("string")),
+            Self::Listen => "tcp_listen",
+            Self::Accept => "tcp_accept",
+            Self::ReceiveUntil => "tcp_receive_until",
+            Self::StartsWith => "tcp_starts_with",
+            Self::Write => "tcp_write",
+            Self::Disconnect => "tcp_disconnect",
+            Self::Close => "tcp_close",
+        }
+    }
+
+    pub fn parameter(self) -> Option<(&'static str, TypeExpr)> {
+        match self {
+            Self::Listen => Some(("port", TypeExpr::named("int32"))),
+            Self::ReceiveUntil => Some(("delimiter", TypeExpr::named("string"))),
+            Self::StartsWith => Some(("prefix", TypeExpr::named("string"))),
+            Self::Write => Some(("text", TypeExpr::named("string"))),
             Self::Accept | Self::Disconnect | Self::Close => None,
         }
+    }
+
+    pub fn parameter_label(self) -> Option<String> {
+        self.parameter()
+            .map(|(name, ty)| format!("{name}: {}", ty.canonical_name()))
+    }
+
+    pub fn signature(self) -> String {
+        format!(
+            "fn {}({}) -> {}",
+            self.name(),
+            self.parameter_label().unwrap_or_default(),
+            self.result().canonical_name()
+        )
     }
 
     pub fn result(self) -> TypeExpr {

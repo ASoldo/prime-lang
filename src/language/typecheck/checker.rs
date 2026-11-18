@@ -2411,7 +2411,7 @@ impl Checker {
             return None;
         }
         if let Some(op) = TcpBuiltin::lookup(name) {
-            if self.current_no_std || self.target.is_embedded() || !cfg!(feature = "std-builtins") {
+            if !TcpBuiltin::available(&self.target, self.current_no_std) {
                 self.errors.push(
                     TypeError::new(
                         &module.path,
@@ -2430,7 +2430,7 @@ impl Checker {
                     span,
                     format!("`{name}` expects {count} arguments"),
                 ));
-            } else if let Some(ty) = parameter {
+            } else if let Some((_, ty)) = parameter {
                 let actual = self.check_expression(module, &args[0], Some(&ty), returns, env);
                 self.ensure_type(module, expr_span(&args[0]), &ty, actual.as_ref());
             }
