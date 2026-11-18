@@ -3405,22 +3405,77 @@ mod host {
         let data = &*(value.0 as *const HostHandle);
         let _ = unsafe { fflush(std::ptr::null_mut()) };
         let mut stdout = io::stdout();
-        let _ = match &data.value {
-            HostValue::Int(i) => write!(stdout, "{i}"),
-            HostValue::Float(f) => write!(stdout, "{f}"),
-            HostValue::Bool(b) => write!(stdout, "{b}"),
-            HostValue::Str(s) => write!(stdout, "{s}"),
-            HostValue::Enum { tag, .. } => write!(stdout, "<enum {tag}>"),
-            HostValue::Unit => write!(stdout, "()"),
-            HostValue::Task(_) => write!(stdout, "<task>"),
-            HostValue::TaskError(message) => write!(stdout, "{message}"),
-            HostValue::CancelToken(_) => write!(stdout, "<cancel token>"),
-            HostValue::Receiver(_) => write!(stdout, "<receiver>"),
-            HostValue::Sender(_) => write!(stdout, "<sender>"),
-            HostValue::Slice(_) => write!(stdout, "<slice>"),
-            HostValue::Map(_) => write!(stdout, "<map>"),
-        };
+        let _ = write_host_value(&mut stdout, &data.value, &mut Vec::new());
         let _ = stdout.flush();
+    }
+
+    fn write_host_value(
+        out: &mut impl Write,
+        value: &HostValue,
+        parents: &mut Vec<usize>,
+    ) -> io::Result<()> {
+        match value {
+            HostValue::Int(i) => write!(out, "{i}"),
+            HostValue::Float(f) => write!(out, "{f}"),
+            HostValue::Bool(b) => write!(out, "{b}"),
+            HostValue::Str(s) => write!(out, "{s}"),
+            HostValue::Enum { tag, .. } => write!(out, "<enum {tag}>"),
+            HostValue::Unit => write!(out, "()"),
+            HostValue::Task(_) => write!(out, "<task>"),
+            HostValue::TaskError(message) => write!(out, "{message}"),
+            HostValue::CancelToken(_) => write!(out, "<cancel token>"),
+            HostValue::Receiver(_) => write!(out, "<receiver>"),
+            HostValue::Sender(_) => write!(out, "<sender>"),
+            HostValue::Slice(items) => {
+                let id = Arc::as_ptr(items) as usize;
+                if parents.contains(&id) {
+                    return write!(out, "<cycle>");
+                }
+                // Snapshot children while the handles are protected. Release the collection
+                // lock before formatting a nested (possibly shared) collection.
+                let children: Vec<_> = items
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|item| HostHandle::new(unsafe { clone_value(*item) }))
+                    .collect();
+                parents.push(id);
+                write!(out, "[")?;
+                for (index, child) in children.iter().enumerate() {
+                    if index > 0 {
+                        write!(out, ", ")?;
+                    }
+                    write_host_value(out, &child.value, parents)?;
+                }
+                parents.pop();
+                write!(out, "]")
+            }
+            HostValue::Map(entries) => {
+                let id = Arc::as_ptr(entries) as usize;
+                if parents.contains(&id) {
+                    return write!(out, "<cycle>");
+                }
+                let children: Vec<_> = entries
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(key, item)| {
+                        (key.clone(), HostHandle::new(unsafe { clone_value(*item) }))
+                    })
+                    .collect();
+                parents.push(id);
+                write!(out, "{{")?;
+                for (index, (key, child)) in children.iter().enumerate() {
+                    if index > 0 {
+                        write!(out, ", ")?;
+                    }
+                    write!(out, "{key}: ")?;
+                    write_host_value(out, &child.value, parents)?;
+                }
+                parents.pop();
+                write!(out, "}}")
+            }
+        }
     }
 
     // The first three i32 arguments carry a TYPE_* code and two program-defined enum tags.

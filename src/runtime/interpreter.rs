@@ -1066,6 +1066,7 @@ impl Interpreter {
             return Some(self.builtin_tcp(name, op, args));
         }
         let result = match name {
+            "debug_show" => self.builtin_debug_show(args),
             "box_new" => self.builtin_box_new(args),
             "box_get" => self.builtin_box_get(args),
             "box_set" => self.builtin_box_set(args),
@@ -1238,7 +1239,8 @@ impl Interpreter {
         }
         matches!(
             name,
-            "box_new"
+            "debug_show"
+                | "box_new"
                 | "box_get"
                 | "box_set"
                 | "box_take"
@@ -1312,6 +1314,15 @@ impl Interpreter {
         } else {
             Ok(())
         }
+    }
+
+    fn builtin_debug_show(&self, args: Vec<Value>) -> RuntimeResult<Vec<Value>> {
+        self.expect_arity("debug_show", &args, 1)?;
+        match &args[0] {
+            Value::Boxed(boxed) => println!("{}", boxed.cell.lock().unwrap()),
+            value => println!("{value}"),
+        }
+        Ok(Vec::new())
     }
 
     fn builtin_box_new(&mut self, mut args: Vec<Value>) -> RuntimeResult<Vec<Value>> {

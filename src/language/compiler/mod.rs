@@ -2016,15 +2016,20 @@ impl Compiler {
         }
     }
 
+    fn next_closure_key(&self) -> usize {
+        let mut key = self.closure_counter + self.closures.len() + 1;
+        while self.closures.contains_key(&key) {
+            key += 1;
+        }
+        key
+    }
+
     fn build_closure_from_build(
         &mut self,
         closure: BuildClosure,
         channels: &mut ChannelHandles,
     ) -> Result<Value, String> {
-        let mut key = self.closure_counter + self.closures.len() + 1;
-        while self.closures.contains_key(&key) {
-            key += 1;
-        }
+        let key = self.next_closure_key();
 
         let mut captured_vars = Vec::with_capacity(closure.captures.len());
         for captured in &closure.captures {

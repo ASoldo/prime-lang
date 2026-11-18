@@ -1830,7 +1830,8 @@ impl Checker {
                 let captured_names = env.end_closure_capture();
                 let mut captured_vars = Vec::new();
                 for name in captured_names {
-                    if let Some(info) = env.lookup(&name) {
+                    // Constructing this closure reads each capture in the enclosing scope.
+                    if let Some(info) = env.lookup_with_captures(&name) {
                         let binding_ty = info.ty.clone();
                         let binding_mutable = info.mutable;
                         let capture_mode = match &binding_ty {
@@ -2224,7 +2225,7 @@ impl Checker {
                         module, sig, args, type_args, expected, returns, env, span,
                     );
                 }
-                if let Some(binding) = env.lookup(&ident.name) {
+                if let Some(binding) = env.lookup_with_captures(&ident.name) {
                     if let Some(TypeExpr::Function {
                         params,
                         returns: fn_returns,

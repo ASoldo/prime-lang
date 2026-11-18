@@ -276,12 +276,15 @@ impl Compiler {
         ty: &TypeExpr,
     ) -> Result<Value, String> {
         match ty {
-            TypeExpr::Reference { mutable, .. } => Ok(Value::Reference(ReferenceValue {
-                cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
-                mutable: *mutable,
-                origin: None,
-                handle: Some(llvm),
-            })),
+            TypeExpr::Reference { mutable, .. } => {
+                self.handle_types.insert(llvm, ty.clone());
+                Ok(Value::Reference(ReferenceValue {
+                    cell: Rc::new(Mutex::new(EvaluatedValue::from_value(Value::Unit))),
+                    mutable: *mutable,
+                    origin: None,
+                    handle: Some(llvm),
+                }))
+            }
             TypeExpr::Named(name, _) => match name.as_str() {
                 "int8" | "int16" | "int32" | "int64" | "isize" | "uint8" | "uint16" | "uint32"
                 | "uint64" | "usize" | "rune" => Ok(Value::Int(IntValue::new(llvm, None))),
@@ -306,7 +309,7 @@ impl Compiler {
                 )))),
                 other => Err(format!("Unsupported captured type `{other}` in closure")),
             },
-            TypeExpr::Function { .. } => {
+            TypeExpr::Function { params, returns } => {
                 let env_ptr = unsafe {
                     LLVMBuildExtractValue(
                         self.builder,
@@ -331,36 +334,25 @@ impl Compiler {
                         CString::new("closure_id_extract").unwrap().as_ptr(),
                     )
                 };
-                let id_const = unsafe { LLVMConstIntGetZExtValue(id_val) } as usize;
-                if let Some(existing) = self.closures.get(&id_const) {
-                    let expected_sig = match ty {
-                        TypeExpr::Function { params, returns } => FnSignature {
-                            params: params.clone(),
-                            returns: returns.clone(),
-                        },
-                        _ => FnSignature {
-                            params: Vec::new(),
-                            returns: Vec::new(),
-                        },
-                    };
-                    if existing.signature.params != expected_sig.params
-                        || existing.signature.returns != expected_sig.returns
+                // A closure loaded from an environment or returned by a call has a
+                // runtime ID. Its static function type suffices for indirect calls.
+                let key = if unsafe { LLVMIsAConstantInt(id_val) }.is_null() {
+                    self.next_closure_key()
+                } else {
+                    unsafe { LLVMConstIntGetZExtValue(id_val) as usize }
+                };
+                let signature = FnSignature {
+                    params: params.clone(),
+                    returns: returns.clone(),
+                };
+                if let Some(existing) = self.closures.get(&key) {
+                    if existing.signature.params != signature.params
+                        || existing.signature.returns != signature.returns
                     {
-                        return Err(format!(
-                            "Closure metadata mismatch for id {}: expected ({:?} -> {:?}), have ({:?} -> {:?})",
-                            id_const,
-                            expected_sig.params,
-                            expected_sig.returns,
-                            existing.signature.params,
-                            existing.signature.returns
-                        ));
+                        return Err(format!("Closure metadata mismatch for id {key}"));
                     }
-                } else if let TypeExpr::Function { params, returns } = ty {
-                    let signature = FnSignature {
-                        params: params.clone(),
-                        returns: returns.clone(),
-                    };
-                    let env_name = CString::new(format!("__closure_env{id_const}")).unwrap();
+                } else {
+                    let env_name = CString::new(format!("__closure_env{key}")).unwrap();
                     let env_type =
                         unsafe { LLVMStructCreateNamed(self.context, env_name.as_ptr()) };
                     let mut arg_types = Vec::with_capacity(signature.params.len() + 1);
@@ -382,7 +374,7 @@ impl Compiler {
                         )
                     };
                     self.closures.insert(
-                        id_const,
+                        key,
                         ClosureInfo {
                             env_type,
                             fn_type,
@@ -392,11 +384,9 @@ impl Compiler {
                             built: true,
                         },
                     );
-                } else {
-                    return Err("Closure value missing function type during reconstruction".into());
                 }
                 Ok(Value::Closure(ClosureValue {
-                    id: id_const,
+                    id: key,
                     env_ptr,
                     fn_ptr,
                 }))

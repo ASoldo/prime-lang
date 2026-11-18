@@ -258,6 +258,14 @@ impl Compiler {
                 _ => {}
             }
         }
+        if self.target.is_host()
+            && let Value::Reference(reference) = &owned
+            && reference.handle.is_some_and(|h| {
+                matches!(self.handle_types.get(&h), Some(TypeExpr::Reference { .. }))
+            })
+        {
+            self.emit_printf_call("&", &mut []);
+        }
         if let Some(handle) =
             runtime_handle.or_else(|| self.maybe_attach_runtime_handle(&mut value))
         {
@@ -283,14 +291,10 @@ impl Compiler {
                         self.emit_printf_call("false", &mut []);
                     }
                     Ok(())
-                } else if let Some(handle) = value.runtime_handle() {
-                    self.emit_runtime_print(handle);
-                    Ok(())
-                } else if let Some(handle) = self.maybe_attach_runtime_handle(&mut value) {
-                    self.emit_runtime_print(handle);
-                    Ok(())
                 } else {
-                    self.emit_printf_call("<bool>", &mut []);
+                    let handle = self.build_runtime_handle(Value::Bool(flag))?;
+                    self.emit_runtime_print(handle);
+                    self.runtime_release(handle);
                     Ok(())
                 }
             }
@@ -401,7 +405,7 @@ impl Compiler {
                     self.emit_runtime_print(handle);
                     return Ok(());
                 }
-                self.emit_printf_call("#{", &mut []);
+                self.emit_printf_call("{", &mut []);
                 let guard = map.entries.lock().unwrap();
                 let mut entries: Vec<_> = guard.iter().collect();
                 entries.sort_by(|a, b| a.0.cmp(b.0));
@@ -409,9 +413,8 @@ impl Compiler {
                     if idx > 0 {
                         self.emit_printf_call(", ", &mut []);
                     }
-                    let (ptr, len) = self.build_runtime_bytes(key, "map_print_key")?;
-                    let mut args = [ptr, len];
-                    self.emit_printf_call("%.*s: ", &mut args);
+                    let (ptr, _) = self.build_runtime_bytes(key, "map_print_key")?;
+                    self.emit_printf_call("%s: ", &mut [ptr]);
                     self.print_value(value.clone().into())?;
                 }
                 self.emit_printf_call("}", &mut []);

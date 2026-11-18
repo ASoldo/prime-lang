@@ -1,0 +1,25 @@
+apply_twice(double, 3) = 12
+make_adder()(5) = 15
+shifter(8) = 15
+combine returns tuple (7, 9)
+higher-order closure on 4 = 9
+nested closure result = 16
+flip(true) = false
+shout(0) = !
+bundle.use_double(9) = 18
+bundle.use_flip(false) = true
+status tuple = (4, false, ok)
+heap handles round-tripped through closures:
+lens -> nums_rt.len() = 2, scores_rt.len() = 1
+[1, 2]
+{a: 10}
+5
+captured handles before closure:
+[5]
+{x: 1}
+captured handles after mutation:
+2
+2
+reference capture returns &11
+defer inside closure ran:
+[1, 2]

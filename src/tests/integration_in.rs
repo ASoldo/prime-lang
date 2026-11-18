@@ -165,21 +165,18 @@ fn build_mode_in_preserves_values() {
     }
 }
 
-#[test]
-fn pattern_demo_build_matches_run_output() {
-    let work = tempdir().expect("temporary pattern demo directory");
-    let entry = PathBuf::from(root()).join("workspace/demos/patterns/pattern_demo.prime");
-    let binary = build_demo(work.path(), &entry, "pattern_demo_parity");
+fn compare_host_output(work: &Path, entry: &Path, name: &str) -> String {
+    let binary = build_demo(work, entry, name);
     let compiled = Command::new(binary)
-        .current_dir(work.path())
+        .current_dir(work)
         .output()
-        .expect("run compiled pattern demo");
+        .expect("run compiled program");
     let interpreted = Command::new(bin_path())
-        .current_dir(work.path())
+        .current_dir(work)
         .arg("run")
         .arg(entry)
         .output()
-        .expect("run interpreted pattern demo");
+        .expect("run interpreted program");
     for output in [&compiled, &interpreted] {
         assert!(
             output.status.success(),
@@ -187,10 +184,52 @@ fn pattern_demo_build_matches_run_output() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    let stdout = String::from_utf8(interpreted.stdout).unwrap();
+    assert_eq!(String::from_utf8(compiled.stdout).unwrap(), stdout);
+    stdout
+}
+
+#[test]
+fn pattern_demo_build_matches_run_output() {
+    let work = tempdir().unwrap();
+    let entry = PathBuf::from(root()).join("workspace/demos/patterns/pattern_demo.prime");
+    compare_host_output(work.path(), &entry, "pattern_demo_parity");
+}
+
+#[test]
+fn closure_demo_build_matches_run_output() {
+    let work = tempdir().unwrap();
+    let entry = PathBuf::from(root()).join("workspace/demos/closures/closure_demo.prime");
+    let stdout = compare_host_output(work.path(), &entry, "closure_demo_parity");
     assert_eq!(
-        String::from_utf8(compiled.stdout).unwrap(),
-        String::from_utf8(interpreted.stdout).unwrap()
+        stdout,
+        include_str!("../../workspace/tests/golden/closure_demo_output.txt")
     );
+}
+
+#[test]
+fn escaped_closure_captures_callee_through_intermediate_closure() {
+    let work = tempdir().unwrap();
+    let entry = work.path().join("main.prime");
+    fs::write(
+        &entry,
+        r#"
+module captures;
+fn wrap(f: fn(int32) -> int32) -> fn(int32) -> int32 {
+    let make = |bias: int32| -> fn(int32) -> int32 {
+        |x: int32| f(x) + bias
+    };
+    make(5)
+}
+fn main() {
+    let double = |x: int32| x * 2;
+    let apply = wrap(double);
+    out(apply(3));
+}
+"#,
+    )
+    .unwrap();
+    assert_eq!(compare_host_output(work.path(), &entry, "captures"), "11\n");
 }
 
 #[test]
