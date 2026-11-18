@@ -2632,40 +2632,6 @@ mod host {
         CancelToken(Arc<AtomicBool>),
     }
 
-    impl std::fmt::Display for HostValue {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                HostValue::Int(i) => write!(f, "{i}"),
-                HostValue::Float(value) => write!(f, "{value}"),
-                HostValue::Bool(b) => write!(f, "{b}"),
-                HostValue::Str(s) => write!(f, "{s}"),
-                HostValue::Enum {
-                    label: Some(label),
-                    values,
-                    ..
-                } => {
-                    write!(f, "{label}(")?;
-                    for (index, value) in values.iter().enumerate() {
-                        if index > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{value}")?;
-                    }
-                    write!(f, ")")
-                }
-                HostValue::Enum { tag, .. } => write!(f, "<enum {tag}>"),
-                HostValue::Unit => write!(f, "()"),
-                HostValue::Task(_) => write!(f, "<task>"),
-                HostValue::TaskError(message) => write!(f, "{message}"),
-                HostValue::CancelToken(_) => write!(f, "<cancel token>"),
-                HostValue::Receiver(_) => write!(f, "<receiver>"),
-                HostValue::Sender(_) => write!(f, "<sender>"),
-                HostValue::Slice(_) => write!(f, "<slice>"),
-                HostValue::Map(_) => write!(f, "<map>"),
-            }
-        }
-    }
-
     #[derive(Clone)]
     struct HostHandle {
         value: HostValue,
@@ -3403,17 +3369,21 @@ mod host {
         parts: *const PrimeHandle,
         len: usize,
     ) -> PrimeHandle {
-        use std::fmt::Write;
-        let mut text = String::new();
+        let mut text = Vec::new();
         if !parts.is_null() {
             for part in slice::from_raw_parts(parts, len) {
                 let Some(part) = (part.0 as *const HostHandle).as_ref() else {
                     return PrimeHandle::null();
                 };
-                let _ = write!(text, "{}", part.value);
+                if write_host_value(&mut text, &part.value, &mut Vec::new()).is_err() {
+                    return PrimeHandle::null();
+                }
             }
         }
-        to_handle(HostHandle::new(HostValue::Str(text)))
+        match String::from_utf8(text) {
+            Ok(text) => to_handle(HostHandle::new(HostValue::Str(text))),
+            Err(_) => PrimeHandle::null(),
+        }
     }
 
     fn result_handle(result: Result<HostValue, String>, ok: u32, err: u32) -> PrimeHandle {
@@ -3565,6 +3535,20 @@ mod host {
             HostValue::Float(f) => write!(out, "{f}"),
             HostValue::Bool(b) => write!(out, "{b}"),
             HostValue::Str(s) => write!(out, "{s}"),
+            HostValue::Enum {
+                label: Some(label),
+                values,
+                ..
+            } => {
+                write!(out, "{label}(")?;
+                for (index, field) in values.iter().enumerate() {
+                    if index > 0 {
+                        write!(out, ", ")?;
+                    }
+                    write_host_value(out, field, parents)?;
+                }
+                write!(out, ")")
+            }
             HostValue::Enum { tag, .. } => write!(out, "<enum {tag}>"),
             HostValue::Unit => write!(out, "()"),
             HostValue::Task(_) => write!(out, "<task>"),
