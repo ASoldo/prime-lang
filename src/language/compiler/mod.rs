@@ -72,6 +72,8 @@ mod builtins;
 mod closures;
 mod emit;
 mod integers;
+mod flow;
+use flow::{ExitBoundary, ExitKind};
 mod resolve;
 mod runtime;
 mod scopes;
@@ -139,6 +141,7 @@ pub struct Compiler {
     module_stack: Vec<String>,
     error_location: Option<CodegenLocation>,
     return_type_stack: Vec<Vec<TypeExpr>>,
+    exits: Vec<ExitBoundary>,
     closure_counter: usize,
     closures: HashMap<usize, ClosureInfo>,
     closure_snapshots: HashMap<usize, ClosureSnapshot>,
@@ -744,6 +747,15 @@ impl EvaluatedValue {
         self.value
     }
 
+    fn into_enum_field(self) -> Value {
+        if matches!(&self.value, Value::Enum(e) if e.variant == "<runtime>")
+            && let Some(handle) = self.runtime_handle()
+        {
+            return Value::from_runtime_payload(handle);
+        }
+        self.value
+    }
+
     fn value(&self) -> &Value {
         &self.value
     }
@@ -778,6 +790,7 @@ struct LoopControl {
 }
 
 enum FlowSignal {
+    Terminated, // Every runtime arm already branched to its destination.
     Break,
     Continue,
     Return(Vec<EvaluatedValue>),
@@ -1678,6 +1691,7 @@ impl Compiler {
                 module_stack: Vec::new(),
                 error_location: None,
                 return_type_stack: Vec::new(),
+                exits: Vec::new(),
                 closure_counter: 0,
                 closures: HashMap::new(),
                 closure_snapshots: HashMap::new(),
@@ -2204,6 +2218,7 @@ impl Compiler {
         self.borrow_frames.clear();
         self.cleanup_stack.clear();
         self.return_type_stack.clear();
+        self.exits.clear();
         self.drop_impls.clear();
         self.push_scope();
         self.push_return_types(&[]);
@@ -2340,13 +2355,17 @@ impl Compiler {
         if env::var_os("PRIME_DEBUG_TRACE").is_some() {
             eprintln!("[prime-debug] entering main body {}", main_module);
         }
+        self.begin_exit_boundary(ExitKind::Function, 0);
         let exec_result = self.execute_block_contents(body);
         if env::var_os("PRIME_DEBUG_TRACE").is_some() {
             eprintln!("[prime-debug] main body finished");
         }
+        let result = exec_result?;
+        self.exit_scope()?;
+        let result = self.finish_exit_boundary(result)?;
         self.module_stack.pop();
-        match exec_result? {
-            BlockEval::Value(_) => {}
+        match result {
+            BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Return(_)) => {}
             BlockEval::Flow(flow) => {
                 return Err(format!(
                     "Control flow {} not allowed at top level",
@@ -2354,7 +2373,6 @@ impl Compiler {
                 ));
             }
         }
-        self.exit_scope()?;
         self.pop_return_types();
         self.release_closure_envs()?;
 
@@ -2406,6 +2424,7 @@ impl Drop for Compiler {
 
 fn flow_name(flow: &FlowSignal) -> &'static str {
     match flow {
+        FlowSignal::Terminated => "terminated",
         FlowSignal::Break => "break",
         FlowSignal::Continue => "continue",
         FlowSignal::Return(_) => "return",

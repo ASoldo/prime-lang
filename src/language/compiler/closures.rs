@@ -631,7 +631,8 @@ impl Compiler {
                 };
                 self.emit_closure_return(&info.signature, value)?;
             }
-            BlockEval::Flow(flow @ FlowSignal::Break)
+            BlockEval::Flow(flow @ FlowSignal::Terminated)
+            | BlockEval::Flow(flow @ FlowSignal::Break)
             | BlockEval::Flow(flow @ FlowSignal::Continue)
             | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
                 return Err(format!(

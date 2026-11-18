@@ -39,7 +39,7 @@ The package path defaults to the current directory. Fetch reads each package’s
 
 ## Native code generation errors
 
-`prime-lang build TARGET --codegen-format json` prints an LLVM code generation error as one JSON object on stdout and exits with status 1. The object includes `phase` (`codegen`), `target` (`host` or the selected triple), `message`, and nullable `code`, `path` and `span`. For `E0NATIVETRY`, the span identifies the postfix `?` in UTF-8 byte offsets. Use an explicit `match` to handle a runtime-selected result. Other build stages retain their usual output.
+`prime-lang build TARGET --codegen-format json` prints an LLVM code generation error as one JSON object on stdout and exits with status 1. The object includes `phase` (`codegen`), `target` (`host` or the selected triple), `message`, and nullable `code`, `path` and `span`. For `E0NATIVETRY`, the span identifies the postfix `?` in UTF-8 byte offsets. For example, `?` on a runtime-selected `Result[Result[int32, string], string]` reports this code because native unwrapping of an aggregate success payload requires an explicit `match`. Other build stages retain their usual output.
 
 ## JSON for tools
 

@@ -41,7 +41,7 @@ match result {
 }
 ```
 
-This prints `timeout` while the 150 ms timer is pending. With enough time, the task returns `7`. In native output, use a `match` for a guarded result whose variant is determined at runtime. For this case, host builds report `E0NATIVETRY`. Use `build --codegen-format json` to obtain the source path, byte range and compilation target. A task supplies one consumable result. A second guarded wait after a successful join returns `Err("task missing result")`.
+This prints `timeout` while the 150 ms timer is pending. With enough time, the task returns `7`. In a host function returning `Result`, `let int32 n = await_timeout(delayed_value(), 2)?;` propagates the original timeout error or continues with the integer. A local `try` can catch the same failure. Use `match` when the task returns an aggregate such as a nested `Result`. A task supplies one consumable result. A second guarded wait after a successful join returns `Err("task missing result")`.
 
 ## Execution and ownership
 

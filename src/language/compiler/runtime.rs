@@ -474,6 +474,21 @@ impl Compiler {
         }
     }
 
+    pub(super) fn host_result_handle(
+        &mut self,
+        payload: LLVMValueRef,
+        tag: LLVMValueRef,
+        ok: u32,
+    ) -> LLVMValueRef {
+        let ok = unsafe { LLVMConstInt(self.i32_type, ok.into(), 0) };
+        self.call_runtime(
+            self.runtime_abi.prime_result_new,
+            self.runtime_abi.prime_result_new_ty,
+            &mut [payload, tag, ok],
+            "result_new",
+        )
+    }
+
     pub(super) fn build_runtime_handle(&mut self, value: Value) -> Result<LLVMValueRef, String> {
         match value {
             Value::Unit => Ok(self.call_runtime(
@@ -591,9 +606,6 @@ impl Compiler {
                 for v in enum_value.values {
                     elements.push(self.build_runtime_handle(v)?);
                 }
-                let arr_ptr = self.alloc_handle_array(&elements);
-                let len_const =
-                    unsafe { LLVMConstInt(self.runtime_abi.usize_type, elements.len() as u64, 0) };
                 let tag = unsafe {
                     LLVMConstInt(
                         self.runtime_abi.status_type,
@@ -601,6 +613,17 @@ impl Compiler {
                         0,
                     )
                 };
+                if self.target.is_host()
+                    && enum_value.enum_name == "Result"
+                    && matches!(enum_value.variant.as_str(), "Ok" | "Err")
+                    && let [payload] = elements.as_slice()
+                    && let Some(ok) = self.enum_variants.get("Ok")
+                {
+                    return Ok(self.host_result_handle(*payload, tag, ok.variant_index));
+                }
+                let arr_ptr = self.alloc_handle_array(&elements);
+                let len_const =
+                    unsafe { LLVMConstInt(self.runtime_abi.usize_type, elements.len() as u64, 0) };
                 Ok(self.call_runtime(
                     self.runtime_abi.prime_enum_new,
                     self.runtime_abi.prime_enum_new_ty,

@@ -461,10 +461,7 @@ impl Compiler {
                             BlockEval::Value(_) => {}
                             BlockEval::Flow(FlowSignal::Continue) => continue,
                             BlockEval::Flow(FlowSignal::Break) => break,
-                            BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
-                            BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                return Ok(Some(flow));
-                            }
+                            BlockEval::Flow(flow) => return Ok(Some(flow)),
                         }
                     } else {
                         unsafe {
@@ -515,29 +512,7 @@ impl Compiler {
                                 Ok::<_, String>(result)
                             })();
                             self.loop_controls.pop();
-                            let result = result?;
-                            match result {
-                                BlockEval::Flow(flow @ FlowSignal::Return(_))
-                                | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                    LLVMPositionBuilderAtEnd(self.builder, after_block);
-                                    return Ok(Some(flow));
-                                }
-                                _ => {}
-                            }
-
-                            let insert_block = LLVMGetInsertBlock(self.builder);
-                            let terminated = !insert_block.is_null()
-                                && !LLVMGetBasicBlockTerminator(insert_block).is_null();
-                            if !terminated {
-                                match result {
-                                    BlockEval::Flow(FlowSignal::Break) => {
-                                        LLVMBuildBr(self.builder, after_block);
-                                    }
-                                    _ => {
-                                        LLVMBuildBr(self.builder, cond_block);
-                                    }
-                                }
-                            }
+                            self.finish_loop_body(result?, after_block, cond_block)?;
                             LLVMPositionBuilderAtEnd(self.builder, after_block);
                         }
                         break;
@@ -635,28 +610,7 @@ impl Compiler {
                             Ok::<_, String>(result)
                         })();
                         self.loop_controls.pop();
-                        let result = result?;
-
-                        let insert_block = LLVMGetInsertBlock(self.builder);
-                        let terminated = !insert_block.is_null()
-                            && !LLVMGetBasicBlockTerminator(insert_block).is_null();
-                        match result {
-                            BlockEval::Value(_) | BlockEval::Flow(FlowSignal::Continue) => {
-                                if !terminated {
-                                    LLVMBuildBr(self.builder, loop_bb);
-                                }
-                            }
-                            BlockEval::Flow(FlowSignal::Break) => {
-                                if !terminated {
-                                    LLVMBuildBr(self.builder, after_bb);
-                                }
-                            }
-                            BlockEval::Flow(flow @ FlowSignal::Return(_))
-                            | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                LLVMPositionBuilderAtEnd(self.builder, after_bb);
-                                return Ok(Some(flow));
-                            }
-                        }
+                        self.finish_loop_body(result?, after_bb, loop_bb)?;
 
                         // Continue compiling after the loop in an "after" block (may be unreachable).
                         LLVMPositionBuilderAtEnd(self.builder, after_bb);
@@ -670,10 +624,7 @@ impl Compiler {
                             BlockEval::Value(_) => {}
                             BlockEval::Flow(FlowSignal::Continue) => continue,
                             BlockEval::Flow(FlowSignal::Break) => break,
-                            BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
-                            BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                return Ok(Some(flow));
-                            }
+                            BlockEval::Flow(flow) => return Ok(Some(flow)),
                         }
                     }
                 }
@@ -711,12 +662,7 @@ impl Compiler {
                                     BlockEval::Value(_) => {}
                                     BlockEval::Flow(FlowSignal::Continue) => {}
                                     BlockEval::Flow(FlowSignal::Break) => break,
-                                    BlockEval::Flow(flow @ FlowSignal::Return(_)) => {
-                                        return Ok(Some(flow));
-                                    }
-                                    BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                        return Ok(Some(flow));
-                                    }
+                                    BlockEval::Flow(flow) => return Ok(Some(flow)),
                                 }
                                 current += 1;
                             }
@@ -752,10 +698,7 @@ impl Compiler {
                             BlockEval::Value(_) => {}
                             BlockEval::Flow(FlowSignal::Continue) => continue,
                             BlockEval::Flow(FlowSignal::Break) => break,
-                            BlockEval::Flow(flow @ FlowSignal::Return(_)) => return Ok(Some(flow)),
-                            BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => {
-                                return Ok(Some(flow));
-                            }
+                            BlockEval::Flow(flow) => return Ok(Some(flow)),
                         }
                     }
                 }
@@ -856,6 +799,27 @@ impl Compiler {
         Ok(())
     }
 
+    fn finish_loop_body(
+        &mut self,
+        result: BlockEval,
+        after: LLVMBasicBlockRef,
+        next: LLVMBasicBlockRef,
+    ) -> Result<(), String> {
+        let destination = match result {
+            BlockEval::Flow(flow @ (FlowSignal::Return(_) | FlowSignal::Propagate(_))) => {
+                return self.branch_to_exit(flow);
+            }
+            BlockEval::Flow(FlowSignal::Break) => after,
+            _ => next,
+        };
+        unsafe {
+            if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(self.builder)).is_null() {
+                LLVMBuildBr(self.builder, destination);
+            }
+        }
+        Ok(())
+    }
+
     fn emit_while_let_body(
         &mut self,
         header: LLVMBasicBlockRef,
@@ -879,15 +843,7 @@ impl Compiler {
             let result = self.execute_block_contents(body);
             self.loop_controls.pop();
             self.exit_scope()?;
-            if let BlockEval::Flow(flow @ (FlowSignal::Return(_) | FlowSignal::Propagate(_))) =
-                result?
-            {
-                LLVMPositionBuilderAtEnd(self.builder, after);
-                return Ok(Some(flow));
-            }
-            if LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(self.builder)).is_null() {
-                LLVMBuildBr(self.builder, header);
-            }
+            self.finish_loop_body(result?, after, header)?;
             LLVMPositionBuilderAtEnd(self.builder, after);
         }
         Ok(None)
@@ -939,21 +895,27 @@ impl Compiler {
                 self.evaluated(Value::Int(self.const_int_value(*value as i128))),
             )),
             Expr::Try { block, .. } => {
+                self.begin_exit_boundary(ExitKind::Try, self.scopes.len());
                 self.push_scope();
                 let result = self.execute_block_contents(block)?;
                 self.exit_scope()?;
-                match result {
+                let result = match result {
                     BlockEval::Value(value) => {
                         let wrapped =
-                            self.instantiate_enum_variant("Ok", vec![value.into_value()])?;
-                        Ok(EvalOutcome::Value(self.evaluated(wrapped)))
+                            self.instantiate_enum_variant("Ok", vec![value.into_enum_field()])?;
+                        BlockEval::Value(self.evaluated(wrapped))
                     }
-                    BlockEval::Flow(FlowSignal::Propagate(value)) => Ok(EvalOutcome::Value(value)),
+                    other => other,
+                };
+                match self.finish_exit_boundary(result)? {
+                    BlockEval::Value(value) | BlockEval::Flow(FlowSignal::Propagate(value)) => {
+                        Ok(EvalOutcome::Value(value))
+                    }
                     BlockEval::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
                 }
             }
-            Expr::TryPropagate { expr, span, .. } => match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => self.eval_try_operator(value, *span),
+            Expr::TryPropagate { id, expr, span } => match self.emit_expression(expr)? {
+                EvalOutcome::Value(value) => self.eval_try_operator(value, *id, *span),
                 EvalOutcome::Flow(flow) => Ok(EvalOutcome::Flow(flow)),
             },
             Expr::Identifier(ident) => {
@@ -1343,7 +1305,11 @@ impl Compiler {
     ) -> Result<EvaluatedValue, String> {
         self.push_scope();
         for (name, value) in captures {
-            self.insert_var(name, value.clone(), !self.in_host_task())?;
+            // Deferred embedded tasks capture the original binding. Making an
+            // immutable pin mutable here loses its known value before ensure_pin.
+            let mutable =
+                !self.in_host_task() && self.get_binding(name).is_some_and(|(_, mutable)| mutable);
+            self.insert_var(name, value.clone(), mutable)?;
         }
         let result = self.execute_block_contents(block)?;
         self.exit_scope()?;
@@ -1641,6 +1607,13 @@ impl Compiler {
             "read_value",
         );
 
+        self.handle_types.insert(
+            result_handle,
+            TypeExpr::Named(
+                "Result".into(),
+                vec![type_args[0].clone(), TypeExpr::named("string")],
+            ),
+        );
         // Wrap in EvaluatedValue with runtime handle
         Ok(EvalOutcome::Value(
             self.evaluated(Value::Enum(EnumValue {
@@ -3121,110 +3094,65 @@ impl Compiler {
                 LLVMPositionBuilderAtEnd(self.builder, then_block);
                 self.push_scope();
                 self.bind_lookup_payload(binding)?;
-                let mut then_value = None;
                 let then_eval = self.execute_block_contents(&if_expr.then_branch)?;
                 self.exit_scope()?;
-                match then_eval {
-                    BlockEval::Flow(FlowSignal::Return(_))
-                    | BlockEval::Flow(FlowSignal::Propagate(_)) => {
-                        let current_block = LLVMGetInsertBlock(self.builder);
-                        if current_block.is_null()
-                            || LLVMGetBasicBlockTerminator(current_block).is_null()
-                        {
-                            return Err(
-                                "return/propagate in dynamic if branch did not terminate block"
-                                    .into(),
-                            );
-                        }
-                    }
-                    BlockEval::Value(val) => {
-                        then_value = Some((val, LLVMGetInsertBlock(self.builder)));
-                        LLVMBuildBr(self.builder, merge_block);
-                    }
-                    BlockEval::Flow(FlowSignal::Break) | BlockEval::Flow(FlowSignal::Continue) => {
-                        let current_block = LLVMGetInsertBlock(self.builder);
-                        if current_block.is_null()
-                            || LLVMGetBasicBlockTerminator(current_block).is_null()
-                        {
-                            return Err(
-                                "break/continue in dynamic if branch did not terminate block"
-                                    .into(),
-                            );
-                        }
-                    }
-                };
+                let then_value = self.finish_if_branch(then_eval, merge_block)?;
 
                 LLVMPositionBuilderAtEnd(self.builder, else_block);
-                let mut else_value = None;
-                if let Some(else_branch) = &if_expr.else_branch {
-                    match else_branch {
-                        ElseBranch::Block(block) => {
-                            self.push_scope();
-                            let else_eval = self.execute_block_contents(block)?;
-                            self.exit_scope()?;
-                            match else_eval {
-                                BlockEval::Flow(FlowSignal::Return(_))
-                                | BlockEval::Flow(FlowSignal::Propagate(_)) => {
-                                    let current_block = LLVMGetInsertBlock(self.builder);
-                                    if current_block.is_null()
-                                        || LLVMGetBasicBlockTerminator(current_block).is_null()
-                                    {
-                                        return Err(
-                                            "return/propagate in dynamic if branch did not terminate block"
-                                                .into(),
-                                        );
-                                    }
-                                }
-                                BlockEval::Value(val) => {
-                                    else_value = Some((val, LLVMGetInsertBlock(self.builder)));
-                                    LLVMBuildBr(self.builder, merge_block);
-                                }
-                                BlockEval::Flow(FlowSignal::Break)
-                                | BlockEval::Flow(FlowSignal::Continue) => {
-                                    let current_block = LLVMGetInsertBlock(self.builder);
-                                    if current_block.is_null()
-                                        || LLVMGetBasicBlockTerminator(current_block).is_null()
-                                    {
-                                        return Err(
-                                            "break/continue in dynamic if branch did not terminate block"
-                                                .into(),
-                                        );
-                                    }
-                                }
-                            };
-                        }
-                        ElseBranch::ElseIf(nested) => match self.emit_if_expression(nested)? {
-                            EvalOutcome::Flow(_) => {
-                                let current_block = LLVMGetInsertBlock(self.builder);
-                                if current_block.is_null()
-                                    || LLVMGetBasicBlockTerminator(current_block).is_null()
-                                {
-                                    return Err(
-                                        "flow in dynamic else-if branch did not terminate block"
-                                            .into(),
-                                    );
-                                }
-                            }
-                            EvalOutcome::Value(val) => {
-                                else_value = Some((val, LLVMGetInsertBlock(self.builder)));
-                                LLVMBuildBr(self.builder, merge_block);
-                            }
-                        },
+                let else_eval = match &if_expr.else_branch {
+                    Some(ElseBranch::Block(block)) => {
+                        self.push_scope();
+                        let result = self.execute_block_contents(block)?;
+                        self.exit_scope()?;
+                        result
                     }
-                } else {
-                    LLVMBuildBr(self.builder, merge_block);
-                }
-
+                    Some(ElseBranch::ElseIf(nested)) => match self.emit_if_expression(nested)? {
+                        EvalOutcome::Value(value) => BlockEval::Value(value),
+                        EvalOutcome::Flow(flow) => BlockEval::Flow(flow),
+                    },
+                    None => BlockEval::Value(Value::Unit.into()),
+                };
+                let else_value = self.finish_if_branch(else_eval, merge_block)?;
                 LLVMPositionBuilderAtEnd(self.builder, merge_block);
-                if let (Some((then_val, then_block)), Some((else_val, else_block))) =
-                    (then_value, else_value)
-                {
-                    return Ok(EvalOutcome::Value(
-                        self.merge_if_values(then_val, then_block, else_val, else_block)?,
-                    ));
-                }
+                let value = match (then_value, else_value) {
+                    (None, None) => {
+                        llvm_sys::core::LLVMBuildUnreachable(self.builder);
+                        return Ok(EvalOutcome::Flow(FlowSignal::Terminated));
+                    }
+                    _ if if_expr.else_branch.is_none() => Value::Unit.into(),
+                    (Some((value, _)), None) | (None, Some((value, _))) => value,
+                    (Some((a, pred_a)), Some((b, pred_b))) => {
+                        self.merge_if_values(a, pred_a, b, pred_b)?
+                    }
+                };
+                Ok(EvalOutcome::Value(value))
             }
-            Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
+        }
+    }
+
+    fn finish_if_branch(
+        &mut self,
+        result: BlockEval,
+        merge: LLVMBasicBlockRef,
+    ) -> Result<Option<(EvaluatedValue, LLVMBasicBlockRef)>, String> {
+        match result {
+            BlockEval::Value(value) => unsafe {
+                let pred = LLVMGetInsertBlock(self.builder);
+                LLVMBuildBr(self.builder, merge);
+                Ok(Some((value, pred)))
+            },
+            BlockEval::Flow(flow @ (FlowSignal::Return(_) | FlowSignal::Propagate(_))) => {
+                self.branch_to_exit(flow)?;
+                Ok(None)
+            }
+            BlockEval::Flow(_) => {
+                if unsafe {
+                    LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(self.builder)).is_null()
+                } {
+                    return Err("conditional control flow requires a runtime destination".into());
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -3696,9 +3624,10 @@ impl Compiler {
                     incoming.push((value, LLVMGetInsertBlock(self.builder)));
                     LLVMBuildBr(self.builder, merge_block);
                 },
-                EvalOutcome::Flow(FlowSignal::Return(_) | FlowSignal::Propagate(_)) => {
-                    return Err("cannot exit early from a runtime match arm in native code; return the match expression instead".into());
+                EvalOutcome::Flow(flow @ (FlowSignal::Return(_) | FlowSignal::Propagate(_))) => {
+                    self.branch_to_exit(flow)?;
                 }
+                EvalOutcome::Flow(FlowSignal::Terminated) => {}
                 EvalOutcome::Flow(FlowSignal::Break | FlowSignal::Continue) => {
                     let block = unsafe { LLVMGetInsertBlock(self.builder) };
                     if unsafe { LLVMGetBasicBlockTerminator(block) }.is_null() {
@@ -3727,13 +3656,17 @@ impl Compiler {
                 llvm_sys::core::LLVMBuildUnreachable(self.builder);
             }
             LLVMPositionBuilderAtEnd(self.builder, merge_block);
+            if incoming.is_empty() {
+                llvm_sys::core::LLVMBuildUnreachable(self.builder);
+                return Ok(EvalOutcome::Flow(FlowSignal::Terminated));
+            }
         }
         Ok(EvalOutcome::Value(
             self.merge_match_values(&incoming, merge_block)?,
         ))
     }
 
-    fn match_block(&self, name: &CStr) -> LLVMBasicBlockRef {
+    pub(super) fn match_block(&self, name: &CStr) -> LLVMBasicBlockRef {
         unsafe {
             let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
             LLVMAppendBasicBlockInContext(self.context, function, name.as_ptr())
@@ -3871,22 +3804,7 @@ impl Compiler {
             } else if let Some(ty) = fields.get(idx) {
                 self.handle_types.insert(field, ty.clone());
             }
-            // Decode concrete scalar fields with their checked ABI type. In
-            // particular, two boxed floats or booleans must retain their kind
-            // when the guard compares them.
-            let payload = Value::from_runtime_payload(field);
-            let value = match self.handle_types.get(&field) {
-                Some(TypeExpr::Named(ty, _)) => match ty.as_str() {
-                    "bool" => Value::Bool(self.value_to_bool(payload)?),
-                    "float32" | "float64" => Value::Float(self.expect_float(payload)?),
-                    "int8" | "int16" | "int32" | "int64" | "isize" | "uint8" | "uint16"
-                    | "uint32" | "uint64" | "usize" | "rune" => {
-                        Value::Int(self.expect_int(payload)?)
-                    }
-                    _ => payload,
-                },
-                _ => payload,
-            };
+            let value = self.decode_enum_field(field)?;
             self.insert_var(
                 name,
                 EvaluatedValue::from_value(value).with_runtime(field),
@@ -3896,7 +3814,24 @@ impl Compiler {
         Ok(())
     }
 
-    fn merge_match_values(
+    fn decode_enum_field(&mut self, field: LLVMValueRef) -> Result<Value, String> {
+        // Runtime enum fields are boxed. Arithmetic and equality need the
+        // actual checked scalar kind, while strings retain their handle.
+        let payload = Value::from_runtime_payload(field);
+        match self.handle_types.get(&field) {
+            Some(TypeExpr::Unit) => Ok(Value::Unit),
+            Some(TypeExpr::Named(ty, _)) => match ty.as_str() {
+                "bool" => Ok(Value::Bool(self.value_to_bool(payload)?)),
+                "float32" | "float64" => Ok(Value::Float(self.expect_float(payload)?)),
+                "int8" | "int16" | "int32" | "int64" | "isize" | "uint8" | "uint16" | "uint32"
+                | "uint64" | "usize" | "rune" => Ok(Value::Int(self.expect_int(payload)?)),
+                _ => Ok(payload),
+            },
+            _ => Ok(payload),
+        }
+    }
+
+    pub(super) fn merge_match_values(
         &mut self,
         incoming: &[(EvaluatedValue, LLVMBasicBlockRef)],
         merge_block: LLVMBasicBlockRef,
@@ -4012,153 +3947,117 @@ impl Compiler {
         }
     }
 
+    fn try_diagnostic(&mut self, span: Span, reason: &str) -> String {
+        self.error_location = self.module_stack.last().map(|module| CodegenLocation {
+            module: module.clone(),
+            span: Span::new(span.end.saturating_sub(1), span.end),
+            code: "E0NATIVETRY",
+        });
+        format!("native runtime Result propagation {reason}; use `match` to handle Ok and Err")
+    }
+
     pub(super) fn eval_try_operator(
         &mut self,
         value: EvaluatedValue,
+        id: ExprId,
         span: Span,
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
-        let EvaluatedValue { value, runtime } = value;
-        let trace_try = env::var_os("PRIME_DEBUG_TRACE").is_some();
-        if trace_try {
-            eprintln!(
-                "[prime-debug] try operator input {}",
-                self.describe_value(&value)
+        let handle = match value.value() {
+            Value::Enum(e) if e.enum_name == "Result" => match e.variant.as_str() {
+                "Ok" => {
+                    let payload = match e.values.as_slice() {
+                        [] => Value::Unit,
+                        [one] => one.clone(),
+                        many => Value::Tuple(many.to_vec()),
+                    };
+                    return Ok(EvalOutcome::Value(payload.into()));
+                }
+                "Err" => return Ok(EvalOutcome::Flow(FlowSignal::Propagate(value))),
+                _ => value.runtime_handle(),
+            },
+            Value::Reference(r) => r.handle,
+            _ => None,
+        }
+        .ok_or("? operator expects Result value in build mode")?;
+
+        if !self.target.is_host() || !self.can_propagate_result() {
+            return Err(self.try_diagnostic(
+                span,
+                "requires a host Result-returning function or try block",
+            ));
+        }
+        if self
+            .enum_variants
+            .iter()
+            .any(|(name, v)| v.enum_name == "Result" && !matches!(name.as_str(), "Ok" | "Err"))
+        {
+            return Err(self.try_diagnostic(span, "requires a two-variant Result"));
+        }
+        let ok = self.enum_variants.get("Ok").ok_or("missing Result::Ok")?;
+        let ok_tag = ok.variant_index;
+        let ty = self
+            .checked
+            .as_ref()
+            .and_then(|facts| facts.try_payloads.get(&id))
+            .cloned()
+            .or_else(|| {
+                ok.field_types_for(self.handle_types.get(&handle))
+                    .into_iter()
+                    .next()
+            })
+            .ok_or_else(|| self.try_diagnostic(span, "requires a known Ok payload type"))?;
+        if !matches!(ty, TypeExpr::Unit) && self.type_code_for(&ty).is_err() {
+            return Err(self.try_diagnostic(
+                span,
+                &format!("does not support Ok payload `{}`", ty.canonical_name()),
+            ));
+        }
+        let tag = self.call_runtime(
+            self.runtime_abi.prime_enum_tag,
+            self.runtime_abi.prime_enum_tag_ty,
+            &mut [handle],
+            "try_tag",
+        );
+        let success = self.match_block(c"try_ok");
+        let failure = self.match_block(c"try_err");
+        unsafe {
+            let is_ok = LLVMBuildICmp(
+                self.builder,
+                llvm_sys::LLVMIntPredicate::LLVMIntEQ,
+                tag,
+                LLVMConstInt(LLVMTypeOf(tag), ok_tag.into(), 0),
+                c"try_is_ok".as_ptr(),
             );
+            LLVMBuildCondBr(self.builder, is_ok, success, failure);
+            LLVMPositionBuilderAtEnd(self.builder, failure);
         }
-        match value {
-            Value::Enum(mut enum_value) => {
-                if trace_try {
-                    eprintln!(
-                        "[prime-debug] try operator enum name={} variant={} idx={} runtime_handle={:?} values_len={} module={}",
-                        enum_value.enum_name,
-                        enum_value.variant,
-                        enum_value.variant_index,
-                        runtime.map(|rt| rt.handle),
-                        enum_value.values.len(),
-                        self.module_stack.last().cloned().unwrap_or_default()
-                    );
-                }
-                if enum_value.enum_name != "Result" {
-                    return Err("? operator expects Result value in build mode".into());
-                }
-                if let Some(runtime_value) = runtime {
-                    self.ensure_runtime_symbols();
-                    if trace_try {
-                        let handle_const =
-                            unsafe { !LLVMIsAConstantInt(runtime_value.handle).is_null() };
-                        eprintln!(
-                            "[prime-debug] try operator runtime handle const={} raw={:?}",
-                            handle_const, runtime_value.handle
-                        );
-                    }
-                    let ok_tag = self.enum_variants.get("Ok").cloned().ok_or_else(|| {
-                        "? operator expects Result value in build mode".to_string()
-                    })?;
-                    let err_tag = self.enum_variants.get("Err").cloned().ok_or_else(|| {
-                        "? operator expects Result value in build mode".to_string()
-                    })?;
-                    let mut tag_args = [runtime_value.handle];
-                    let tag = self.call_runtime(
-                        self.runtime_abi.prime_enum_tag,
-                        self.runtime_abi.prime_enum_tag_ty,
-                        &mut tag_args,
-                        "try_enum_tag",
-                    );
-                    let tag_value = unsafe {
-                        if LLVMIsAConstantInt(tag).is_null() {
-                            None
-                        } else {
-                            Some(LLVMConstIntGetZExtValue(tag) as u32)
-                        }
-                    }
-                    .or(match enum_value.variant.as_str() {
-                        "Ok" => Some(ok_tag.variant_index),
-                        "Err" => Some(err_tag.variant_index),
-                        _ => None,
-                    })
-                    .or_else(|| self.target.is_embedded().then_some(ok_tag.variant_index))
-                    .ok_or_else(|| {
-                        self.error_location = self.module_stack.last().map(|module| CodegenLocation {
-                            module: module.clone(),
-                            // The parser's span ends immediately after the postfix operator.
-                            span: Span::new(span.end.saturating_sub(1), span.end),
-                            code: "E0NATIVETRY",
-                        });
-                        "native code cannot yet propagate a runtime-selected Result with `?`; use `match` to handle Ok and Err"
-                    })?;
-                    if trace_try {
-                        let is_const = unsafe { !LLVMIsAConstantInt(tag).is_null() };
-                        eprintln!(
-                            "[prime-debug] try operator runtime tag const={} raw_handle={:?} resolved_tag={}",
-                            is_const, tag, tag_value
-                        );
-                    }
-                    if tag_value == ok_tag.variant_index {
-                        if ok_tag.fields.is_empty() {
-                            return Ok(EvalOutcome::Value(self.evaluated(Value::Unit)));
-                        }
-                        let mut get_args = [runtime_value.handle, unsafe {
-                            LLVMConstInt(self.runtime_abi.usize_type, 0, 0)
-                        }];
-                        let payload_handle = self.call_runtime(
-                            self.runtime_abi.prime_enum_get,
-                            self.runtime_abi.prime_enum_get_ty,
-                            &mut get_args,
-                            "try_enum_get",
-                        );
-                        let payload = if enum_value.values.len() == 1 {
-                            enum_value.values.remove(0)
-                        } else {
-                            // Materialize a concrete payload value; for the blink path this is an int pin.
-                            let mut as_int_args = [payload_handle];
-                            let llvm = self.call_runtime(
-                                self.runtime_abi.prime_value_as_int,
-                                self.runtime_abi.prime_value_as_int_ty,
-                                &mut as_int_args,
-                                "try_enum_payload_as_int",
-                            );
-                            Value::Int(IntValue::new(llvm, None))
-                        };
-                        return Ok(EvalOutcome::Value(self.evaluated(payload)));
-                    } else if tag_value == err_tag.variant_index {
-                        return Ok(EvalOutcome::Flow(FlowSignal::Propagate(EvaluatedValue {
-                            value: Value::Enum(EnumValue {
-                                enum_name: "Result".into(),
-                                variant: "Err".into(),
-                                values: Vec::new(),
-                                variant_index: err_tag.variant_index,
-                            }),
-                            runtime: Some(runtime_value),
-                        })));
-                    } else {
-                        if env::var_os("PRIME_DEBUG_TRACE").is_some() {
-                            eprintln!(
-                                "[prime-debug] try operator saw unexpected Result tag {tag_value}"
-                            );
-                        }
-                        return Err("? operator expects Result value in build mode".into());
-                    }
-                }
-                match enum_value.variant.as_str() {
-                    "Ok" => {
-                        let mut values = enum_value.values;
-                        if values.is_empty() {
-                            Ok(EvalOutcome::Value(self.evaluated(Value::Unit)))
-                        } else if values.len() == 1 {
-                            Ok(EvalOutcome::Value(self.evaluated(values.remove(0))))
-                        } else {
-                            Ok(EvalOutcome::Value(self.evaluated(Value::Tuple(values))))
-                        }
-                    }
-                    "Err" => Ok(EvalOutcome::Flow(FlowSignal::Propagate(EvaluatedValue {
-                        value: Value::Enum(enum_value),
-                        runtime,
-                    }))),
-                    _ => Err("? operator expects Result value in build mode".into()),
-                }
-            }
-            _ => Err("? operator expects Result value in build mode".into()),
+        // Carry the original enum (including its error payload) across the edge.
+        let error = EvaluatedValue::from_value(Value::Enum(EnumValue {
+            enum_name: "Result".into(),
+            variant: "<runtime>".into(),
+            variant_index: 0,
+            values: Vec::new(),
+        }))
+        .with_runtime(handle);
+        self.branch_to_exit(FlowSignal::Propagate(error))?;
+        unsafe {
+            LLVMPositionBuilderAtEnd(self.builder, success);
         }
+        if ty == TypeExpr::Unit {
+            return Ok(EvalOutcome::Value(Value::Unit.into()));
+        }
+        let payload = self.call_runtime(
+            self.runtime_abi.prime_enum_get,
+            self.runtime_abi.prime_enum_get_ty,
+            &mut [handle, unsafe {
+                LLVMConstNull(self.runtime_abi.usize_type)
+            }],
+            "try_payload",
+        );
+        self.handle_types.insert(payload, ty);
+        Ok(EvalOutcome::Value(
+            EvaluatedValue::from_value(self.decode_enum_field(payload)?).with_runtime(payload),
+        ))
     }
 
     pub(super) fn match_pattern(
@@ -5123,27 +5022,7 @@ impl Compiler {
                 Ok::<_, String>(result)
             })();
             self.loop_controls.pop();
-            let result = result?;
-
-            match result {
-                BlockEval::Flow(flow @ FlowSignal::Return(_))
-                | BlockEval::Flow(flow @ FlowSignal::Propagate(_)) => return Ok(Some(flow)),
-                _ => {}
-            }
-
-            let insert_block = LLVMGetInsertBlock(self.builder);
-            let terminated =
-                !insert_block.is_null() && !LLVMGetBasicBlockTerminator(insert_block).is_null();
-            if !terminated {
-                match result {
-                    BlockEval::Flow(FlowSignal::Break) => {
-                        LLVMBuildBr(self.builder, after_block);
-                    }
-                    _ => {
-                        LLVMBuildBr(self.builder, continue_block);
-                    }
-                }
-            }
+            self.finish_loop_body(result?, after_block, continue_block)?;
 
             LLVMPositionBuilderAtEnd(self.builder, continue_block);
             let next = LLVMBuildAdd(
@@ -5340,7 +5219,7 @@ impl Compiler {
         let mut evaluated = Vec::new();
         for expr in values {
             match self.emit_expression(expr)? {
-                EvalOutcome::Value(value) => evaluated.push(value.into_value()),
+                EvalOutcome::Value(value) => evaluated.push(value.into_enum_field()),
                 EvalOutcome::Flow(flow) => return Ok(EvalOutcome::Flow(flow)),
             }
         }

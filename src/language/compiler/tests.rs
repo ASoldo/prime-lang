@@ -892,13 +892,14 @@ fn main() {
         let ir_path = dir.path().join("async_match.ll");
         compiler.write_ir_to(&ir_path).expect("write IR");
         let ir = std::fs::read_to_string(ir_path).expect("read IR");
+        let constructed = if host { "[ %result_new" } else { "[ %enum_new" };
         let mut saw_result = false;
         for line in ir.lines().filter(|line| line.contains(" = phi ptr ")) {
             let (name, incoming) = line.trim().split_once(" = phi ptr ").unwrap();
-            if !incoming.contains("%enum_new") {
+            if !incoming.contains(constructed) {
                 continue;
             }
-            assert_eq!(incoming.matches("[ %enum_new").count(), 2, "{line}");
+            assert_eq!(incoming.matches(constructed).count(), 2, "{line}");
             let consumer = if host {
                 format!("ret ptr {name}\n")
             } else {

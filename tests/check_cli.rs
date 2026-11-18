@@ -257,11 +257,9 @@ fn named_entry_uses_the_selecting_manifest_even_when_its_file_lives_elsewhere() 
 }
 
 #[test]
-fn native_runtime_try_reports_operator_location_and_target() {
+fn native_guarded_wait_propagates_timeout() {
     let dir = tempfile::tempdir().unwrap();
-    // A multibyte character precedes the operator to distinguish byte offsets.
     let source = r#"module demo;
-// é
 enum Result[T, E] { Ok(T), Err(E) }
 fn guarded() -> Result[int32, string] {
   await_timeout(sleep_task(10000), 0)?;
@@ -288,7 +286,38 @@ fn main() {
     let run = invoke(&["run", "demo.prime"]);
     assert!(run.status.success(), "{run:?}");
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "timeout");
-    let build = invoke(&["build", "demo.prime", "--codegen-format=json"]);
+    let build = invoke(&["build", "demo.prime", "--name", "demo"]);
+    assert!(build.status.success(), "{build:?}");
+    let native = Command::new(dir.path().join(".build.prime/demo/demo"))
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "{native:?}");
+    assert_eq!(native.stdout, run.stdout);
+}
+
+#[test]
+fn unsupported_runtime_try_reports_operator_location_and_target() {
+    let dir = tempdir().unwrap();
+    // A multibyte character precedes the operator to distinguish byte offsets.
+    let source = r#"module demo;
+// é
+enum Result[T, E] { Ok(T), Err(E) }
+fn guarded() -> Result[int32, string] {
+  let task = async { let Result[int32, string] r = Ok(7); r };
+  let Result[int32, string] nested = await_timeout(task, 1000)?;
+  nested
+}
+fn main() { match guarded() { Ok(n) => out(n), Err(msg) => out(msg) } }
+"#;
+    let path = dir.path().join("demo.prime");
+    fs::write(&path, source).unwrap();
+    check(dir.path(), &["demo.prime", "--format=json"], 0);
+    let build = Command::new(env!("CARGO_BIN_EXE_prime-lang"))
+        .current_dir(dir.path())
+        .env_remove("PRIME_TARGET")
+        .args(["build", "demo.prime", "--codegen-format=json"])
+        .output()
+        .unwrap();
     assert_eq!(build.status.code(), Some(1), "{build:?}");
     let diagnostic: serde_json::Value = serde_json::from_slice(&build.stdout).unwrap();
     assert_eq!(diagnostic["code"], "E0NATIVETRY");
@@ -303,7 +332,12 @@ fn main() {
         diagnostic["span"],
         serde_json::json!({"start":start,"end":start+1})
     );
-    assert!(diagnostic["message"].as_str().unwrap().contains("match"));
+    assert!(
+        diagnostic["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not support Ok payload")
+    );
 }
 
 #[test]

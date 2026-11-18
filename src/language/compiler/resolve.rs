@@ -51,6 +51,7 @@ impl Compiler {
         self.module_stack.push(func_entry.module.clone());
         let return_types: Vec<TypeExpr> = func.returns.iter().map(|ann| ann.ty.clone()).collect();
         self.push_return_types(&return_types);
+        self.begin_exit_boundary(ExitKind::Function, self.scopes.len());
         let result = (|| {
             self.push_scope();
             for (param, value) in func.params.iter().zip(evaluated_args) {
@@ -64,7 +65,7 @@ impl Compiler {
                 },
             };
             self.exit_scope()?;
-            match result {
+            match self.finish_exit_boundary(result)? {
                 BlockEval::Value(value) => {
                     if func.returns.len() <= 1 {
                         if func.returns.is_empty() {
@@ -82,7 +83,8 @@ impl Compiler {
                     }
                 }
                 BlockEval::Flow(FlowSignal::Return(values)) => Ok(values),
-                BlockEval::Flow(flow @ FlowSignal::Break)
+                BlockEval::Flow(flow @ FlowSignal::Terminated)
+                | BlockEval::Flow(flow @ FlowSignal::Break)
                 | BlockEval::Flow(flow @ FlowSignal::Continue) => Err(format!(
                     "Control flow {} cannot escape function body in build mode",
                     flow_name(&flow)

@@ -77,6 +77,8 @@ pub struct RuntimeAbi {
     pub prime_value_as_string_ty: LLVMTypeRef,
     pub prime_enum_new: LLVMValueRef,
     pub prime_enum_new_ty: LLVMTypeRef,
+    pub prime_result_new: LLVMValueRef,
+    pub prime_result_new_ty: LLVMTypeRef,
     pub prime_enum_tag: LLVMValueRef,
     pub prime_enum_tag_ty: LLVMTypeRef,
     pub prime_enum_get: LLVMValueRef,
@@ -381,6 +383,16 @@ impl RuntimeAbi {
             &mut [
                 LLVMPointerType(handle_type, 0),
                 usize_type,
+                LLVMInt32TypeInContext(context),
+            ],
+        );
+        let (prime_result_new, prime_result_new_ty) = declare_fn(
+            module,
+            "prime_result_new",
+            handle_type,
+            &mut [
+                handle_type,
+                LLVMInt32TypeInContext(context),
                 LLVMInt32TypeInContext(context),
             ],
         );
@@ -797,6 +809,8 @@ impl RuntimeAbi {
             prime_value_as_string_ty,
             prime_enum_new,
             prime_enum_new_ty,
+            prime_result_new,
+            prime_result_new_ty,
             prime_enum_tag,
             prime_enum_tag_ty,
             prime_enum_get,
@@ -997,6 +1011,8 @@ impl RuntimeAbi {
             prime_value_as_string_ty: std::ptr::null_mut(),
             prime_enum_new: std::ptr::null_mut(),
             prime_enum_new_ty: std::ptr::null_mut(),
+            prime_result_new: std::ptr::null_mut(),
+            prime_result_new_ty: std::ptr::null_mut(),
             prime_enum_tag: std::ptr::null_mut(),
             prime_enum_tag_ty: std::ptr::null_mut(),
             prime_enum_get: std::ptr::null_mut(),

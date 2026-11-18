@@ -370,8 +370,8 @@ impl Compiler {
                 c"await_tag".as_ptr(),
             )
         };
-        let result = self.task_record(&[payload], tag);
-        // The runtime wait transfers ownership; task_record has copied the value.
+        let result = self.host_result_handle(payload, tag, ok_tag);
+        // The runtime wait transfers ownership. The Result has copied the value.
         if !matches!(task.kind, TaskResultKind::Ready) {
             self.runtime_release(payload);
         }

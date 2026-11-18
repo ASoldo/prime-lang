@@ -163,3 +163,114 @@ fn main() {
     );
     assert!(!tmp.path().join("side-effect").exists());
 }
+
+#[test]
+fn runtime_exits_preserve_payload_and_cleanup_order() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path();
+    let cli = Path::new(env!("CARGO_BIN_EXE_prime-lang"));
+    fs::write(
+        dir.join("probe.prime"),
+        r#"
+module probe;
+enum Result[T, E] { Err(E), Ok(T) }
+struct Tracker { label: string; }
+impl Drop for Tracker { fn drop(self: &mut Tracker) { out(self.label); } }
+
+fn read() -> Result[string, string] {
+  let Tracker tracker = Tracker { label: "drop read" };
+  let mut string state = "defer read";
+  defer { out(state); state = "changed"; };
+  let string text = fs_read("input")?;
+  out(state);
+  defer out("read ok");
+  Ok(text + "!")
+}
+
+fn probe() -> Result[string, string] {
+  let Tracker tracker = Tracker { label: "drop probe" };
+  defer out("defer probe");
+  let Result[string, string] caught = try {
+    let Tracker tracker = Tracker { label: "drop try" };
+    defer out("defer try");
+    let string text = read()?;
+    out("try ok");
+    text
+  };
+  out("after try");
+  match caught {
+    Err(message) => {
+      defer out("defer arm");
+      return Err("caught: " + message);
+    },
+    Ok(text) => out(text),
+  }
+  out("after match");
+  Ok("done")
+}
+fn from_try() -> Result[string, string] {
+  let Result[string, string] caught = try {
+    let string first = fs_read("input")?;
+    match fs_read("input") {
+      Ok(text) if text == first => { return Ok("return from try: " + text); },
+      _ => { return Err("unexpected arm"); },
+    }
+    "unreachable"
+  };
+  out("caught in try");
+  caught
+}
+fn main() {
+  match probe() { Err(message) => out(message), Ok(text) => out(text) }
+  out(from_try());
+}
+"#,
+    )
+    .unwrap();
+    execute(cli, dir, &["check", "probe.prime", "--format=json"]);
+    execute(cli, dir, &["build", "probe.prime", "--name", "probe"]);
+    let native = dir.join(".build.prime/probe/probe");
+    let missing = fs::read_to_string(dir.join("input")).unwrap_err();
+    for (input, expected) in [
+        (None, format!("defer read\ndrop read\ndefer try\ndrop try\nafter try\ndefer arm\ndefer probe\ndrop probe\ncaught: {missing}\ncaught in try\nResult::Err({missing})\n")),
+        (Some("hello"), "defer read\nread ok\ndefer read\ndrop read\ntry ok\ndefer try\ndrop try\nafter try\nhello!\nafter match\ndefer probe\ndrop probe\ndone\nResult::Ok(return from try: hello)\n".into()),
+    ] {
+        if let Some(input) = input { fs::write(dir.join("input"), input).unwrap(); }
+        let interpreted = execute(cli, dir, &["run", "probe.prime"]);
+        assert_eq!(interpreted, expected);
+        assert_eq!(execute(&native, dir, &[]), interpreted);
+    }
+}
+
+#[test]
+fn fs_demo_returns_after_a_failed_write() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path();
+    let cli = Path::new(env!("CARGO_BIN_EXE_prime-lang"));
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("workspace/demos/fs_demo/fs_demo.prime");
+    let source = source.to_str().unwrap();
+    execute(cli, dir, &["check", source, "--format=json"]);
+    execute(cli, dir, &["build", source, "--name", "demo"]);
+    let native = dir.join(".build.prime/demo/demo");
+    let subdir = dir.join("workspace/demos/fs_demo");
+    let path = "workspace/demos/fs_demo/tmp_demo.txt";
+    let missing = fs::write(dir.join(path), "").unwrap_err();
+    for (create, expected) in [
+        (
+            false,
+            format!("writing to {path}\nwrite failed: {missing}\n"),
+        ),
+        (
+            true,
+            format!("writing to {path}\nwrite ok\nexists? true\nread: demo file contents\n"),
+        ),
+    ] {
+        if create {
+            fs::create_dir_all(&subdir).unwrap();
+        }
+        let interpreted = execute(cli, dir, &["run", source]);
+        assert_eq!(interpreted, expected);
+        assert_eq!(execute(&native, dir, &[]), interpreted);
+    }
+}

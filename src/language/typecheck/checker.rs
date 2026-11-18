@@ -2027,10 +2027,11 @@ impl Checker {
                 }
                 None
             }
-            Expr::TryPropagate { expr, span, .. } => {
+            Expr::TryPropagate { id, expr, span } => {
                 let ty = self.check_expression(module, expr, None, returns, env);
                 if let Some(TypeExpr::Named(name, args)) = ty {
                     if name == "Result" && !args.is_empty() {
+                        self.facts.try_payloads.insert(*id, args[0].clone());
                         return Some(args[0].clone());
                     }
                 }

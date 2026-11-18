@@ -658,7 +658,7 @@ fn read_hp(target: &Player) -> int32 {
 let Box[int32] counter = box_new(0);
 bump_counter(&counter, 5);
 out(`box counter -> {}`, counter.box_get());"#,
-                explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. Native host builds support `?` when the variant is known during compilation. Use `match` for runtime-selected variants such as guarded task results. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and either `.get(key)` or bracket indexing for safe ownership transfers; the same APIs work in build/run modes.",
+                explanation: "`Result[T, E]` plus the `?` operator short-circuits on failure, and `try { ... }` blocks wrap multi-expression workflows. In host Result-returning functions and try blocks, runtime `?` unwraps unit, string or scalar successes and preserves the error. Use `match` for aggregate success payloads. Import `core::types` to bring the `Result`/`Option` enums (and variants like `Ok`, `Err`, `Some`, `None`) into scope. Heap primitives such as `Box`, slices (`[]T`), and maps (`Map[K, V]`) provide helper methods like `.box_get()`, `.len()`, and either `.get(key)` or bracket indexing for safe ownership transfers; the same APIs work in build/run modes.",
             },
             TopicSection {
                 title: "Collections and indexing",
@@ -887,7 +887,7 @@ out(roster); // error points at the move site"#,
             title: "Checking and building",
             snippet: r#"prime-lang check workspace/demos/channel_demo/channel_demo.prime
 prime-lang build workspace/demos/channel_demo/channel_demo.prime --name channel_demo"#,
-            explanation: "The checker validates the expanded AST. Native lowering can still report a code generation error, for example E0NATIVETRY for a runtime-selected host Result. See docs/CompilerFlow.md and docs/Checking.md.",
+            explanation: "The checker validates the expanded AST. Native lowering can still report a code generation error, for example E0NATIVETRY when runtime `?` would unwrap an aggregate payload. See docs/CompilerFlow.md and docs/Checking.md.",
         }],
     },
 ];

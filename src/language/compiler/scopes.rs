@@ -463,15 +463,19 @@ impl Compiler {
             mem::swap(stack, &mut pending);
             while let Some(action) = pending.pop() {
                 match action {
-                    CleanupAction::Defer(expr) => match self.emit_expression(&expr)? {
-                        EvalOutcome::Value(_) => {}
-                        EvalOutcome::Flow(flow) => {
+                    CleanupAction::Defer(expr) => {
+                        // Deferred expressions may call functions or contain their own
+                        // try, but control flow cannot escape to the scope being unwound.
+                        let outer = mem::take(&mut self.exits);
+                        let result = self.emit_expression(&expr);
+                        self.exits = outer;
+                        if let EvalOutcome::Flow(flow) = result? {
                             return Err(format!(
                                 "Control flow {} not allowed in deferred expression",
                                 flow_name(&flow)
                             ));
                         }
-                    },
+                    }
                     CleanupAction::Drop(record) => self.run_drop(record)?,
                 }
             }
@@ -479,8 +483,52 @@ impl Compiler {
         Ok(())
     }
 
+    /// Emit precisely the actions registered up to this exit. Temporarily
+    /// unwind the lexical scopes so outer cleanups resolve shadowed bindings
+    /// correctly, then restore them for the continuing runtime path.
+    pub(super) fn emit_exit_cleanups(&mut self, depth: usize) -> Result<(), String> {
+        if self.cleanup_stack[depth..].iter().all(Vec::is_empty) {
+            return Ok(());
+        }
+        // Dropping and deferring may assign through a binding. Slot stores
+        // belong to this LLVM edge, but changes to the compiler's value cells
+        // must not affect code emitted for its sibling.
+        let bindings: Vec<_> = self
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.values())
+            .map(|binding| (binding.cell.clone(), binding.cell.lock().unwrap().clone()))
+            .collect();
+        let scopes = self.scopes.clone();
+        let cleanups = self.cleanup_stack.clone();
+        let borrows = self.borrow_frames.clone();
+        let active = self.active_mut_borrows.clone();
+        while self.scopes.len() > depth {
+            self.exit_scope()?;
+        }
+        for (cell, value) in bindings {
+            *cell.lock().unwrap() = value;
+        }
+        self.scopes = scopes;
+        self.cleanup_stack = cleanups;
+        self.borrow_frames = borrows;
+        self.active_mut_borrows = active;
+        Ok(())
+    }
+
     pub(super) fn exit_scope(&mut self) -> Result<(), String> {
-        self.run_cleanups()?;
+        // A match with no continuing arm has already emitted the cleanup on
+        // each outgoing edge. Its empty merge block ends in unreachable.
+        let terminated = unsafe {
+            let block = LLVMGetInsertBlock(self.builder);
+            !block.is_null()
+                && !LLVMGetBasicBlockTerminator(block).is_null()
+                && !llvm_sys::core::LLVMIsAUnreachableInst(LLVMGetBasicBlockTerminator(block))
+                    .is_null()
+        };
+        if !terminated {
+            self.run_cleanups()?;
+        }
         self.pop_scope();
         self.release_dead_tokens();
         Ok(())

@@ -65,7 +65,16 @@ Try adding `out(values.len());` after the move. Checking the program reports the
 
 The installed CLI includes the runtime sources and builds its matching archive under `.build.prime/runtime` or `$CARGO_TARGET_DIR/prime-runtime`.
 
-Use `match` or `if let` to handle the native result. Native code generation currently rejects `?` on a runtime-selected result and early returns inside runtime match arms. When compiling a spawned filesystem call, leave the experimental `PRIME_BUILD_PARALLEL` snapshot evaluator disabled.
+In a host function that returns `Result`, postfix `?` tests the runtime tag. Success continues with the payload. Failure returns the original `Err` to the caller, running the cleanups registered along that path. Inside `try`, failure exits the nearest enclosing `try` in the same function. A `return` in a runtime match arm exits the function, including `return;` in `main`.
+
+```prime
+fn read_config() -> Result[string, string] {
+  let string text = fs_read("config.txt")?;
+  Ok(text)
+}
+```
+
+Native runtime `?` supports unit, string, boolean, numeric and rune success payloads. Use an explicit `match` for aggregate success payloads, for propagation out of a closure or async block itself, and for runtime-selected variants on embedded targets. Conditional match-arm returns support zero or one return value. A loop’s `break` or `continue` across a `try` with runtime propagation is unsupported. When compiling a spawned filesystem call, leave the experimental `PRIME_BUILD_PARALLEL` snapshot evaluator disabled.
 
 ## Scope exit
 

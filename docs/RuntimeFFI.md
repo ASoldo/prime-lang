@@ -26,6 +26,7 @@ The interpreter uses an in-process runtime. Native code calls C-compatible symbo
 | --- | --- | --- |
 | `prime_integer_check` | Boolean condition, pointer to UTF-8 diagnostic bytes, target-width byte length | Returns on success. On failure the host reports the error and exits, and firmware stops. |
 | `prime_sleep_task` | `i128` milliseconds | Opaque task handle |
+| `prime_result_new` (host) | Payload handle, selected variant tag and declared Ok tag (both `u32`) | Result handle containing a copy of the payload and the corresponding display label |
 | `prime_delay_ms` | `i32` milliseconds | `PrimeStatus` |
 | `prime_recv_timeout` | Receiver handle, `i128` milliseconds, output pointer | `PrimeStatus` |
 

@@ -3448,9 +3448,26 @@ mod host {
     }
 
     fn result_handle(result: Result<HostValue, String>, ok: u32, err: u32) -> PrimeHandle {
-        let (tag, label, payload) = match result {
-            Ok(value) => (ok, "Result::Ok", value),
-            Err(message) => (err, "Result::Err", HostValue::Str(message)),
+        match result {
+            Ok(value) => boxed_result(value, ok, ok),
+            Err(message) => boxed_result(HostValue::Str(message), err, ok),
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn prime_result_new(
+        payload: PrimeHandle,
+        tag: u32,
+        ok: u32,
+    ) -> PrimeHandle {
+        boxed_result(clone_value(payload), tag, ok)
+    }
+
+    fn boxed_result(payload: HostValue, tag: u32, ok: u32) -> PrimeHandle {
+        let label = if tag == ok {
+            "Result::Ok"
+        } else {
+            "Result::Err"
         };
         let value = HostValue::Enum {
             tag,
