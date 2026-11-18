@@ -135,7 +135,7 @@ pub struct Compiler {
     impls: HashSet<ImplKey>,
     consts: Vec<(String, ConstDef)>,
     drop_impls: HashMap<String, FunctionKey>,
-    borrows: MutableBorrows,
+    borrows: MutableBorrows<Rc<Mutex<EvaluatedValue>>>,
     cleanup_stack: Vec<Vec<CleanupAction>>,
     deprecated_warnings: HashSet<String>,
     module_stack: Vec<String>,
@@ -263,6 +263,7 @@ struct FloatValue {
 
 #[derive(Clone)]
 struct ReferenceValue {
+    // Set when this reference aliases an LLVM-backed scalar binding.
     slot: Option<LLVMValueRef>,
     cell: Rc<Mutex<EvaluatedValue>>,
     mutable: bool,

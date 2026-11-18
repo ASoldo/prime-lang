@@ -14,6 +14,8 @@ FS_FILE = Path("workspace/demos/fs_demo/tmp_demo.txt")
 
 # Each marker tests an observable property in addition to comparing the full output.
 DEMOS = {
+    "borrow": ("demos/borrow/borrow_demo.prime", ["loop_merging => 14", "after block gauge 13"]),
+    "borrow_scopes": ("demos/borrow_checker_errors/borrow_error_demo.prime", ["gauge stabilized at 24"]),
     "channel": ("demos/channel_demo/channel_demo.prime", ["6"]),
     "patterns": ("demos/patterns/pattern_demo.prime", ["snapshot sums -> 140", "struct mutation total 105"]),
     "generic": ("demos/generic/generic_demo.prime", ["hp identity => 120", "pair => (18, bleed)"]),

@@ -42,7 +42,7 @@ impl Scope {
 #[derive(Clone)]
 pub struct Environment {
     scopes: Vec<Scope>,
-    borrows: MutableBorrows,
+    borrows: MutableBorrows<Arc<Mutex<Value>>>,
 }
 
 impl Default for Environment {
@@ -53,7 +53,10 @@ impl Default for Environment {
 
 impl Environment {
     pub fn new() -> Self {
-        let mut env = Self { scopes: Vec::new(), borrows: MutableBorrows::default() };
+        let mut env = Self {
+            scopes: Vec::new(),
+            borrows: MutableBorrows::default(),
+        };
         env.push_scope();
         env
     }
@@ -92,7 +95,13 @@ impl Environment {
         self.bind(name, value, mutable, false)
     }
 
-    pub(super) fn bind(&mut self, name: &str, value: Value, mutable: bool, parameter: bool) -> Result<(), RuntimeError> {
+    pub(super) fn bind(
+        &mut self,
+        name: &str,
+        value: Value,
+        mutable: bool,
+        parameter: bool,
+    ) -> Result<(), RuntimeError> {
         let scope_index = self.scopes.len().saturating_sub(1);
         let cell = Arc::new(Mutex::new(value));
         {
@@ -153,7 +162,22 @@ impl Environment {
     }
 
     pub fn is_mut_borrowed(&self, name: &str) -> bool {
-        self.get_cell(name).is_some_and(|(cell, _)| self.borrows.contains(Arc::as_ptr(&cell)))
+        self.get_cell(name)
+            .is_some_and(|(cell, _)| self.borrows.contains(&cell))
+    }
+
+    pub fn end_mut_borrow(&mut self, name: &str) {
+        if let Some((cell, _)) = self.get_cell(name) {
+            for scope in (0..self.scopes.len()).rev() {
+                if self.borrows.release(scope, &cell) {
+                    break;
+                }
+            }
+        }
+    }
+
+    pub fn register_move(&mut self, name: &str) {
+        self.end_mut_borrow(name);
     }
 
     fn track_reference_borrow_in_scope(
@@ -165,7 +189,9 @@ impl Environment {
         match value {
             Value::Reference(reference) if reference.mutable => {
                 if let Some(origin) = &reference.origin {
-                    self.borrows.acquire(scope_index, Arc::as_ptr(&reference.cell), origin, parameter).map_err(|message| RuntimeError::Panic {message})?;
+                    self.borrows
+                        .acquire(scope_index, &reference.cell, origin, parameter)
+                        .map_err(|message| RuntimeError::Panic { message })?;
                 }
             }
             Value::FormatTemplate(template) => {
@@ -183,7 +209,7 @@ impl Environment {
     fn release_reference_borrow(&mut self, value: &Value, scope: usize) {
         match value {
             Value::Reference(reference) if reference.mutable => {
-                self.borrows.release(scope, Arc::as_ptr(&reference.cell));
+                self.borrows.release(scope, &reference.cell);
             }
             Value::FormatTemplate(template) => {
                 for segment in &template.segments {

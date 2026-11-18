@@ -15,7 +15,9 @@ impl Compiler {
                 "reference_retain",
             ));
         }
-        let inner = self.load_binding_value(&reference.cell, reference.slot).into_value();
+        let inner = self
+            .load_binding_value(&reference.cell, reference.slot)
+            .into_value();
         let target = self.build_runtime_handle(inner)?;
         let mut_flag =
             unsafe { LLVMConstInt(self.runtime_abi.bool_type, reference.mutable as u64, 0) };

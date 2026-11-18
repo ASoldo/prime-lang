@@ -200,7 +200,11 @@ impl Compiler {
     }
 
     pub(super) fn assign_var(&mut self, name: &str, value: EvaluatedValue) -> Result<(), String> {
-        let (index, binding) = self.scopes.iter().enumerate().rev()
+        let (index, binding) = self
+            .scopes
+            .iter()
+            .enumerate()
+            .rev()
             .find_map(|(index, scope)| scope.get(name).cloned().map(|binding| (index, binding)))
             .ok_or_else(|| format!("Unknown variable {name}"))?;
         if !binding.mutable {
@@ -230,7 +234,9 @@ impl Compiler {
                 let scalar = self.bool_llvm_value(&flag);
                 (scalar, Value::Bool(BoolValue::new(scalar, None)))
             };
-            unsafe { LLVMBuildStore(self.builder, scalar, slot); }
+            unsafe {
+                LLVMBuildStore(self.builder, scalar, slot);
+            }
             value = updated.into();
         }
         Self::clear_scalar_constant(&mut value);
@@ -530,7 +536,11 @@ impl Compiler {
     }
 
     pub(super) fn bind_var(
-        &mut self, name: &str, value: EvaluatedValue, mutable: bool, parameter: bool,
+        &mut self,
+        name: &str,
+        value: EvaluatedValue,
+        mutable: bool,
+        parameter: bool,
     ) -> Result<(), String> {
         let scope_index = self.scopes.len().saturating_sub(1);
         let drop_target = self.drop_type_for_value(value.value());
@@ -583,7 +593,8 @@ impl Compiler {
                     slot = Some(alloca);
                 }
                 Value::Bool(flag) => {
-                    let alloca = self.build_entry_alloca(self.runtime_abi.bool_type, &format!("{name}_slot"));
+                    let alloca = self
+                        .build_entry_alloca(self.runtime_abi.bool_type, &format!("{name}_slot"));
                     let stored = self.bool_llvm_value(&flag);
                     unsafe {
                         LLVMBuildStore(self.builder, stored, alloca);
@@ -651,12 +662,12 @@ impl Compiler {
         cell: &Mutex<EvaluatedValue>,
         slot: Option<LLVMValueRef>,
     ) -> EvaluatedValue {
-        let value = cell.lock().unwrap().clone();
-        let Some(slot) = slot else { return self.read_token_binding(value) };
-        let loaded = unsafe {
-            LLVMBuildLoad2(self.builder, LLVMGetAllocatedType(slot), slot, c"binding_load".as_ptr())
+        let Some(slot) = slot else {
+            return self.read_token_binding(cell.lock().unwrap().clone());
         };
-        if unsafe { LLVMGetAllocatedType(slot) } == self.runtime_abi.int_type {
+        let ty = unsafe { LLVMGetAllocatedType(slot) };
+        let loaded = unsafe { LLVMBuildLoad2(self.builder, ty, slot, c"binding_load".as_ptr()) };
+        if ty == self.runtime_abi.int_type {
             self.evaluated(Value::Int(IntValue::new(loaded, None)))
         } else {
             self.evaluated(Value::Bool(BoolValue::new(loaded, None)))
@@ -664,7 +675,11 @@ impl Compiler {
     }
 
     pub(super) fn get_binding(&self, name: &str) -> Option<Binding> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name)).cloned()
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+            .cloned()
     }
 
     pub(super) fn reset_module(&mut self) {

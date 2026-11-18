@@ -595,7 +595,12 @@ impl Interpreter {
         let result = (|| {
             self.env.push_scope();
             for (param, value) in info.def.params.iter().zip(args) {
-                self.env.bind(&param.name, value.clone(), param.mutability == Mutability::Mutable, true)?;
+                self.env.bind(
+                    &param.name,
+                    value.clone(),
+                    param.mutability == Mutability::Mutable,
+                    true,
+                )?;
                 if !self.suppress_drop_schedule {
                     self.schedule_drop_for_value(&param.name, &value);
                 }
@@ -3738,7 +3743,9 @@ impl Interpreter {
                     });
                 }
                 if self.env.is_mut_borrowed(&ident.name) {
-                    return Err(RuntimeError::Panic { message: format!("`{}` is already mutably borrowed", ident.name) });
+                    return Err(RuntimeError::Panic {
+                        message: format!("`{}` is already mutably borrowed", ident.name),
+                    });
                 }
                 if matches!(*cell.lock().unwrap(), Value::Moved) {
                     return Err(RuntimeError::MovedValue {

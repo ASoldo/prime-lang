@@ -214,7 +214,9 @@ impl Compiler {
         let mut handles = Vec::new();
         for name in capture_names {
             if let Some(value) = self.get_var(&name) {
-                if self.get_binding(&name).is_some_and(|binding| binding.mutable)
+                if self
+                    .get_binding(&name)
+                    .is_some_and(|binding| binding.mutable)
                     || matches!(value.value(), Value::Reference(r) if r.mutable)
                     || matches!(value.value(), Value::Pointer(p) if p.mutable)
                 {
@@ -240,6 +242,7 @@ impl Compiler {
         let outer_task = self.host_task_entry.replace(function);
         let loop_controls = mem::take(&mut self.loop_controls);
         let lexical_scopes = mem::take(&mut self.scopes);
+        let caller_borrows = mem::take(&mut self.borrows);
         let env_param = unsafe { LLVMGetParam(function, 0) };
         let mut bindings = Vec::new();
         for (index, (name, original)) in captures.iter().enumerate() {
@@ -260,6 +263,7 @@ impl Compiler {
             LLVMPositionBuilderAtEnd(self.builder, caller);
         }
         self.scopes = lexical_scopes;
+        self.borrows = caller_borrows;
         self.loop_controls = loop_controls;
         self.host_task_entry = outer_task;
         let task = self.call_runtime(

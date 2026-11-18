@@ -54,7 +54,7 @@ impl Compiler {
     }
 
     pub(super) fn take_binding_value(&mut self, name: &str) -> Result<EvaluatedValue, String> {
-        let Binding {cell, ..} = self
+        let Binding { cell, .. } = self
             .get_binding(name)
             .ok_or_else(|| format!("Unknown variable {}", name))?;
         if self.is_mut_borrowed(name) {
@@ -1009,7 +1009,7 @@ impl Compiler {
             if captures_vec.iter().any(|c| c.name == name) {
                 continue;
             }
-            if let Some(Binding {cell, ..}) = self.get_binding(&name) {
+            if let Some(Binding { cell, .. }) = self.get_binding(&name) {
                 let value = cell.lock().unwrap().clone().into_value();
                 let ty = self.value_type_hint(&value).ok_or_else(|| {
                     format!(

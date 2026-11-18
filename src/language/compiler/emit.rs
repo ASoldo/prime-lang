@@ -3405,7 +3405,11 @@ impl Compiler {
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Identifier(ident) => {
-                let Binding {cell, mutable: binding_mut, slot} = self
+                let Binding {
+                    cell,
+                    mutable: binding_mut,
+                    slot,
+                } = self
                     .get_binding(&ident.name)
                     .ok_or_else(|| format!("Unknown variable {}", ident.name))?;
                 if mutable && !binding_mut {
@@ -3414,7 +3418,7 @@ impl Compiler {
                         ident.name
                     ));
                 }
-                if self.borrows.contains(Rc::as_ptr(&cell)) {
+                if self.borrows.contains(&cell) {
                     return Err(format!("`{}` is already mutably borrowed", ident.name));
                 }
                 if matches!(cell.lock().unwrap().value(), Value::Moved) {
@@ -3491,7 +3495,7 @@ impl Compiler {
     ) -> Result<EvalOutcome<EvaluatedValue>, String> {
         match expr {
             Expr::Identifier(ident) => {
-                let Binding {cell, ..} = self
+                let Binding { cell, .. } = self
                     .get_binding(&ident.name)
                     .ok_or_else(|| format!("Unknown variable {}", ident.name))?;
                 if self.is_mut_borrowed(&ident.name) {
@@ -3523,8 +3527,12 @@ impl Compiler {
 
     pub(super) fn deref_value(&mut self, value: Value) -> Result<EvaluatedValue, String> {
         match value {
-            Value::Reference(reference) => Ok(self.load_binding_value(&reference.cell, reference.slot)),
-            Value::Pointer(pointer) => Ok(self.read_token_binding(pointer.cell.lock().unwrap().clone())),
+            Value::Reference(reference) => {
+                Ok(self.load_binding_value(&reference.cell, reference.slot))
+            }
+            Value::Pointer(pointer) => {
+                Ok(self.read_token_binding(pointer.cell.lock().unwrap().clone()))
+            }
             _ => Err("Cannot dereference non-reference value in build mode".into()),
         }
     }

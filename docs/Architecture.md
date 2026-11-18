@@ -22,7 +22,7 @@ The language server uses the Rust frontend for source analysis. Tree-sitter supp
 
 ### A mutable parameter across a call
 
-On x86_64 at `af313d8`, this program passes checking and prints `7` in the interpreter. The host binary prints `6`. The assignment through the parameter must be visible to the caller after the function returns.
+This program prints `7` in both the interpreter and the host binary. In an ordinary named function call, the reference to `n` keeps the caller’s storage. The native emitter loads and stores through the same LLVM slot when the binding is an integer or boolean. Passing an existing reference on to another named function keeps the original loan live in the caller. [Interpreter/native regression](../scripts/tests/test_mutable_references.py)
 
 ```prime
 module example;
@@ -42,3 +42,5 @@ prime-lang run example.prime
 prime-lang build example.prime --name example
 ./.build.prime/example/example
 ```
+
+The write-through guarantee above covers a borrow of a named binding, including when the callee forwards its reference as `bump(r)`. Projections have different behavior. Both evaluators currently put the value of `&mut pair.field` in a separate cell, so assigning through it leaves the field unchanged. A checked `&mut *r` on a reference parameter also borrows a copy. Checking rejects a borrow of an indexed expression such as `&mut values[0]` as a reference to a temporary. Closure calls use a separate native calling convention.

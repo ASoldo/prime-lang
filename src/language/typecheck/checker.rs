@@ -2631,14 +2631,15 @@ impl Checker {
         returns: &[TypeExpr],
         env: &mut FnEnv,
     ) -> Option<TypeExpr> {
-        let mut seen_mut_refs = HashSet::new();
+        let mut references = HashMap::new();
         for arg in args {
-            if let Some(target) = mutable_reference_target(arg) {
-                if !seen_mut_refs.insert(target.clone()) {
+            if let Some((target, mutable)) = call_reference_target(arg, env) {
+                let previous = references.insert(target.clone(), mutable);
+                if previous.is_some_and(|was_mutable| was_mutable || mutable) {
                     self.errors.push(TypeError::new(
                         &module.path,
                         expr_span(arg),
-                        format!("`{}` is already mutably borrowed in this call", target),
+                        format!("`{target}` is already mutably borrowed in this call"),
                     ));
                 }
             }
@@ -7261,18 +7262,23 @@ fn expression_borrow_targets(expr: &Expr, env: &FnEnv) -> Vec<String> {
     expression_borrow_targets_with_context(expr, env, &context)
 }
 
-fn mutable_reference_target(expr: &Expr) -> Option<String> {
-    if let Expr::Reference {
-        mutable: true,
-        expr: inner,
-        ..
-    } = expr
-    {
-        if let Expr::Identifier(ident) = inner.as_ref() {
-            return Some(ident.name.clone());
+fn call_reference_target(expr: &Expr, env: &FnEnv) -> Option<(String, bool)> {
+    match expr {
+        Expr::Reference { mutable, expr, .. } => match expr.as_ref() {
+            Expr::Identifier(ident) => Some((ident.name.clone(), *mutable)),
+            _ => None,
+        },
+        Expr::Identifier(ident) => {
+            let TypeExpr::Reference { mutable, .. } = env.lookup(&ident.name)?.ty.as_ref()? else {
+                return None;
+            };
+            let target = env
+                .binding_borrow_target(&ident.name)
+                .unwrap_or_else(|| ident.name.clone());
+            Some((target, *mutable))
         }
+        _ => None,
     }
-    None
 }
 
 fn expression_borrow_targets_with_context(

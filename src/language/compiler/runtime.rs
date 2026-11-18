@@ -166,7 +166,7 @@ impl Compiler {
                         return Ok(());
                     }
                     // Print the current pointed-to value (non-runtime).
-                    let inner = reference.cell.lock().unwrap().clone();
+                    let inner = self.load_binding_value(&reference.cell, reference.slot);
                     return self.print_value(inner);
                 }
                 Value::Str(string) => {
@@ -367,7 +367,7 @@ impl Compiler {
                     Ok(())
                 } else {
                     self.emit_printf_call("&", &mut []);
-                    let inner = reference.cell.lock().unwrap().clone();
+                    let inner = self.load_binding_value(&reference.cell, reference.slot);
                     self.print_value(inner)
                 }
             }
@@ -796,7 +796,7 @@ impl Compiler {
                     );
                     return Ok(inner);
                 }
-                let inner = reference.cell.lock().unwrap().clone().into_value();
+                let inner = self.load_binding_value(&reference.cell, reference.slot).into_value();
                 let target = self.build_runtime_handle(inner)?;
                 let mut_flag = unsafe {
                     LLVMConstInt(self.runtime_abi.bool_type, reference.mutable as u64, 0)
