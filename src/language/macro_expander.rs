@@ -469,6 +469,7 @@ impl<'a> Expander<'a> {
                 path: module.path.clone(),
                 doc: module.doc.clone(),
                 no_std: module.no_std,
+                is_script: module.is_script,
                 declared_name: module.declared_name.clone(),
                 declared_span: module.declared_span,
                 redundant_module_spans: module.redundant_module_spans.clone(),

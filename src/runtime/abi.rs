@@ -3631,7 +3631,10 @@ mod host {
         let result = io::stdin()
             .read_line(&mut input)
             .map_err(|err| err.to_string())
-            .and_then(|_| {
+            .and_then(|count| {
+                if count == 0 {
+                    return Err("end of input".to_string());
+                }
                 let trimmed = input.trim();
                 match type_code {
                     TYPE_INT8 | TYPE_INT16 | TYPE_INT32 | TYPE_INT64 | TYPE_ISIZE | TYPE_UINT8

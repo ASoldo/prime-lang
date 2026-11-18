@@ -111,8 +111,15 @@ pub struct TypeDiagnostic {
 }
 
 pub fn emit_type_errors(errors: &[TypeError]) {
+    emit_type_errors_with_source(errors, |path| std::fs::read_to_string(path));
+}
+
+pub fn emit_type_errors_with_source(
+    errors: &[TypeError],
+    read_source: impl Fn(&Path) -> std::io::Result<String>,
+) {
     for err in errors {
-        match std::fs::read_to_string(&err.path) {
+        match read_source(&err.path) {
             Ok(contents) => {
                 let named = NamedSource::new(err.path.display().to_string(), contents);
                 let diagnostic = TypeDiagnostic {
@@ -126,9 +133,10 @@ pub fn emit_type_errors(errors: &[TypeError]) {
             }
             Err(read_err) => {
                 eprintln!(
-                    "type error at {}:{} - {}",
+                    "type error at {}:{} - {} (could not read source: {})",
                     err.path.display(),
                     err.span.start,
+                    err.display_message(),
                     read_err
                 );
             }

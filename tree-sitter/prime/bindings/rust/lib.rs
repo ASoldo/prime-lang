@@ -68,6 +68,9 @@ mod tests {
         for source in [
             "module demo; fn sample() { let = ; }",
             "module demo; fn sample() { ()",
+            "let answer = 6 * ;",
+            "module demo; out(42);",
+            "out(42); fn main() {}",
         ] {
             assert!(parse(source).root_node().has_error(), "{source}");
         }

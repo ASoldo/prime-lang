@@ -30,6 +30,7 @@ module.exports = grammar({
   ],
 
   conflicts: $ => [
+    [$.program],
     [$.array_literal, $.slice_type],
     [$.expression, $.generic_type],
     [$.statement, $.expression],
@@ -53,10 +54,19 @@ module.exports = grammar({
   ],
 
   rules: {
-    program: $ => seq(
-      optional($.module_declaration),
-      repeat(choice($.import_declaration, $.prelude_export)),
-      repeat($.item)
+    program: $ => choice(
+      seq(
+        optional($.module_declaration),
+        repeat(choice($.import_declaration, $.prelude_export)),
+        repeat($.item)
+      ),
+      seq(
+        repeat($.import_declaration),
+        choice(
+          seq(repeat1($.statement), optional($.expression)),
+          $.expression
+        )
+      )
     ),
 
     module_declaration: $ => seq(
@@ -65,7 +75,7 @@ module.exports = grammar({
       ';'
     ),
 
-    import_declaration: $ => seq(
+    import_declaration: $ => prec.right(seq(
       optional('pub'),
       'import',
       choice(
@@ -79,7 +89,7 @@ module.exports = grammar({
         seq(field('path', $.string_literal), optional($._import_alias), optional($.import_selector_list))
       ),
       optional(';')
-    ),
+    )),
 
     namespace_path: $ => seq(
       field('head', choice($.identifier, $.type_identifier)),
@@ -129,10 +139,10 @@ module.exports = grammar({
     ),
 
     // Top-level macro invocations (e.g., ~add_item();)
-    macro_call_item: $ => seq(
+    macro_call_item: $ => prec(1, seq(
       $.macro_call_expression,
       ';'
-    ),
+    )),
 
     macro_definition: $ => seq(
       'macro',

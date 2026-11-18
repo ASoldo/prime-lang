@@ -10,7 +10,7 @@ prime-lang check demos::macro_demo --project workspace/demos/macro
 prime-lang check workspace/app/main.prime --frozen --format json
 ```
 
-`TARGET` accepts a source path or module name. When resolving a module from a workspace, `--project` (or `-p`) selects a member by its path or package name. The checker uses the same target settings as `run`, including the target in the manifest and the `PRIME_TARGET` fallback. It reads local dependency manifests and reuses shared dependencies. A dependency cycle reports the manifest paths that form the loop.
+`TARGET` accepts a source path, module name or `-` for UTF-8 source on stdin. The [inline guide](Inline.md) covers scripts, imports and application input. When resolving a module from a workspace, `--project` (or `-p`) selects a member by its path or package name. The checker uses the same target settings as `run`, including the target in the manifest and the `PRIME_TARGET` fallback. It reads local dependency manifests and reuses shared dependencies. A dependency cycle reports the manifest paths that form the loop.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -63,9 +63,9 @@ For example, checking a standalone `hello.prime` containing `module hello;` from
 | --- | --- |
 | `outcome` | `ok` or `error`. |
 | `target` | Original target argument. |
-| `entry_path` | Canonical entry file path, or `null` if resolution failed. |
+| `entry_path` | Canonical entry file path or `<stdin>`, or `null` if resolution failed. |
 | `manifest_path` | Selected manifest path, or `null` if no manifest was loaded. |
-| `paths` | Sorted, unique canonical paths of the loaded source files. Empty until the entire import graph has loaded. |
+| `paths` | Sorted, unique source paths, including `<stdin>` for a stdin entry. Empty until the entire import graph has loaded. |
 | `diagnostics` | Errors from the first failing phase, sorted by path, byte range and diagnostic details. |
 
 Each diagnostic has a `phase` (`input`, `io`, `manifest`, `syntax`, `macro` or `type`), `path`, `message`, optional-valued `code` and `help`, and a `span`. A span is either `null` or an object with `start` and `end`. Both are zero-based UTF-8 **byte offsets** in the identified file. The start is inclusive and the end is exclusive. For example, if the lexer rejects `§`, its span covers two bytes. A missing file has a path and a `null` span.

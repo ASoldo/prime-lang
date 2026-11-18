@@ -4,7 +4,7 @@ This document describes the current implementation. Use `prime-lang check TARGET
 
 ## Source and modules
 
-A file can declare a `module`, `library` or `test` header. Package manifests (`prime.toml`) provide names, paths and visibility. A module can supply `fn main()`. Libraries expose items to importing modules. Test files contain functions that the test runner discovers. Namespace paths support `::` and `/`. For example, `import core::types::prelude::{*};` imports the exported prelude. Items support private, `pub(package)` and `pub` visibility. The Rust parser defines the accepted syntax. The Tree-sitter grammar supplies an independent editor parser.
+A file can declare a `module`, `library` or `test` header. Package manifests (`prime.toml`) provide names, paths and visibility. A module can supply `fn main()`. A headerless script may place statements directly after its imports. The parser treats them as an implicit main body and keeps their original source positions. The [inline guide](Inline.md) covers mode selection and stdin. Libraries expose items to importing modules. Test files contain functions that the test runner discovers. Namespace paths support `::` and `/`. For example, `import core::types::prelude::{*};` imports the exported prelude. Items support private, `pub(package)` and `pub` visibility. The Rust parser defines the accepted syntax. The Tree-sitter grammar supplies an independent editor parser.
 
 ## Expressions, types and control flow
 

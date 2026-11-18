@@ -1038,11 +1038,16 @@ impl Interpreter {
             io::stdout().flush().ok();
 
             let mut buffer = String::new();
-            io::stdin()
+            let count = io::stdin()
                 .read_line(&mut buffer)
                 .map_err(|err| RuntimeError::Panic {
                     message: format!("failed to read input: {err}"),
                 })?;
+            if count == 0 {
+                return self
+                    .instantiate_enum("Result", "Err", vec![Value::String("end of input".into())])
+                    .map(|value| vec![value]);
+            }
             buffer.trim_end_matches(&['\n', '\r'][..]).to_string()
         };
         let parsed = match self.parse_input_value(&raw, ty) {

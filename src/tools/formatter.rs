@@ -8,7 +8,7 @@ pub fn format_module(module: &Module) -> String {
     if let Some(doc) = &module.doc {
         write_doc_comment(&mut out, doc, true, 0);
     }
-    if let Some(name) = module.declared_name.as_ref() {
+    if let Some(name) = module.declared_name.as_ref().filter(|_| !module.is_script) {
         let header = match module.kind {
             ModuleKind::Module => "module",
             ModuleKind::Library => "library",
@@ -49,6 +49,11 @@ pub fn format_module(module: &Module) -> String {
             Item::Enum(def) => format_enum(&mut out, def),
             Item::Interface(def) => format_interface(&mut out, def),
             Item::Impl(block) => format_impl(&mut out, block),
+            Item::Function(def) if module.is_script => {
+                if let FunctionBody::Block(block) = &def.body {
+                    format_block(&mut out, block, 0);
+                }
+            }
             Item::Function(def) => format_function(&mut out, def),
             Item::Macro(def) => format_macro(&mut out, def),
             Item::Const(def) => format_const(&mut out, def),

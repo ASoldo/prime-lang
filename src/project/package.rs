@@ -85,18 +85,19 @@ pub fn load_resolved_package(
     manifest: Option<PackageManifest>,
 ) -> Result<Package, PackageError> {
     let mut loader = ModuleLoader::new(manifest);
-    loader.load(entry)?;
+    loader.load_module(entry, None)?;
+    loader.finish()
+}
 
-    if !loader.file_errors.is_empty() {
-        return Err(PackageError::Syntax(loader.file_errors));
-    }
-
-    let modules = loader.modules;
-    let program = Program {
-        modules: modules.iter().map(|unit| unit.module.clone()).collect(),
-    };
-
-    Ok(Package { program, modules })
+pub(super) fn load_stdin_package(
+    path: &Path,
+    directory: &Path,
+    text: &str,
+    manifest: Option<PackageManifest>,
+) -> Result<Package, PackageError> {
+    let mut loader = ModuleLoader::new(manifest);
+    loader.load_source(path, directory, super::entry::STDIN_PATH, text, None)?;
+    loader.finish()
 }
 
 struct ModuleLoader {
@@ -116,9 +117,21 @@ impl ModuleLoader {
         }
     }
 
-    fn load(&mut self, path: &Path) -> Result<(), PackageError> {
-        self.load_module(path, None)?;
-        Ok(())
+    fn finish(self) -> Result<Package, PackageError> {
+        if !self.file_errors.is_empty() {
+            return Err(PackageError::Syntax(self.file_errors));
+        }
+        let program = Program {
+            modules: self
+                .modules
+                .iter()
+                .map(|unit| unit.module.clone())
+                .collect(),
+        };
+        Ok(Package {
+            program,
+            modules: self.modules,
+        })
     }
 
     fn load_module(
@@ -144,7 +157,24 @@ impl ModuleLoader {
             .and_then(|m| m.module_name_for_path(&canonical))
             .unwrap_or_else(|| module_name_from_path(&canonical));
 
-        match parse_module(&module_name, canonical.clone(), &source) {
+        self.load_source(
+            &canonical,
+            canonical.parent().unwrap(),
+            &module_name,
+            &source,
+            source_library,
+        )
+    }
+
+    fn load_source(
+        &mut self,
+        path: &Path,
+        directory: &Path,
+        module_name: &str,
+        source: &str,
+        source_library: Option<&ModuleInfo>,
+    ) -> Result<(), PackageError> {
+        match parse_module(module_name, path.to_owned(), source) {
             Ok(mut module) => {
                 if let Some(manifest) = &self.manifest {
                     module.no_std = source_library
@@ -153,8 +183,8 @@ impl ModuleLoader {
                 let imports = module.imports.clone();
                 if let Some(err) = library_main_error(&module) {
                     self.file_errors.push(FileErrors {
-                        path: canonical.clone(),
-                        source,
+                        path: path.to_owned(),
+                        source: source.to_owned(),
                         errors: vec![err],
                     });
                     return Ok(());
@@ -175,15 +205,15 @@ impl ModuleLoader {
                     {
                         self.load_module(&lib.path, Some(lib))?;
                     } else {
-                        let resolved = self.resolve_import_path(&canonical, &import.path)?;
+                        let resolved = self.resolve_import_path(directory, &import.path)?;
                         self.load_module(&resolved, None)?;
                     }
                 }
             }
             Err(errs) => {
                 self.file_errors.push(FileErrors {
-                    path: canonical.clone(),
-                    source,
+                    path: path.to_owned(),
+                    source: source.to_owned(),
                     errors: errs.errors,
                 });
             }
@@ -203,7 +233,8 @@ impl ModuleLoader {
         let Some(entry) = &self.manifest else {
             return Ok(None);
         };
-        if entry.module_kind(&module.name) != Some(ModuleKind::Library)
+        if !module.path.is_absolute()
+            || entry.module_kind(&module.name) != Some(ModuleKind::Library)
             || !module.imports.iter().any(|i| {
                 let path = i.canonical_path();
                 i.visibility == Visibility::Public
@@ -227,7 +258,7 @@ impl ModuleLoader {
 
     fn resolve_import_path(
         &self,
-        base: &Path,
+        directory: &Path,
         import_path: &ImportPath,
     ) -> Result<PathBuf, PackageError> {
         let mut lookup_path = import_path.clone();
@@ -272,7 +303,7 @@ impl ModuleLoader {
                 }
             }
         }
-        Ok(resolve_import_relative(base, import_path))
+        Ok(resolve_import_relative(directory, import_path))
     }
 }
 
@@ -300,7 +331,7 @@ fn module_name_from_path(path: &Path) -> String {
         .to_string()
 }
 
-fn resolve_import_relative(base: &Path, import_path: &ImportPath) -> PathBuf {
+fn resolve_import_relative(directory: &Path, import_path: &ImportPath) -> PathBuf {
     let mut path = if import_path.segments.is_empty() {
         PathBuf::new()
     } else {
@@ -312,11 +343,7 @@ fn resolve_import_relative(base: &Path, import_path: &ImportPath) -> PathBuf {
     if path.is_absolute() {
         return path;
     }
-    let base_dir = base
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    base_dir.join(path)
+    directory.join(path)
 }
 
 fn resolve_namespaced_import(

@@ -1931,6 +1931,10 @@
       "required": false,
       "types": [
         {
+          "type": "expression",
+          "named": true
+        },
+        {
           "type": "import_declaration",
           "named": true
         },
@@ -1944,6 +1948,10 @@
         },
         {
           "type": "prelude_export",
+          "named": true
+        },
+        {
+          "type": "statement",
           "named": true
         }
       ]

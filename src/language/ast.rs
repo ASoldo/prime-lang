@@ -26,6 +26,7 @@ pub struct Module {
     pub path: PathBuf,
     pub doc: Option<String>,
     pub no_std: bool,
+    pub is_script: bool,
     pub declared_name: Option<String>,
     pub declared_span: Option<Span>,
     pub redundant_module_spans: Vec<Span>,

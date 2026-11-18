@@ -8,7 +8,8 @@ mod package;
 pub mod program;
 
 pub use entry::{
-    EntryPoint, load_manifest_for_entry, load_package_with_manifest, resolve_entry_path,
+    EntryPoint, EntrySource, load_manifest_for_entry, load_package_with_manifest,
+    resolve_entry_path,
 };
 pub use package::{ModuleUnit, canonicalize, load_resolved_package};
 pub use program::{

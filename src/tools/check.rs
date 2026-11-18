@@ -6,8 +6,7 @@ use crate::{
         typecheck::{TypecheckOptions, check_program_with_options},
     },
     project::{
-        EntryPoint, PackageError, load_manifest_for_entry, load_resolved_package,
-        lock::require_frozen, resolve_entry_path,
+        EntryPoint, EntrySource, PackageError, load_manifest_for_entry, lock::require_frozen,
     },
     target::BuildOptions,
 };
@@ -111,33 +110,25 @@ impl Report<'_> {
         let entry = EntryPoint::from_target(self.target);
         let manifest = load_manifest_for_entry(entry, project).map_err(package_errors)?;
         self.manifest_path = manifest.as_ref().map(|m| m.path.display().to_string());
-        if project.is_some() && manifest.is_none() {
+        let source =
+            EntrySource::resolve(entry, manifest.as_ref(), project).map_err(package_errors)?;
+        let path = source.path();
+        if !source.is_prime() {
             return Err(vec![Diagnostic::new(
-                Path::new("prime.toml"),
-                "manifest",
-                "--project requires a workspace manifest".into(),
-            )]);
-        }
-        let path = resolve_entry_path(entry, manifest.as_ref(), project).map_err(package_errors)?;
-        if path.extension().is_none_or(|ext| ext != "prime") {
-            return Err(vec![Diagnostic::new(
-                &path,
+                path,
                 "input",
                 "expected a .prime source file".into(),
             )]);
         }
-        let path = path
-            .canonicalize()
-            .map_err(|err| vec![Diagnostic::new(&path, "io", err.to_string())])?;
         self.entry_path = Some(path.display().to_string());
         if frozen {
-            require_frozen(manifest.as_ref(), &path).map_err(package_errors)?;
+            require_frozen(manifest.as_ref(), path).map_err(package_errors)?;
         }
 
         let options = TypecheckOptions {
             target: BuildOptions::from_sources(None, None, manifest.as_ref()).target,
         };
-        let package = load_resolved_package(&path, manifest).map_err(package_errors)?;
+        let package = source.load(manifest).map_err(package_errors)?;
         self.paths = package
             .program
             .modules

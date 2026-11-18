@@ -436,20 +436,8 @@ impl Parser {
         let mut redundant_module_spans = Vec::new();
         let mut prelude = Vec::new();
         let mut pending_doc: Option<String> = None;
-        if matches!(
-            self.peek_kind(),
-            Some(TokenKind::ModuleKw | TokenKind::LibraryKw | TokenKind::TestKw)
-        ) {
-            match self.parse_module_declaration() {
-                Ok((name, span, kind)) => {
-                    declared_name = Some(name.clone());
-                    declared_span = Some(span);
-                    self.module_name = name;
-                    self.kind = kind;
-                }
-                Err(err) => self.report(err),
-            }
-        }
+        let mut declarations = false;
+        let mut is_script = false;
 
         while !self.is_eof() {
             if self.matches(TokenKind::Semi) {
@@ -476,10 +464,23 @@ impl Parser {
                 self.peek_kind(),
                 Some(TokenKind::ModuleKw | TokenKind::LibraryKw | TokenKind::TestKw)
             ) {
-                match self.parse_redundant_module_decl() {
-                    Ok(span) => redundant_module_spans.push(span),
-                    Err(err) => self.report(err),
+                if declarations || !imports.is_empty() {
+                    match self.parse_redundant_module_decl() {
+                        Ok(span) => redundant_module_spans.push(span),
+                        Err(err) => self.report(err),
+                    }
+                } else {
+                    match self.parse_module_declaration() {
+                        Ok((name, span, kind)) => {
+                            declared_name = Some(name.clone());
+                            declared_span = Some(span);
+                            self.module_name = name;
+                            self.kind = kind;
+                        }
+                        Err(err) => self.report(err),
+                    }
                 }
+                declarations = true;
                 continue;
             }
 
@@ -504,6 +505,7 @@ impl Parser {
             }
 
             if self.check(TokenKind::Export) {
+                declarations = true;
                 match self.parse_prelude_clause() {
                     Ok(selectors) => {
                         prelude.extend(selectors);
@@ -518,6 +520,31 @@ impl Parser {
                 }
             }
 
+            // Select once from tokens. A failed declaration never gets retried as a script.
+            if !declarations
+                && !matches!(
+                    self.peek_kind(),
+                    Some(
+                        TokenKind::Pub
+                            | TokenKind::Struct
+                            | TokenKind::Enum
+                            | TokenKind::Interface
+                            | TokenKind::Impl
+                            | TokenKind::Macro
+                            | TokenKind::Fn
+                            | TokenKind::Const
+                            | TokenKind::Tilde
+                    )
+                )
+            {
+                is_script = true;
+                match self.parse_script_body() {
+                    Ok(main) => items.push(Item::Function(main)),
+                    Err(err) => self.report(err),
+                }
+                break;
+            }
+            declarations = true;
             match self.parse_item(pending_doc.take()) {
                 Ok(item) => items.push(item),
                 Err(err) => {
@@ -532,6 +559,7 @@ impl Parser {
                 name: self.module_name,
                 kind: self.kind,
                 path: self.path,
+                is_script,
                 doc: module_doc,
                 no_std: false,
                 declared_name,
@@ -544,6 +572,40 @@ impl Parser {
         } else {
             Err(SyntaxErrors::new(self.errors))
         }
+    }
+
+    fn parse_script_body(&mut self) -> Result<FunctionDef, SyntaxError> {
+        let start = self.current_span_start();
+        let mut statements = Vec::new();
+        while !self.is_eof() {
+            if self.matches(TokenKind::Semi) {
+                continue;
+            }
+            match self.parse_statement(true)? {
+                StatementOrTail::Statement(stmt) => statements.push(stmt),
+                StatementOrTail::Tail(expr) if self.is_eof() => {
+                    statements.push(Statement::Expr(ExprStmt { expr }));
+                }
+                StatementOrTail::Tail(_) => return Err(self.error_here("Unexpected '}' in script")),
+            }
+        }
+        let span = Span::new(start, self.current_span_start());
+        Ok(FunctionDef {
+            source_path: self.path.as_path().into(),
+            name: "main".into(),
+            name_span: Span::new(start, start),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            returns: Vec::new(),
+            body: FunctionBody::Block(Box::new(Block {
+                statements,
+                tail: None,
+                span,
+            })),
+            span,
+            visibility: Visibility::Private,
+            doc: None,
+        })
     }
 
     fn parse_module_declaration(&mut self) -> Result<(String, Span, ModuleKind), SyntaxError> {
@@ -1691,7 +1753,7 @@ impl Parser {
 
         let next_is_rbrace = matches!(self.peek_kind(), Some(TokenKind::RBrace));
 
-        if allow_tail && next_is_rbrace {
+        if allow_tail && (next_is_rbrace || self.is_eof()) {
             return Ok(StatementOrTail::Tail(expr));
         }
 

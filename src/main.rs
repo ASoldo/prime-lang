@@ -16,15 +16,15 @@ use prime_lang::language::{
 };
 use prime_lang::project::diagnostics::analyze_manifest_issues;
 use prime_lang::project::{
-    FileErrors, PackageError, apply_manifest_header_with_manifest, canonicalize, find_manifest,
-    load_package, load_resolved_package, manifest::PackageManifest,
-    manifest::canonical_module_name, manifest::manifest_key_for, warn_manifest_drift,
+    EntrySource, FileErrors, PackageError, apply_manifest_header_with_manifest, canonicalize,
+    find_manifest, load_package, manifest::PackageManifest, manifest::canonical_module_name,
+    manifest::manifest_key_for, warn_manifest_drift,
 };
 use prime_lang::runtime::{Interpreter, platform, trace::TraceEvent};
 use prime_lang::target::{BuildOptions, BuildTarget};
 use prime_lang::tools::{
     diagnostics::{
-        emit_manifest_issues, emit_syntax_errors, emit_type_errors, report_io_error,
+        emit_manifest_issues, emit_syntax_errors, emit_type_errors_with_source, report_io_error,
         report_runtime_error,
     },
     formatter::format_module,
@@ -34,6 +34,7 @@ use prime_lang::{language, lsp, project, tools};
 use runtime_distribution::RuntimePackage;
 use std::{
     env, fs, io,
+    io::IsTerminal,
     path::{Component, Path, PathBuf},
     process::Command,
 };
@@ -47,7 +48,7 @@ use toml_edit::{
 #[command(
     name = "prime-lang",
     version,
-    about = "Prime language CLI",
+    about = "Prime language CLI. Pipe source to prime-lang or use prime-lang - to run stdin.",
     arg_required_else_help = true
 )]
 struct Cli {
@@ -57,7 +58,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Interpret a Prime module by manifest name or file path
+    /// Interpret a Prime source file, manifest module or stdin (-)
     Run {
         /// Emit interpreted Prime function calls as NDJSON on stderr
         #[arg(long)]
@@ -73,7 +74,7 @@ enum Commands {
         )]
         frozen: bool,
     },
-    /// Type-check a Prime module and its imports without executing it
+    /// Type-check a Prime target (including stdin) and its imports without executing it
     Check {
         #[arg(value_name = "TARGET")]
         entry: String,
@@ -84,7 +85,7 @@ enum Commands {
         #[arg(long, value_enum, default_value = "text")]
         format: tools::check::CheckFormat,
     },
-    /// Build a Prime module down to LLVM IR and a native binary
+    /// Build a Prime target (including stdin) to LLVM IR and a native binary
     Build(BuildArgs),
     /// Lint a file once or continuously
     Lint {
@@ -331,7 +332,13 @@ struct BuildArgs {
 }
 
 fn main() -> std::process::ExitCode {
-    let cli = Cli::parse();
+    let mut args: Vec<_> = env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == "-") {
+        args.insert(1, "run".into());
+    } else if args.len() == 1 && !io::stdin().is_terminal() {
+        args.extend(["run".into(), "-".into()]);
+    }
+    let cli = Cli::parse_from(args);
     match cli.command {
         Commands::Run {
             trace,
@@ -527,26 +534,16 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run_entry(entry: &str, project: Option<&str>, frozen: bool, trace: bool) {
-    let (entry_path, manifest) = match resolve_entry_for_cli(entry, project) {
+    let (source, manifest) = match resolve_entry_for_cli(entry, project) {
         Ok(values) => values,
         Err(err) => exit_on_package_error(err),
     };
-    ensure_prime_file(&entry_path);
-    reject_non_module_entry(&entry_path, manifest.as_ref(), "run");
-    if frozen {
-        if let Err(err) = project::lock::require_frozen(manifest.as_ref(), &entry_path) {
-            eprintln!("{err}");
-            std::process::exit(1);
-        }
-    }
-    if let Some(m) = manifest.as_ref() {
-        project::program::warn_missing_modules(m);
-    }
     let run_options = BuildOptions::from_sources(None, None, manifest.as_ref());
     platform::configure_platform(&run_options);
-    match load_resolved_package(&entry_path, manifest) {
+    match load_executable(&source, manifest, frozen, "run") {
         Ok(package) => {
-            let expanded_program = expand_or_report(&package.program);
+            let expanded_program =
+                expand_or_report(&package.program, |path| source.read_source(path));
             let expanded_modules = expanded_program
                 .program
                 .modules
@@ -564,7 +561,7 @@ fn run_entry(entry: &str, project: Option<&str>, frozen: bool, trace: bool) {
             if let Err(errors) =
                 typecheck::check_program_with_options(&expanded_program, &typecheck_options)
             {
-                emit_type_errors(&errors);
+                emit_type_errors_with_source(&errors, |path| source.read_source(path));
                 std::process::exit(1);
             }
             let mut interpreter =
@@ -821,7 +818,7 @@ fn build_entry(args: BuildArgs) {
         codegen_format,
     } = args;
     let name = name.as_str();
-    let (entry_path, manifest) = match resolve_entry_for_cli(&entry, project.as_deref()) {
+    let (source, manifest) = match resolve_entry_for_cli(&entry, project.as_deref()) {
         Ok(values) => values,
         Err(err) => exit_on_package_error(err),
     };
@@ -829,28 +826,18 @@ fn build_entry(args: BuildArgs) {
     if no_flash {
         build_options.flash.enabled = false;
     }
-    ensure_prime_file(&entry_path);
-    reject_non_module_entry(&entry_path, manifest.as_ref(), "build");
-    if frozen {
-        if let Err(err) = project::lock::require_frozen(manifest.as_ref(), &entry_path) {
-            eprintln!("{err}");
-            std::process::exit(1);
-        }
-    }
-    if let Some(m) = manifest.as_ref() {
-        project::program::warn_missing_modules(m);
-    }
     platform::configure_platform(&build_options);
-    match load_resolved_package(&entry_path, manifest) {
+    match load_executable(&source, manifest, frozen, "build") {
         Ok(package) => {
             configure_embedded_env(&build_options);
-            let expanded_program = expand_or_report(&package.program);
+            let expanded_program =
+                expand_or_report(&package.program, |path| source.read_source(path));
             let typecheck_options = TypecheckOptions {
                 target: build_options.target.clone(),
             };
             let checked = typecheck::check_program_typed(&expanded_program, &typecheck_options)
                 .unwrap_or_else(|errors| {
-                    emit_type_errors(&errors);
+                    emit_type_errors_with_source(&errors, |path| source.read_source(path));
                     std::process::exit(1);
                 });
             let mut compiler = Compiler::with_target(build_options.target.clone());
@@ -989,48 +976,54 @@ enum NewKind {
 fn resolve_entry_for_cli(
     target: &str,
     project: Option<&str>,
-) -> Result<(PathBuf, Option<PackageManifest>), PackageError> {
+) -> Result<(EntrySource, Option<PackageManifest>), PackageError> {
     let entry = project::EntryPoint::from_target(target);
     let manifest = project::load_manifest_for_entry(entry, project)?;
-    if project.is_some() && manifest.is_none() {
-        let manifest_stub = env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("prime.toml");
-        return Err(PackageError::Manifest {
-            path: manifest_stub,
-            message: "workspace manifest required when using --project".into(),
-        });
-    }
-    let entry_path = project::resolve_entry_path(entry, manifest.as_ref(), project)?;
-    Ok((entry_path, manifest))
+    let source = EntrySource::resolve(entry, manifest.as_ref(), project)?;
+    Ok((source, manifest))
 }
 
-fn reject_non_module_entry(path: &Path, manifest: Option<&PackageManifest>, command: &str) {
-    if let Some(manifest) = manifest {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        if let Some(name) = manifest.module_name_for_path(&canonical) {
-            if let Some(kind) = manifest.module_kind(&name) {
-                if kind != ModuleKind::Module {
-                    eprintln!(
-                        "`{}` is listed as {:?} in {} and cannot be used with `prime-lang {}`",
-                        name,
-                        kind,
-                        manifest.path.display(),
-                        command
-                    );
-                    std::process::exit(1);
+fn load_executable(
+    source: &EntrySource,
+    manifest: Option<PackageManifest>,
+    frozen: bool,
+    command: &str,
+) -> Result<project::Package, PackageError> {
+    let path = source.path();
+    if !source.is_prime() {
+        ensure_prime_file(path);
+    }
+    if frozen {
+        project::lock::require_frozen(manifest.as_ref(), path)?;
+    }
+    if let Some(manifest) = &manifest {
+        project::program::warn_missing_modules(manifest);
+        if let EntrySource::File(path) = source {
+            if let Some(name) = manifest.module_name_for_path(path) {
+                if let Some(kind) = manifest.module_kind(&name) {
+                    if kind != ModuleKind::Module {
+                        eprintln!(
+                            "`{name}` is listed as {kind:?} in {} and cannot be used with `prime-lang {command}`",
+                            manifest.path.display()
+                        );
+                        std::process::exit(1);
+                    }
                 }
             }
         }
     }
+    let package = source.load(manifest)?;
     let (test_msg, lib_msg) = entry_error_messages(command);
-    if is_test_file(path) {
-        eprintln!("{test_msg}");
-        std::process::exit(1);
-    }
-    if is_library_file(path) {
-        eprintln!("{lib_msg}");
-        std::process::exit(1);
+    match package.program.modules[0].kind {
+        ModuleKind::Test => {
+            eprintln!("{test_msg}");
+            std::process::exit(1);
+        }
+        ModuleKind::Library => {
+            eprintln!("{lib_msg}");
+            std::process::exit(1);
+        }
+        ModuleKind::Module => Ok(package),
     }
 }
 
@@ -1663,7 +1656,7 @@ fn expand_entry(
     let has_position = offset.is_some() || line.is_some() || column.is_some();
     match load_package(path) {
         Ok(package) => {
-            let expanded = expand_or_report(&package.program);
+            let expanded = expand_or_report(&package.program, |path| fs::read_to_string(path));
             let canonical = canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
             let span = Span::new(resolved_offset, resolved_offset.saturating_add(1));
             let macro_names = expanded.traces.macro_names_for(&canonical, span);
@@ -1843,7 +1836,7 @@ fn main() {
 "#;
         fs::write(&file, src).expect("write");
         let package = load_package(&file).expect("load package");
-        let expanded = expand_or_report(&package.program);
+        let expanded = expand_or_report(&package.program, |path| fs::read_to_string(path));
         let canonical = canonicalize(&file).unwrap();
         let offset = src.find("~add_one").expect("find macro usage");
         let trace = expanded
@@ -1871,40 +1864,17 @@ fn ensure_prime_file(path: &Path) {
     }
 }
 
-fn is_test_file(path: &Path) -> bool {
-    fs::read_to_string(path)
-        .ok()
-        .map(|content| {
-            let trimmed = content.trim_start();
-            trimmed.starts_with("test ")
-                || trimmed.starts_with("test\t")
-                || trimmed.starts_with("test::")
-                || trimmed.starts_with("test.")
-        })
-        .unwrap_or(false)
-}
-
-fn is_library_file(path: &Path) -> bool {
-    fs::read_to_string(path)
-        .ok()
-        .map(|content| {
-            let trimmed = content.trim_start();
-            trimmed.starts_with("library ")
-                || trimmed.starts_with("library\t")
-                || trimmed.starts_with("library::")
-                || trimmed.starts_with("library.")
-        })
-        .unwrap_or(false)
-}
-
-fn expand_or_report(program: &language::ast::Program) -> macro_expander::ExpandedProgram {
+fn expand_or_report(
+    program: &language::ast::Program,
+    read_source: impl Fn(&Path) -> io::Result<String>,
+) -> macro_expander::ExpandedProgram {
     match macro_expander::expand_program(program) {
         Ok(expanded) => expanded,
         Err(errors) => {
             let file_errors: Vec<FileErrors> = errors
                 .into_iter()
                 .map(|err| FileErrors {
-                    source: fs::read_to_string(&err.path).unwrap_or_default(),
+                    source: read_source(&err.path).unwrap_or_default(),
                     path: err.path,
                     errors: err.errors,
                 })
