@@ -1,0 +1,6 @@
+.git
+**/target
+**/.build.prime
+**/__pycache__
+**/.venv
+workspace/demos/field_arena/test_*.py

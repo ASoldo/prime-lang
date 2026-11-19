@@ -1,0 +1,93 @@
+# Build from the repository root with rootless podman build --target sdk|games.
+# games includes local demo media. Keep that target in local image storage.
+ARG GAME_ARTIFACTS=binaries
+FROM docker.io/library/rust:1.100.0-slim-trixie@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe AS rust
+RUN rustup component add rustfmt clippy && cp -a "$(rustc --print sysroot)" /opt/rust
+
+FROM docker.io/library/ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS base
+# Fix the signed package indexes for every stage, including native runtime libs.
+COPY --from=rust /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+RUN echo 'Acquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";' > /etc/apt/apt.conf.d/80snapshot-ca && \
+    rm /etc/apt/sources.list.d/ubuntu.sources && \
+    echo 'deb [check-valid-until=no signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://snapshot.ubuntu.com/ubuntu/20261117T000000Z/ resolute main universe' > /etc/apt/sources.list && \
+    sed 's/ resolute / resolute-updates /' /etc/apt/sources.list > /etc/apt/sources.list.d/updates.list && \
+    sed 's/ resolute / resolute-security /' /etc/apt/sources.list > /etc/apt/sources.list.d/security.list && \
+    apt-get update --error-on=any
+
+FROM base AS compiler
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential pkg-config lld-21 llvm-21-dev libasound2-dev libxcursor-dev \
+    libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev
+COPY --from=rust /opt/rust /opt/rust
+ENV PATH=/opt/rust/bin:/usr/lib/llvm-21/bin:${PATH} LLVM_SYS_211_PREFIX=/usr/lib/llvm-21
+WORKDIR /src
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY docs/schemas docs/schemas
+COPY workspace/core workspace/core
+COPY src src
+ARG CARGO_BUILD_JOBS=2
+RUN --mount=type=cache,id=prime-podman-cargo,target=/cache \
+    host="$(rustc -vV | sed -n 's/^host: //p')" && \
+    export CARGO_HOME="/cache/$host/cargo" CARGO_TARGET_DIR="/cache/$host/target" && \
+    mkdir -p "$CARGO_HOME" && exec 9>"$CARGO_HOME/prime-build.lock" && flock 9 && \
+    test "$(rustc --version | cut -d' ' -f2)" = "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" && \
+    touch src/main.rs src/lib.rs && cargo build --release --locked --bin prime-lang && \
+    install "$CARGO_TARGET_DIR/release/prime-lang" /usr/local/bin/prime-lang
+# Keep the locked media runtime dependencies available for offline SDK builds.
+ENV CARGO_HOME=/opt/cargo
+RUN mkdir -p /tmp/runtime && cp src/runtime/distribution/host.Cargo.toml /tmp/runtime/Cargo.toml && \
+    cp src/runtime/distribution/host.Cargo.lock /tmp/runtime/Cargo.lock && touch /tmp/runtime/host.rs && \
+    cargo fetch --locked --manifest-path /tmp/runtime/Cargo.toml --target "$(rustc -vV | sed -n 's/^host: //p')" && \
+    chmod -R a+rX /opt/cargo && rm -r /tmp/runtime
+
+FROM compiler AS sdk
+ENV CARGO_NET_OFFLINE=true
+WORKDIR /work
+RUN apt-get install -y --no-install-recommends git && chmod 1777 /work
+COPY LICENSE /usr/share/doc/prime-lang/copyright
+ENTRYPOINT ["prime-lang"]
+
+FROM compiler AS native
+COPY workspace/app/model.prime workspace/app/
+COPY workspace/demos/tetris/*.prime workspace/demos/tetris/prime.toml workspace/demos/tetris/
+COPY workspace/demos/tetris_ecs/ecs.prime workspace/demos/tetris_ecs/
+COPY workspace/demos/tetris_arena/main.prime workspace/demos/tetris_arena/prime.toml workspace/demos/tetris_arena/
+RUN --mount=type=cache,id=prime-podman-runtime,target=/build \
+    host="$(rustc -vV | sed -n 's/^host: //p')" && \
+    export CARGO_TARGET_DIR="/build/$host" CARGO_NET_OFFLINE=true && \
+    prime-lang build workspace/demos/tetris/tetris.prime --name prime_tetris && \
+    prime-lang build workspace/demos/tetris_arena/main.prime --name riftwell && \
+    install .build.prime/prime_tetris/prime_tetris .build.prime/riftwell/riftwell /usr/local/bin/
+
+FROM base AS rtc
+RUN apt-get install -y --no-install-recommends golang-go
+WORKDIR /src
+COPY adapters/webrtc/go.mod adapters/webrtc/go.sum ./
+RUN go mod download && go mod verify
+COPY adapters/webrtc/ ./
+RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o /usr/local/bin/prime-webrtc .
+
+# For packaging binaries already built for the target architecture with this CLI,
+# supply a local OCI image containing the same three /usr/local/bin files via
+# --build-arg GAME_ARTIFACTS=localhost/your-artifacts:revision.
+FROM scratch AS binaries
+COPY --from=rtc /usr/local/bin/prime-webrtc /usr/local/bin/
+COPY --from=native /usr/local/bin/prime_tetris /usr/local/bin/riftwell /usr/local/bin/
+FROM ${GAME_ARTIFACTS} AS selected
+
+FROM base AS games
+RUN apt-get install -y --no-install-recommends python3 python3-pip \
+    libasound2t64 libasound2-plugins libx11-6 libxcursor1 libxrandr2 libxi6 \
+    libxkbcommon0 libwayland-client0 libwayland-cursor0 && rm -rf /var/lib/apt/lists/*
+COPY sdk/websocket/requirements.txt /tmp/websocket-requirements.txt
+RUN python3 -m pip install --break-system-packages --no-cache-dir --only-binary=:all: \
+    -r /tmp/websocket-requirements.txt
+COPY --from=selected /usr/local/bin/prime-webrtc /usr/local/bin/prime_tetris /usr/local/bin/riftwell /usr/local/bin/
+COPY sdk/websocket/service.py workspace/demos/field_arena/*.py /opt/riftwell/
+COPY workspace/demos/field_arena/web/ /opt/riftwell/web/
+WORKDIR /usr/local
+COPY workspace/demos/tetris/assets/block.png workspace/demos/tetris/assets/*.wav workspace/demos/tetris/assets/
+COPY LICENSE /usr/share/doc/prime-lang/copyright
+ENV PYTHONDONTWRITEBYTECODE=1
+USER 65534:65534
+CMD ["/usr/local/bin/prime_tetris"]
