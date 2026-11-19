@@ -15,6 +15,12 @@ on:
       - 'adapters/webrtc/**'
       - 'sdk/websocket/**'
       - 'rust-toolchain.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'workspace/core/**'
+      - 'scripts/test_host_sockets.py'
+      - 'scripts/tests/host_sockets/**'
   pull_request:
     paths: *game_paths
 
@@ -41,6 +47,13 @@ jobs:
           podman info --format '{{.Host.Security.Rootless}}' | grep -x true
       - name: Build the native games image
         run: ./scripts/tetris build
+      - name: Exercise the Prime SDK with an independent TCP and UDP peer
+        run: |
+          podman build --target sdk -f deploy/podman/Containerfile -t localhost/prime-sdk:ci .
+          podman run --rm --network none --userns keep-id --read-only \
+            --tmpfs /tmp:rw,exec,mode=1777 -e CARGO_TARGET_DIR=/tmp/prime-cache \
+            -v "$PWD/scripts:/qa:ro" -w /tmp --entrypoint /usr/bin/python3 \
+            localhost/prime-sdk:ci /qa/test_host_sockets.py /usr/local/bin/prime-lang
       - name: Render native solo frames through X11
         run: PRIME_AUDIO_SILENT=1 PRIME_GFX_MAX_FRAMES=3 xvfb-run -a ./scripts/tetris solo
       - name: Play through the published TCP and UDP ports

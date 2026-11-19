@@ -4,7 +4,11 @@ Riftwell is a local browser arena for 2–99 falling-block wells. Each match run
 
 ![Riftwell in Chromium. Seat 2 has received garbage, 39 of 99 wells remain alive.](riftwell.png)
 
-## Run locally
+## Play the built game
+
+Use `./scripts/tetris build` and `./scripts/tetris online` from the repository root. Open the printed URL in the browser. `./scripts/tetris solo` opens the single-player game. [Rootless Podman, LAN play and service controls](../../../docs/Podman.md)
+
+## Run locally with the development toolchain
 
 From the repository root, activate a Python 3.11+ virtual environment with the WebSocket SDK and put `prime-lang` on PATH (or set `PRIME_BIN` to its executable). The launcher starts a native Prime match over WebSocket. Add `--webrtc` to enable both transports with Go 1.24+ installed. Add `--interpret` to use the Prime interpreter.
 

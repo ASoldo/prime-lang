@@ -5,7 +5,9 @@ opens a native window, draws a textured Tetris board with `assets/block.png`,
 loops `assets/arcade-music-loop.wav`, and reads keyboard input through
 `gfx_key_down` / `gfx_key_pressed`.
 
-Run it from the repository root:
+With rootless Podman, run `./scripts/tetris build` once, then `./scripts/tetris solo` from the repository root. The same image starts a browser match with `./scripts/tetris online`. [Podman player guide](../../../docs/Podman.md)
+
+To run the source with a host development toolchain:
 
 ```sh
 cargo run -- run workspace/demos/tetris/tetris.prime

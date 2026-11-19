@@ -60,6 +60,15 @@ podman run --rm --network none -v "$PWD/sample:/work:ro,Z" \
   --entrypoint /work/.build.prime/answer/answer localhost/prime-sdk:dev
 ```
 
+The SDK can also check a service against an independent peer. The repository's socket example exchanges binary TCP and UDP data with Python on container loopback. The same command tests the interpreter and the compiled service using ephemeral ports.
+
+```sh
+podman run --rm --network none --userns keep-id --read-only \
+  --tmpfs /tmp:rw,exec,mode=1777 -e CARGO_TARGET_DIR=/tmp/prime-cache \
+  -v "$PWD/scripts:/qa:ro" -w /tmp --entrypoint /usr/bin/python3 \
+  localhost/prime-sdk:dev /qa/test_host_sockets.py /usr/local/bin/prime-lang
+```
+
 ### Transfer a local build
 
 Use an image built for the destination architecture. For a private transfer, `podman save -o prime-games.tar localhost/prime-games:dev` on the build host and `podman load -i prime-games.tar` on the player host. Copy the matching `compose.yaml`, `scripts/tetris` and `deploy/podman/` as well. Set `PRIME_GAMES_IMAGE` to choose a different local tag. Keep the games image local or transfer it privately between your own machines while redistribution rights for the demo media are being confirmed. [Project license and media](../README.md#license)
