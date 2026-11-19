@@ -7,7 +7,7 @@ import {once} from 'node:events';
 const [chrome, profile, origin] = process.argv.slice(2);
 const browser = spawn(chrome, ['--headless', '--no-first-run', '--disable-background-networking',
     '--disable-extensions', '--disable-gpu', '--remote-debugging-pipe', '--user-data-dir=' + profile],
-    {stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe']});
+    {stdio: ['ignore', 'ignore', 'inherit', 'pipe', 'pipe']});
 const pending = new Map();
 let seq = 0;
 let buffer = '';

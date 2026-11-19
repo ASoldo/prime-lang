@@ -38,7 +38,10 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/prime-browser"
           "$RUNNER_TEMP/prime-browser/bin/pip" install -r sdk/websocket/requirements-test.txt
-          PATH="$RUNNER_TEMP/prime-browser/bin:$PATH" ./scripts/test_browser_network.sh target/debug/prime-lang
+          # Packaged Chrome has an Ubuntu sandbox profile and matches the runner's ChromeDriver.
+          "$CHROME_BIN" --version
+          chromedriver --version
+          CHROMIUM="$CHROME_BIN" PATH="$RUNNER_TEMP/prime-browser/bin:$PATH" ./scripts/test_browser_network.sh target/debug/prime-lang
       - name: Install the packaged CLI and run a native consumer
         id: candidate
         run: ./scripts/package_candidate.sh
