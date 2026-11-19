@@ -4,3 +4,7 @@
 **/__pycache__
 **/.venv
 workspace/demos/field_arena/test_*.py
+**/.venv-network
+**/.env
+**/*.pem
+**/*.key
