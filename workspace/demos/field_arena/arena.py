@@ -115,7 +115,8 @@ async def serve(args):
             writer.write(f"text {number} {text}\n".encode())
             await asyncio.wait_for(writer.drain(), 10)
 
-        match = Match(engine, args.humans, args.tick_ms / 1000, send)
+        clock = None if args.lockstep else args.tick_ms / 1000
+        match = Match(engine, args.humans, clock, send)
 
         async def input_loop(transport, reader):
             while True:
@@ -157,7 +158,7 @@ async def serve(args):
                 page.config["ws"] = f"ws://127.0.0.1:{port}/"
             if args.rtc_bin:
                 page.rtc_port = await adapter("rtc", [args.rtc_bin.resolve(), "-port", "0"])
-            if args.tick_ms > 0:
+            if clock:
                 tasks.add(asyncio.create_task(match.run_clock()))
             for task in tasks:
                 task.add_done_callback(monitor)
@@ -179,8 +180,11 @@ def main():
     parser.add_argument("--seats", type=int, default=8)
     parser.add_argument("--humans", type=int, default=2)
     parser.add_argument("--seed", type=int, default=17)
-    parser.add_argument("--tick-ms", type=int, default=250,
-                        help="server tick interval, or 0 to advance once per accepted input")
+    clock = parser.add_mutually_exclusive_group()
+    clock.add_argument("--tick-ms", type=int, default=250,
+                       help="server tick interval, or 0 to advance once per accepted input")
+    clock.add_argument("--lockstep", action="store_true",
+                       help="wait for one numbered input from every live seat in an all-human match")
     parser.add_argument("--ws-service", type=Path, help="SDK sdk/websocket/service.py")
     parser.add_argument("--rtc-bin", type=Path, help="built SDK prime-webrtc executable")
     parser.add_argument("engine", nargs=argparse.REMAINDER, help="-- ENGINE [ARG ...]")
@@ -189,6 +193,8 @@ def main():
         args.engine.pop(0)
     if not args.engine or not (args.ws_service or args.rtc_bin):
         parser.error("provide an engine command and at least one adapter")
+    if args.lockstep and args.humans != args.seats:
+        parser.error("--lockstep requires one client per seat (--humans equal to --seats)")
     if not (2 <= args.seats <= 99 and 1 <= args.humans <= args.seats and 0 <= args.seed <= 2147483647
             and 0 <= args.tick_ms <= 60000):
         parser.error("invalid roster, seed or tick interval")

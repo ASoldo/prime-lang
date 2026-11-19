@@ -6,24 +6,21 @@ Riftwell is a local browser arena for 2–99 falling-block wells. Each match run
 
 ## Run locally
 
-Use Linux with the repository Rust/LLVM build prerequisites, Python 3.11+, and Go 1.24+ for the RTC adapter. Run the commands below from the repository root containing those components. If the components are still on their individual local branches, assemble the tested revisions in a disposable directory from the arena checkout first.
+From the repository root, activate a Python 3.11+ virtual environment with the WebSocket SDK and put `prime-lang` on PATH (or set `PRIME_BIN` to its executable). The launcher starts a native Prime match over WebSocket. Add `--webrtc` to enable both transports with Go 1.24+ installed. Add `--interpret` to use the Prime interpreter.
 
 ```sh
-stage=$(mktemp -d)
-git archive HEAD | tar -x -C "$stage"
-git archive 583c6cf prime.toml workspace/demos/tetris workspace/demos/tetris_ecs workspace/demos/tetris_arena | tar -x -C "$stage"
-git archive e3f15d9 sdk/websocket | tar -x -C "$stage"
-git archive 5f85b66 adapters/webrtc | tar -x -C "$stage"
-cd "$stage"
-```
-
-You can also point the engine entry and SDK paths at separate checkouts. The arena uses loopback networking and a private temporary Unix socket per adapter.
-
-```sh
-arena=workspace/demos/field_arena
 python3 -m venv /tmp/riftwell-venv
 . /tmp/riftwell-venv/bin/activate
 pip install -r sdk/websocket/requirements.txt
+./scripts/play_riftwell.sh --webrtc --seats 99 --humans 2
+```
+
+### Explicit build and launch
+
+For direct control over the binaries, use the repository Rust/LLVM toolchain and the same activated environment. The arena binds loopback and creates a private temporary Unix socket per adapter.
+
+```sh
+arena=workspace/demos/field_arena
 (cd adapters/webrtc && go build -mod=readonly -o /tmp/riftwell-rtc .)
 ```
 
@@ -46,9 +43,11 @@ The server assigns human seats in connection order and fills the other seats wit
 
 ## Session and snapshots
 
-Both SDKs deliver three lines per peer event (kind, peer ID, payload) and accept `text PEER PAYLOAD` addressed replies. The local relay only moves bytes between the SDK child interface and the arena. Peer identity is the pair of adapter name and SDK peer ID. A browser sends `join UUID`, then `move SEQUENCE ACTION`. The peer binding determines the seat. Sequences start at one. The server acknowledges a move in the authoritative tick where Prime consumes it. An old or queued sequence returns the current snapshot. Gaps and concurrent claims on an active identity are rejected. The browser keeps its random bearer token and unacknowledged inputs in tab session storage.
+Both SDKs deliver three lines per peer event (kind, peer ID, payload) and accept `text PEER PAYLOAD` addressed replies. The local relay only moves bytes between the SDK child interface and the arena. Peer identity is the pair of adapter name and SDK peer ID. A browser sends `join UUID zlib` when it supports DEFLATE. A plain-text client can send `join UUID`. Both send `move SEQUENCE ACTION`, with action 0 for an explicit wait and 1–4 for the movement controls. The peer binding determines the seat. Sequences start at one. The server acknowledges a move in the authoritative tick where Prime consumes it. An old or queued sequence returns the current snapshot. Gaps and concurrent claims on an active identity are rejected. The browser keeps its random bearer token and unacknowledged inputs in tab session storage.
 
-Each complete snapshot carries every seat's visible board, score, lines, life flag, placement and acknowledged sequence, along with the match tick, winner and events. Messages use `F PART COUNT SHA256 TEXT` with zero-based part numbers and up to 2800 ASCII payload bytes per part. Each browser verifies the reassembled JSON against the SHA-256 before replacing its displayed state. The browser uses Prime’s four projected active cells and the 200 settled cells to display each well. The ordinary server waits 250 ms between ticks. With `--tick-ms 0`, each accepted move advances one tick for repeatable interactive tests.
+Each complete snapshot carries every seat's visible board, score, lines, life flag, placement and acknowledged sequence, along with the match tick, winner and events. The server serializes a complete snapshot once per broadcast and shares its encoded chunks across recipients. `F PART COUNT SHA256 TEXT` carries plain JSON. `Z PART COUNT SHA256 TEXT` carries base64 of the zlib-compressed JSON when the negotiated representation is smaller. Both use zero-based parts of at most 2800 ASCII payload bytes. Reassemble all parts before decoding. Verify SHA-256 over the original JSON bytes before replacing the displayed state. A reconnect always gets a complete snapshot, including the acknowledged input sequence. The browser paints the four projected active cells and the 200 settled cells from Prime.
+
+The default server waits 250 ms between ticks. With `--tick-ms 0`, each accepted input advances one tick. With `--lockstep` in an all-human roster, the server waits for one numbered move or wait from every live seat, then commits them together in seat order. A disconnected live seat can resume and submit its move. Wall-clock mode continues advancing while a player is offline.
 
 ## System checks
 
@@ -63,6 +62,12 @@ python "$arena/test_browser.py" --ws-service sdk/websocket/service.py --rtc-bin 
 python "$arena/test_replay.py" --prime "$cli" --entry "$entry" --native "$native" --replay /tmp/riftwell.json
 ```
 
+The Linux full-roster test starts `scripts/play_riftwell.sh` in both interpreter and native mode. It needs only the WebSocket runtime dependency and the CLI. It creates 99 real WS connections, sends hard drops from seats 1–98 and a numbered wait from seat 99 each tick, and verifies the decoded snapshots, input acknowledgements and all places on all 99 clients. For CI, use the command below with `PRIME_BIN` pointing to the built CLI. Append `--compare-plain` to measure the plain wire format on both backends with identical inputs.
+
+```sh
+PRIME_BIN="$cli" python workspace/demos/field_arena/test_roster.py
+```
+
 ### Recorded run
 
 | Scenario on archiebald x86-64 | Result in the interpreter and native binary |
@@ -71,3 +76,17 @@ python "$arena/test_replay.py" --prime "$cli" --entry "$entry" --native "$native
 | 99 deterministic bot input streams, zero transport connections and zero browser windows | 19 ticks, one attack, 98 eliminations, seat 1 winning. The complete ordered transcript including input acknowledgements and snapshots had SHA-256 `2caf8e759264c75d23722a9c008483dcb9490201589708e51f433f6021697bc5`. The [recorded replay](bots.replay.json) contains every input, event and placement. |
 | Timed disconnect and resume, one WS client | The original seat recovered after disconnecting with pending input. Duplicate move 1 and subsequent move 2 produced two acknowledged inputs and the expected piece position. |
 | 99 simultaneously connected WS clients, zero simulated bots and zero browser windows | Each connection claimed a distinct seat. The input from seat 99 changed only its own well and all 99 recipients agreed on the resulting snapshot. |
+| Full match with 99 automated WS clients, zero simulated slots and zero browser windows | All clients reconstructed the same state on every tick. Seat 99 won on tick 10 and seats 1 through 99 placed 99th through first. The final snapshot SHA-256 was `dd9e188c63e410a64633b438737161a634b49c8fb2d36ccb7f3aaf4bbfa59960`. |
+
+#### Full-match traffic and timing
+
+The [measured run](roster99-run.txt) used the debug Prime CLI at `e087738` on archiebald x86-64. Each tick was timed from input submission through all 99 clients decoding, hashing and comparing the authoritative snapshot. There was no timer delay between ticks. TX and RX sum the 99 clients’ Linux TCP payload counters, including WebSocket headers, masking and control frames. The play interval begins after all clients receive the start snapshot and ends at victory. The log also includes connection setup and lobby traffic in the through-final counters. TCP/IP and link-layer headers and connection teardown fall outside the measurement. The 98 identical hard-drop streams produced many repeated boards, which compress well.
+
+| Backend and snapshot | Match duration | Mean tick | Client TX bytes | Client RX bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native, plain | 0.322 s | 32.24 ms | 13,959 | 21,986,613 |
+| Native, compressed | 0.222 s | 22.17 ms | 13,959 | 657,558 |
+| Interpreter, plain | 29.319 s | 2,931.91 ms | 14,949 | 21,987,207 |
+| Interpreter, compressed | 28.912 s | 2,891.23 ms | 14,949 | 658,152 |
+
+Compression reduced native downstream traffic by 97.0% for this roster. The four runs produced identical tick hashes and standings.

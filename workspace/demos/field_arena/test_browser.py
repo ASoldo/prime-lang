@@ -1,5 +1,6 @@
 """Drive two independent Chromium processes through the live arena UI."""
 import argparse
+import base64
 import contextlib
 import hashlib
 import json
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import uuid
 from urllib.request import urlopen
+import zlib
 
 from selenium import webdriver
 from selenium.webdriver import ActionChains, Keys
@@ -138,7 +140,8 @@ def scenario(args, engine, screenshot):
             wire.addEventListener("message", e => done(e.data), {once: true});
             wire.send("move 1 2");
         """)
-        assert replayed.split(" ", 4)[3] == hashes[-1], "duplicate changed snapshot"
+        fields = replayed.split(" ", 4)
+        assert fields[0] == "Z" and fields[3] == hashes[-1], "duplicate changed compressed snapshot"
         # Complete the shared seed-137 clear, allowing for seat 2's tick-2 move.
         script = [Keys.ARROW_LEFT] * 3 + [Keys.SPACE] * 2 + [Keys.ARROW_RIGHT] * 4 + [Keys.SPACE]
         for tick, symbol in enumerate(script, 3):
@@ -164,15 +167,17 @@ def scenario(args, engine, screenshot):
         return hashes
 
 
-def snapshot(ws):
+def snapshot(ws, encoding="F"):
     parts = []
     while True:
         kind, index, count, digest, data = ws.recv(timeout=10).split(" ", 4)
-        assert kind == "F" and int(index) == len(parts)
+        assert kind == encoding and int(index) == len(parts)
         parts.append(data)
         if len(parts) == int(count):
-            payload = "".join(parts)
-            assert hashlib.sha256(payload.encode()).hexdigest() == digest
+            payload = "".join(parts).encode("ascii")
+            if kind == "Z":
+                payload = zlib.decompress(base64.b64decode(payload, validate=True))
+            assert hashlib.sha256(payload).hexdigest() == digest
             return json.loads(payload)
 
 
@@ -217,16 +222,17 @@ def full_roster(args, engine):
         peers = []
         for i in range(99):
             peer = stack.enter_context(connect(endpoint, origin=origin))
-            peer.send("join " + str(uuid.uuid4()))
+            encoding = "Z" if i % 2 else "F"
+            peer.send("join " + str(uuid.uuid4()) + (" zlib" if encoding == "Z" else ""))
             assert peer.recv(timeout=5) == f"seat {i}"
-            initial = snapshot(peer)
-            peers.append(peer)
-        peers[-1].send("start")
-        peers[-1].send("move 1 1")
+            initial = snapshot(peer, encoding)
+            peers.append((peer, encoding))
+        peers[-1][0].send("start")
+        peers[-1][0].send("move 1 1")
         common = None
-        for peer in peers:
-            assert snapshot(peer)["phase"] == "playing"
-            state = snapshot(peer)
+        for peer, encoding in peers:
+            assert snapshot(peer, encoding)["phase"] == "playing"
+            state = snapshot(peer, encoding)
             assert state["tick"] == 1 and state["bots"] == 0
             assert state["seats"][:-1] == initial["seats"][:-1]
             assert state["seats"][-1][0] != initial["seats"][-1][0] and state["seats"][-1][5] == 1

@@ -56,17 +56,18 @@ class Engine:
         await self.write(f"{seed}\n{self.size}\n-2\n")
         await self.receive(0, [])
 
-    async def step(self, actions):
+    async def step(self, actions, explicit_waits=()):
         if len(actions) != self.size or any(action not in range(5) for action in actions):
             raise ValueError("invalid input vector")
         tick = self.frame.tick + 1
-        moving = [i for i, action in enumerate(actions) if action and self.frame.seats[i][3]]
-        records = [tick * 10000 + (i + 1) * 10 + actions[i] for i in moving]
+        submitted = [i for i, action in enumerate(actions)
+                     if self.frame.seats[i][3] and (action or i in explicit_waits)]
+        records = [tick * 10000 + (i + 1) * 10 + actions[i] for i in submitted]
         records.extend((tick * 10000, -2))
         await self.write("".join(f"{n}\n" for n in records))
-        await self.receive(tick, moving)
+        await self.receive(tick, submitted)
 
-    async def receive(self, tick, moving):
+    async def receive(self, tick, submitted):
         seats, events, raw = [], [], bytearray()
         async def read():
             line = await self.process.stdout.readline()
@@ -76,7 +77,7 @@ class Engine:
             return line.decode("ascii").split()
 
         async with asyncio.timeout(90):
-            for i in moving:
+            for i in submitted:
                 record = await read()
                 if record != ["Q2", str(tick), str(i)]:
                     raise ValueError(f"unexpected input acknowledgement {record}")

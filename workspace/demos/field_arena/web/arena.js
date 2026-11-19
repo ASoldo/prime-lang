@@ -100,7 +100,7 @@ async function connect() {
   const active = ++generation;
   seat = null;
   lastSent = 0;
-  let incoming = Promise.resolve(), parts = [], count, digest;
+  let incoming = Promise.resolve(), parts = [], count, digest, encoding;
   $("reconnect").hidden = true;
   status("Connecting…");
   function lost(label) {
@@ -125,19 +125,28 @@ async function connect() {
       status(data.slice(6));
       return;
     }
-    const record = /^F (\d+) (\d+) ([a-f0-9]{64}) (.*)$/.exec(data);
+    const record = /^([FZ]) (\d+) (\d+) ([a-f0-9]{64}) (.*)$/.exec(data);
     if (!record || seat === null) throw Error("Unexpected frame");
-    const part = Number(record[1]);
-    if (part === 0) { parts = []; count = Number(record[2]); digest = record[3]; }
-    if (part !== parts.length || count !== Number(record[2]) || digest !== record[3]) throw Error("Incomplete frame");
-    parts.push(record[4]);
+    const [, kind, index, total, sha, body] = record;
+    const part = Number(index);
+    if (part === 0) { parts = []; count = Number(total); digest = sha; encoding = kind; }
+    if (part !== parts.length || count !== Number(total) || digest !== sha || encoding !== kind) throw Error("Incomplete frame");
+    parts.push(body);
     if (parts.length !== count) return;
-    const payload = parts.join("");
-    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
+    const text = parts.join("");
+    let payload;
+    if (encoding === "Z") {
+      const packed = Uint8Array.from(atob(text), ch => ch.charCodeAt(0));
+      const stream = new Blob([packed]).stream().pipeThrough(new DecompressionStream("deflate"));
+      payload = await new Response(stream).arrayBuffer();
+    } else {
+      payload = new TextEncoder().encode(text);
+    }
+    const bytes = await crypto.subtle.digest("SHA-256", payload);
     const hash = Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("");
     if (hash !== digest) throw Error("Invalid snapshot checksum");
     if (active !== generation) return;
-    const next = JSON.parse(payload);
+    const next = JSON.parse(new TextDecoder().decode(payload));
     const ack = next.seats[seat][5];
     saved.last = ack;
     saved.pending = next.phase === "playing" && next.seats[seat][3]
@@ -168,7 +177,7 @@ async function connect() {
       });
     }
     channel.onclose = () => lost("Reconnecting…");
-    channel.send("join " + saved.token);
+    channel.send("join " + saved.token + (typeof DecompressionStream === "function" ? " zlib" : ""));
   } catch (err) { lost(err.message); }
 }
 const bindings = { ArrowLeft: 1, ArrowRight: 2, ArrowUp: 3, Space: 4 };

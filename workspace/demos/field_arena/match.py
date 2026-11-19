@@ -1,13 +1,15 @@
 """Seat leases, sequenced input and presentation of one Prime-owned match."""
 import asyncio
+import base64
 import hashlib
 import json
 import re
+import zlib
 from collections import deque
 from dataclasses import dataclass, field
 
-TOKEN = re.compile(r"join ([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})")
-MOVE = re.compile(r"move ([1-9][0-9]{0,8}) ([1-4])")
+TOKEN = re.compile(r"join ([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})( zlib)?")
+MOVE = re.compile(r"move ([1-9][0-9]{0,8}) ([0-4])")
 
 
 @dataclass
@@ -16,6 +18,7 @@ class Lease:
     peer: tuple | None = None
     ack: int = 0
     pending: deque = field(default_factory=deque)
+    compressed: bool = False
 
 
 class Match:
@@ -39,14 +42,24 @@ class Match:
                     phase=phase, bots=len(seats) - self.humans, log=list(self.log), events=frame.events)
 
     async def publish(self, peers):
-        payload = json.dumps(self.snapshot(), separators=(",", ":"), ensure_ascii=True)
-        digest = hashlib.sha256(payload.encode()).hexdigest()
-        parts = [payload[i:i + 2800] for i in range(0, len(payload), 2800)]
+        plain = json.dumps(self.snapshot(), separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        digest = hashlib.sha256(plain).hexdigest()
+        messages = {}
         for peer in peers:
-            for i, part in enumerate(parts):
-                await self.send(peer, f"F {i} {len(parts)} {digest} {part}")
+            compressed = self.leases[self.by_peer[peer]].compressed
+            if compressed not in messages:
+                kind, payload = "F", plain
+                if compressed:
+                    packed = base64.b64encode(zlib.compress(plain, level=3))
+                    if len(packed) < len(plain):
+                        kind, payload = "Z", packed
+                parts = [payload[i:i + 2800].decode("ascii") for i in range(0, len(payload), 2800)]
+                messages[compressed] = [f"{kind} {i} {len(parts)} {digest} {part}"
+                                        for i, part in enumerate(parts)]
+            for message in messages[compressed]:
+                await self.send(peer, message)
 
-    async def join(self, peer, token):
+    async def join(self, peer, token, compressed):
         current = self.by_peer.get(peer)
         for i, lease in enumerate(self.leases):
             if lease.token == token:
@@ -61,6 +74,7 @@ class Match:
             self.leases.append(lease)
         self.by_peer[peer] = i
         lease.peer = peer
+        lease.compressed = compressed
         await self.send(peer, f"seat {i}")
         await self.publish([peer])
 
@@ -75,7 +89,7 @@ class Match:
                 return
             join = TOKEN.fullmatch(payload)
             if join:
-                return await self.join(peer, join[1])
+                return await self.join(peer, join[1], bool(join[2]))
             if peer not in self.by_peer:
                 return await self.send(peer, "error Join required")
             if payload == "start" and not self.started:
@@ -98,6 +112,12 @@ class Match:
             lease.pending.append((seq, action))
             if self.clock == 0:
                 await self.advance()
+            elif self.clock is None:
+                # A lockstep roster is entirely human. Unclaimed live seats also hold the tick.
+                while self.engine.frame.winner is None and len(self.leases) == self.humans and all(
+                    lease.pending for i, lease in enumerate(self.leases) if self.engine.frame.seats[i][3]
+                ):
+                    await self.advance()
 
     async def advance(self):
         # The engine alone decides gravity, collisions, attacks, KO order and victory.
@@ -108,7 +128,8 @@ class Match:
                 actions[i] = lease.pending[0][1]
         for i in range(self.humans, len(actions)):
             actions[i] = bot_action(i, frame.tick + 1)
-        await self.engine.step(actions)
+        waits = {i for i, lease in enumerate(self.leases) if lease.pending and actions[i] == 0}
+        await self.engine.step(actions, waits)
         for i, lease in enumerate(self.leases):
             if lease.pending and frame.seats[i][3]:
                 lease.ack = lease.pending.popleft()[0]

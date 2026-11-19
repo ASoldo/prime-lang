@@ -1,0 +1,5 @@
+native F: ticks=10 play_s=0.322 mean_ms=32.24 median_ms=32.16 max_ms=35.66 play_tx=13959 play_rx=21986613 through_final_tx=41096 through_final_rx=26359037
+interpreter F: ticks=10 play_s=29.319 mean_ms=2931.91 median_ms=2887.75 max_ms=3943.14 play_tx=14949 play_rx=21987207 through_final_tx=42086 through_final_rx=26359631
+native Z: ticks=10 play_s=0.222 mean_ms=22.17 median_ms=21.75 max_ms=24.72 play_tx=13959 play_rx=657558 through_final_tx=41591 through_final_rx=796346
+interpreter Z: ticks=10 play_s=28.912 mean_ms=2891.23 median_ms=2886.95 max_ms=3708.17 play_tx=14949 play_rx=658152 through_final_tx=42581 through_final_rx=796940
+99 WS connections, 99 input clients, 0 simulated bots, 0 browser windows; all recipients agreed each tick; winner seat 99, ranks by seat 99..1; final_sha256=dd9e188c63e410a64633b438737161a634b49c8fb2d36ccb7f3aaf4bbfa59960

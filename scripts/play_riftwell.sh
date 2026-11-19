@@ -12,7 +12,7 @@ for arg in "$@"; do
     --interpret) mode=interpreter ;;
     --webrtc) rtc=1 ;;
     -h|--help)
-      echo 'Usage: play_riftwell.sh [--interpret] [--webrtc] [--port PORT] [--seats 2..99] [--humans N] [--seed N] [--tick-ms N]'
+      echo 'Usage: play_riftwell.sh [--interpret] [--webrtc] [--port PORT] [--seats 2..99] [--humans N] [--seed N] [--tick-ms N | --lockstep]'
       echo 'Defaults: native Prime, WebSocket, 8 seats, 2 human seats, port 8000. --webrtc adds a second transport.'
       exit 0 ;;
     *) args+=("$arg") ;;
