@@ -4,6 +4,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import os
 from pathlib import Path
 import selectors
 import signal
@@ -25,6 +26,8 @@ HERE = Path(__file__).resolve().parent
 
 def browser():
     options = webdriver.ChromeOptions()
+    if binary := os.environ.get("CHROMIUM"):
+        options.binary_location = binary
     for flag in ["--headless", "--disable-dev-shm-usage", "--window-size=1100,1040",
                  "--no-proxy-server", "--no-first-run"]:
         options.add_argument(flag)

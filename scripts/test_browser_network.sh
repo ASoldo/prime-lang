@@ -22,6 +22,7 @@ entry="$root/workspace/demos/tetris_arena/main.prime"
 game="$root/workspace/demos/field_arena"
 (cd "$work" && "$cli" build "$entry" --name riftwell)
 native="$work/.build.prime/riftwell/riftwell"
-python3 "$game/test_browser.py" --ws-service "$root/sdk/websocket/service.py" --rtc-bin "$work/webrtc" \
+CHROMIUM="$chrome" python3 "$game/test_browser.py" --ws-service "$root/sdk/websocket/service.py" --rtc-bin "$work/webrtc" \
   --prime "$cli" --entry "$entry" --native "$native"
 python3 "$game/test_replay.py" --prime "$cli" --entry "$entry" --native "$native"
+python3 "$game/test_roster.py" --prime "$cli"
