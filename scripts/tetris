@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'HELP'
+Usage: scripts/tetris build | solo [--headless] | online | status | logs | down
+  build           Build the local native games image with Podman Compose.
+  solo            Play with the keyboard on the current X11 or Xwayland display.
+  solo --headless Run three silent frames and exit.
+  online          Start Riftwell and print its browser URL when ready.
+  status, logs    Inspect the arena and its game process.
+  down            Stop the arena and remove this project's network.
+HELP
+}
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    build|online|status|logs|down) [[ $# -eq 1 ]] || { usage >&2; exit 2; } ;;
+    solo) [[ $# -eq 1 || ( $# -eq 2 && $2 == --headless ) ]] || { usage >&2; exit 2; } ;;
+    *) usage >&2; exit 2 ;;
+esac
+
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+provider=$(command -v podman-compose) || { echo 'Install podman-compose and add it to PATH.' >&2; exit 1; }
+export PODMAN_COMPOSE_PROVIDER="$provider"
+export RIFTWELL_PUBLIC_ORIGIN="${RIFTWELL_PUBLIC_ORIGIN:-http://127.0.0.1:${RIFTWELL_HOST_PORT:-8000}}"
+export RIFTWELL_CLOCK="${RIFTWELL_CLOCK:---tick-ms=${RIFTWELL_TICK_MS:-250}}"
+project=${COMPOSE_PROJECT_NAME:-prime-tetris}
+compose=(podman compose -p "$project" -f "$root/compose.yaml")
+if [[ -n ${RIFTWELL_TLS_CERT:-} || -n ${RIFTWELL_TLS_KEY:-} ]]; then
+    : "${RIFTWELL_TLS_CERT:?provide a certificate}" "${RIFTWELL_TLS_KEY:?provide a private key}"
+    compose+=(-f "$root/deploy/podman/compose.tls.yaml")
+fi
+
+case "$1" in
+    build) exec "${compose[@]}" build arena ;;
+    status) exec "${compose[@]}" ps ;;
+    logs) exec "${compose[@]}" logs arena ;;
+    down) exec "${compose[@]}" down ;;
+    online)
+        "${compose[@]}" up -d arena
+        cid=$(podman ps -aq --filter "label=io.podman.compose.project=$project" --filter label=io.podman.compose.service=arena)
+        [[ -n $cid ]] || { echo "Missing arena container for project $project." >&2; exit 1; }
+        for ((attempt=0; attempt<45; attempt++)); do
+            if podman healthcheck run "$cid" >/dev/null 2>&1; then
+                printf 'Riftwell  %s\nWebRTC    %s/?transport=rtc\n' "$RIFTWELL_PUBLIC_ORIGIN" "$RIFTWELL_PUBLIC_ORIGIN"
+                exit 0
+            fi
+            sleep 1
+        done
+        "${compose[@]}" logs arena >&2
+        echo 'Riftwell did not pass its readiness check.' >&2
+        exit 1 ;;
+    solo)
+        run=("${compose[@]}" --profile solo run --rm --no-deps -T -u "$(id -u):$(id -g)")
+        if [[ ${2:-} == --headless ]]; then
+            exec "${run[@]}" -e PRIME_AUDIO_SILENT=1 -e PRIME_GFX_HEADLESS=1 -e PRIME_GFX_MAX_FRAMES=3 solo </dev/null
+        fi
+        display=${DISPLAY:-}
+        if [[ ! $display =~ ^(unix)?:([0-9]+)(\.[0-9]+)?$ ]]; then
+            echo 'Select a local X11 or Xwayland DISPLAY (for example :0).' >&2
+            exit 1
+        fi
+        socket=/tmp/.X11-unix/X${BASH_REMATCH[2]}
+        [[ -S $socket ]] || { echo "Missing display socket $socket" >&2; exit 1; }
+        cookie=$(mktemp)
+        trap 'rm -f -- "$cookie"' EXIT
+        xauth nlist "$display" | sed 's/^..../ffff/' | xauth -f "$cookie" nmerge -
+        # keep-id permits the game to read the single-display 0600 cookie.
+        run+=(-v "$socket:$socket:ro" -v "$cookie:/run/prime.xauth:ro" -e "DISPLAY=$display" -e XAUTHORITY=/run/prime.xauth)
+        pulse="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pulse/native"
+        if [[ ${PRIME_AUDIO_SILENT:-0} != 1 && -S $pulse ]]; then
+            run+=(-v "$pulse:/run/prime-pulse:ro" -e PULSE_SERVER=unix:/run/prime-pulse
+                  -v "$root/deploy/podman/asound-pulse.conf:/run/prime-asound.conf:ro" -e ALSA_CONFIG_PATH=/run/prime-asound.conf)
+        else
+            run+=(-e PRIME_AUDIO_SILENT=1)
+        fi
+        if [[ -n ${PRIME_GFX_MAX_FRAMES:-} ]]; then run+=(-e "PRIME_GFX_MAX_FRAMES=$PRIME_GFX_MAX_FRAMES"); fi
+        "${run[@]}" solo </dev/null ;;
+esac

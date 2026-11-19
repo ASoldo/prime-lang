@@ -35,6 +35,7 @@ The executable also prints `42`. Continue with a [package of your own](docs/Gett
 | A web server you can query with curl | [Run the loopback HTTP server](docs/LoopbackWebServer.md) |
 | Binary TCP and UDP, browser APIs and realtime peers | [Networking profiles and executable examples](docs/Networking.md) |
 | Graphics and audio | [Tetris](workspace/demos/tetris/tetris.prime), [graphics](docs/GraphicsRuntime.md) and [audio](docs/AudioRuntime.md) |
+| Build once with rootless Podman, then play solo or host a match | [Podman and Compose](docs/Podman.md) |
 | Play a 2–99 seat falling-block match over WebSocket and WebRTC | [Riftwell arena](workspace/demos/field_arena/README.md) · [Local launcher](scripts/play_riftwell.sh) |
 | Follow interpreted function calls and locate runtime errors | [Interpreter tracing](docs/Debugging.md) |
 | Type diagnostics, JSON output and frozen dependencies | [Checking a program](docs/Checking.md) |

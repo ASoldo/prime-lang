@@ -1,0 +1,72 @@
+name: prime-tetris
+services:
+  arena:
+    image: ${PRIME_GAMES_IMAGE:-localhost/prime-games:dev}
+    build:
+      context: .
+      dockerfile: deploy/podman/Containerfile
+      target: games
+      args:
+        CARGO_BUILD_JOBS: "${CARGO_BUILD_JOBS:-2}"
+    command:
+      - python3
+      - /opt/riftwell/arena.py
+      - --ws-service
+      - /opt/riftwell/service.py
+      - --rtc-bin
+      - /usr/local/bin/prime-webrtc
+      - --seats
+      - "${RIFTWELL_SEATS:-8}"
+      - --humans
+      - "${RIFTWELL_HUMANS:-2}"
+      - "${RIFTWELL_CLOCK:---tick-ms=250}"
+      - --seed
+      - "${RIFTWELL_SEED:-17}"
+      - --
+      - /usr/local/bin/riftwell
+    environment:
+      RIFTWELL_BIND: 0.0.0.0
+      RIFTWELL_PORT: "8000"
+      RIFTWELL_PUBLIC_ORIGIN: ${RIFTWELL_PUBLIC_ORIGIN:-http://127.0.0.1:8000}
+      RIFTWELL_ICE_UDP_PORT: "${RIFTWELL_ICE_UDP_PORT:-8001}"
+      RIFTWELL_ICE_ADVERTISE_IP: ${RIFTWELL_ICE_ADVERTISE_IP:-127.0.0.1}
+    ports:
+      - "${RIFTWELL_PUBLISH_IP:-127.0.0.1}:${RIFTWELL_HOST_PORT:-8000}:8000/tcp"
+      - "${RIFTWELL_PUBLISH_IP:-127.0.0.1}:${RIFTWELL_ICE_UDP_PORT:-8001}:${RIFTWELL_ICE_UDP_PORT:-8001}/udp"
+    userns_mode: "keep-id:uid=65534,gid=65534"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777,size=32m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges]
+    stop_grace_period: 15s
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import http.client, os, ssl
+          from urllib.parse import urlsplit
+          origin = urlsplit(os.environ["RIFTWELL_PUBLIC_ORIGIN"])
+          if os.environ.get("RIFTWELL_TLS_CERT"):
+              conn = http.client.HTTPSConnection("127.0.0.1", 8000, timeout=2, context=ssl._create_unverified_context())
+          else:
+              conn = http.client.HTTPConnection("127.0.0.1", 8000, timeout=2)
+          conn.request("GET", "/healthz", headers={"Host": origin.netloc})
+          raise SystemExit(conn.getresponse().status != 200)
+      interval: 15s
+      timeout: 4s
+      retries: 3
+      start_period: 10s
+  solo:
+    profiles: [solo]
+    image: ${PRIME_GAMES_IMAGE:-localhost/prime-games:dev}
+    network_mode: none
+    userns_mode: keep-id
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,mode=1777,size=32m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges]

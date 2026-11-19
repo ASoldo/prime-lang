@@ -1,0 +1,54 @@
+name: Podman games
+
+on:
+  workflow_dispatch:
+  push:
+    paths: &game_paths
+      - '.github/workflows/podman.yml'
+      - '.containerignore'
+      - 'compose.yaml'
+      - 'deploy/podman/**'
+      - 'scripts/tetris'
+      - 'scripts/test_podman.sh'
+      - 'workspace/demos/field_arena/**'
+      - 'workspace/demos/tetris*/**'
+      - 'adapters/webrtc/**'
+      - 'sdk/websocket/**'
+      - 'rust-toolchain.toml'
+  pull_request:
+    paths: *game_paths
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Prepare rootless Podman and clients
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs xvfb xauth
+          python3 -m venv "$RUNNER_TEMP/prime-podman"
+          "$RUNNER_TEMP/prime-podman/bin/pip" install 'podman-compose==1.6.0' -r sdk/websocket/requirements-test.txt
+          echo "$RUNNER_TEMP/prime-podman/bin" >> "$GITHUB_PATH"
+          podman info --format '{{.Host.Security.Rootless}}' | grep -x true
+      - name: Build the native games image
+        run: ./scripts/tetris build
+      - name: Render native solo frames through X11
+        run: PRIME_AUDIO_SILENT=1 PRIME_GFX_MAX_FRAMES=3 xvfb-run -a ./scripts/tetris solo
+      - name: Play through the published TCP and UDP ports
+        if: matrix.runner == 'ubuntu-24.04'
+        run: CHROMIUM="$CHROME_BIN" ./scripts/test_podman.sh
+      - name: Start and stop the native ARM service
+        if: matrix.runner == 'ubuntu-24.04-arm'
+        run: |
+          trap './scripts/tetris down' EXIT
+          ./scripts/tetris online
+          curl --fail --silent http://127.0.0.1:8000/config | python3 -c 'import json, sys; assert json.load(sys.stdin)["rtc"]'

@@ -1,0 +1,8 @@
+services:
+  arena:
+    environment:
+      RIFTWELL_TLS_CERT: /run/tls/server.crt
+      RIFTWELL_TLS_KEY: /run/tls/server.key
+    volumes:
+      - ${RIFTWELL_TLS_CERT:?provide the certificate chain}:/run/tls/server.crt:ro
+      - ${RIFTWELL_TLS_KEY:?provide the private key}:/run/tls/server.key:ro

@@ -38,9 +38,7 @@ async def launch(cli, mode):
             else:
                 raise RuntimeError(f"launcher exited with {await proc.wait()}")
         origin = line.decode().split()[1]
-        with urlopen(origin + "/config", timeout=5) as page:
-            endpoint = json.load(page)["ws"]
-        yield origin, endpoint
+        yield origin
     finally:
         if proc.returncode is None:
             proc.terminate()
@@ -87,8 +85,10 @@ def tcp_bytes(peers):
     return tx, rx
 
 
-async def play(cli, mode, fmt):
-    async with launch(cli, mode) as (origin, endpoint), contextlib.AsyncExitStack() as stack:
+async def play(origin, mode, fmt):
+    with urlopen(origin + "/config", timeout=5) as page:
+        endpoint = json.load(page)["ws"]
+    async with contextlib.AsyncExitStack() as stack:
         peers = []
         for slot in range(SEATS):
             ws = await stack.enter_async_context(connect(endpoint, origin=origin, compression=None,
@@ -126,10 +126,17 @@ async def play(cli, mode, fmt):
 
 
 async def verify(args):
+    if args.origin:
+        path, _ = await play(args.origin, "published", "Z")
+        expected_digest = "dd9e188c63e410a64633b438737161a634b49c8fb2d36ccb7f3aaf4bbfa59960"
+        assert path[-1] == expected_digest, path[-1]
+        print(f"99 connected players agreed on all ten ticks and ranks 99..1, final_sha256={path[-1]}")
+        return
     expected = None
     for fmt in (["F", "Z"] if args.compare_plain else ["Z"]):
         for mode in ("native", "interpreter"):
-            result = await play(args.prime, mode, fmt)
+            async with launch(args.prime, mode) as origin:
+                result = await play(origin, mode, fmt)
             if expected is not None:
                 assert result == expected, "backend or encoding changed authoritative replay or standings"
             else:
@@ -140,11 +147,18 @@ async def verify(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--prime", default=os.environ.get("PRIME_BIN", "prime-lang"))
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--origin", help="play a prestarted seed-137, 99-human lockstep match")
+    source.add_argument("--prime", default=os.environ.get("PRIME_BIN", "prime-lang"))
     parser.add_argument("--compare-plain", action="store_true", help="also measure the plain snapshot protocol")
     args = parser.parse_args()
-    cli = shutil.which(args.prime)
-    if not cli or sys.platform != "linux":
-        parser.error("requires Linux TCP_INFO and prime-lang on PATH or --prime")
-    args.prime = str(Path(cli).resolve())
+    if sys.platform != "linux":
+        parser.error("requires Linux TCP_INFO")
+    if args.origin and args.compare_plain:
+        parser.error("each encoding requires a fresh lobby")
+    if not args.origin:
+        cli = shutil.which(args.prime)
+        if not cli:
+            parser.error("requires prime-lang on PATH or --prime")
+        args.prime = str(Path(cli).resolve())
     asyncio.run(verify(args))
