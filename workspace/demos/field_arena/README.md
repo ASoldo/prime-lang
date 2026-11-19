@@ -41,6 +41,21 @@ Open the printed URL in one tab for WebSocket. In another tab or browser, open t
 
 The server assigns human seats in connection order and fills the other seats with deterministic bot inputs. `--seats 99 --humans 2` reserves two human seats and runs 97 simulated opponents. Set `--humans` equal to `--seats` to reserve all seats for players. The launcher sets the WebSocket adapter cap to the human-seat count. The RTC adapter admits up to 99 concurrent peers. Both adapters feed the same roster. Each process can start with only `--ws-service` or only `--rtc-bin`. The RTC option uses the SDK's own browser helper and loopback signaling endpoint through the same page origin.
 
+## Play from a second computer over SSH
+
+Start the launcher on the game host with `--port 8000 --seats 2 --humans 2`. The first player opens `http://127.0.0.1:8000/` on that host. On the second computer, substitute an SSH host name you can log into and forward both the page port and the WebSocket port advertised for this match.
+
+```sh
+game_host=archiebald
+ws_port=$(ssh "$game_host" 'curl -fsS http://127.0.0.1:8000/config' |
+  python3 -c 'import json, sys, urllib.parse; print(urllib.parse.urlsplit(json.load(sys.stdin)["ws"]).port)')
+ssh -NT -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:8000:127.0.0.1:8000 \
+  -L "127.0.0.1:$ws_port:127.0.0.1:$ws_port" "$game_host"
+```
+
+While the tunnel is open, the second player opens the same `http://127.0.0.1:8000/` URL and uses WebSocket. Both local ports must be free on the second computer. A restarted match can advertise a new WebSocket port. In a two-computer check, a native arena on x86-64 accepted one client on the host and a second on an AArch64 uConsole through SSH. The two clients agreed on the final tick and winner. WebRTC uses its own ICE media path.
+
 ## Session and snapshots
 
 Both SDKs deliver three lines per peer event (kind, peer ID, payload) and accept `text PEER PAYLOAD` addressed replies. The local relay only moves bytes between the SDK child interface and the arena. Peer identity is the pair of adapter name and SDK peer ID. A browser sends `join UUID zlib` when it supports DEFLATE. A plain-text client can send `join UUID`. Both send `move SEQUENCE ACTION`, with action 0 for an explicit wait and 1–4 for the movement controls. The peer binding determines the seat. Sequences start at one. The server acknowledges a move in the authoritative tick where Prime consumes it. An old or queued sequence returns the current snapshot. Gaps and concurrent claims on an active identity are rejected. The browser keeps its random bearer token and unacknowledged inputs in tab session storage.
