@@ -68,6 +68,7 @@ case "$1" in
         # keep-id permits the game to read the single-display 0600 cookie.
         run+=(-v "$socket:$socket:ro" -v "$cookie:/run/prime.xauth:ro" -e "DISPLAY=$display" -e XAUTHORITY=/run/prime.xauth)
         pulse="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pulse/native"
+        if [[ ${PULSE_SERVER:-} == unix:/* ]]; then pulse=${PULSE_SERVER#unix:}; fi
         if [[ ${PRIME_AUDIO_SILENT:-0} != 1 && -S $pulse ]]; then
             run+=(-v "$pulse:/run/prime-pulse:ro" -e PULSE_SERVER=unix:/run/prime-pulse
                   -v "$root/deploy/podman/asound-pulse.conf:/run/prime-asound.conf:ro" -e ALSA_CONFIG_PATH=/run/prime-asound.conf)
