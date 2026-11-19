@@ -1,9 +1,10 @@
-"""Launch one local Prime match with either or both of the existing adapters."""
+"""Launch one Prime match with a local or published browser endpoint."""
 import argparse
 import asyncio
 import contextlib
 import http.client
 import json
+import os
 from pathlib import Path
 import signal
 import sys
@@ -14,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from engine import Engine
+from gateway import authority, serve_gateway
 from match import Match
 
 HERE = Path(__file__).resolve().parent
@@ -23,6 +25,8 @@ ASSETS = {"/": ("index.html", "text/html"), "/arena.js": ("arena.js", "text/java
 
 
 class Page(BaseHTTPRequestHandler):
+    timeout = 12
+
     def log_message(self, *_):
         pass
 
@@ -34,9 +38,18 @@ class Page(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def allowed(self, require_origin=False):
+        origins = self.headers.get_all("Origin", [])
+        return (self.headers.get_all("Host") == [self.server.public_host] and
+                (origins == [self.server.origin] or (not origins and not require_origin)))
+
     def do_GET(self):
+        if not self.allowed():
+            return self.send_error(403)
         path = urlsplit(self.path).path
-        if path in ASSETS:
+        if path == "/healthz":
+            self.reply(200 if self.server.healthy() else 503, b"", "text/plain")
+        elif path in ASSETS:
             name, mime = ASSETS[path]
             self.reply(200, (WEB / name).read_bytes(), mime)
         elif path == "/config":
@@ -47,8 +60,7 @@ class Page(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
-        origin = "http://127.0.0.1:" + str(self.server.server_port)
-        if self.path != "/offer" or self.headers.get("Origin") != origin or self.headers.get("Host") != origin[7:]:
+        if self.path != "/offer" or not self.allowed(require_origin=True):
             return self.send_error(403)
         try:
             length = int(self.headers.get("Content-Length", ""))
@@ -100,14 +112,18 @@ async def serve(args):
         loop.add_signal_handler(sig, done)
     async with contextlib.AsyncExitStack() as stack:
         tmp = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="prime-field-")))
-        page = stack.enter_context(ThreadingHTTPServer(("127.0.0.1", args.port), Page))
-        origin = f"http://127.0.0.1:{page.server_port}"
+        page = stack.enter_context(ThreadingHTTPServer(("127.0.0.1", 0 if args.public_origin else args.port), Page))
+        origin = args.public_origin or f"http://127.0.0.1:{page.server_port}"
+        page.origin = origin
+        page.public_host = authority(origin)
         page.config = {"match": str(uuid.uuid4()), "ws": None, "rtc": bool(args.rtc_bin)}
         page.rtc_port = None
         engine = await Engine.launch(args.engine, args.seats, args.seed)
         stack.push_async_callback(engine.close)
         streams = {}
-        tasks = set()
+        processes = [engine.process]
+        tasks = {asyncio.create_task(engine.process.wait())}
+        page.healthy = lambda: not finished.done() and all(p.returncode is None for p in processes)
 
         async def send(peer, text):
             transport, number = peer
@@ -141,6 +157,7 @@ async def serve(args):
             stack.enter_context(contextlib.closing(listener))
             process = await asyncio.create_subprocess_exec(*command, "--", sys.executable,
                         HERE / "relay.py", socket_path, stdout=asyncio.subprocess.PIPE)
+            processes.append(process)
             stack.push_async_callback(stop, process)
             line = (await asyncio.wait_for(process.stdout.readline(), 20)).decode().strip()
             if not line.startswith("LISTEN "):
@@ -153,11 +170,25 @@ async def serve(args):
             return int(address.rsplit(":", 1)[-1])
 
         try:
+            ws_port = None
             if args.ws_service:
-                port = await adapter("ws", [sys.executable, args.ws_service, "--port", "0", "--origin", origin, "--max-peers", str(args.humans)])
-                page.config["ws"] = f"ws://127.0.0.1:{port}/"
+                command = [sys.executable, args.ws_service, "--port", "0", "--origin", origin,
+                           "--max-peers", str(args.humans)]
+                if args.public_origin:
+                    command += ["--browser-host", page.public_host]
+                ws_port = await adapter("ws", command)
+                page.config["ws"] = ("ws" + origin[4:] + "/ws" if args.public_origin
+                                     else f"ws://127.0.0.1:{ws_port}/")
             if args.rtc_bin:
-                page.rtc_port = await adapter("rtc", [args.rtc_bin.resolve(), "-port", "0"])
+                command = [args.rtc_bin.resolve(), "-port", "0"]
+                if args.ice_udp_port:
+                    command += ["-ice-udp-port", str(args.ice_udp_port)]
+                    if args.ice_advertise_ip:
+                        command += ["-ice-advertise-ip", args.ice_advertise_ip]
+                page.rtc_port = await adapter("rtc", command)
+            if args.public_origin:
+                await stack.enter_async_context(await serve_gateway(
+                    args.bind, args.port, page.server_port, ws_port, args.tls_cert, args.tls_key))
             if clock:
                 tasks.add(asyncio.create_task(match.run_clock()))
             for task in tasks:
@@ -176,7 +207,14 @@ async def serve(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=os.getenv("RIFTWELL_PORT", "8000"))
+    parser.add_argument("--bind", default=os.getenv("RIFTWELL_BIND", "127.0.0.1"))
+    parser.add_argument("--public-origin", default=os.getenv("RIFTWELL_PUBLIC_ORIGIN"),
+                        help="exact browser origin for the single published HTTP/WS port")
+    parser.add_argument("--tls-cert", default=os.getenv("RIFTWELL_TLS_CERT"))
+    parser.add_argument("--tls-key", default=os.getenv("RIFTWELL_TLS_KEY"))
+    parser.add_argument("--ice-udp-port", type=int, default=os.getenv("RIFTWELL_ICE_UDP_PORT", "0"))
+    parser.add_argument("--ice-advertise-ip", default=os.getenv("RIFTWELL_ICE_ADVERTISE_IP"))
     parser.add_argument("--seats", type=int, default=8)
     parser.add_argument("--humans", type=int, default=2)
     parser.add_argument("--seed", type=int, default=17)
@@ -198,6 +236,20 @@ def main():
     if not (2 <= args.seats <= 99 and 1 <= args.humans <= args.seats and 0 <= args.seed <= 2147483647
             and 0 <= args.tick_ms <= 60000):
         parser.error("invalid roster, seed or tick interval")
+    if not (0 <= args.port <= 65535 and 0 <= args.ice_udp_port <= 65535):
+        parser.error("ports must be in 0..65535")
+    if args.bind != "127.0.0.1" and not args.public_origin:
+        parser.error("--bind requires --public-origin")
+    if args.public_origin:
+        try:
+            authority(args.public_origin)
+        except ValueError as exc:
+            parser.error(f"invalid --public-origin: {exc}")
+    if bool(args.tls_cert) != bool(args.tls_key) or (args.tls_cert and
+            not (args.public_origin or "").startswith("https://")):
+        parser.error("direct TLS requires --tls-cert, --tls-key and an HTTPS --public-origin")
+    if args.rtc_bin and args.ice_advertise_ip and not args.ice_udp_port:
+        parser.error("--ice-advertise-ip requires --ice-udp-port")
     asyncio.run(serve(args))
 
 

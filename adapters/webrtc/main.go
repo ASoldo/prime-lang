@@ -82,9 +82,12 @@ func routes(host string, h *hub) http.Handler {
 	})
 }
 
-func run(port int, icePath string, args []string) error {
+func run(port int, icePath string, icePort int, advertised string, args []string) error {
 	if len(args) == 0 || port < 0 || port > 65535 {
-		return errors.New("usage: prime-webrtc [-port 0..65535] [-ice-config FILE] -- PROGRAM [ARG ...]")
+		return errors.New("usage: prime-webrtc [-port 0..65535] [-ice-config FILE] [-ice-udp-port PORT [-ice-advertise-ip IPv4]] -- PROGRAM [ARG ...]")
+	}
+	if icePort != 0 && icePath != "" {
+		return errors.New("the fixed UDP ICE-lite profile requires direct candidates")
 	}
 	config, err := loadICE(icePath)
 	if err != nil {
@@ -99,7 +102,14 @@ func run(port int, icePath string, args []string) error {
 	defer release()
 	ctx, stop := context.WithCancelCause(parent)
 	defer stop(nil)
-	h := newHub(config)
+	settings, mux, err := transportSettings(icePort, advertised)
+	if err != nil {
+		return err
+	}
+	if mux != nil {
+		defer mux.Close()
+	}
+	h := newHub(config, settings)
 	host := listener.Addr().String()
 	server := &http.Server{
 		Handler: routes(host, h), ReadHeaderTimeout: 3 * time.Second,
@@ -130,8 +140,10 @@ func run(port int, icePath string, args []string) error {
 func main() {
 	port := flag.Int("port", 0, "IPv4 loopback HTTP port (0 chooses a free port)")
 	ice := flag.String("ice-config", "", "private host ICE configuration JSON file")
+	icePort := flag.Int("ice-udp-port", 0, "fixed IPv4 ICE UDP port on bridge interfaces (0 uses loopback candidates)")
+	advertised := flag.String("ice-advertise-ip", "", "IPv4 address for ICE host candidates behind a port forward")
 	flag.Parse()
-	if err := run(*port, *ice, flag.Args()); err != nil {
+	if err := run(*port, *ice, *icePort, *advertised, flag.Args()); err != nil {
 		log.Fatal(err)
 	}
 }

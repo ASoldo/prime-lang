@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -42,15 +41,11 @@ type peer struct {
 	returns  map[string]*webrtc.TrackLocalStaticRTP
 }
 
-func newHub(config webrtc.Configuration) *hub {
-	var settings webrtc.SettingEngine
+func newHub(config webrtc.Configuration, settings webrtc.SettingEngine) *hub {
 	if len(config.ICEServers) > 0 {
 		// Protect TURN credentials even if verbose SDK logging is configured externally.
 		settings.LoggerFactory = &logging.DefaultLoggerFactory{Writer: io.Discard}
 	}
-	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
-	settings.SetIncludeLoopbackCandidate(true)
-	settings.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
 	settings.SetICETimeouts(4*time.Second, 8*time.Second, time.Second)
 	settings.SetSCTPMaxMessageSize(16384)
 	return &hub{

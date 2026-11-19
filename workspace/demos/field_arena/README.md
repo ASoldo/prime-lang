@@ -56,6 +56,8 @@ ssh -NT -o ExitOnForwardFailure=yes \
 
 While the tunnel is open, the second player opens the same `http://127.0.0.1:8000/` URL and uses WebSocket. Both local ports must be free on the second computer. A restarted match can advertise a new WebSocket port. In a two-computer check, a native arena on x86-64 accepted one client on the host and a second on an AArch64 uConsole through SSH. The two clients agreed on the final tick and winner. WebRTC uses its own ICE media path.
 
+For play across a rootless Podman bridge, see [the deployment network settings and browser acceptance check](Network.md).
+
 ## Session and snapshots
 
 Both SDKs deliver three lines per peer event (kind, peer ID, payload) and accept `text PEER PAYLOAD` addressed replies. The local relay only moves bytes between the SDK child interface and the arena. Peer identity is the pair of adapter name and SDK peer ID. A browser sends `join UUID zlib` when it supports DEFLATE. A plain-text client can send `join UUID`. Both send `move SEQUENCE ACTION`, with action 0 for an explicit wait and 1–4 for the movement controls. The peer binding determines the seat. Sequences start at one. The server acknowledges a move in the authoritative tick where Prime consumes it. An old or queued sequence returns the current snapshot. Gaps and concurrent claims on an active identity are rejected. The browser keeps its random bearer token and unacknowledged inputs in tab session storage.

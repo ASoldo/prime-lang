@@ -13,8 +13,17 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+func localHub(t *testing.T) *hub {
+	t.Helper()
+	settings, _, err := transportSettings(0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newHub(webrtc.Configuration{}, settings)
+}
+
 func TestSignalingFailures(t *testing.T) {
-	h := newHub(webrtc.Configuration{})
+	h := localHub(t)
 	defer h.shutdown()
 	const host = "127.0.0.1:8080"
 	handler := routes(host, h)
@@ -47,7 +56,7 @@ func TestSignalingFailures(t *testing.T) {
 }
 
 func TestPendingPeerDeadlineReleasesCapacity(t *testing.T) {
-	h := newHub(webrtc.Configuration{})
+	h := localHub(t)
 	defer h.shutdown()
 	var first *peer
 	for i := range maxPeers {
@@ -102,7 +111,7 @@ func TestShortLivedProgram(t *testing.T) {
 	t.Setenv("PRIME_RTC_TEST_CHILD", "1")
 	ctx, stop := context.WithCancelCause(t.Context())
 	defer stop(nil)
-	h := newHub(webrtc.Configuration{})
+	h := localHub(t)
 	defer h.shutdown()
 	_ = runProgram(ctx, stop, []string{os.Args[0], "-test.run=^TestShortLivedProgram$"}, h)
 	if cause := context.Cause(ctx); cause == nil || errors.Is(cause, context.Canceled) {

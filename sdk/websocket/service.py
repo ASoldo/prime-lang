@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import base64
 from collections import deque
+from http import HTTPStatus
 import itertools
 import signal
 import sys
@@ -156,9 +157,13 @@ async def run(args):
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, service.stopped.set)
+    def check_host(connection, request):
+        if args.browser_host and request.headers.get_all("Host") != [args.browser_host]:
+            return connection.respond(HTTPStatus.FORBIDDEN, "Unexpected Host")
+
     try:
-        async with serve(service.handle, "127.0.0.1", args.port,
-                         origins=[None, *args.origin], compression=None,
+        async with serve(service.handle, "127.0.0.1", args.port, process_request=check_host,
+                         origins=args.origin if args.browser_host else [None, *args.origin], compression=None,
                          max_size=MAX_BYTES, max_queue=4, write_limit=8192,
                          open_timeout=3, close_timeout=1, backlog=max(8, args.max_peers)) as server:
             print(f"LISTEN {server.sockets[0].getsockname()[1]}", flush=True)
@@ -183,6 +188,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-peers", type=int, default=4, help="application peer limit (1..256)")
     parser.add_argument("--origin", action="append", default=[],
                         help="allow an exact browser Origin (repeatable)")
+    parser.add_argument("--browser-host", help="require this Host and an allowed Origin behind a gateway")
     parser.add_argument("command", nargs="+", help="Prime executable and arguments after --")
     args = parser.parse_args()
     if not 1 <= args.max_peers <= 256:
