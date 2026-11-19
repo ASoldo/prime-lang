@@ -277,7 +277,7 @@ impl Compiler {
             }
         }
         if let Some(slot) = slot {
-            if slot.ty == self.runtime_abi.handle_type && matches!(value.value(), Value::Enum(_)) {
+            if matches!(slot.contents, SlotContents::Enum) {
                 return self.store_enum_handle(slot.ptr, &value);
             }
             value = self.store_slot(slot, value)?;
@@ -742,6 +742,7 @@ impl Compiler {
                     self.store_enum_handle(ptr, &value)?;
                     value = Value::runtime_enum(&enumeration.enum_name).into();
                     slot = Some(StorageSlot {
+                        contents: SlotContents::Enum,
                         ptr,
                         ty,
                         projected: false,
@@ -890,9 +891,7 @@ impl Compiler {
             }
             return self.read_token_binding(value);
         };
-        if slot.ty == self.runtime_abi.handle_type
-            && matches!(cell.lock().unwrap().value(), Value::Enum(_))
-        {
+        if matches!(slot.contents, SlotContents::Enum) {
             let handle =
                 unsafe { LLVMBuildLoad2(self.builder, slot.ty, slot.ptr, c"enum_read".as_ptr()) };
             if self.target.is_embedded() {

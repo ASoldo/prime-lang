@@ -745,6 +745,7 @@ struct StructValue {
 
 #[derive(Clone, Copy)]
 enum SlotContents {
+    Enum,
     Scalar,
     Slice,
     String,
