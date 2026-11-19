@@ -1,4 +1,7 @@
 name: prime-tetris
+# Each service has its own network and user namespace.
+x-podman:
+  in_pod: false
 services:
   arena:
     image: ${PRIME_GAMES_IMAGE:-localhost/prime-games:dev}
