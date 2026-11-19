@@ -26,12 +26,13 @@ COPY docs/schemas docs/schemas
 COPY workspace/core workspace/core
 COPY src src
 ARG CARGO_BUILD_JOBS=2
+# Ubuntu installs the versioned llvm-config in /usr/bin. llvm-sys probes it first.
 RUN --mount=type=cache,id=prime-podman-cargo,target=/cache \
     host="$(rustc -vV | sed -n 's/^host: //p')" && \
     export CARGO_HOME="/cache/$host/cargo" CARGO_TARGET_DIR="/cache/$host/target" && \
     mkdir -p "$CARGO_HOME" && exec 9>"$CARGO_HOME/prime-build.lock" && flock 9 && \
     test "$(rustc --version | cut -d' ' -f2)" = "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" && \
-    touch src/main.rs src/lib.rs && cargo build --release --locked --bin prime-lang && \
+    touch src/main.rs src/lib.rs && LLVM_SYS_211_PREFIX=/usr cargo build --release --locked --bin prime-lang && \
     install "$CARGO_TARGET_DIR/release/prime-lang" /usr/local/bin/prime-lang
 # Keep the locked media runtime dependencies available for offline SDK builds.
 ENV CARGO_HOME=/opt/cargo
